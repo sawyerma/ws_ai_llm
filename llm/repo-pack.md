@@ -817,6 +817,7 @@ stop-system.sh
 table_test.sh
 TEST_LLM_UPDATE.md
 update-llm-pack.sh
+ws_test.html
 </directory_structure>
 
 <files>
@@ -77081,183 +77082,6 @@ export function useTicker(
 }
 </file>
 
-<file path="frontend/src/features/trading/hooks/useMarketTrades.ts">
-/**
- * useMarketTrades Hook - HYBRID + RingBuffer (REST Snapshot + Live Events)
- * =========================================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/market/trades
- * 2. Live WebSocket Events: TRADE_UPDATE (SOFORT, kein Coalescing!)
- * 3. RingBuffer: O(1) Performance, keine Re-allocation
- * 4. pendingRef Pattern: 1x setState pro requestAnimationFrame
- * 
- * VORTEILE:
- * - Echtzeit: Sofortige Trade-Updates via WebSocket (kein Coalescing!)
- * - Performance: RingBuffer statt Array (O(1) append)
- * - Effizient: Nur 1x setState pro Frame
- * - Deduplizierung: Trade-ID basiert
- * 
- * VERWENDUNG:
- * const { trades, loading, error, refresh } = useMarketTrades(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   50          // limit
- * );
- */
-
-import { useState, useEffect, useRef } from 'react';
-import { TradingAPI } from '@/services/api/trading';
-import { useFastSnapshot } from '@/shared/state/laneStores';
-import { RingBuffer } from '@/lib/RingBuffer';
-
-export interface Trade {
-  symbol: string;
-  price: number;
-  size: number;
-  side: 'buy' | 'sell';
-  timestamp: number;
-  exchange: string;
-  market: string;
-  id?: string;
-}
-
-/**
- * useMarketTrades Hook mit RingBuffer + pendingRef
- */
-export function useMarketTrades(
-  symbol: string,
-  market: string = 'spot',
-  exchange: string,
-  limit: number = 50
-) {
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // RingBuffer statt Array (Performance! O(1) append)
-  const tradesBuffer = useRef(new RingBuffer<Trade>(100));
-  const flushScheduled = useRef(false);
-  const seenIds = useRef(new Set<string>());
-  
-  // Flush per requestAnimationFrame
-  const flushTrades = () => {
-    flushScheduled.current = false;
-    // Nur einmal pro Frame updaten!
-    setTrades(tradesBuffer.current.last(limit));
-  };
-  
-  // Initial REST Snapshot
-  const fetchTrades = async () => {
-    try {
-      setLoading(true);
-      const data = await TradingAPI.getTrades(symbol, market, exchange, limit);
-      
-      // Initial-Trades in RingBuffer laden
-      // API kann direkt Array oder {data: Trade[]} zurückgeben
-      const initialTrades = Array.isArray(data) 
-        ? data 
-        : ((data as any).data || []);
-      tradesBuffer.current.clear();
-      seenIds.current.clear();
-      
-      initialTrades.forEach((trade: any) => {
-        // ✅ Transform: Backend Strings → Numbers
-        const normalizedTrade: Trade = {
-          symbol: trade.symbol || symbol,
-          price: parseFloat(trade.price || trade.p || '0'),
-          size: parseFloat(trade.size || trade.qty || trade.q || '0'),
-          side: trade.side || (trade.isBuyerMaker === false ? 'buy' : 'sell'),
-          timestamp: trade.timestamp || trade.ts || trade.T || Date.now(),
-          exchange: trade.exchange || exchange,
-          market: trade.market || market,
-          id: trade.id || trade.trade_id || `${Date.now()}-${Math.random()}`
-        };
-        
-        tradesBuffer.current.push(normalizedTrade);
-        if (normalizedTrade.id) {
-          seenIds.current.add(normalizedTrade.id);
-        }
-      });
-      
-      // Sofort flushen für Initial-Render
-      flushTrades();
-      setLoading(false);
-    } catch (err) {
-      setError(err as Error);
-      setLoading(false);
-    }
-  };
-  
-  // 🚀 LANE SYSTEM: FAST Lane für Trade Updates  
-  const tradesKey = `trades:${symbol}:${exchange}`;
-  const liveTrades = useFastSnapshot<any[]>(tradesKey);
-  
-  useEffect(() => {
-    if (!liveTrades || !Array.isArray(liveTrades)) return;
-    
-    liveTrades.forEach((event: any) => {
-      // Filter: Nur Events für aktuelles Symbol + Exchange
-      if (event.symbol !== symbol) return;
-      if (event.exchange && event.exchange !== exchange) return;
-      
-      const newTrade = event.data;
-      
-      // Deduplizierung: Trade-ID prüfen
-      if (newTrade?.id && seenIds.current.has(newTrade.id)) {
-        return; // Already seen, skip
-      }
-      
-      // ✅ Transform: Backend Strings → Numbers
-      const normalizedTrade: Trade = {
-        symbol: newTrade?.symbol || symbol,
-        price: parseFloat(newTrade?.price || newTrade?.p || '0'),
-        size: parseFloat(newTrade?.size || newTrade?.qty || newTrade?.q || '0'),
-        side: newTrade?.side || (newTrade?.isBuyerMaker === false ? 'buy' : 'sell'),
-        timestamp: newTrade?.timestamp || newTrade?.ts || newTrade?.T || Date.now(),
-        exchange: newTrade?.exchange || exchange,
-        market: newTrade?.market || market,
-        id: newTrade?.id || newTrade?.trade_id || `${Date.now()}`
-      };
-      
-      // In RingBuffer pushen (O(1)!)
-      tradesBuffer.current.push(normalizedTrade);
-      
-      // Trade-ID merken
-      if (newTrade?.id) {
-        seenIds.current.add(newTrade.id);
-        
-        // Cleanup alte IDs (behalte nur letzte 100)
-        if (seenIds.current.size > 100) {
-          const idsArray = Array.from(seenIds.current);
-          const toDelete = idsArray.slice(0, idsArray.length - 100);
-          toDelete.forEach(id => seenIds.current.delete(id));
-        }
-      }
-    });
-    
-    // Schedule Flush (nur 1x pro Frame!)
-    if (!flushScheduled.current && liveTrades.length > 0) {
-      flushScheduled.current = true;
-      requestAnimationFrame(flushTrades);
-    }
-  }, [liveTrades, symbol, exchange, limit]);
-  
-  // Initial Load
-  useEffect(() => {
-    fetchTrades();
-  }, [symbol, market, exchange, limit]);
-  
-  // Refresh-Funktion
-  const refresh = () => {
-    fetchTrades();
-  };
-
-  return { trades, loading, error, refresh };
-}
-</file>
-
 <file path="frontend/src/features/trading/hooks/useOrderBook.ts">
 /**
  * useOrderBook Hook - HYBRID (REST Snapshot + Live Events) + 8ms Coalescing
@@ -106455,6 +106279,197 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
+<file path="frontend/src/features/trading/hooks/useMarketTrades.ts">
+/**
+ * useMarketTrades Hook - HYBRID + RingBuffer (REST Snapshot + Live Events)
+ * =========================================================================
+ * 
+ * ARCHITEKTUR:
+ * 1. Initial REST Snapshot: GET /api/market/trades
+ * 2. Live WebSocket Events: TRADE_UPDATE (SOFORT, kein Coalescing!)
+ * 3. RingBuffer: O(1) Performance, keine Re-allocation
+ * 4. pendingRef Pattern: 1x setState pro requestAnimationFrame
+ * 
+ * VORTEILE:
+ * - Echtzeit: Sofortige Trade-Updates via WebSocket (kein Coalescing!)
+ * - Performance: RingBuffer statt Array (O(1) append)
+ * - Effizient: Nur 1x setState pro Frame
+ * - Deduplizierung: Trade-ID basiert
+ * 
+ * VERWENDUNG:
+ * const { trades, loading, error, refresh } = useMarketTrades(
+ *   'BTCUSDT',  // symbol
+ *   'spot',     // market
+ *   'binance',  // exchange
+ *   50          // limit
+ * );
+ */
+
+import { useState, useEffect, useRef } from 'react';
+import { TradingAPI } from '@/services/api/trading';
+import { useFastSnapshot } from '@/shared/state/laneStores';
+import { RingBuffer } from '@/lib/RingBuffer';
+import { WebSocketService } from '@/services/api/websocket';
+
+export interface Trade {
+  symbol: string;
+  price: number;
+  size: number;
+  side: 'buy' | 'sell';
+  timestamp: number;
+  exchange: string;
+  market: string;
+  id?: string;
+}
+
+/**
+ * useMarketTrades Hook mit RingBuffer + pendingRef
+ */
+export function useMarketTrades(
+  symbol: string,
+  market: string = 'spot',
+  exchange: string,
+  limit: number = 50
+) {
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  
+  // RingBuffer statt Array (Performance! O(1) append)
+  const tradesBuffer = useRef(new RingBuffer<Trade>(100));
+  const flushScheduled = useRef(false);
+  const seenIds = useRef(new Set<string>());
+  
+  // Flush per requestAnimationFrame
+  const flushTrades = () => {
+    flushScheduled.current = false;
+    // Nur einmal pro Frame updaten!
+    setTrades(tradesBuffer.current.last(limit));
+  };
+  
+  // Initial REST Snapshot
+  const fetchTrades = async () => {
+    try {
+      setLoading(true);
+      const data = await TradingAPI.getTrades(symbol, market, exchange, limit);
+      
+      // Initial-Trades in RingBuffer laden
+      // API kann direkt Array oder {data: Trade[]} zurückgeben
+      const initialTrades = Array.isArray(data) 
+        ? data 
+        : ((data as any).data || []);
+      tradesBuffer.current.clear();
+      seenIds.current.clear();
+      
+      initialTrades.forEach((trade: any) => {
+        // ✅ Transform: Backend Strings → Numbers
+        const normalizedTrade: Trade = {
+          symbol: trade.symbol || symbol,
+          price: parseFloat(trade.price || trade.p || '0'),
+          size: parseFloat(trade.size || trade.qty || trade.q || '0'),
+          side: trade.side || (trade.isBuyerMaker === false ? 'buy' : 'sell'),
+          timestamp: trade.timestamp || trade.ts || trade.T || Date.now(),
+          exchange: trade.exchange || exchange,
+          market: trade.market || market,
+          id: trade.id || trade.trade_id || `${Date.now()}-${Math.random()}`
+        };
+        
+        tradesBuffer.current.push(normalizedTrade);
+        if (normalizedTrade.id) {
+          seenIds.current.add(normalizedTrade.id);
+        }
+      });
+      
+      // Sofort flushen für Initial-Render
+      flushTrades();
+      setLoading(false);
+    } catch (err) {
+      setError(err as Error);
+      setLoading(false);
+    }
+  };
+  
+  // 🚀 LANE SYSTEM: FAST Lane für Trade Updates  
+  const tradesKey = `trades:${symbol}:${exchange}`;
+  const liveTrades = useFastSnapshot<any[]>(tradesKey);
+  
+  useEffect(() => {
+    if (!liveTrades || !Array.isArray(liveTrades)) return;
+    
+    liveTrades.forEach((event: any) => {
+      // Filter: Nur Events für aktuelles Symbol + Exchange
+      if (event.symbol !== symbol) return;
+      if (event.exchange && event.exchange !== exchange) return;
+      
+      const newTrade = event.data;
+      
+      // Deduplizierung: Trade-ID prüfen
+      if (newTrade?.id && seenIds.current.has(newTrade.id)) {
+        return; // Already seen, skip
+      }
+      
+      // ✅ Transform: Backend Strings → Numbers
+      const normalizedTrade: Trade = {
+        symbol: newTrade?.symbol || symbol,
+        price: parseFloat(newTrade?.price || newTrade?.p || '0'),
+        size: parseFloat(newTrade?.size || newTrade?.qty || newTrade?.q || '0'),
+        side: newTrade?.side || (newTrade?.isBuyerMaker === false ? 'buy' : 'sell'),
+        timestamp: newTrade?.timestamp || newTrade?.ts || newTrade?.T || Date.now(),
+        exchange: newTrade?.exchange || exchange,
+        market: newTrade?.market || market,
+        id: newTrade?.id || newTrade?.trade_id || `${Date.now()}`
+      };
+      
+      // In RingBuffer pushen (O(1)!)
+      tradesBuffer.current.push(normalizedTrade);
+      
+      // Trade-ID merken
+      if (newTrade?.id) {
+        seenIds.current.add(newTrade.id);
+        
+        // Cleanup alte IDs (behalte nur letzte 100)
+        if (seenIds.current.size > 100) {
+          const idsArray = Array.from(seenIds.current);
+          const toDelete = idsArray.slice(0, idsArray.length - 100);
+          toDelete.forEach(id => seenIds.current.delete(id));
+        }
+      }
+    });
+    
+    // Schedule Flush (nur 1x pro Frame!)
+    if (!flushScheduled.current && liveTrades.length > 0) {
+      flushScheduled.current = true;
+      requestAnimationFrame(flushTrades);
+    }
+  }, [liveTrades, symbol, exchange, limit]);
+  
+  // Initial Load
+  useEffect(() => {
+    fetchTrades();
+  }, [symbol, market, exchange, limit]);
+  
+  // ✅ KRITISCH: WebSocket Connection aufbauen!
+  // OHNE DIES: Keine Live-Updates, Lane Stores bleiben leer!
+  useEffect(() => {
+    const wsService = WebSocketService.getInstance();
+    wsService.connect(symbol, market, exchange);
+    
+    return () => {
+      // Cleanup: Disconnect nur wenn Component unmounted
+      // Nicht bei jedem Re-Render!
+      wsService.disconnect();
+    };
+  }, [symbol, market, exchange]);
+  
+  // Refresh-Funktion
+  const refresh = () => {
+    fetchTrades();
+  };
+
+  return { trades, loading, error, refresh };
+}
+</file>
+
 <file path="frontend/src/lib/zod-transforms.ts">
 import { z } from 'zod';
 
@@ -107026,196 +107041,6 @@ export class UserSettingsAPI extends BaseAPI {
       }
       throw error;
     }
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/websocket.ts">
-import { RingBuffer } from '../../lib/RingBuffer';
-
-/**
- * FINAL WebSocketService
- * - Connects to backend gateway: ws://localhost:8100/ws/{exchange}/{symbol}/{market}
- * - Reconnect without losing listeners
- * - Emits full message for message.type (no message.data assumptions)
- */
-export class WebSocketService {
-  private static instance: WebSocketService;
-
-  private ws: WebSocket | null = null;
-  private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 8;
-
-  private listeners: Map<string, Function[]> = new Map();
-  private currentUrl: string = '';
-
-  private messageQueue = new RingBuffer<string>(500);
-  private flushing = false;
-  private flushInterval: number | null = null;
-
-  static getInstance(): WebSocketService {
-    if (!WebSocketService.instance) {
-      WebSocketService.instance = new WebSocketService();
-    }
-    return WebSocketService.instance;
-  }
-
-  connect(symbol: string, market: string, exchange: string): void {
-    const base =
-      (import.meta as any)?.env?.VITE_BACKEND_WS_URL ||
-      'ws://localhost:8100/ws';
-
-    const ex = String(exchange || '').toLowerCase();
-    const sym = String(symbol || '').toUpperCase();
-    const mkt = String(market || 'spot').toLowerCase();
-
-    const wsUrl = `${base}/${ex}/${sym}/${mkt}`;
-
-    if (this.ws && this.currentUrl === wsUrl && this.ws.readyState === WebSocket.OPEN) return;
-
-    this.closeSocketOnly(); // KEEP listeners
-    this.currentUrl = wsUrl;
-
-    this.ws = new WebSocket(wsUrl);
-    this.setupEventHandlers();
-  }
-
-  private setupEventHandlers(): void {
-    if (!this.ws) return;
-
-    this.ws.onopen = () => {
-      this.reconnectAttempts = 0;
-      this.emit('connected', { url: this.currentUrl, ts: Date.now() });
-    };
-
-    this.ws.onmessage = (event: MessageEvent) => {
-      this.messageQueue.push(event.data);
-      if (!this.flushInterval) this.startFlushLoop();
-    };
-
-    this.ws.onclose = (event: CloseEvent) => {
-      this.emit('disconnected', { code: event.code, reason: event.reason });
-      this.handleReconnect();
-    };
-
-    this.ws.onerror = (error: Event) => {
-      this.emit('error', error);
-    };
-  }
-
-  private dispatchInbound(message: any): void {
-    if (message && typeof message === 'object') {
-      message.clientReceivedAt = performance.now();
-    }
-
-    this.emit('message', message);
-
-    if (message && typeof message.type === 'string') {
-      this.emit(message.type, message);
-    } else {
-      this.emit('raw_message', message);
-    }
-  }
-
-  private flushMessages(): void {
-    if (this.flushing) return;
-    this.flushing = true;
-
-    // robust even in background tabs:
-    setTimeout(() => {
-      let raw: string | undefined;
-      let processed = 0;
-      const maxBatch = 200;
-
-      while ((raw = this.messageQueue.shift()) && processed < maxBatch) {
-        try {
-          this.dispatchInbound(JSON.parse(raw));
-        } catch (e) {
-          this.emit('error', e);
-        }
-        processed++;
-      }
-
-      this.flushing = false;
-    }, 0);
-  }
-
-  private startFlushLoop(): void {
-    if (this.flushInterval) return;
-
-    this.flushInterval = window.setInterval(() => {
-      if (!this.messageQueue.isEmpty()) this.flushMessages();
-    }, 8); // 8ms ≈ 125Hz
-  }
-
-  private stopFlushLoop(): void {
-    if (this.flushInterval) {
-      clearInterval(this.flushInterval);
-      this.flushInterval = null;
-    }
-  }
-
-  private handleReconnect(): void {
-    if (!this.currentUrl) return;
-
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      this.emit('error', new Error('Max reconnection attempts reached'));
-      return;
-    }
-
-    this.reconnectAttempts++;
-    const delay = Math.min(250 * this.reconnectAttempts, 2000);
-
-    setTimeout(() => {
-      if (!this.currentUrl) return;
-      this.connectFromUrl(this.currentUrl);
-    }, delay);
-  }
-
-  private connectFromUrl(url: string): void {
-    this.closeSocketOnly();
-    this.currentUrl = url;
-    this.ws = new WebSocket(url);
-    this.setupEventHandlers();
-  }
-
-  subscribe(event: string, callback: Function): void {
-    if (!this.listeners.has(event)) this.listeners.set(event, []);
-    this.listeners.get(event)!.push(callback);
-  }
-
-  unsubscribe(event: string, callback: Function): void {
-    const arr = this.listeners.get(event);
-    if (!arr) return;
-    const i = arr.indexOf(callback);
-    if (i >= 0) arr.splice(i, 1);
-  }
-
-  private emit(event: string, data: any): void {
-    const arr = this.listeners.get(event) || [];
-    for (const cb of [...arr]) {
-      try { cb(data); } catch {}
-    }
-  }
-
-  private closeSocketOnly(): void {
-    this.stopFlushLoop();
-    if (this.ws) {
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
-    this.messageQueue.clear();
-  }
-
-  disconnect(): void {
-    this.closeSocketOnly();
-    this.currentUrl = '';
-    this.reconnectAttempts = 0;
-  }
-
-  destroy(): void {
-    this.disconnect();
-    this.listeners.clear();
   }
 }
 </file>
@@ -189961,6 +189786,65 @@ echo "✅ LLM Pack updated successfully!"
 echo "🔗 Check: https://github.com/sawyerma/ws_ai_llm"
 </file>
 
+<file path="ws_test.html">
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WS Test</title>
+</head>
+<body>
+    <h1>WebSocket Connection Test</h1>
+    <div id="status">Testing...</div>
+    <div id="messages"></div>
+    
+    <script>
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+        
+        // Test 1: Direct to Backend (8100)
+        console.log('Testing ws://localhost:8100/ws/binance/BTCUSDT/spot');
+        const ws1 = new WebSocket('ws://localhost:8100/ws/binance/BTCUSDT/spot');
+        
+        ws1.onopen = () => {
+            status.innerHTML = '✅ DIRECT Backend Connection (8100): WORKS!';
+            console.log('✅ Direct connection SUCCESS');
+        };
+        
+        ws1.onmessage = (event) => {
+            messages.innerHTML += `<div>DIRECT: ${event.data}</div>`;
+            if (messages.children.length > 10) ws1.close();
+        };
+        
+        ws1.onerror = (error) => {
+            status.innerHTML = '❌ DIRECT Backend Connection (8100): FAILED';
+            console.error('❌ Direct connection FAILED:', error);
+            
+            // Test 2: Through Vite Proxy (8080)
+            setTimeout(() => {
+                console.log('Testing ws://localhost:8080/ws/binance/BTCUSDT/spot');
+                const ws2 = new WebSocket('ws://localhost:8080/ws/binance/BTCUSDT/spot');
+                
+                ws2.onopen = () => {
+                    status.innerHTML += '<br>✅ PROXY Connection (8080): WORKS!';
+                    console.log('✅ Proxy connection SUCCESS');
+                };
+                
+                ws2.onmessage = (event) => {
+                    messages.innerHTML += `<div>PROXY: ${event.data}</div>`;
+                    if (messages.children.length > 10) ws2.close();
+                };
+                
+                ws2.onerror = (error) => {
+                    status.innerHTML += '<br>❌ PROXY Connection (8080): FAILED';
+                    console.error('❌ Proxy connection FAILED:', error);
+                };
+            }, 2000);
+        };
+    </script>
+</body>
+</html>
+</file>
+
 <file path="backend/core/config.py">
 # backend/core/config.py
 
@@ -191313,197 +191197,6 @@ def get_exchange_status(exchange: str):
     return universal_ws_service.get_exchange_lanes(exchange)
 </file>
 
-<file path="frontend/src/features/trading/hooks/useChartView.ts">
-/**
- * useChartView Hook - HYBRID + pendingRef (REST Snapshot + Live Events)
- * ======================================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/chart/history
- * 2. Live WebSocket Events: KLINE_UPDATE (mit 8ms Coalescing im Router)
- * 3. pendingRef Pattern: 1x setState pro requestAnimationFrame
- * 4. Merge Logic: Letzte Candle updaten wenn time matched
- * 
- * VORTEILE:
- * - Echtzeit: Candlestick-Updates via WebSocket (8ms coalescet)
- * - Performance: pendingRef Pattern, 1x setState pro Frame
- * - Effizient: Nur 1x REST initial, dann nur Events
- * 
- * VERWENDUNG:
- * const { chartData, loading, error, refresh } = useChartView(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   '1m',       // interval
- *   100         // limit
- * );
- */
-
-import { useState, useEffect, useRef } from 'react';
-import { ChartAPI } from '@/services/api/chart';
-import { useFastSnapshot } from '@/shared/state/laneStores';
-import { cancel } from '@/lib/rafScheduler';
-import { WebSocketService } from '@/services/api/websocket';
-
-export interface ChartData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-/**
- * useChartView Hook mit pendingRef Pattern
- */
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string = '1m',
-  limit: number = 100
-) {
-  const [chartData, setChartData] = useState<ChartData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // pendingRef: Events sammeln, 1x setState pro Frame
-  const pendingData = useRef<ChartData[] | null>(null);
-  const flushScheduled = useRef(false);
-  
-  // Flush per requestAnimationFrame
-  const flushUpdate = () => {
-    flushScheduled.current = false;
-    
-    if (pendingData.current) {
-      setChartData(pendingData.current);
-      pendingData.current = null;
-    }
-  };
-  
-  // Initial REST Snapshot
-  const fetchChartData = async () => {
-    try {
-      setLoading(true);
-      const data = await ChartAPI.getHistory(symbol, exchange, interval, limit);
-      
-      // ✅ FIX: ChartAPI gibt direkt Array zurück, nicht {data: [...]}
-      const rawData = Array.isArray(data) ? data : ((data as any).data || []);
-      
-      // Transform: Backend Format → ChartData[]
-      const transformed: ChartData[] = rawData.map((d: any) => ({
-        time: d.time,
-        open: parseFloat(d.open),
-        high: parseFloat(d.high),
-        low: parseFloat(d.low),
-        close: parseFloat(d.close),
-        volume: parseFloat(d.volume),
-      }));
-      
-      pendingData.current = transformed;
-      flushUpdate();
-      setLoading(false);
-    } catch (err) {
-      setError(err as Error);
-      setLoading(false);
-    }
-  };
-  
-  // 🚀 LANE SYSTEM: FAST Lane für KLINE Updates
-  // ✅ KRITISCH: Key MUSS exchange enthalten (sonst Collision bei multi-exchange)
-  const klineKey = `kline:${exchange}:${symbol}:${interval}`;
-  const liveKline = useFastSnapshot<any>(klineKey);
-  
-  useEffect(() => {
-    if (!liveKline) return;
-    
-    // Filter: Nur Events für aktuelles Symbol + Exchange + Interval
-    if (liveKline.symbol !== symbol) return;
-    if (liveKline.exchange && liveKline.exchange !== exchange) return;
-    if (liveKline.interval && liveKline.interval !== interval) return;
-    
-    const newCandle = liveKline.candle;
-    const currentData = pendingData.current || chartData;
-    
-    if (currentData.length === 0) {
-      // Leere Daten: Neuen Candle hinzufügen
-      pendingData.current = [{
-        time: newCandle.ts || newCandle.time || newCandle.t,
-        open: parseFloat(newCandle.open || newCandle.o),
-        high: parseFloat(newCandle.high || newCandle.h),
-        low: parseFloat(newCandle.low || newCandle.l),
-        close: parseFloat(newCandle.close || newCandle.c),
-        volume: parseFloat(newCandle.volume || newCandle.v),
-      }];
-    } else {
-      const lastCandle = currentData[currentData.length - 1];
-      if (!lastCandle) return;
-      
-      const candleTime = newCandle.ts || newCandle.time || newCandle.t;
-      
-      // Update letzte Candle wenn Zeit matched
-      if (lastCandle.time === candleTime) {
-        const updatedData = [...currentData];
-        updatedData[updatedData.length - 1] = {
-          time: candleTime,
-          open: parseFloat(newCandle.open || newCandle.o),
-          high: parseFloat(newCandle.high || newCandle.h),
-          low: parseFloat(newCandle.low || newCandle.l),
-          close: parseFloat(newCandle.close || newCandle.c),
-          volume: parseFloat(newCandle.volume || newCandle.v),
-        };
-        pendingData.current = updatedData;
-      }
-      // Neue Candle anhängen wenn Zeit > last
-      else if (candleTime > lastCandle.time) {
-        const updatedData = [...currentData, {
-          time: candleTime,
-          open: parseFloat(newCandle.open || newCandle.o),
-          high: parseFloat(newCandle.high || newCandle.h),
-          low: parseFloat(newCandle.low || newCandle.l),
-          close: parseFloat(newCandle.close || newCandle.c),
-          volume: parseFloat(newCandle.volume || newCandle.v),
-        }];
-        // Limit beachten
-        pendingData.current = updatedData.slice(-limit);
-      }
-      // Event älter: Ignorieren
-      else {
-        return;
-      }
-    }
-    
-    // Schedule Flush (nur 1x pro frame!)
-    if (!flushScheduled.current) {
-      flushScheduled.current = true;
-      requestAnimationFrame(flushUpdate);
-    }
-  }, [liveKline, symbol, exchange, interval, limit, chartData]);
-  
-  // Initial Load
-  useEffect(() => {
-    // REST Snapshot laden - WebSocket wird zentral über Lane-System verwaltet
-    fetchChartData();
-  }, [symbol, market, exchange, interval, limit]);
-  
-  // Cleanup bei Unmount
-  useEffect(() => {
-    return () => {
-      const topicKey = `${exchange}|${market}|${symbol}|kline`;
-      cancel(topicKey);
-    };
-  }, [exchange, market, symbol]);
-  
-  // Refresh-Funktion
-  const refresh = () => {
-    fetchChartData();
-  };
-
-  return { chartData, loading, error, refresh };
-}
-</file>
-
 <file path="frontend/src/services/api/market.ts">
 import { BaseAPI } from './base';
 
@@ -192074,6 +191767,203 @@ export type WhaleTransaction = z.infer<typeof WhaleTransactionSchema>;
 export type WhaleStatistics = z.infer<typeof WhaleStatisticsSchema>;
 export type BackfillTask = z.infer<typeof BackfillTaskSchema>;
 export type Health = z.infer<typeof HealthSchema>;
+</file>
+
+<file path="frontend/src/services/api/websocket.ts">
+import { RingBuffer } from '../../lib/RingBuffer';
+
+/**
+ * FINAL WebSocketService
+ * - Connects to backend gateway: ws://localhost:8100/ws/{exchange}/{symbol}/{market}
+ * - Reconnect without losing listeners
+ * - Emits full message for message.type (no message.data assumptions)
+ */
+export class WebSocketService {
+  private static instance: WebSocketService;
+
+  private ws: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private readonly maxReconnectAttempts = 8;
+
+  private listeners: Map<string, Function[]> = new Map();
+  private currentUrl: string = '';
+
+  private messageQueue = new RingBuffer<string>(500);
+  private flushing = false;
+  private flushInterval: number | null = null;
+
+  static getInstance(): WebSocketService {
+    if (!WebSocketService.instance) {
+      WebSocketService.instance = new WebSocketService();
+    }
+    return WebSocketService.instance;
+  }
+
+  connect(symbol: string, market: string, exchange: string): void {
+    // ✅ FIX: Relative WS URL für Vite Proxy (läuft auf Port 8080, nicht 8100!)
+    // Vite proxy leitet /ws -> ws://localhost:8100/ws weiter
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host; // localhost:8080 in dev
+    const base = (import.meta as any)?.env?.VITE_BACKEND_WS_URL || `${protocol}//${host}/ws`;
+
+    const ex = String(exchange || '').toLowerCase();
+    const sym = String(symbol || '').toUpperCase();
+    const mkt = String(market || 'spot').toLowerCase();
+
+    const wsUrl = `${base}/${ex}/${sym}/${mkt}`;
+
+    // ✅ FIX: Prüfe auch CONNECTING state um Race Conditions zu vermeiden
+    if (this.ws && this.currentUrl === wsUrl) {
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        return; // Bereits verbunden oder verbindet gerade
+      }
+    }
+
+    this.closeSocketOnly(); // KEEP listeners
+    this.currentUrl = wsUrl;
+
+    this.ws = new WebSocket(wsUrl);
+    this.setupEventHandlers();
+  }
+
+  private setupEventHandlers(): void {
+    if (!this.ws) return;
+
+    this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
+      this.emit('connected', { url: this.currentUrl, ts: Date.now() });
+    };
+
+    this.ws.onmessage = (event: MessageEvent) => {
+      this.messageQueue.push(event.data);
+      if (!this.flushInterval) this.startFlushLoop();
+    };
+
+    this.ws.onclose = (event: CloseEvent) => {
+      this.emit('disconnected', { code: event.code, reason: event.reason });
+      this.handleReconnect();
+    };
+
+    this.ws.onerror = (error: Event) => {
+      this.emit('error', error);
+    };
+  }
+
+  private dispatchInbound(message: any): void {
+    if (message && typeof message === 'object') {
+      message.clientReceivedAt = performance.now();
+    }
+
+    this.emit('message', message);
+
+    if (message && typeof message.type === 'string') {
+      this.emit(message.type, message);
+    } else {
+      this.emit('raw_message', message);
+    }
+  }
+
+  private flushMessages(): void {
+    if (this.flushing) return;
+    this.flushing = true;
+
+    // robust even in background tabs:
+    setTimeout(() => {
+      let raw: string | undefined;
+      let processed = 0;
+      const maxBatch = 200;
+
+      while ((raw = this.messageQueue.shift()) && processed < maxBatch) {
+        try {
+          this.dispatchInbound(JSON.parse(raw));
+        } catch (e) {
+          this.emit('error', e);
+        }
+        processed++;
+      }
+
+      this.flushing = false;
+    }, 0);
+  }
+
+  private startFlushLoop(): void {
+    if (this.flushInterval) return;
+
+    this.flushInterval = window.setInterval(() => {
+      if (!this.messageQueue.isEmpty()) this.flushMessages();
+    }, 8); // 8ms ≈ 125Hz
+  }
+
+  private stopFlushLoop(): void {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+  }
+
+  private handleReconnect(): void {
+    if (!this.currentUrl) return;
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('error', new Error('Max reconnection attempts reached'));
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(250 * this.reconnectAttempts, 2000);
+
+    setTimeout(() => {
+      if (!this.currentUrl) return;
+      this.connectFromUrl(this.currentUrl);
+    }, delay);
+  }
+
+  private connectFromUrl(url: string): void {
+    this.closeSocketOnly();
+    this.currentUrl = url;
+    this.ws = new WebSocket(url);
+    this.setupEventHandlers();
+  }
+
+  subscribe(event: string, callback: Function): void {
+    if (!this.listeners.has(event)) this.listeners.set(event, []);
+    this.listeners.get(event)!.push(callback);
+  }
+
+  unsubscribe(event: string, callback: Function): void {
+    const arr = this.listeners.get(event);
+    if (!arr) return;
+    const i = arr.indexOf(callback);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  private emit(event: string, data: any): void {
+    const arr = this.listeners.get(event) || [];
+    for (const cb of [...arr]) {
+      try { cb(data); } catch {}
+    }
+  }
+
+  private closeSocketOnly(): void {
+    this.stopFlushLoop();
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
+    this.messageQueue.clear();
+  }
+
+  disconnect(): void {
+    this.closeSocketOnly();
+    this.currentUrl = '';
+    this.reconnectAttempts = 0;
+  }
+
+  destroy(): void {
+    this.disconnect();
+    this.listeners.clear();
+  }
+}
 </file>
 
 <file path="readme/000_backfill_loop.md">
@@ -196364,6 +196254,206 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
+<file path="frontend/src/features/trading/hooks/useChartView.ts">
+/**
+ * useChartView Hook - HYBRID + pendingRef (REST Snapshot + Live Events)
+ * ======================================================================
+ * 
+ * ARCHITEKTUR:
+ * 1. Initial REST Snapshot: GET /api/chart/history
+ * 2. Live WebSocket Events: KLINE_UPDATE (mit 8ms Coalescing im Router)
+ * 3. pendingRef Pattern: 1x setState pro requestAnimationFrame
+ * 4. Merge Logic: Letzte Candle updaten wenn time matched
+ * 
+ * VORTEILE:
+ * - Echtzeit: Candlestick-Updates via WebSocket (8ms coalescet)
+ * - Performance: pendingRef Pattern, 1x setState pro Frame
+ * - Effizient: Nur 1x REST initial, dann nur Events
+ * 
+ * VERWENDUNG:
+ * const { chartData, loading, error, refresh } = useChartView(
+ *   'BTCUSDT',  // symbol
+ *   'spot',     // market
+ *   'binance',  // exchange
+ *   '1m',       // interval
+ *   100         // limit
+ * );
+ */
+
+import { useState, useEffect, useRef } from 'react';
+import { ChartAPI } from '@/services/api/chart';
+import { useFastSnapshot } from '@/shared/state/laneStores';
+import { cancel } from '@/lib/rafScheduler';
+import { WebSocketService } from '@/services/api/websocket';
+
+export interface ChartData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+/**
+ * useChartView Hook mit pendingRef Pattern
+ */
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string = '1m',
+  limit: number = 100
+) {
+  const [chartData, setChartData] = useState<ChartData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  
+  // pendingRef: Events sammeln, 1x setState pro Frame
+  const pendingData = useRef<ChartData[] | null>(null);
+  const flushScheduled = useRef(false);
+  
+  // Flush per requestAnimationFrame
+  const flushUpdate = () => {
+    flushScheduled.current = false;
+    
+    if (pendingData.current) {
+      setChartData(pendingData.current);
+      pendingData.current = null;
+    }
+  };
+  
+  // Initial REST Snapshot
+  const fetchChartData = async () => {
+    try {
+      setLoading(true);
+      const data = await ChartAPI.getHistory(symbol, exchange, interval, limit);
+      
+      // ✅ FIX: ChartAPI gibt direkt Array zurück, nicht {data: [...]}
+      const rawData = Array.isArray(data) ? data : ((data as any).data || []);
+      
+      // Transform: Backend Format → ChartData[]
+      const transformed: ChartData[] = rawData.map((d: any) => ({
+        time: d.time,
+        open: parseFloat(d.open),
+        high: parseFloat(d.high),
+        low: parseFloat(d.low),
+        close: parseFloat(d.close),
+        volume: parseFloat(d.volume),
+      }));
+      
+      pendingData.current = transformed;
+      flushUpdate();
+      setLoading(false);
+    } catch (err) {
+      setError(err as Error);
+      setLoading(false);
+    }
+  };
+  
+  // 🚀 LANE SYSTEM: FAST Lane für KLINE Updates
+  // ✅ KRITISCH: Key MUSS exchange enthalten (sonst Collision bei multi-exchange)
+  const klineKey = `kline:${exchange}:${symbol}:${interval}`;
+  const liveKline = useFastSnapshot<any>(klineKey);
+  
+  useEffect(() => {
+    if (!liveKline) return;
+    
+    // Filter: Nur Events für aktuelles Symbol + Exchange + Interval
+    if (liveKline.symbol !== symbol) return;
+    if (liveKline.exchange && liveKline.exchange !== exchange) return;
+    if (liveKline.interval && liveKline.interval !== interval) return;
+    
+    const newCandle = liveKline.candle;
+    const currentData = pendingData.current || chartData;
+    
+    if (currentData.length === 0) {
+      // Leere Daten: Neuen Candle hinzufügen
+      pendingData.current = [{
+        time: newCandle.ts || newCandle.time || newCandle.t,
+        open: parseFloat(newCandle.open || newCandle.o),
+        high: parseFloat(newCandle.high || newCandle.h),
+        low: parseFloat(newCandle.low || newCandle.l),
+        close: parseFloat(newCandle.close || newCandle.c),
+        volume: parseFloat(newCandle.volume || newCandle.v),
+      }];
+    } else {
+      const lastCandle = currentData[currentData.length - 1];
+      if (!lastCandle) return;
+      
+      const candleTime = newCandle.ts || newCandle.time || newCandle.t;
+      
+      // Update letzte Candle wenn Zeit matched
+      if (lastCandle.time === candleTime) {
+        const updatedData = [...currentData];
+        updatedData[updatedData.length - 1] = {
+          time: candleTime,
+          open: parseFloat(newCandle.open || newCandle.o),
+          high: parseFloat(newCandle.high || newCandle.h),
+          low: parseFloat(newCandle.low || newCandle.l),
+          close: parseFloat(newCandle.close || newCandle.c),
+          volume: parseFloat(newCandle.volume || newCandle.v),
+        };
+        pendingData.current = updatedData;
+      }
+      // Neue Candle anhängen wenn Zeit > last
+      else if (candleTime > lastCandle.time) {
+        const updatedData = [...currentData, {
+          time: candleTime,
+          open: parseFloat(newCandle.open || newCandle.o),
+          high: parseFloat(newCandle.high || newCandle.h),
+          low: parseFloat(newCandle.low || newCandle.l),
+          close: parseFloat(newCandle.close || newCandle.c),
+          volume: parseFloat(newCandle.volume || newCandle.v),
+        }];
+        // Limit beachten
+        pendingData.current = updatedData.slice(-limit);
+      }
+      // Event älter: Ignorieren
+      else {
+        return;
+      }
+    }
+    
+    // Schedule Flush (nur 1x pro frame!)
+    if (!flushScheduled.current) {
+      flushScheduled.current = true;
+      requestAnimationFrame(flushUpdate);
+    }
+  }, [liveKline, symbol, exchange, interval, limit, chartData]);
+  
+  // Initial Load
+  useEffect(() => {
+    fetchChartData();
+  }, [symbol, market, exchange, interval, limit]);
+  
+  // 🔌 WebSocket Connection Management
+  useEffect(() => {
+    const wsService = WebSocketService.getInstance();
+    wsService.connect(symbol, market, exchange);
+    
+    return () => {
+      wsService.disconnect();
+    };
+  }, [symbol, market, exchange]);
+  
+  // Cleanup bei Unmount
+  useEffect(() => {
+    return () => {
+      const topicKey = `${exchange}|${market}|${symbol}|kline`;
+      cancel(topicKey);
+    };
+  }, [exchange, market, symbol]);
+  
+  // Refresh-Funktion
+  const refresh = () => {
+    fetchChartData();
+  };
+
+  return { chartData, loading, error, refresh };
+}
+</file>
+
 <file path="start-health.sh">
 #!/bin/bash
 
@@ -199897,6 +199987,65 @@ volumes:
   redis-data:
 </file>
 
+<file path="Dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ============================================================
+# LAYER 1: System Dependencies (CACHED solange unverändert)
+# ============================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    tar \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
+# ============================================================
+# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
+COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
+COPY vendor/system/file_linux/config.guess ./config.guess
+COPY vendor/system/file_linux/config.sub ./config.sub
+
+RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
+ && cd ta-lib/ \
+ && cp ../config.guess ../config.sub . \
+ && chmod +x config.guess config.sub \
+ && ./configure --prefix=/usr \
+ && (make -j$(nproc) || make) \
+ && make install \
+ && cd .. \
+ && rm -rf ta-lib* config.guess config.sub \
+ && ldconfig
+
+# ============================================================
+# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
+# ============================================================
+COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
+COPY vendor/backend/file_linux/ ./wheels/
+
+RUN pip install --no-cache-dir --no-index --find-links ./wheels \
+    -r backend_requirements.lock
+
+# ============================================================
+# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
+# ============================================================
+COPY backend ./backend
+
+# ENV für Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Port exposen
+EXPOSE 8100
+
+# Start der App
+CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
+</file>
+
 <file path="backend/websocket/ws_config.py">
 import os
 from typing import Dict, Any, Set
@@ -200380,65 +200529,6 @@ export class TradingAPI extends BaseAPI {
   }
 
 }
-</file>
-
-<file path="Dockerfile">
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# ============================================================
-# LAYER 1: System Dependencies (CACHED solange unverändert)
-# ============================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    wget \
-    tar \
-    curl \
- && rm -rf /var/lib/apt/lists/*
-
-# ============================================================
-# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
-# ============================================================
-# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
-COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
-COPY vendor/system/file_linux/config.guess ./config.guess
-COPY vendor/system/file_linux/config.sub ./config.sub
-
-RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
- && cd ta-lib/ \
- && cp ../config.guess ../config.sub . \
- && chmod +x config.guess config.sub \
- && ./configure --prefix=/usr \
- && (make -j$(nproc) || make) \
- && make install \
- && cd .. \
- && rm -rf ta-lib* config.guess config.sub \
- && ldconfig
-
-# ============================================================
-# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
-# ============================================================
-COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
-COPY vendor/backend/file_linux/ ./wheels/
-
-RUN pip install --no-cache-dir --no-index --find-links ./wheels \
-    -r backend_requirements.lock
-
-# ============================================================
-# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
-# ============================================================
-COPY backend ./backend
-
-# ENV für Python
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Port exposen
-EXPOSE 8100
-
-# Start der App
-CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
 <file path="readme/000_live_backfill_data_build.md">
