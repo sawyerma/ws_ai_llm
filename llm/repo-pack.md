@@ -11041,230 +11041,6 @@ async def gw_health():
         raise HTTPException(status_code=500, detail=f"Gateway health error: {e}")
 </file>
 
-<file path="backend/api/routers/ro_monitoring.py">
-from __future__ import annotations
-
-import logging
-import platform
-import time
-from datetime import datetime
-from typing import Any, Dict
-
-import psutil
-from fastapi import APIRouter, Request
-
-from backend.websocket.ws_registry import ws_registry
-
-logger = logging.getLogger("monitoring-router")
-
-monitoring_router = APIRouter(
-    prefix="/api/monitoring",
-    tags=["Monitoring"],
-)
-
-# Startzeit des Prozesses für Uptime-Berechnung
-PROCESS_START_TIME = time.time()
-
-
-def _get_system_metrics() -> Dict[str, Any]:
-    """
-    Liefert Basis-Systemmetriken (CPU, RAM, Uptime, Plattform).
-    """
-    now = datetime.utcnow()
-    process = psutil.Process()
-
-    uptime_seconds = time.time() - PROCESS_START_TIME
-    mem = psutil.virtual_memory()
-
-    return {
-        "timestamp": now.isoformat(),
-        "uptime_seconds": uptime_seconds,
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "python_version": platform.python_version(),
-        },
-        "cpu": {
-            "percent": psutil.cpu_percent(interval=None),
-            "count_logical": psutil.cpu_count(logical=True),
-            "count_physical": psutil.cpu_count(logical=False),
-        },
-        "memory": {
-            "total": mem.total,
-            "available": mem.available,
-            "percent": mem.percent,
-            "used": mem.used,
-            "free": mem.free,
-        },
-        "process": {
-            "pid": process.pid,
-            "cpu_percent": process.cpu_percent(interval=None),
-            "memory_rss": process.memory_info().rss,
-            "num_threads": process.num_threads(),
-        },
-    }
-
-
-def _get_ws_metrics() -> Dict[str, Any]:
-    """
-    Liest Metriken aus dem WebSocket-Registry-System aus.
-    """
-    try:
-        health = ws_registry.get_system_health()
-    except Exception as exc:
-        logger.error(f"Error while fetching WS registry metrics: {exc}")
-        health = {
-            "status": "error",
-            "error": str(exc),
-        }
-    return health
-
-
-@monitoring_router.get("/metrics")
-async def get_websocket_metrics(request: Request) -> Dict[str, Any]:
-    """
-    Kombinierte Monitoring-Übersicht:
-    - Systemmetriken (CPU, RAM, Prozess)
-    - WebSocket-Lane-/Exchange-Metriken (via ws_registry)
-    - (Optional) Cache-Middleware-Status
-    """
-    system_metrics = _get_system_metrics()
-    ws_metrics = _get_ws_metrics()
-
-    cache_info: Dict[str, Any] = {
-        "status": "unknown",
-        "middleware_found": False,
-    }
-
-    try:
-        # Suche z. B. nach UltraFastASGICacheMiddleware im Middleware-Stack
-        cache_middlewares = []
-        for mw in getattr(request.app, "user_middleware", []):
-            name = getattr(mw, "cls", type(mw)).__name__
-            if "Cache" in name or "UltraFastASGICacheMiddleware" in name:
-                cache_middlewares.append(name)
-
-        if cache_middlewares:
-            cache_info = {
-                "status": "active",
-                "middleware_found": True,
-                "middlewares": cache_middlewares,
-            }
-        else:
-            cache_info = {
-                "status": "inactive",
-                "middleware_found": False,
-            }
-    except Exception as exc:
-        logger.error(f"Error while inspecting cache middleware: {exc}")
-        cache_info = {
-            "status": "error",
-            "error": str(exc),
-        }
-
-    return {
-        "status": "ok",
-        "system": system_metrics,
-        "websocket": ws_metrics,
-        "cache": cache_info,
-    }
-
-
-@monitoring_router.get("/health")
-async def health_check() -> Dict[str, Any]:
-    """
-    Einfache Health-Check-Route für das Gesamtsystem.
-    """
-    system_metrics = _get_system_metrics()
-    ws_metrics = _get_ws_metrics()
-
-    status = "ok"
-    details: Dict[str, Any] = {}
-
-    # einfache Bewertung
-    try:
-        ws_status = ws_metrics.get("status")
-        if ws_status not in (None, "ok", "healthy"):
-            status = "degraded"
-            details["ws_status"] = ws_status
-    except Exception:
-        pass
-
-    return {
-        "status": status,
-        "timestamp": datetime.utcnow().isoformat(),
-        "system": system_metrics,
-        "websocket": ws_metrics,
-        "details": details,
-    }
-
-
-@monitoring_router.get("/cache")
-async def get_cache_monitoring(request: Request) -> Dict[str, Any]:
-    """
-    Monitoring-Endpunkt für Cache/Middleware.
-    Erkennt Cache-Middleware (z. B. UltraFastASGICacheMiddleware) dynamisch
-    über den FastAPI-Middleware-Stack.
-    """
-    now = datetime.utcnow()
-
-    try:
-        cache_middlewares = []
-        for mw in getattr(request.app, "user_middleware", []):
-            cls = getattr(mw, "cls", type(mw))
-            name = getattr(cls, "__name__", str(cls))
-            if "Cache" in name or "UltraFastASGICacheMiddleware" in name:
-                cache_middlewares.append(name)
-
-        if cache_middlewares:
-            return {
-                "status": "healthy",
-                "timestamp": now.isoformat(),
-                "middleware_stats": {
-                    "status": "active",
-                    "middlewares": cache_middlewares,
-                    "note": "Cache middleware detected in application stack.",
-                },
-            }
-        else:
-            # Fallback wie im alten metrics.py:
-            return {
-                "status": "healthy",
-                "timestamp": now.isoformat(),
-                "middleware_stats": {
-                    "status": "active",
-                    "middleware_type": "UltraFastASGICacheMiddleware",
-                    "note": "Cache stats collected at runtime via middleware",
-                    "features": {
-                        "memory_cache": "active",
-                        "ttl_cache": "short TTL for hot endpoints",
-                        "single_flight": "active for duplicate request deduplication",
-                    },
-                },
-                "strategy_stats": {
-                    "status": "static_hint",
-                    "note": "Using generic cache strategy description as fallback.",
-                },
-            }
-    except Exception as exc:
-        logger.error(f"Cache monitoring error: {exc}")
-        return {
-            "status": "error",
-            "error": str(exc),
-            "timestamp": now.isoformat(),
-        }
-
-
-@monitoring_router.get("/ws")
-async def get_ws_metrics_alias(request: Request) -> Dict[str, Any]:
-    """
-    Alias für Kompatibilität (z. B. Endpoint-Mapping).
-    Liefert identische Daten wie `/api/monitoring/metrics`,
-    fokussiert auf WebSocket-relevante Metriken.
-    """
-    return await get_websocket_metrics(request)
-</file>
-
 <file path="backend/api/routers/ro_user_settings.py">
 # backend/api/routers/ro_user_settings.py
 """
@@ -70006,221 +69782,6 @@ export const TRADING_CONSTANTS = {
 } as const;
 </file>
 
-<file path="frontend/src/config/exchanges.ts">
-// Exchange Configuration with Dynamic Loading from Backend API
-// ================================================================
-// Loads exchange URLs dynamically from backend settings API
-// Replaces hardcoded URLs with GUI-configurable endpoints
-
-export interface ExchangeConfig {
-  name: string;
-  wsUrl: string;
-  apiUrl: string;
-}
-
-export interface ExchangeConfigs {
-  bitget: ExchangeConfig;
-  binance: ExchangeConfig;
-  mexc: ExchangeConfig;
-  gateio: ExchangeConfig;
-  bybit: ExchangeConfig;
-  okx: ExchangeConfig;
-  htx: ExchangeConfig;
-  coinbase: ExchangeConfig;
-}
-
-// Cache für geladene Konfiguration
-let cachedConfig: ExchangeConfigs | null = null;
-let configPromise: Promise<ExchangeConfigs> | null = null;
-
-// Fallback-Konfiguration für den Fall, dass das Backend nicht erreichbar ist
-// Nutzt Environment Variables für vollständige Konfigurierbarkeit
-const FALLBACK_CONFIG: ExchangeConfigs = {
-  bitget: {
-    name: 'Bitget',
-    wsUrl: (import.meta as any)?.env?.VITE_BITGET_WS_URL || 'wss://ws.bitget.com/spot/v1/stream',
-    apiUrl: `${(import.meta as any)?.env?.VITE_BITGET_API_URL || 'https://api.bitget.com'}/api/spot/v1`,
-  },
-  binance: {
-    name: 'Binance',
-    wsUrl: (import.meta as any)?.env?.VITE_BINANCE_WS_URL || 'wss://stream.binance.com:9443/ws',
-    apiUrl: `${(import.meta as any)?.env?.VITE_BINANCE_API_URL || 'https://api.binance.com'}/api/v3`,
-  },
-  mexc: {
-    name: 'MEXC',
-    wsUrl: (import.meta as any)?.env?.VITE_MEXC_WS_URL || 'wss://wbs.mexc.com/ws',
-    apiUrl: `${(import.meta as any)?.env?.VITE_MEXC_API_URL || 'https://api.mexc.com'}/api/v3`,
-  },
-  gateio: {
-    name: 'Gate.io',
-    wsUrl: (import.meta as any)?.env?.VITE_GATEIO_WS_URL || 'wss://api.gateio.ws/ws/v4/',
-    apiUrl: `${(import.meta as any)?.env?.VITE_GATEIO_API_URL || 'https://api.gateio.ws'}/api/v4`,
-  },
-  bybit: {
-    name: 'Bybit',
-    wsUrl: (import.meta as any)?.env?.VITE_BYBIT_WS_URL || 'wss://stream.bybit.com/v5/public/spot',
-    apiUrl: `${(import.meta as any)?.env?.VITE_BYBIT_API_URL || 'https://api.bybit.com'}/v5`,
-  },
-  okx: {
-    name: 'OKX',
-    wsUrl: (import.meta as any)?.env?.VITE_OKX_WS_URL || 'wss://ws.okx.com:8443/ws/v5/public',
-    apiUrl: `${(import.meta as any)?.env?.VITE_OKX_API_URL || 'https://www.okx.com'}/api/v5`,
-  },
-  htx: {
-    name: 'HTX',
-    wsUrl: (import.meta as any)?.env?.VITE_HTX_WS_URL || 'wss://api.huobi.pro/ws',
-    apiUrl: `${(import.meta as any)?.env?.VITE_HTX_API_URL || 'https://api.huobi.pro'}`,
-  },
-  coinbase: {
-    name: 'Coinbase',
-    wsUrl: (import.meta as any)?.env?.VITE_COINBASE_WS_URL || 'wss://ws-feed.exchange.coinbase.com',
-    apiUrl: `${(import.meta as any)?.env?.VITE_COINBASE_API_URL || 'https://api.exchange.coinbase.com'}`,
-  },
-} as const;
-
-/**
- * Lädt Exchange-Konfiguration dynamisch vom Backend
- * Nutzt Caching um wiederholte API-Calls zu vermeiden
- */
-async function loadExchangeConfig(): Promise<ExchangeConfigs> {
-  // Return cached config if available
-  if (cachedConfig) {
-    return cachedConfig;
-  }
-
-  // Return existing promise if already loading
-  if (configPromise) {
-    return configPromise;
-  }
-
-  // Start loading configuration
-  configPromise = (async () => {
-    try {
-      // Parallel loading aller benötigten Endpoints
-      const [bitgetUrls, binanceUrls, bitgetWs, binanceWs] = await Promise.all([
-        fetch('/api/settings/urls/bitget', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          // 5 second timeout
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/binance', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/websockets/bitget', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/websockets/binance', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-      ]);
-
-      // Prüfe alle Responses
-      if (!bitgetUrls.ok || !binanceUrls.ok || !bitgetWs.ok || !binanceWs.ok) {
-        throw new Error(`HTTP Error: ${[bitgetUrls, binanceUrls, bitgetWs, binanceWs].find(r => !r.ok)?.status}`);
-      }
-
-      // Parse JSON responses
-      const [bitgetUrlsData, binanceUrlsData, bitgetWsData, binanceWsData] = await Promise.all([
-        bitgetUrls.json(),
-        binanceUrls.json(),
-        bitgetWs.json(),
-        binanceWs.json(),
-      ]);
-
-      // Erstelle Konfiguration aus Backend-Daten
-      const config: ExchangeConfigs = {
-        bitget: {
-          name: 'Bitget',
-          wsUrl: bitgetWsData.spot || FALLBACK_CONFIG.bitget.wsUrl,
-          apiUrl: `${bitgetUrlsData.rest || 'https://api.bitget.com'}/api/spot/v1`,
-        },
-        binance: {
-          name: 'Binance',
-          wsUrl: binanceWsData.spot || FALLBACK_CONFIG.binance.wsUrl,
-          apiUrl: `${binanceUrlsData.rest || 'https://api.binance.com'}/api/v3`,
-        },
-        // Neue Exchanges nutzen Fallback-Config (Backend-Loading kann später erweitert werden)
-        mexc: FALLBACK_CONFIG.mexc,
-        gateio: FALLBACK_CONFIG.gateio,
-        bybit: FALLBACK_CONFIG.bybit,
-        okx: FALLBACK_CONFIG.okx,
-        htx: FALLBACK_CONFIG.htx,
-        coinbase: FALLBACK_CONFIG.coinbase,
-      };
-
-      // Cache die Konfiguration
-      cachedConfig = config;
-      
-      console.log('✅ Exchange configuration loaded from backend:', config);
-      return config;
-
-    } catch (error) {
-      console.warn('⚠️ Failed to load exchange config from backend, using fallback:', error);
-      
-      // Bei Fehlern: Fallback-Konfiguration verwenden
-      cachedConfig = FALLBACK_CONFIG;
-      return FALLBACK_CONFIG;
-    } finally {
-      // Reset promise so future calls can try again
-      configPromise = null;
-    }
-  })();
-
-  return configPromise;
-}
-
-/**
- * Exportierte Funktion für den Zugriff auf Exchange-Konfiguration
- * Usage: const config = await getExchangeConfig();
- */
-export async function getExchangeConfig(): Promise<ExchangeConfigs> {
-  return loadExchangeConfig();
-}
-
-/**
- * Synchrone Funktion für den Zugriff auf gecachte Konfiguration
- * Gibt Fallback zurück wenn noch nicht geladen
- */
-export function getExchangeConfigSync(): ExchangeConfigs {
-  return cachedConfig || FALLBACK_CONFIG;
-}
-
-/**
- * Cache leeren - nützlich für Testing oder wenn Konfiguration aktualisiert wurde
- */
-export function clearExchangeConfigCache(): void {
-  cachedConfig = null;
-  configPromise = null;
-  console.log('🔄 Exchange configuration cache cleared');
-}
-
-/**
- * Preload der Konfiguration beim Import
- * Startet das Laden im Hintergrund ohne zu warten
- */
-export function preloadExchangeConfig(): void {
-  if (!cachedConfig && !configPromise) {
-    loadExchangeConfig().catch(() => {
-      // Ignoriere Fehler beim Preload
-    });
-  }
-}
-
-// Legacy Export für Rückwärtskompatibilität
-// Nutzt Fallback-Konfiguration, sollte durch getExchangeConfig() ersetzt werden
-export const EXCHANGE_CONFIG = FALLBACK_CONFIG;
-
-// Auto-Preload beim Import
-preloadExchangeConfig();
-</file>
-
 <file path="frontend/src/config/exchangeSupport.ts">
 // ✅ Exchange & Market Configuration (Single Source of Truth)
 // Definiert alle Exchanges, Market-Typen und deren Unterstützung
@@ -99993,6 +99554,230 @@ async def symbols_health():
         raise HTTPException(status_code=500, detail="Symbols health check failed")
 </file>
 
+<file path="backend/api/routers/ro_monitoring.py">
+from __future__ import annotations
+
+import logging
+import platform
+import time
+from datetime import datetime
+from typing import Any, Dict
+
+import psutil
+from fastapi import APIRouter, Request
+
+from backend.websocket.ws_registry import ws_registry
+
+logger = logging.getLogger("monitoring-router")
+
+monitoring_router = APIRouter(
+    prefix="/monitoring",  # ✅ KORREKT - Registry fügt /api davor
+    tags=["Monitoring"],
+)
+
+# Startzeit des Prozesses für Uptime-Berechnung
+PROCESS_START_TIME = time.time()
+
+
+def _get_system_metrics() -> Dict[str, Any]:
+    """
+    Liefert Basis-Systemmetriken (CPU, RAM, Uptime, Plattform).
+    """
+    now = datetime.utcnow()
+    process = psutil.Process()
+
+    uptime_seconds = time.time() - PROCESS_START_TIME
+    mem = psutil.virtual_memory()
+
+    return {
+        "timestamp": now.isoformat(),
+        "uptime_seconds": uptime_seconds,
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "python_version": platform.python_version(),
+        },
+        "cpu": {
+            "percent": psutil.cpu_percent(interval=None),
+            "count_logical": psutil.cpu_count(logical=True),
+            "count_physical": psutil.cpu_count(logical=False),
+        },
+        "memory": {
+            "total": mem.total,
+            "available": mem.available,
+            "percent": mem.percent,
+            "used": mem.used,
+            "free": mem.free,
+        },
+        "process": {
+            "pid": process.pid,
+            "cpu_percent": process.cpu_percent(interval=None),
+            "memory_rss": process.memory_info().rss,
+            "num_threads": process.num_threads(),
+        },
+    }
+
+
+def _get_ws_metrics() -> Dict[str, Any]:
+    """
+    Liest Metriken aus dem WebSocket-Registry-System aus.
+    """
+    try:
+        health = ws_registry.get_system_health()
+    except Exception as exc:
+        logger.error(f"Error while fetching WS registry metrics: {exc}")
+        health = {
+            "status": "error",
+            "error": str(exc),
+        }
+    return health
+
+
+@monitoring_router.get("/metrics")
+async def get_websocket_metrics(request: Request) -> Dict[str, Any]:
+    """
+    Kombinierte Monitoring-Übersicht:
+    - Systemmetriken (CPU, RAM, Prozess)
+    - WebSocket-Lane-/Exchange-Metriken (via ws_registry)
+    - (Optional) Cache-Middleware-Status
+    """
+    system_metrics = _get_system_metrics()
+    ws_metrics = _get_ws_metrics()
+
+    cache_info: Dict[str, Any] = {
+        "status": "unknown",
+        "middleware_found": False,
+    }
+
+    try:
+        # Suche z. B. nach UltraFastASGICacheMiddleware im Middleware-Stack
+        cache_middlewares = []
+        for mw in getattr(request.app, "user_middleware", []):
+            name = getattr(mw, "cls", type(mw)).__name__
+            if "Cache" in name or "UltraFastASGICacheMiddleware" in name:
+                cache_middlewares.append(name)
+
+        if cache_middlewares:
+            cache_info = {
+                "status": "active",
+                "middleware_found": True,
+                "middlewares": cache_middlewares,
+            }
+        else:
+            cache_info = {
+                "status": "inactive",
+                "middleware_found": False,
+            }
+    except Exception as exc:
+        logger.error(f"Error while inspecting cache middleware: {exc}")
+        cache_info = {
+            "status": "error",
+            "error": str(exc),
+        }
+
+    return {
+        "status": "ok",
+        "system": system_metrics,
+        "websocket": ws_metrics,
+        "cache": cache_info,
+    }
+
+
+@monitoring_router.get("/health")
+async def health_check() -> Dict[str, Any]:
+    """
+    Einfache Health-Check-Route für das Gesamtsystem.
+    """
+    system_metrics = _get_system_metrics()
+    ws_metrics = _get_ws_metrics()
+
+    status = "ok"
+    details: Dict[str, Any] = {}
+
+    # einfache Bewertung
+    try:
+        ws_status = ws_metrics.get("status")
+        if ws_status not in (None, "ok", "healthy"):
+            status = "degraded"
+            details["ws_status"] = ws_status
+    except Exception:
+        pass
+
+    return {
+        "status": status,
+        "timestamp": datetime.utcnow().isoformat(),
+        "system": system_metrics,
+        "websocket": ws_metrics,
+        "details": details,
+    }
+
+
+@monitoring_router.get("/cache")
+async def get_cache_monitoring(request: Request) -> Dict[str, Any]:
+    """
+    Monitoring-Endpunkt für Cache/Middleware.
+    Erkennt Cache-Middleware (z. B. UltraFastASGICacheMiddleware) dynamisch
+    über den FastAPI-Middleware-Stack.
+    """
+    now = datetime.utcnow()
+
+    try:
+        cache_middlewares = []
+        for mw in getattr(request.app, "user_middleware", []):
+            cls = getattr(mw, "cls", type(mw))
+            name = getattr(cls, "__name__", str(cls))
+            if "Cache" in name or "UltraFastASGICacheMiddleware" in name:
+                cache_middlewares.append(name)
+
+        if cache_middlewares:
+            return {
+                "status": "healthy",
+                "timestamp": now.isoformat(),
+                "middleware_stats": {
+                    "status": "active",
+                    "middlewares": cache_middlewares,
+                    "note": "Cache middleware detected in application stack.",
+                },
+            }
+        else:
+            # Fallback wie im alten metrics.py:
+            return {
+                "status": "healthy",
+                "timestamp": now.isoformat(),
+                "middleware_stats": {
+                    "status": "active",
+                    "middleware_type": "UltraFastASGICacheMiddleware",
+                    "note": "Cache stats collected at runtime via middleware",
+                    "features": {
+                        "memory_cache": "active",
+                        "ttl_cache": "short TTL for hot endpoints",
+                        "single_flight": "active for duplicate request deduplication",
+                    },
+                },
+                "strategy_stats": {
+                    "status": "static_hint",
+                    "note": "Using generic cache strategy description as fallback.",
+                },
+            }
+    except Exception as exc:
+        logger.error(f"Cache monitoring error: {exc}")
+        return {
+            "status": "error",
+            "error": str(exc),
+            "timestamp": now.isoformat(),
+        }
+
+
+@monitoring_router.get("/ws")
+async def get_ws_metrics_alias(request: Request) -> Dict[str, Any]:
+    """
+    Alias für Kompatibilität (z. B. Endpoint-Mapping).
+    Liefert identische Daten wie `/api/monitoring/metrics`,
+    fokussiert auf WebSocket-relevante Metriken.
+    """
+    return await get_websocket_metrics(request)
+</file>
+
 <file path="backend/api/routers/ro_settings.py">
 # backend/api/routers/ro_settings.py
 """
@@ -100299,6 +100084,16 @@ async def get_system_settings():
         features=features,
         limits=limits,
     )
+
+
+@settings_router.get("/settings", response_model=SystemSettingsResponse)
+async def get_settings_alias():
+    """
+    Alias für /system – Frontend-Kompatibilität.
+    Liefert identische System-Settings wie /api/settings/system.
+    """
+    logger.debug("GET /api/settings/settings (alias)")
+    return await get_system_settings()
 
 
 # ============================================================
@@ -105202,291 +104997,6 @@ async def discover_trade_streams(
     return streams_final, active_symbols, existing_streams
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
-        }
-
-
-ws_manager = PerformantWebSocketManager()
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
 <file path="backend/websocket/ws_router.py">
 from fastapi import APIRouter, WebSocket
 from datetime import datetime
@@ -106621,6 +106131,245 @@ echo ""
 echo "=================================================="
 echo "✅ VERIFICATION COMPLETE"
 echo "=================================================="
+</file>
+
+<file path="frontend/src/config/exchanges.ts">
+// Exchange Configuration with Dynamic Loading from Backend API
+// ================================================================
+// Loads exchange URLs dynamically from backend settings API
+// Replaces hardcoded URLs with GUI-configurable endpoints
+
+export interface ExchangeConfig {
+  name: string;
+  wsUrl: string;
+  apiUrl: string;
+}
+
+export interface ExchangeConfigs {
+  bitget: ExchangeConfig;
+  binance: ExchangeConfig;
+  mexc: ExchangeConfig;
+  gateio: ExchangeConfig;
+  bybit: ExchangeConfig;
+  okx: ExchangeConfig;
+  htx: ExchangeConfig;
+  coinbase: ExchangeConfig;
+}
+
+// Cache für geladene Konfiguration
+let cachedConfig: ExchangeConfigs | null = null;
+let configPromise: Promise<ExchangeConfigs> | null = null;
+
+// Fallback-Konfiguration für den Fall, dass das Backend nicht erreichbar ist
+// Nutzt Environment Variables für vollständige Konfigurierbarkeit
+const FALLBACK_CONFIG: ExchangeConfigs = {
+  bitget: {
+    name: 'Bitget',
+    wsUrl: (import.meta as any)?.env?.VITE_BITGET_WS_URL || 'wss://ws.bitget.com/spot/v1/stream',
+    apiUrl: `${(import.meta as any)?.env?.VITE_BITGET_API_URL || 'https://api.bitget.com'}/api/spot/v1`,
+  },
+  binance: {
+    name: 'Binance',
+    wsUrl: (import.meta as any)?.env?.VITE_BINANCE_WS_URL || 'wss://stream.binance.com:9443/ws',
+    apiUrl: `${(import.meta as any)?.env?.VITE_BINANCE_API_URL || 'https://api.binance.com'}/api/v3`,
+  },
+  mexc: {
+    name: 'MEXC',
+    wsUrl: (import.meta as any)?.env?.VITE_MEXC_WS_URL || 'wss://wbs.mexc.com/ws',
+    apiUrl: `${(import.meta as any)?.env?.VITE_MEXC_API_URL || 'https://api.mexc.com'}/api/v3`,
+  },
+  gateio: {
+    name: 'Gate.io',
+    wsUrl: (import.meta as any)?.env?.VITE_GATEIO_WS_URL || 'wss://api.gateio.ws/ws/v4/',
+    apiUrl: `${(import.meta as any)?.env?.VITE_GATEIO_API_URL || 'https://api.gateio.ws'}/api/v4`,
+  },
+  bybit: {
+    name: 'Bybit',
+    wsUrl: (import.meta as any)?.env?.VITE_BYBIT_WS_URL || 'wss://stream.bybit.com/v5/public/spot',
+    apiUrl: `${(import.meta as any)?.env?.VITE_BYBIT_API_URL || 'https://api.bybit.com'}/v5`,
+  },
+  okx: {
+    name: 'OKX',
+    wsUrl: (import.meta as any)?.env?.VITE_OKX_WS_URL || 'wss://ws.okx.com:8443/ws/v5/public',
+    apiUrl: `${(import.meta as any)?.env?.VITE_OKX_API_URL || 'https://www.okx.com'}/api/v5`,
+  },
+  htx: {
+    name: 'HTX',
+    wsUrl: (import.meta as any)?.env?.VITE_HTX_WS_URL || 'wss://api.huobi.pro/ws',
+    apiUrl: `${(import.meta as any)?.env?.VITE_HTX_API_URL || 'https://api.huobi.pro'}`,
+  },
+  coinbase: {
+    name: 'Coinbase',
+    wsUrl: (import.meta as any)?.env?.VITE_COINBASE_WS_URL || 'wss://ws-feed.exchange.coinbase.com',
+    apiUrl: `${(import.meta as any)?.env?.VITE_COINBASE_API_URL || 'https://api.exchange.coinbase.com'}`,
+  },
+} as const;
+
+/**
+ * Lädt Exchange-Konfiguration dynamisch vom Backend
+ * Nutzt Caching um wiederholte API-Calls zu vermeiden
+ */
+async function loadExchangeConfig(): Promise<ExchangeConfigs> {
+  // Return cached config if available
+  if (cachedConfig) {
+    return cachedConfig;
+  }
+
+  // Return existing promise if already loading
+  if (configPromise) {
+    return configPromise;
+  }
+
+  // Start loading configuration
+  configPromise = (async () => {
+    try {
+      // ✅ Generate Client-ID (matching base.ts logic)
+      let clientId = sessionStorage.getItem('client_id') || localStorage.getItem('client_id');
+      if (!clientId) {
+        clientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = Math.random() * 16 | 0;
+          const v = c === 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+        });
+        sessionStorage.setItem('client_id', clientId);
+        localStorage.setItem('client_id', clientId);
+      }
+
+      // Parallel loading aller benötigten Endpoints
+      const [bitgetUrls, binanceUrls, bitgetWs, binanceWs] = await Promise.all([
+        fetch('/api/settings/urls/bitget', { 
+          method: 'GET',
+          headers: { 
+            'Accept': 'application/json',
+            'X-Client-ID': clientId  // ✅ REQUIRED by backend!
+          },
+          // 5 second timeout
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/binance', { 
+          method: 'GET',
+          headers: { 
+            'Accept': 'application/json',
+            'X-Client-ID': clientId  // ✅ REQUIRED by backend!
+          },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/websockets/bitget', { 
+          method: 'GET',
+          headers: { 
+            'Accept': 'application/json',
+            'X-Client-ID': clientId  // ✅ REQUIRED by backend!
+          },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/websockets/binance', { 
+          method: 'GET',
+          headers: { 
+            'Accept': 'application/json',
+            'X-Client-ID': clientId  // ✅ REQUIRED by backend!
+          },
+          signal: AbortSignal.timeout(5000)
+        }),
+      ]);
+
+      // Prüfe alle Responses
+      if (!bitgetUrls.ok || !binanceUrls.ok || !bitgetWs.ok || !binanceWs.ok) {
+        throw new Error(`HTTP Error: ${[bitgetUrls, binanceUrls, bitgetWs, binanceWs].find(r => !r.ok)?.status}`);
+      }
+
+      // Parse JSON responses
+      const [bitgetUrlsData, binanceUrlsData, bitgetWsData, binanceWsData] = await Promise.all([
+        bitgetUrls.json(),
+        binanceUrls.json(),
+        bitgetWs.json(),
+        binanceWs.json(),
+      ]);
+
+      // Erstelle Konfiguration aus Backend-Daten
+      const config: ExchangeConfigs = {
+        bitget: {
+          name: 'Bitget',
+          wsUrl: bitgetWsData.spot || FALLBACK_CONFIG.bitget.wsUrl,
+          apiUrl: `${bitgetUrlsData.rest || 'https://api.bitget.com'}/api/spot/v1`,
+        },
+        binance: {
+          name: 'Binance',
+          wsUrl: binanceWsData.spot || FALLBACK_CONFIG.binance.wsUrl,
+          apiUrl: `${binanceUrlsData.rest || 'https://api.binance.com'}/api/v3`,
+        },
+        // Neue Exchanges nutzen Fallback-Config (Backend-Loading kann später erweitert werden)
+        mexc: FALLBACK_CONFIG.mexc,
+        gateio: FALLBACK_CONFIG.gateio,
+        bybit: FALLBACK_CONFIG.bybit,
+        okx: FALLBACK_CONFIG.okx,
+        htx: FALLBACK_CONFIG.htx,
+        coinbase: FALLBACK_CONFIG.coinbase,
+      };
+
+      // Cache die Konfiguration
+      cachedConfig = config;
+      
+      console.log('✅ Exchange configuration loaded from backend:', config);
+      return config;
+
+    } catch (error) {
+      console.warn('⚠️ Failed to load exchange config from backend, using fallback:', error);
+      
+      // Bei Fehlern: Fallback-Konfiguration verwenden
+      cachedConfig = FALLBACK_CONFIG;
+      return FALLBACK_CONFIG;
+    } finally {
+      // Reset promise so future calls can try again
+      configPromise = null;
+    }
+  })();
+
+  return configPromise;
+}
+
+/**
+ * Exportierte Funktion für den Zugriff auf Exchange-Konfiguration
+ * Usage: const config = await getExchangeConfig();
+ */
+export async function getExchangeConfig(): Promise<ExchangeConfigs> {
+  return loadExchangeConfig();
+}
+
+/**
+ * Synchrone Funktion für den Zugriff auf gecachte Konfiguration
+ * Gibt Fallback zurück wenn noch nicht geladen
+ */
+export function getExchangeConfigSync(): ExchangeConfigs {
+  return cachedConfig || FALLBACK_CONFIG;
+}
+
+/**
+ * Cache leeren - nützlich für Testing oder wenn Konfiguration aktualisiert wurde
+ */
+export function clearExchangeConfigCache(): void {
+  cachedConfig = null;
+  configPromise = null;
+  console.log('🔄 Exchange configuration cache cleared');
+}
+
+/**
+ * Preload der Konfiguration beim Import
+ * Startet das Laden im Hintergrund ohne zu warten
+ */
+export function preloadExchangeConfig(): void {
+  if (!cachedConfig && !configPromise) {
+    loadExchangeConfig().catch(() => {
+      // Ignoriere Fehler beim Preload
+    });
+  }
+}
+
+// Legacy Export für Rückwärtskompatibilität
+// Nutzt Fallback-Konfiguration, sollte durch getExchangeConfig() ersetzt werden
+export const EXCHANGE_CONFIG = FALLBACK_CONFIG;
+
+// Auto-Preload beim Import
+preloadExchangeConfig();
 </file>
 
 <file path="frontend/src/contexts/TradingContext.tsx">
@@ -191068,6 +190817,292 @@ async def get_ohlc_from_ch(
     return []
 </file>
 
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(payloads)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+</file>
+
 <file path="backend/websocket/ws_unified.py">
 """
 ✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT - Delegiert zu ws_manager für echte WebSockets
@@ -196329,351 +196364,6 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="frontend/src/services/api/base.ts">
-import { ZodSchema } from 'zod';
-import { logger } from '../../lib/logger';
-
-/**
- * ✅ KONFORMITÄT Teil 5: Enterprise LRU-Cache Implementation
- * 
- * Generic LRU (Least Recently Used) Cache mit:
- * - O(1) get/set Operationen via Map
- * - Automatische Eviction bei max capacity
- * - Input-Validierung (fail-fast)
- * - Performance-Statistiken für Debugging
- * 
- * Verwendung:
- * const cache = new LRUCache<string, string>({ max: 100 });
- * cache.set('key', 'value');
- * const value = cache.get('key'); // Promotes to MRU
- */
-class LRUCache<K, V> {
-  private cache: Map<K, V>;
-  private readonly maxSize: number;
-  private stats = { hits: 0, misses: 0, evictions: 0 };
-
-  constructor(options: { max: number }) {
-    if (options.max <= 0 || !Number.isInteger(options.max)) {
-      throw new Error('LRUCache: max must be positive integer');
-    }
-    this.maxSize = options.max;
-    this.cache = new Map<K, V>();
-  }
-
-  /**
-   * Get value and promote to MRU (Most Recently Used)
-   * @returns Value wenn gefunden, undefined sonst
-   */
-  get(key: K): V | undefined {
-    if (!this.cache.has(key)) {
-      this.stats.misses++;
-      return undefined;
-    }
-
-    this.stats.hits++;
-    const value = this.cache.get(key)!;
-    
-    // Re-insert to move to end (MRU position in Map iteration order)
-    this.cache.delete(key);
-    this.cache.set(key, value);
-    
-    return value;
-  }
-
-  /**
-   * Set value as MRU, evict LRU if necessary
-   */
-  set(key: K, value: V): void {
-    // Remove existing to update order
-    if (this.cache.has(key)) {
-      this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
-      // Evict LRU (first entry in Map = least recently used)
-      // Type assertion is safe here because size >= maxSize guarantees at least one entry
-      const lruKey = this.cache.keys().next().value as K;
-      this.cache.delete(lruKey);
-      this.stats.evictions++;
-    }
-    
-    this.cache.set(key, value);
-  }
-
-  has(key: K): boolean {
-    return this.cache.has(key);
-  }
-
-  delete(key: K): boolean {
-    return this.cache.delete(key);
-  }
-
-  clear(): void {
-    this.cache.clear();
-    this.stats = { hits: 0, misses: 0, evictions: 0 };
-  }
-
-  get size(): number {
-    return this.cache.size;
-  }
-
-  /**
-   * Cache Performance Metrics für Production-Debugging
-   * @returns Statistiken mit Hit-Rate in Prozent
-   */
-  getStats(): { hits: number; misses: number; evictions: number; hitRate: string; size: number } {
-    const total = this.stats.hits + this.stats.misses;
-    return {
-      ...this.stats,
-      hitRate: total > 0 ? `${(this.stats.hits / total * 100).toFixed(1)}%` : '0%',
-      size: this.cache.size
-    };
-  }
-}
-
-// Service-specific API configuration (profi_gui.md: Feature-basierte Architektur)
-const SERVICE_API_CONFIG = {
-  BASE_URL: (import.meta as any)?.env?.VITE_API_BASE_URL || `http://localhost:${(import.meta as any)?.env?.VITE_BACKEND_PORT || '8100'}`,
-  TIMEOUT: 10000,
-  RETRY_ATTEMPTS: 3,
-  RATE_LIMIT_RETRIES: 1,
-} as const;
-
-/**
- * ✅ KONFORMITÄT Teil 6: Endpoints die X-Client-ID Header benötigen
- * 
- * Backend-Kontext (ro_settings.py, ro_user_settings.py):
- * - get_client_id() Dependency erwartet X-Client-ID Header
- * - Wirft HTTPException 400 wenn Header fehlt
- * 
- * Generisch erweiterbar: Neue Endpoint-Präfixe können hinzugefügt werden
- */
-const CLIENT_ID_ENDPOINTS = ['/settings/', '/user/', '/historical/config/'] as const;
-
-type RequestConfig = RequestInit & { 
-  params?: Record<string, any>;
-  schema?: ZodSchema<any>;
-};
-
-/**
- * ✅ KONFORMITÄT Teil 5: LRU-Cache mit max 100 Entries
- * Verhindert unbegrenztes Memory-Wachstum bei vielen verschiedenen Endpoints.
- * 
- * Cache-Key Format: "{url}:{method}"
- * Beispiel: "http://localhost:8100/api/market/binance/trades:GET"
- */
-const etagCache = new LRUCache<string, string>({ max: 100 });
-
-// Development-Only: Cache-Statistiken alle 5 Minuten loggen
-if ((import.meta as any).env.DEV) {
-  setInterval(() => {
-    const stats = etagCache.getStats();
-    if (stats.hits > 0 || stats.misses > 0) {
-      logger.debug('[ETag Cache Stats]', stats);
-    }
-  }, 5 * 60 * 1000); // 5 Minuten
-}
-
-// Helper für exponential backoff
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Custom API Error Class mit erweiterten Informationen
- */
-export class APIError extends Error {
-  constructor(
-    message: string,
-    public status?: number,
-    public response?: any,
-    public endpoint?: string
-  ) {
-    super(message);
-    this.name = 'APIError';
-  }
-}
-
-export class BaseAPI {
-  private static baseURL = SERVICE_API_CONFIG.BASE_URL;
-  
-  /**
-   * ✅ KONFORMITÄT Teil 6: Generiere oder lade Client-ID
-   * 
-   * Strategie:
-   * 1. sessionStorage (höchste Priorität - Session-persistent)
-   * 2. localStorage (Fallback - Browser-persistent)
-   * 3. Generiere neue UUID v4 (nur wenn beide leer)
-   * 
-   * UUID-Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (RFC 4122 v4)
-   * Ohne externe Library - reine Crypto-API
-   * 
-   * @returns Client-ID string (z.B. "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
-   */
-  private static getClientId(): string {
-    let clientId = sessionStorage.getItem('client_id');
-    if (!clientId) {
-      clientId = localStorage.getItem('client_id');
-    }
-    if (!clientId) {
-      // UUID v4 Generator (ohne externe Library)
-      clientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-      });
-      sessionStorage.setItem('client_id', clientId);
-      localStorage.setItem('client_id', clientId);
-    }
-    return clientId;
-  }
-
-  /**
-   * ✅ KONFORMITÄT Teil 6: Prüfe ob Endpoint X-Client-ID Header benötigt
-   * 
-   * Generische Implementierung mit Array.some() - leicht erweiterbar
-   * 
-   * @param endpoint - API-Endpoint (z.B. "/api/settings/urls/binance")
-   * @returns true wenn Header erforderlich
-   */
-  private static requiresClientId(endpoint: string): boolean {
-    return CLIENT_ID_ENDPOINTS.some(prefix => endpoint.includes(prefix));
-  }
-  
-  /**
-   * Handle 429 Rate Limit with smart backoff
-   * @param response - Response with 429 status
-   * @param attempt - Current retry attempt
-   * @returns Backoff delay in ms
-   */
-  private static async handle429(response: Response, attempt: number): Promise<number> {
-    // Parse Retry-After header (seconds or HTTP date)
-    const retryAfter = response.headers.get('retry-after');
-    let backoffMs = 1000; // Default: 1s
-    
-    if (retryAfter) {
-      // Check if it's seconds or date
-      const retrySeconds = parseInt(retryAfter, 10);
-      if (!isNaN(retrySeconds)) {
-        backoffMs = retrySeconds * 1000;
-      }
-    }
-    
-    // Exponential backoff: 1s, 2s, 4s...
-    const exponentialBackoff = Math.min(1000 * Math.pow(2, attempt), 10000);
-    backoffMs = Math.max(backoffMs, exponentialBackoff);
-    
-    // User-friendly warning
-    logger.warn(`⚠️ Rate limit hit - retrying in ${backoffMs/1000}s (attempt ${attempt + 1}/${SERVICE_API_CONFIG.RATE_LIMIT_RETRIES})`);
-    
-    // TODO: Replace with Toast notification in future
-    // toast.warning(`Server beschäftigt - versuche erneut in ${backoffMs/1000}s`);
-    
-    await sleep(backoffMs);
-    return backoffMs;
-  }
-  
-  static async request<T>(endpoint: string, options?: RequestConfig, attempt = 0): Promise<T> {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), SERVICE_API_CONFIG.TIMEOUT);
-
-    let url = `${this.baseURL}${endpoint}`;
-    if (options?.params) {
-      const query = new URLSearchParams(options.params).toString();
-      url = `${url}?${query}`;
-    }
-
-    try {
-      // ETag-Support: Cache-Key aus URL + Method
-      const cacheKey = `${url}:${options?.method || 'GET'}`;
-      const cachedETag = etagCache.get(cacheKey);
-      
-      const headers = new Headers({
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      });
-      
-      // ✅ KONFORMITÄT Teil 6: Auto-Injection X-Client-ID für Settings/User Endpoints
-      // Generisch: requiresClientId() prüft gegen CLIENT_ID_ENDPOINTS Array
-      if (this.requiresClientId(endpoint)) {
-        headers.set('X-Client-ID', this.getClientId());
-      }
-      
-      // If-None-Match header für 304-Responses
-      if (cachedETag && (options?.method === 'GET' || !options?.method)) {
-        headers.set('If-None-Match', cachedETag);
-      }
-      
-      const response = await fetch(url, {
-        ...options,
-        headers,
-        signal: controller.signal,
-      });
-      clearTimeout(id);
-      
-      // HTTP 304: Nutze gecachte Response
-      if (response.status === 304) {
-        const cached = sessionStorage.getItem(cacheKey);
-        if (cached) {
-          const parsedCache = JSON.parse(cached);
-          return options?.schema ? options.schema.parse(parsedCache) : parsedCache;
-        }
-      }
-      
-      // HTTP 429: Rate Limit - Smart Backoff & Retry
-      if (response.status === 429) {
-        if (attempt >= SERVICE_API_CONFIG.RATE_LIMIT_RETRIES) {
-          throw new Error('Rate limit exceeded - please try again later');
-        }
-        
-        await this.handle429(response, attempt);
-        
-        // Retry with incremented attempt counter
-        return this.request<T>(endpoint, options, attempt + 1);
-      }
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new APIError(
-          `API Error ${response.status}`,
-          response.status,
-          errorText,
-          endpoint
-        );
-      }
-      
-      const json = await response.json();
-      
-      // ETag speichern für zukünftige Requests
-      const newETag = response.headers.get('ETag');
-      if (newETag && (options?.method === 'GET' || !options?.method)) {
-        etagCache.set(cacheKey, newETag);
-        sessionStorage.setItem(cacheKey, JSON.stringify(json));
-      }
-      
-      // x-request-id Korrelation für Debugging
-      const requestId = response.headers.get('x-request-id');
-      if (requestId && (import.meta as any).env.DEV) {
-        console.debug(`[BaseAPI] Request ID: ${requestId} | URL: ${url}`);
-      }
-      
-      // Runtime-Validation mit Zod (optional)
-      if (options?.schema) {
-        try {
-          return options.schema.parse(json);
-        } catch (validationError) {
-          console.error('[BaseAPI] Validation Error:', validationError);
-          throw new APIError('Validation failed', 400, validationError, endpoint);
-        }
-      }
-      
-      return json;
-    } catch (error) {
-      clearTimeout(id);
-      if (error instanceof APIError) throw error;
-      if (error instanceof Error) throw new APIError(error.message, undefined, undefined, endpoint);
-      throw new APIError('Unknown error', undefined, undefined, endpoint);
-    }
-  }
-}
-</file>
-
 <file path="start-health.sh">
 #!/bin/bash
 
@@ -198637,6 +198327,353 @@ class MultiResCandleAgg:
                     c["l"] = price
 
         return finished
+</file>
+
+<file path="frontend/src/services/api/base.ts">
+import { ZodSchema } from 'zod';
+import { logger } from '../../lib/logger';
+
+/**
+ * ✅ KONFORMITÄT Teil 5: Enterprise LRU-Cache Implementation
+ * 
+ * Generic LRU (Least Recently Used) Cache mit:
+ * - O(1) get/set Operationen via Map
+ * - Automatische Eviction bei max capacity
+ * - Input-Validierung (fail-fast)
+ * - Performance-Statistiken für Debugging
+ * 
+ * Verwendung:
+ * const cache = new LRUCache<string, string>({ max: 100 });
+ * cache.set('key', 'value');
+ * const value = cache.get('key'); // Promotes to MRU
+ */
+class LRUCache<K, V> {
+  private cache: Map<K, V>;
+  private readonly maxSize: number;
+  private stats = { hits: 0, misses: 0, evictions: 0 };
+
+  constructor(options: { max: number }) {
+    if (options.max <= 0 || !Number.isInteger(options.max)) {
+      throw new Error('LRUCache: max must be positive integer');
+    }
+    this.maxSize = options.max;
+    this.cache = new Map<K, V>();
+  }
+
+  /**
+   * Get value and promote to MRU (Most Recently Used)
+   * @returns Value wenn gefunden, undefined sonst
+   */
+  get(key: K): V | undefined {
+    if (!this.cache.has(key)) {
+      this.stats.misses++;
+      return undefined;
+    }
+
+    this.stats.hits++;
+    const value = this.cache.get(key)!;
+    
+    // Re-insert to move to end (MRU position in Map iteration order)
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    
+    return value;
+  }
+
+  /**
+   * Set value as MRU, evict LRU if necessary
+   */
+  set(key: K, value: V): void {
+    // Remove existing to update order
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      // Evict LRU (first entry in Map = least recently used)
+      // Type assertion is safe here because size >= maxSize guarantees at least one entry
+      const lruKey = this.cache.keys().next().value as K;
+      this.cache.delete(lruKey);
+      this.stats.evictions++;
+    }
+    
+    this.cache.set(key, value);
+  }
+
+  has(key: K): boolean {
+    return this.cache.has(key);
+  }
+
+  delete(key: K): boolean {
+    return this.cache.delete(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.stats = { hits: 0, misses: 0, evictions: 0 };
+  }
+
+  get size(): number {
+    return this.cache.size;
+  }
+
+  /**
+   * Cache Performance Metrics für Production-Debugging
+   * @returns Statistiken mit Hit-Rate in Prozent
+   */
+  getStats(): { hits: number; misses: number; evictions: number; hitRate: string; size: number } {
+    const total = this.stats.hits + this.stats.misses;
+    return {
+      ...this.stats,
+      hitRate: total > 0 ? `${(this.stats.hits / total * 100).toFixed(1)}%` : '0%',
+      size: this.cache.size
+    };
+  }
+}
+
+// Service-specific API configuration (profi_gui.md: Feature-basierte Architektur)
+// ✅ FIX: Leere BASE_URL im Dev-Mode damit Vite Proxy greift!
+// Im Production-Build wird VITE_API_BASE_URL gesetzt
+const SERVICE_API_CONFIG = {
+  BASE_URL: (import.meta as any)?.env?.VITE_API_BASE_URL || '', // ✅ Leer = Proxy wird genutzt
+  TIMEOUT: 10000,
+  RETRY_ATTEMPTS: 3,
+  RATE_LIMIT_RETRIES: 1,
+} as const;
+
+/**
+ * ✅ KONFORMITÄT Teil 6: Endpoints die X-Client-ID Header benötigen
+ * 
+ * Backend-Kontext (ro_settings.py, ro_user_settings.py):
+ * - get_client_id() Dependency erwartet X-Client-ID Header
+ * - Wirft HTTPException 400 wenn Header fehlt
+ * 
+ * Generisch erweiterbar: Neue Endpoint-Präfixe können hinzugefügt werden
+ */
+const CLIENT_ID_ENDPOINTS = ['/settings/', '/user/', '/historical/config/'] as const;
+
+type RequestConfig = RequestInit & { 
+  params?: Record<string, any>;
+  schema?: ZodSchema<any>;
+};
+
+/**
+ * ✅ KONFORMITÄT Teil 5: LRU-Cache mit max 100 Entries
+ * Verhindert unbegrenztes Memory-Wachstum bei vielen verschiedenen Endpoints.
+ * 
+ * Cache-Key Format: "{url}:{method}"
+ * Beispiel: "http://localhost:8100/api/market/binance/trades:GET"
+ */
+const etagCache = new LRUCache<string, string>({ max: 100 });
+
+// Development-Only: Cache-Statistiken alle 5 Minuten loggen
+if ((import.meta as any).env.DEV) {
+  setInterval(() => {
+    const stats = etagCache.getStats();
+    if (stats.hits > 0 || stats.misses > 0) {
+      logger.debug('[ETag Cache Stats]', stats);
+    }
+  }, 5 * 60 * 1000); // 5 Minuten
+}
+
+// Helper für exponential backoff
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Custom API Error Class mit erweiterten Informationen
+ */
+export class APIError extends Error {
+  constructor(
+    message: string,
+    public status?: number,
+    public response?: any,
+    public endpoint?: string
+  ) {
+    super(message);
+    this.name = 'APIError';
+  }
+}
+
+export class BaseAPI {
+  private static baseURL = SERVICE_API_CONFIG.BASE_URL;
+  
+  /**
+   * ✅ KONFORMITÄT Teil 6: Generiere oder lade Client-ID
+   * 
+   * Strategie:
+   * 1. sessionStorage (höchste Priorität - Session-persistent)
+   * 2. localStorage (Fallback - Browser-persistent)
+   * 3. Generiere neue UUID v4 (nur wenn beide leer)
+   * 
+   * UUID-Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (RFC 4122 v4)
+   * Ohne externe Library - reine Crypto-API
+   * 
+   * @returns Client-ID string (z.B. "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
+   */
+  private static getClientId(): string {
+    let clientId = sessionStorage.getItem('client_id');
+    if (!clientId) {
+      clientId = localStorage.getItem('client_id');
+    }
+    if (!clientId) {
+      // UUID v4 Generator (ohne externe Library)
+      clientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+      sessionStorage.setItem('client_id', clientId);
+      localStorage.setItem('client_id', clientId);
+    }
+    return clientId;
+  }
+
+  /**
+   * ✅ KONFORMITÄT Teil 6: Prüfe ob Endpoint X-Client-ID Header benötigt
+   * 
+   * Generische Implementierung mit Array.some() - leicht erweiterbar
+   * 
+   * @param endpoint - API-Endpoint (z.B. "/api/settings/urls/binance")
+   * @returns true wenn Header erforderlich
+   */
+  private static requiresClientId(endpoint: string): boolean {
+    return CLIENT_ID_ENDPOINTS.some(prefix => endpoint.includes(prefix));
+  }
+  
+  /**
+   * Handle 429 Rate Limit with smart backoff
+   * @param response - Response with 429 status
+   * @param attempt - Current retry attempt
+   * @returns Backoff delay in ms
+   */
+  private static async handle429(response: Response, attempt: number): Promise<number> {
+    // Parse Retry-After header (seconds or HTTP date)
+    const retryAfter = response.headers.get('retry-after');
+    let backoffMs = 1000; // Default: 1s
+    
+    if (retryAfter) {
+      // Check if it's seconds or date
+      const retrySeconds = parseInt(retryAfter, 10);
+      if (!isNaN(retrySeconds)) {
+        backoffMs = retrySeconds * 1000;
+      }
+    }
+    
+    // Exponential backoff: 1s, 2s, 4s...
+    const exponentialBackoff = Math.min(1000 * Math.pow(2, attempt), 10000);
+    backoffMs = Math.max(backoffMs, exponentialBackoff);
+    
+    // User-friendly warning
+    logger.warn(`⚠️ Rate limit hit - retrying in ${backoffMs/1000}s (attempt ${attempt + 1}/${SERVICE_API_CONFIG.RATE_LIMIT_RETRIES})`);
+    
+    // TODO: Replace with Toast notification in future
+    // toast.warning(`Server beschäftigt - versuche erneut in ${backoffMs/1000}s`);
+    
+    await sleep(backoffMs);
+    return backoffMs;
+  }
+  
+  static async request<T>(endpoint: string, options?: RequestConfig, attempt = 0): Promise<T> {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), SERVICE_API_CONFIG.TIMEOUT);
+
+    let url = `${this.baseURL}${endpoint}`;
+    if (options?.params) {
+      const query = new URLSearchParams(options.params).toString();
+      url = `${url}?${query}`;
+    }
+
+    try {
+      // ETag-Support: Cache-Key aus URL + Method
+      const cacheKey = `${url}:${options?.method || 'GET'}`;
+      const cachedETag = etagCache.get(cacheKey);
+      
+      const headers = new Headers({
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      });
+      
+      // ✅ KONFORMITÄT Teil 6: Auto-Injection X-Client-ID für Settings/User Endpoints
+      // Generisch: requiresClientId() prüft gegen CLIENT_ID_ENDPOINTS Array
+      if (this.requiresClientId(endpoint)) {
+        headers.set('X-Client-ID', this.getClientId());
+      }
+      
+      // If-None-Match header für 304-Responses
+      if (cachedETag && (options?.method === 'GET' || !options?.method)) {
+        headers.set('If-None-Match', cachedETag);
+      }
+      
+      const response = await fetch(url, {
+        ...options,
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(id);
+      
+      // HTTP 304: Nutze gecachte Response
+      if (response.status === 304) {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const parsedCache = JSON.parse(cached);
+          return options?.schema ? options.schema.parse(parsedCache) : parsedCache;
+        }
+      }
+      
+      // HTTP 429: Rate Limit - Smart Backoff & Retry
+      if (response.status === 429) {
+        if (attempt >= SERVICE_API_CONFIG.RATE_LIMIT_RETRIES) {
+          throw new Error('Rate limit exceeded - please try again later');
+        }
+        
+        await this.handle429(response, attempt);
+        
+        // Retry with incremented attempt counter
+        return this.request<T>(endpoint, options, attempt + 1);
+      }
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new APIError(
+          `API Error ${response.status}`,
+          response.status,
+          errorText,
+          endpoint
+        );
+      }
+      
+      const json = await response.json();
+      
+      // ETag speichern für zukünftige Requests
+      const newETag = response.headers.get('ETag');
+      if (newETag && (options?.method === 'GET' || !options?.method)) {
+        etagCache.set(cacheKey, newETag);
+        sessionStorage.setItem(cacheKey, JSON.stringify(json));
+      }
+      
+      // x-request-id Korrelation für Debugging
+      const requestId = response.headers.get('x-request-id');
+      if (requestId && (import.meta as any).env.DEV) {
+        console.debug(`[BaseAPI] Request ID: ${requestId} | URL: ${url}`);
+      }
+      
+      // Runtime-Validation mit Zod (optional)
+      if (options?.schema) {
+        try {
+          return options.schema.parse(json);
+        } catch (validationError) {
+          console.error('[BaseAPI] Validation Error:', validationError);
+          throw new APIError('Validation failed', 400, validationError, endpoint);
+        }
+      }
+      
+      return json;
+    } catch (error) {
+      clearTimeout(id);
+      if (error instanceof APIError) throw error;
+      if (error instanceof Error) throw new APIError(error.message, undefined, undefined, endpoint);
+      throw new APIError('Unknown error', undefined, undefined, endpoint);
+    }
+  }
+}
 </file>
 
 <file path="readme/000_backfill_2_build.md">
