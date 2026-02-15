@@ -812,6 +812,7 @@ start-health.sh
 start-system.sh
 stop-system.sh
 table_test.sh
+TEST_LLM_UPDATE.md
 </directory_structure>
 
 <files>
@@ -10652,6 +10653,390 @@ data = await api.fetch_spot_orderbook(symbol, limit)
 1. ✅ Prüfe die **5 Entwicklungsregeln** ganz oben
 </file>
 
+<file path="backend/api/routers/ro_market_gateway.py">
+# backend/api/routers/ro_market_gateway.py
+"""
+ro_market_gateway.py – Unified Market Gateway Layer
+
+Dieses Gateway bildet die komplette Funktionalität der früheren Dateien ab:
+
+- market.py
+- unified_trades_api.py
+- unified_orderbook.py
+- unified_symbols.py
+- ticker.py
+- enterprise_market_proxy.py
+
+Es stellt stabile, standardisierte Endpunkte bereit:
+
+    /gw/meta
+    /gw/orderbook
+    /gw/trades
+    /gw/ticker
+    /gw/symbols
+    /gw/history
+    /gw/health
+
+Intern delegiert das Gateway ausschließlich an den neuen
+generischen Market-Core (ro_market_data.py), der
+Orderbook, Trades, Ticker und Symbols absolut generisch,
+exchange-agnostisch und ohne Hardcodings verarbeitet.
+"""
+
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+
+# Reuse generische Market-Logik aus ro_market_data
+from backend.api.routers.ro_market_data import (
+    get_unified_orderbook,
+    get_trades_unified,
+    get_ticker as _md_get_ticker,
+    get_symbols as _md_get_symbols,
+    get_default_exchange,
+    json_response_with_decimals,
+)
+
+logger = logging.getLogger("ro-market-gateway")
+
+market_gateway_router = APIRouter()
+
+
+# =========================
+# HELPER: DISCOVERY
+# =========================
+
+
+def _get_available_exchanges() -> List[str]:
+    """Liest verfügbare Exchanges generisch aus der ExchangeFactory."""
+    try:
+        exchanges = ExchangeFactory.get_available_exchanges() or []
+        return exchanges
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges from ExchangeFactory: {e}", exc_info=True)
+        return []
+
+
+# =========================
+# META / CONFIG GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/meta")
+async def get_market_gateway_meta(
+    request: Request,
+):
+    """
+    Enterprise-Meta-Endpunkt für das Frontend.
+    Standardisiert alle Gateway-Metadaten.
+    """
+    try:
+        exchanges = _get_available_exchanges()
+        default_exchange = get_default_exchange()
+
+        supported_markets = ["spot", "futures"]
+
+        # KEINE HARTE LISTE MEHR – nur Dokumentation,
+        # parse_resolution() akzeptiert ALLE korrekten Formate
+        supported_resolutions = {
+            "format": "<int><unit>",
+            "units": ["s", "m", "h", "d", "w"],
+            "examples": ["1s", "5s", "30s", "1m", "5m", "15m", "1h", "4h", "1d", "1w"],
+            "description": "Alle durch parse_resolution() unterstützten Intervalle.",
+        }
+
+        data: Dict[str, Any] = {
+            "status": "ok",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "gateway": {
+                "name": "ro_market_gateway",
+                "version": "v1",
+            },
+            "exchanges": {
+                "available": exchanges,
+                "default": default_exchange,
+            },
+            "markets": {
+                "types": supported_markets,
+            },
+            "resolutions": supported_resolutions,
+            "endpoints": {
+                "orderbook": "/gw/orderbook",
+                "trades": "/gw/trades",
+                "ticker": "/gw/ticker",
+                "symbols": "/gw/symbols",
+                "history": "/gw/history",
+                "meta": "/gw/meta",
+            },
+        }
+
+        return json_response_with_decimals(
+            content=data,
+            headers={
+                "Cache-Control": "public, max-age=5",
+                "Vary": "Accept, Authorization",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Market gateway meta failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway meta error: {e}")
+
+
+# =========================
+# ORDERBOOK GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/orderbook")
+async def gw_orderbook(
+    symbol: str = Query(..., description="Symbol, z. B. BTCUSDT"),
+    market_type: str = Query("spot", description="Market type (spot|futures)"),
+    limit: int = Query(15, ge=1, le=5000, description="Depth Level (Bids/Asks)"),
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional explizite Exchange; wenn None → Auto-Detection via SYMBOL_REGISTRY",
+    ),
+):
+    """
+    Gateway-Alias für Unified OrderBook (Live-REST).
+    """
+    try:
+        return await get_unified_orderbook(
+            symbol=symbol,
+            market_type=market_type,
+            limit=limit,
+            exchange=exchange,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GW orderbook failed for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway orderbook error: {e}")
+
+
+# =========================
+# TRADES GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/trades")
+async def gw_trades(
+    symbol: str = Query("BTCUSDT", description="Symbol, z. B. BTCUSDT"),
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional Exchange (wenn None → Default aus ExchangeFactory)",
+    ),
+    market: str = Query("spot", description="Market (spot|futures|usdtm|coinm|...)"),
+    limit: int = Query(100, gt=0, le=1000),
+):
+    """
+    Gateway-Alias für Unified Trades.
+    """
+    try:
+        return await get_trades_unified(
+            exchange=exchange,
+            symbol=symbol,
+            market=market,
+            limit=limit,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GW trades failed for {exchange}/{symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway trades error: {e}")
+
+
+# =========================
+# TICKER GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/ticker")
+async def gw_ticker(
+    exchange: Optional[str] = Query(
+        None,
+        description="Exchange (wenn None → Default aus ExchangeFactory)",
+    ),
+    symbol: Optional[str] = Query(
+        None,
+        description="Optional symbol filter, z. B. BTCUSDT",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Market type (spot|usdtm|usdcm|coinm|futures)",
+    ),
+):
+    """
+    Gateway-Alias für Unified Ticker.
+    """
+    try:
+        return await _md_get_ticker(
+            exchange=exchange,
+            symbol=symbol,
+            market_type=market_type,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GW ticker failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway ticker error: {e}")
+
+
+# =========================
+# SYMBOLS GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/symbols")
+async def gw_symbols(
+    exchange: Optional[str] = Query(
+        None,
+        description="Exchange (binance|bitget|...); wenn None → Default aus ExchangeFactory",
+    ),
+    market: Optional[str] = Query(
+        None,
+        description="Filter nach Markt (spot|usdtm|coinm|usdcm|futures)",
+    ),
+):
+    """
+    Gateway-Alias für Unified Symbols.
+    """
+    try:
+        data = await _md_get_symbols(exchange=exchange, market=market)
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GW symbols failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway symbols error: {e}")
+
+
+# =========================
+# HISTORY / OHLC GATEWAY
+# =========================
+
+
+@market_gateway_router.get("/gw/history")
+async def gw_history(
+    symbol: str = Query(..., description="Symbol, z. B. BTCUSDT"),
+    exchange: Optional[str] = Query(
+        None,
+        description="Exchange (wenn None → Default aus ExchangeFactory)",
+    ),
+    resolution: str = Query(
+        "1m",
+        description="Chart-Interval – vollständig generisch (<int><unit>).",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Rolling Window (Anzahl letzter Candles).",
+    ),
+):
+    """
+    Gateway für OHLC-Historie über ClickHouse.
+    """
+    try:
+        ex = exchange or get_default_exchange()
+        interval_seconds, _ = parse_resolution(resolution)
+
+        candles = await get_ohlc_from_ch(
+            exchange=ex,
+            symbol=symbol,
+            interval_seconds=interval_seconds,
+            start=None,
+            end=None,
+            limit=limit,
+        )
+
+        payload: Dict[str, Any] = {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "exchange": ex,
+            "symbol": symbol,
+            "resolution": resolution,
+            "interval_seconds": interval_seconds,
+            "count": len(candles) if isinstance(candles, list) else 0,
+            "data": candles,
+            "meta": {
+                "mode": "rolling_window",
+                "limit": limit,
+                "data_source": "clickhouse",
+            },
+        }
+
+        return json_response_with_decimals(
+            content=payload,
+            headers={
+                "Cache-Control": "public, max-age=3",
+                "Vary": "Accept, Authorization",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GW history failed for {symbol} ({resolution}): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway history error: {e}")
+
+
+# =========================
+# HEALTH / STATUS
+# =========================
+
+
+@market_gateway_router.get("/gw/health")
+async def gw_health():
+    """
+    Lightweight Health-/Status-Endpunkt für das Gateway.
+    Nutzt ExchangeFactory + SYMBOL_REGISTRY.
+    """
+    try:
+        exchanges = _get_available_exchanges()
+        default_exchange = get_default_exchange()
+
+        reg_ok = False
+        cached_symbols = 0
+
+        try:
+            catalog = await SYMBOL_REGISTRY.catalog(default_exchange, Market.SPOT)  # type: ignore[name-defined]
+            cached_symbols = len(catalog)
+            reg_ok = cached_symbols > 0
+        except Exception as reg_err:
+            logger.warning(f"Registry health check failed for {default_exchange}: {reg_err}")
+
+        data: Dict[str, Any] = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "exchanges": {
+                "available": exchanges,
+                "default": default_exchange,
+            },
+            "symbol_registry": {
+                "ok": reg_ok,
+                "cached_symbols_default_exchange_spot": cached_symbols,
+            },
+        }
+
+        return json_response_with_decimals(
+            content=data,
+            headers={
+                "Cache-Control": "no-cache",
+                "Vary": "Accept, Authorization",
+            },
+        )
+    except Exception as e:
+        logger.error(f"GW health check failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gateway health error: {e}")
+</file>
+
 <file path="backend/api/routers/ro_monitoring.py">
 from __future__ import annotations
 
@@ -15750,6 +16135,488 @@ class UnifiedCandlesService:
 
 # Global instance
 unified_candles_service = UnifiedCandlesService()
+</file>
+
+<file path="backend/database/redis/rs_unified_manager.py">
+"""
+✅ ENTERPRISE UNIFIED REDIS MANAGER
+Environment-agnostic Redis connection mit Auto-Detection
+"""
+
+import os
+import logging
+import asyncio
+from typing import Optional, Dict, Any, List
+import redis.asyncio as redis
+from contextlib import asynccontextmanager
+
+logger = logging.getLogger("unified-redis")
+
+
+class RedisConnectionConfig:
+    """Redis Configuration mit Environment Detection"""
+    
+    def __init__(self):
+        self.environment = self._detect_environment()
+        self.config = self._get_config_for_environment()
+        self.max_connections = self._get_max_connections()
+        
+    def _detect_environment(self) -> str:
+        """Auto-detect ob Docker oder Localhost"""
+        # 1. Explicit Environment Variable
+        if os.getenv("DOCKER_ENV", "").lower() == "true":
+            return "docker"
+        
+        # 2. Docker Hostname Detection
+        if os.path.exists("/.dockerenv"):
+            return "docker"
+            
+        # 3. Redis Service Detection (versuche Docker-Service zuerst)
+        try:
+            test_redis = redis.Redis(host="redis", port=int(os.getenv("REDIS_PORT", "6379")), socket_connect_timeout=1)
+            # ✅ FIX: RuntimeWarning behoben - sync ping für Environment Detection
+            import redis as sync_redis
+            sync_test = sync_redis.Redis(host="redis", port=int(os.getenv("REDIS_PORT", "6379")), socket_connect_timeout=1)
+            sync_test.ping()
+            sync_test.close()
+            return "docker"
+        except Exception:
+            pass
+            
+        # 4. Default: Localhost
+        return "localhost"
+        
+    def _get_config_for_environment(self) -> Dict[str, Any]:
+        """Environment-spezifische Redis Config"""
+        if self.environment == "docker":
+            return {
+                "host": os.getenv("REDIS_HOST", "redis"),
+                "port": int(os.getenv("REDIS_PORT", "6379")),
+                "password": os.getenv("REDIS_PASSWORD", "") or None,
+                "db": int(os.getenv("REDIS_DB", "0")),
+                "decode_responses": True,
+                "socket_connect_timeout": 5,
+                "socket_timeout": 5,
+                "retry_on_timeout": True,
+                "health_check_interval": 30
+            }
+        else:  # localhost
+            return {
+                "host": os.getenv("REDIS_HOST", "localhost"), 
+                "port": int(os.getenv("REDIS_PORT", "6380")),
+                "password": os.getenv("REDIS_PASSWORD", "") or None,
+                "db": int(os.getenv("REDIS_DB", "0")),
+                "decode_responses": True,
+                "socket_connect_timeout": 5,
+                "socket_timeout": 5,
+                "retry_on_timeout": True,
+                "health_check_interval": 30
+            }
+    
+    def _get_max_connections(self) -> int:
+        """
+        Dynamisches max_connections:
+        1. ENV REDIS_MAX_CONNECTIONS (Priorität)
+        2. Fallback: 200 (Docker), 50 (Localhost)
+        3. Validation: > 0
+        """
+        default = 200 if self.environment == "docker" else 50
+        env_val = os.getenv("REDIS_MAX_CONNECTIONS")
+        
+        if env_val is not None:
+            try:
+                val = int(env_val)
+                if val > 0:
+                    return val
+                logger.warning(
+                    "REDIS_MAX_CONNECTIONS must be > 0, using default %s", default
+                )
+            except ValueError:
+                logger.warning(
+                    "Invalid REDIS_MAX_CONNECTIONS='%s', using default %s",
+                    env_val, default
+                )
+        return default
+
+
+class UnifiedRedisManager:
+    """
+    Enterprise Redis Manager mit:
+    - Auto Environment Detection
+    - Connection Pooling
+    - Circuit Breaker Pattern
+    - Health Monitoring
+    - Graceful Failover
+    """
+    
+    _instance = None
+    _redis = None
+    _config = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(UnifiedRedisManager, cls).__new__(cls)
+            cls._redis = None
+            cls._config = None
+        return cls._instance
+    
+    async def initialize(self):
+        """Initialize Redis connection mit Health Check"""
+        if self._redis is None:
+            self._config = RedisConnectionConfig()
+            
+            try:
+                # Connection Pool für bessere Performance mit dynamischem max_connections
+                self._max_connections = self._config.max_connections
+                self._redis = redis.Redis(
+                    connection_pool=redis.ConnectionPool(
+                        **self._config.config,
+                        max_connections=self._max_connections,
+                        retry_on_error=[redis.ConnectionError, redis.TimeoutError]
+                    )
+                )
+                
+                # Health Check
+                await self._redis.ping()
+                
+                logger.info(
+                    "✅ Unified Redis connected: %s (%s:%s, max_connections=%s)",
+                    self._config.environment,
+                    self._config.config["host"],
+                    self._config.config["port"],
+                    self._max_connections
+                )
+                
+                # Start Health Monitor
+                asyncio.create_task(self._health_monitor())
+                
+            except Exception as e:
+                logger.error(f"❌ Unified Redis connection failed: {e}")
+                self._redis = None
+                raise
+    
+    async def _health_monitor(self):
+        """Background Health Monitoring"""
+        while True:
+            try:
+                if self._redis:
+                    await self._redis.ping()
+                    logger.debug("✅ Redis health check passed")
+                await asyncio.sleep(30)  # Check every 30 seconds
+            except Exception as e:
+                logger.error(f"❌ Redis health check failed: {e}")
+                await asyncio.sleep(5)  # Retry faster on failure
+    
+    async def ping(self) -> bool:
+        """Simple health check"""
+        if not self._redis:
+            await self.initialize()
+            
+        if self._redis:
+            try:
+                await self._redis.ping()
+                return True
+            except Exception as e:
+                logger.error(f"Redis ping failed: {e}")
+                return False
+        return False
+    
+    async def get_connection(self) -> Optional[redis.Redis]:
+        """Get Redis connection with auto-initialization"""
+        if not self._redis:
+            await self.initialize()
+        return self._redis
+    
+    # ✅ ENTERPRISE: High-level Redis Operations mit Error Handling
+    
+    async def get(self, key: str) -> Optional[str]:
+        """Safe Redis GET mit Error Handling"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                return await redis_conn.get(key)
+        except Exception as e:
+            logger.error(f"Redis GET error for key '{key}': {e}")
+        return None
+    
+    async def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
+        """Safe Redis SET mit Error Handling"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                await redis_conn.set(key, value, ex=ex)
+                return True
+        except Exception as e:
+            logger.error(f"Redis SET error for key '{key}': {e}")
+        return False
+    
+    async def publish(self, channel: str, message: str) -> bool:
+        """Safe Redis PUBLISH mit Error Handling"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                await redis_conn.publish(channel, message)
+                return True
+        except Exception as e:
+            logger.error(f"Redis PUBLISH error for channel '{channel}': {e}")
+        return False
+    
+    async def xadd(self, stream: str, fields: Dict[str, Any], maxlen: Optional[int] = None) -> bool:
+        """Safe Redis XADD für Streams"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                await redis_conn.xadd(stream, fields, maxlen=maxlen)
+                return True
+        except Exception as e:
+            logger.error(f"Redis XADD error for stream '{stream}': {e}")
+        return False
+    
+    async def xread(self, streams: Dict[str, str], count: Optional[int] = None, block: Optional[int] = None) -> List:
+        """Safe Redis XREAD für Streams"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                return await redis_conn.xread(streams, count=count, block=block)
+        except Exception as e:
+            logger.error(f"Redis XREAD error: {e}")
+        return []
+    
+    async def xrevrange(self, stream: str, max: str = "+", min: str = "-", count: Optional[int] = None) -> List:
+        """Safe Redis XREVRANGE für Streams"""
+        try:
+            redis_conn = await self.get_connection()
+            if redis_conn:
+                return await redis_conn.xrevrange(stream, max=max, min=min, count=count)
+        except Exception as e:
+            logger.error(f"Redis XREVRANGE error for stream '{stream}': {e}")
+        return []
+    
+    async def close(self):
+        """Graceful connection cleanup"""
+        if self._redis:
+            try:
+                await self._redis.close()
+                logger.info("🛑 Unified Redis connection closed")
+            except Exception as e:
+                logger.error(f"Error closing Redis connection: {e}")
+            finally:
+                self._redis = None
+    
+    async def get_redis_server_stats(self) -> Dict[str, Any]:
+        """
+        Redis Server-Metriken:
+        - connected_clients: Aktuelle Verbindungen
+        - blocked_clients: Blockierte Clients
+        - maxclients: Server-Limit
+        - server_client_utilization: connected / maxclients
+        """
+        stats = {
+            "ok": False,
+            "error": None,
+            "connected_clients": None,
+            "blocked_clients": None,
+            "maxclients": None,
+            "server_client_utilization": None,
+        }
+        
+        try:
+            redis_conn = await self.get_connection()
+            if not redis_conn:
+                stats["error"] = "no_connection"
+                return stats
+            
+            info_clients = await redis_conn.info("clients")
+            config = await redis_conn.config_get("maxclients")
+            
+            connected = info_clients.get("connected_clients")
+            blocked = info_clients.get("blocked_clients")
+            maxclients_raw = config.get("maxclients")
+            maxclients = int(maxclients_raw) if maxclients_raw is not None else None
+            
+            stats["connected_clients"] = connected
+            stats["blocked_clients"] = blocked
+            stats["maxclients"] = maxclients
+            
+            if maxclients and connected is not None:
+                stats["server_client_utilization"] = round(
+                    connected / maxclients, 4
+                )
+            
+            stats["ok"] = True
+            return stats
+            
+        except Exception as e:
+            stats["error"] = str(e)
+            logger.error(f"Redis server stats failed: {e}")
+            return stats
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get comprehensive Redis status"""
+        return {
+            "environment": self._config.environment if self._config else "unknown",
+            "config": self._config.config if self._config else {},
+            "connected": self._redis is not None,
+            "instance_id": id(self),
+            "singleton": True,
+            "pool_max_connections": self._max_connections if hasattr(self, '_max_connections') else None
+        }
+
+
+# ✅ ENTERPRISE: Global Singleton Instance
+rs_unified_manager = UnifiedRedisManager()
+
+
+# ✅ ENTERPRISE: Context Manager für sichere Redis Operations
+@asynccontextmanager
+async def redis_operation():
+    """Context Manager für sichere Redis-Operationen"""
+    try:
+        redis_conn = await rs_unified_manager.get_connection()
+        if not redis_conn:
+            raise ConnectionError("Redis connection not available")
+        yield redis_conn
+    except Exception as e:
+        logger.error(f"Redis operation failed: {e}")
+        raise
+    finally:
+        # Connection wird vom Pool verwaltet, nicht hier geschlossen
+        pass
+
+
+# ✅ ENTERPRISE: Convenience Functions
+async def get_redis() -> redis.Redis:
+    """Get Redis connection - Convenience Function"""
+    return await rs_unified_manager.get_connection()
+
+
+async def redis_health_check() -> Dict[str, Any]:
+    """Comprehensive Redis Health Check"""
+    status = rs_unified_manager.get_status()
+    
+    # Test basic operations
+    try:
+        test_key = "health_check_test"
+        await rs_unified_manager.set(test_key, "ok", ex=10)
+        value = await rs_unified_manager.get(test_key)
+        status["operations_working"] = value == "ok"
+    except Exception as e:
+        status["operations_working"] = False
+        status["error"] = str(e)
+    
+    # ✅ Server Stats hinzufügen
+    try:
+        server_stats = await rs_unified_manager.get_redis_server_stats()
+    except Exception as e:
+        logger.error(f"Redis server stats failed in health_check: {e}")
+        server_stats = {}
+    
+    status["server_stats"] = server_stats
+    return status
+
+
+# =====================================================
+# 🚀 ENTERPRISE USER SETTINGS CACHE (wie in README gefordert)
+# =====================================================
+
+import json
+from typing import Dict, Any, Optional
+
+class UserSettingsCache:
+    """Redis Cache für User Settings mit TTL Management - Enterprise Grade + rs_ Lane System"""
+    
+    def __init__(self, redis_client=None):
+        # Migriere zu rs_ Lane System
+        try:
+            from backend.database.redis import unified_rs_service
+            self.rs_service = unified_rs_service
+            self.use_rs_system = True
+        except ImportError:
+            # Fallback zu Unified Redis Manager
+            self.redis = redis_client or rs_unified_manager
+            self.use_rs_system = False
+            
+        self.key_prefix = "usrset:"
+        self.ttl = 300  # 5 Minuten TTL
+    
+    def _key(self, user_id: str) -> str:
+        return f"{self.key_prefix}{user_id}"
+    
+    async def get(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user settings from Redis cache über rs_ Lane System"""
+        try:
+            if self.use_rs_system:
+                # Nutze rs_ Lane System für Cache Access
+                from backend.services.adapter.cache_service import rs_cache
+                return await rs_cache.get(self._key(user_id))
+            else:
+                # Fallback zu Unified Redis Manager
+                cached = await self.redis.get(self._key(user_id))
+                if cached:
+                    return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Redis get failed for user {user_id}: {e}")
+        return None
+    
+    async def set(self, user_id: str, settings: Dict[str, Any]) -> bool:
+        """Set user settings in Redis cache with TTL über rs_ Lane System"""
+        try:
+            if self.use_rs_system:
+                # Nutze rs_ Lane System für Cache Access
+                from backend.services.adapter.cache_service import rs_cache
+                return await rs_cache.set(self._key(user_id), settings, self.ttl)
+            else:
+                # Fallback zu Unified Redis Manager
+                await self.redis.set(
+                    self._key(user_id),
+                    json.dumps(settings, ensure_ascii=False),
+                    ex=self.ttl
+                )
+                return True
+        except Exception as e:
+            logger.warning(f"Redis set failed for user {user_id}: {e}")
+            return False
+    
+    async def invalidate(self, user_id: str) -> bool:
+        """Remove user settings from Redis cache über rs_ Lane System"""
+        try:
+            if self.use_rs_system:
+                # Nutze rs_ Lane System für Cache Access
+                from backend.services.adapter.cache_service import rs_cache
+                return await rs_cache.delete(self._key(user_id))
+            else:
+                # Fallback zu Unified Redis Manager
+                redis_conn = await self.redis.get_connection()
+                if redis_conn:
+                    await redis_conn.delete(self._key(user_id))
+                    return True
+        except Exception as e:
+            logger.warning(f"Redis invalidate failed for user {user_id}: {e}")
+        return False
+
+# Add to UnifiedRedisManager  
+def get_user_settings_cache() -> UserSettingsCache:
+    """Factory für UserSettingsCache - Enterprise Grade"""
+    return UserSettingsCache(rs_unified_manager)
+
+
+# =====================================================
+# 🚀 rs_ LANE SYSTEM INTEGRATION (Task 22)
+# =====================================================
+
+def get_rs_lane_integration() -> Dict[str, Any]:
+    """
+    Integration Point für rs_ Lane System
+    Ermöglicht rs_ Lane System Zugriff auf Unified Redis Manager
+    """
+    return {
+        "unified_manager": rs_unified_manager,
+        "connection_factory": get_redis,
+        "health_check": redis_health_check,
+        "user_cache": get_user_settings_cache(),
+        "integration_status": "active",
+        "compatible_with_rs_lanes": True
+    }
 </file>
 
 <file path="backend/database/redis/rs_unified_system.py">
@@ -39682,355 +40549,6 @@ class ws_checker:
         logger.info("Stopped WebSocket health checks")
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-import asyncio
-import json
-import time
-import traceback
-import logging
-from typing import Dict, Set
-from fastapi import WebSocket
-from datetime import datetime
-
-# Structured logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-class PerformantWebSocketManager:
-    """
-    Optimized WebSocket manager with connection pooling, message batching,
-    and comprehensive error logging
-    """
-    def __init__(self, batch_interval_ms: int = 50, debounce_ms: int = 25):
-        # Connection pools per symbol
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        # Message queues for batching
-        self.message_queues: Dict[str, list] = {}
-        # Last update timestamps for debouncing
-        self.last_updates: Dict[str, float] = {}
-        # Configurable intervals for performance tuning
-        self.batch_interval_ms = batch_interval_ms
-        self.debounce_ms = debounce_ms
-        # Batch processing task
-        self._batch_task = None
-        self._running = False
-        # Performance metrics
-        self.metrics = {
-            "messages_sent": 0,
-            "messages_queued": 0,
-            "connections_total": 0,
-            "errors_count": 0
-        }
-    
-    async def start(self):
-        """Start the batch processing task"""
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches())
-        logger.info(f"WebSocket manager started with batch_interval={self.batch_interval_ms}ms, debounce={self.debounce_ms}ms")
-    
-    async def stop(self):
-        """Stop the batch processing task"""
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("WebSocket manager stopped")
-    
-    def update_performance_settings(self, batch_interval_ms: int = None, debounce_ms: int = None):
-        """
-        Dynamically update performance settings for live tuning
-        """
-        if batch_interval_ms is not None:
-            self.batch_interval_ms = batch_interval_ms
-            logger.info(f"Updated batch_interval to {batch_interval_ms}ms")
-        
-        if debounce_ms is not None:
-            self.debounce_ms = debounce_ms
-            logger.info(f"Updated debounce to {debounce_ms}ms")
-    
-    async def connect(self, websocket: WebSocket, exchange: str, symbol: str):
-        """Connect a WebSocket to a unique channel (exchange:symbol)"""
-        channel = f"{exchange}:{symbol}"
-        try:
-            await websocket.accept()
-            
-            if channel not in self.connections:
-                self.connections[channel] = set()
-                self.message_queues[channel] = []
-            
-            self.connections[channel].add(websocket)
-            self.metrics["connections_total"] += 1
-            
-            logger.info(f"Client connected to {channel}. Channel connections: {len(self.connections[channel])}, Total: {self.get_connection_count()}")
-            
-        except Exception as e:
-            logger.error(f"Error connecting client to {channel}: {e}")
-            traceback.print_exc()
-            raise
-    
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str):
-        """Disconnect a WebSocket from a channel"""
-        channel = f"{exchange}:{symbol}"
-        try:
-            if channel in self.connections:
-                self.connections[channel].discard(websocket)
-                if not self.connections[channel]:
-                    # Clean up empty channels
-                    del self.connections[channel]
-                    if channel in self.message_queues:
-                        del self.message_queues[channel]
-                    if channel in self.last_updates:
-                        del self.last_updates[channel]
-                    logger.info(f"Cleaned up empty channel for {channel}")
-            
-            logger.info(f"Client disconnected from {channel}. Total connections: {self.get_connection_count()}")
-            
-        except Exception as e:
-            logger.error(f"Error disconnecting client from {channel}: {e}")
-            traceback.print_exc()
-    
-    async def broadcast_to_channel(self, channel: str, message: dict, debounce_ms: int = None):
-        """
-        Broadcast message to all connections for a channel with configurable debouncing
-        """
-        try:
-            if channel not in self.connections or not self.connections[channel]:
-                return
-            
-            # Use instance debounce or override
-            effective_debounce = debounce_ms if debounce_ms is not None else self.debounce_ms
-            current_time = time.time() * 1000  # Convert to milliseconds
-            
-            # Debouncing: Skip if last update was too recent
-            if channel in self.last_updates:
-                if current_time - self.last_updates[channel] < effective_debounce:
-                    return
-            
-            self.last_updates[channel] = current_time
-            
-            # Add message to batch queue
-            if channel not in self.message_queues:
-                self.message_queues[channel] = []
-            
-            self.message_queues[channel].append(message)
-            self.metrics["messages_queued"] += 1
-            
-        except Exception as e:
-            logger.error(f"Error broadcasting to {channel}: {e}")
-            traceback.print_exc()
-            self.metrics["errors_count"] += 1
-    
-    async def _process_message_batches(self):
-        """
-        Process message batches with configurable interval for optimal performance
-        """
-        logger.info("Started message batch processing")
-        
-        while self._running:
-            try:
-                batch_start = time.time()
-                messages_processed = 0
-                
-                # Process all queued messages
-                for channel, messages in list(self.message_queues.items()):
-                    if not messages or channel not in self.connections:
-                        continue
-                    
-                    # Get the latest message (most recent data) - FLAT STRUCTURE
-                    latest_message = messages[-1]
-                    
-                    # Clear the queue
-                    self.message_queues[channel] = []
-                    
-                    # Broadcast to all connections for this channel
-                    disconnected = set()
-                    for websocket in self.connections[channel].copy():
-                        try:
-                            await websocket.send_text(json.dumps(latest_message))
-                            self.metrics["messages_sent"] += 1
-                            messages_processed += 1
-                        except Exception as e:
-                            logger.warning(f"Error sending to client on {channel}: {e}")
-                            disconnected.add(websocket)
-                            self.metrics["errors_count"] += 1
-                    
-                    # Remove disconnected clients
-                    for ws in disconnected:
-                        self.connections[channel].discard(ws)
-                        if disconnected:
-                            logger.info(f"Removed {len(disconnected)} disconnected clients from {channel}")
-                
-                # Performance logging every 1000 batches
-                if self.metrics["messages_sent"] % 1000 == 0 and messages_processed > 0:
-                    batch_time = (time.time() - batch_start) * 1000
-                    logger.info(f"Batch processed: {messages_processed} messages in {batch_time:.2f}ms. Total sent: {self.metrics['messages_sent']}")
-                
-                # Wait for next batch (configurable interval)
-                await asyncio.sleep(self.batch_interval_ms / 1000.0)
-                
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.1)  # Fallback delay
-    
-    def get_connection_count(self, symbol: str = None) -> int:
-        """Get total connection count or for specific symbol"""
-        if symbol:
-            return len(self.connections.get(symbol, set()))
-        return sum(len(conns) for conns in self.connections.values())
-    
-    def get_metrics(self) -> dict:
-        """Get performance metrics for monitoring"""
-        return {
-            **self.metrics,
-            "active_symbols": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "debounce_ms": self.debounce_ms
-        }
-
-# Global WebSocket manager instance
-ws_manager = PerformantWebSocketManager()
-
-from fastapi import APIRouter
-router = APIRouter()
-
-@router.websocket("/ws/{exchange}/{symbol}")
-async def websocket_endpoint(websocket: WebSocket, exchange: str, symbol: str):
-    await handle_websocket_connection(websocket, exchange, symbol)
-
-async def handle_websocket_connection(websocket: WebSocket, exchange: str, symbol: str):
-    """
-    Handle individual WebSocket connection with comprehensive error handling
-    """
-    client_id = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
-    channel = f"{exchange}:{symbol}"
-    
-    try:
-        await ws_manager.connect(websocket, exchange, symbol)
-        
-        # Send initial connection confirmation - FLAT STRUCTURE
-        await websocket.send_text(json.dumps({
-            "type": "connection",
-            "status": "connected",
-            "channel": channel,
-            "timestamp": datetime.utcnow().isoformat(),
-            "server_time": int(time.time() * 1000)
-        }))
-        
-        logger.info(f"WebSocket connection established: {client_id} -> {channel}")
-        
-        # Keep connection alive with configurable ping interval
-        ping_interval = 30.0  # seconds
-        
-        while True:
-            try:
-                # Wait for messages from client (ping/pong, etc.)
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=ping_interval)
-                
-                # Handle client messages if needed
-                try:
-                    data = json.loads(message)
-                    if data.get("type") == "ping":
-                        await websocket.send_text(json.dumps({
-                            "type": "pong",
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "server_time": int(time.time() * 1000)
-                        }))
-                    elif data.get("type") == "subscribe":
-                        # Handle additional subscriptions
-                        logger.info(f"Client {client_id} subscription request: {data}")
-                        
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Invalid JSON from client {client_id}: {e}")
-                    
-            except asyncio.TimeoutError:
-                # Send periodic ping to keep connection alive
-                try:
-                    await websocket.send_text(json.dumps({
-                        "type": "ping",
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "server_time": int(time.time() * 1000)
-                    }))
-                except Exception as ping_error:
-                    logger.error(f"Failed to send ping to {client_id}: {ping_error}")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"Connection error for {client_id} on {channel}: {e}")
-                traceback.print_exc()
-                break
-                
-    except Exception as e:
-        logger.error(f"WebSocket error for {client_id} on {channel}: {e}")
-        traceback.print_exc()
-    finally:
-        await ws_manager.disconnect(websocket, exchange, symbol)
-        logger.info(f"WebSocket connection closed: {client_id} -> {channel}")
-
-# FLAT STRUCTURE - Keine Verschachtelung in "data"
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict):
-    """
-    Broadcast trade data to connected clients - FLAT STRUCTURE
-    """
-    channel = f"{exchange}:{symbol}"
-    try:
-        # FLAT STRUCTURE: Alle Felder auf oberster Ebene
-        message = {
-            "type": "trade",
-            "exchange": exchange,
-            "symbol": trade_data.get("symbol", symbol),
-            "market": trade_data.get("market", "spot"),
-            "price": str(trade_data["price"]),
-            "size": str(trade_data["size"]),
-            "side": trade_data["side"],
-            "timestamp": trade_data["timestamp"],
-            "timestamp": datetime.utcnow().isoformat(),
-            "server_time": int(time.time() * 1000)
-        }
-        
-        await ws_manager.broadcast_to_channel(channel, message, debounce_ms=25)
-        
-    except Exception as e:
-        logger.error(f"Error broadcasting trade data for {channel}: {e}")
-        traceback.print_exc()
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict):
-    """
-    Broadcast candle data to connected clients - FLAT STRUCTURE
-    """
-    channel = f"{exchange}:{symbol}"
-    try:
-        # FLAT STRUCTURE: Alle Felder auf oberster Ebene
-        message = {
-            "type": "candle",
-            "exchange": exchange,
-            "symbol": candle_data.get("symbol", symbol),
-            "market": candle_data.get("market", "spot"),
-            "open": str(candle_data["open"]),
-            "high": str(candle_data["high"]),
-            "low": str(candle_data["low"]),
-            "close": str(candle_data["close"]),
-            "volume": str(candle_data["volume"]),
-            "timestamp": candle_data["timestamp"],
-            "timestamp": datetime.utcnow().isoformat(),
-            "server_time": int(time.time() * 1000)
-        }
-        
-        await ws_manager.broadcast_to_channel(channel, message, debounce_ms=100)
-        
-    except Exception as e:
-        logger.error(f"Error broadcasting candle data for {channel}: {e}")
-        traceback.print_exc()
-</file>
-
 <file path="backend/websocket/ws_lanes.py">
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime, timedelta
@@ -41212,120 +41730,6 @@ class WebSocketRegistry:
 
 # Global instance
 ws_registry = WebSocketRegistry()
-</file>
-
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import JSONResponse
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_registry import ws_registry
-from .ws_checker import ws_checker
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-# ws Checker für Health-Tests
-websocket_checker = ws_checker(ws_registry)
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    """Zentraler WebSocket-Endpoint für alle Exchanges"""
-    await websocket.accept()
-    
-    try:
-        # Starte WS Lane für diesen Client
-        lane = await ws_manager.start_websocket_lane(exchange, symbol, market)
-        
-        while True:
-            # Warte auf Client-Messages (z.B. Heartbeat)
-            try:
-                client_message = await websocket.receive_text()
-                
-                # Echo für Heartbeat
-                if client_message == "ping":
-                    await websocket.send_text("pong")
-                    
-            except WebSocketDisconnect:
-                break
-                
-    except Exception as e:
-        await websocket.send_text(f"Error: {str(e)}")
-    finally:
-        # Stoppe WS Lane wenn Client disconnected
-        ws_manager.stop_websocket_lane(exchange, symbol, market)
-
-@ws_router.websocket("/{exchange}/{symbol}")
-async def websocket_trades_legacy(websocket: WebSocket, exchange: str, symbol: str):
-    """Legacy WebSocket-Endpoint (default market = spot)"""
-    await websocket_trades(websocket, exchange, symbol, "spot")
-
-@ws_router.get("/health/")
-async def websocket_system_health():
-    """WebSocket System Health Overview"""
-    system_health = ws_registry.get_system_health()
-    
-    if system_health["ready"]:
-        return JSONResponse(content=system_health, status_code=200)
-    else:
-        return JSONResponse(content=system_health, status_code=503)
-
-@ws_router.get("/status/{exchange}")
-async def exchange_websocket_status(exchange: str):
-    """WebSocket Status für spezifische Exchange"""
-    lanes = ws_registry.get_lanes_by_exchange(exchange)
-    
-    if not lanes:
-        raise HTTPException(status_code=404, detail=f"No WebSocket lanes found for exchange: {exchange}")
-    
-    return {
-        "exchange": exchange,
-        "lanes": lanes,
-        "total_lanes": len(lanes),
-        "connected_lanes": len([l for l in lanes.values() if l.get_effective_status().value == "connected"]),
-        "timestamp": datetime.now().isoformat()
-    }
-
-@ws_router.get("/status/{exchange}/{symbol}/{market}")
-async def specific_websocket_status(exchange: str, symbol: str, market: str):
-    """Status für spezifische WS Lane"""
-    return ws_manager.get_lane_status(exchange, symbol, market)
-
-@ws_router.post("/test/{exchange}")
-async def test_exchange_connection(exchange: str):
-    """Teste WebSocket-Verbindung zu Exchange"""
-    result = await websocket_checker.test_exchange_connection(exchange)
-    
-    if result["status"] == "healthy":
-        return JSONResponse(content=result, status_code=200)
-    else:
-        return JSONResponse(content=result, status_code=503)
-
-@ws_router.get("/metrics/")
-async def websocket_system_metrics():
-    """Umfassende WebSocket System-Metriken"""
-    all_lanes = ws_registry.get_all_lanes()
-    
-    metrics = {
-        "total_lanes": len(all_lanes),
-        "connected_lanes": len([l for l in all_lanes if l.get_effective_status().value == "connected"]),
-        "total_messages": sum(l.message_count for l in all_lanes),
-        "total_errors": sum(l.error_count for l in all_lanes),
-        "total_reconnections": sum(l.reconnect_count for l in all_lanes),
-        "exchanges": {}
-    }
-    
-    # Exchange-spezifische Metriken
-    for exchange in set(l.exchange for l in all_lanes):
-        exchange_lanes = [l for l in all_lanes if l.exchange == exchange]
-        metrics["exchanges"][exchange] = {
-            "lanes": len(exchange_lanes),
-            "connected": len([l for l in exchange_lanes if l.get_effective_status().value == "connected"]),
-            "messages": sum(l.message_count for l in exchange_lanes),
-            "errors": sum(l.error_count for l in exchange_lanes)
-        }
-    
-    return metrics
 </file>
 
 <file path="backend/websocket/ws_symbols_handler.py">
@@ -80363,233 +80767,6 @@ export class EnterpriseAPI extends BaseAPI {
 }
 </file>
 
-<file path="frontend/src/services/api/websocket.ts">
-import { getExchangeConfigSync } from '../../config/exchanges';
-import { RingBuffer } from '../../lib/RingBuffer';
-
-export class WebSocketService {
-  private static instance: WebSocketService;
-  private ws: WebSocket | null = null;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private listeners: Map<string, Function[]> = new Map();
-  private currentUrl: string = '';
-  
-  // RingBuffer für Backpressure (verhindert UI-Freeze bei hohem Durchsatz)
-  private messageQueue = new RingBuffer<string>(200);
-  private flushing = false;
-  private flushInterval: number | null = null;
-
-  static getInstance(): WebSocketService {
-    if (!WebSocketService.instance) {
-      WebSocketService.instance = new WebSocketService();
-    }
-    return WebSocketService.instance;
-  }
-
-  connect(symbol: string, market: string, exchange: string): void {
-    // ✅ ENTERPRISE: Nutze Exchange Config (TTL-Cache konform)
-    const exchangeConfig = getExchangeConfigSync();
-    const wsUrl = exchangeConfig[exchange as keyof typeof exchangeConfig]?.wsUrl || 
-                  `ws://localhost:8100/api/${exchange}/ws/${symbol}/${market}`;
-    
-    if (this.ws && this.currentUrl === wsUrl) {
-      return; // Bereits verbunden
-    }
-    
-    this.disconnect();
-    this.currentUrl = wsUrl;
-    
-    try {
-      this.ws = new WebSocket(wsUrl);
-      this.setupEventHandlers();
-    } catch (error) {
-      console.error('WebSocket connection error:', error);
-      this.handleReconnect();
-    }
-  }
-
-  private dispatchInbound(message: any): void {
-    // ✅ CLOCK-TAG: Füge Ingest-Timestamp für Lag-Messung hinzu
-    if (message && typeof message === 'object') {
-      message.ingestTs = performance.now();
-    }
-    
-    // Immer komplettes Rohobjekt broadcasten für EventRouter
-    this.emit('message', message);
-
-    // Bestehendes Verhalten beibehalten für Komponenten die direkt subscriben
-    if (message && typeof message.type === 'string' && 'data' in message) {
-      this.emit(message.type as string, message.data);
-    } else {
-      this.emit('raw_message', message);
-    }
-  }
-
-  private setupEventHandlers = (): void => {
-    if (!this.ws) return;
-
-    this.ws.onopen = () => {
-      console.log('WebSocket connected');
-      this.reconnectAttempts = 0;
-      this.emit('connected', null);
-    };
-
-    this.ws.onmessage = (event: MessageEvent) => {
-      // Push to RingBuffer statt direkt zu dispatchen (Backpressure!)
-      this.messageQueue.push(event.data);
-      
-      // Starte Flush-Loop falls noch nicht aktiv
-      if (!this.flushInterval) {
-        this.startFlushLoop();
-      }
-    };
-
-    this.ws.onclose = (event: CloseEvent) => {
-      console.log('WebSocket disconnected:', event.code, event.reason);
-      this.handleReconnect();
-    };
-
-    this.ws.onerror = (error: Event) => {
-      console.error('WebSocket error:', error);
-      this.emit('error', error);
-    };
-  };
-
-  private handleReconnect = (): void => {
-    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.reconnectAttempts++;
-      const delay = Math.min(1000 * this.reconnectAttempts, 10000);
-      
-      console.log(`Reconnecting in ${delay}ms...`);
-      
-      setTimeout(() => {
-        if (this.currentUrl) {
-          this.connectFromUrl(this.currentUrl);
-        }
-      }, delay);
-    } else {
-      console.error('Max reconnection attempts reached');
-    }
-  };
-
-  private connectFromUrl = (url: string): void => {
-    try {
-      this.ws = new WebSocket(url);
-      this.setupEventHandlers();
-    } catch (error) {
-      console.error('WebSocket reconnection error:', error);
-      this.handleReconnect();
-    }
-  };
-
-  subscribe(event: string, callback: Function): void {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, []);
-    }
-    this.listeners.get(event)!.push(callback);
-  }
-
-  unsubscribe(event: string, callback: Function): void {
-    const callbacks = this.listeners.get(event);
-    if (callbacks) {
-      const index = callbacks.indexOf(callback);
-      if (index > -1) {
-        callbacks.splice(index, 1);
-      }
-    }
-  }
-
-  private emit(event: string, data: any): void {
-    const callbacks = this.listeners.get(event) || [];
-    callbacks.forEach(callback => {
-      try {
-        callback(data);
-      } catch (error) {
-        console.error('Error in WebSocket callback:', error);
-      }
-    });
-  }
-
-  /**
-   * Flush Messages aus RingBuffer mit requestAnimationFrame
-   * Verhindert UI-Freeze bei hohem Message-Durchsatz (>100 msg/s)
-   */
-  private flushMessages = (): void => {
-    if (this.flushing) return;
-    this.flushing = true;
-    
-    requestAnimationFrame(() => {
-      let rawMessage: string | undefined;
-      let processed = 0;
-      const maxBatchSize = 50; // Max 50 Messages pro Frame
-      
-      while ((rawMessage = this.messageQueue.shift()) && processed < maxBatchSize) {
-        try {
-          const message: any = JSON.parse(rawMessage);
-          this.dispatchInbound(message);
-          processed++;
-        } catch (error) {
-          console.error('[WebSocket] Message parse error:', error);
-          this.emit('error', error);
-        }
-      }
-      
-      this.flushing = false;
-    });
-  };
-
-  /**
-   * Startet Flush-Loop (60fps via setInterval)
-   */
-  private startFlushLoop(): void {
-    if (this.flushInterval) return;
-    
-    this.flushInterval = window.setInterval(() => {
-      if (!this.messageQueue.isEmpty()) {
-        this.flushMessages();
-      }
-    }, 16); // ~60fps
-  }
-
-  /**
-   * Stoppt Flush-Loop
-   */
-  private stopFlushLoop(): void {
-    if (this.flushInterval) {
-      clearInterval(this.flushInterval);
-      this.flushInterval = null;
-    }
-  }
-
-  disconnect(): void {
-    this.stopFlushLoop();
-    
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    
-    this.messageQueue.clear();
-    this.listeners.clear();
-    this.currentUrl = '';
-    this.reconnectAttempts = 0;
-  }
-
-  getConnectionStatus(): 'connected' | 'connecting' | 'disconnected' | 'error' {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      return 'connected';
-    } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
-      return 'connecting';
-    } else if (this.ws && this.ws.readyState === WebSocket.CLOSING) {
-      return 'disconnected';
-    } else {
-      return 'disconnected';
-    }
-  }
-}
-</file>
-
 <file path="frontend/src/services/storage/favorites.ts">
 import { LocalStorageService } from './localStorage';
 
@@ -99882,390 +100059,6 @@ async def symbols_health():
         raise HTTPException(status_code=500, detail="Symbols health check failed")
 </file>
 
-<file path="backend/api/routers/ro_market_gateway.py">
-# backend/api/routers/ro_market_gateway.py
-"""
-ro_market_gateway.py – Unified Market Gateway Layer
-
-Dieses Gateway bildet die komplette Funktionalität der früheren Dateien ab:
-
-- market.py
-- unified_trades_api.py
-- unified_orderbook.py
-- unified_symbols.py
-- ticker.py
-- enterprise_market_proxy.py
-
-Es stellt stabile, standardisierte Endpunkte bereit:
-
-    /gw/meta
-    /gw/orderbook
-    /gw/trades
-    /gw/ticker
-    /gw/symbols
-    /gw/history
-    /gw/health
-
-Intern delegiert das Gateway ausschließlich an den neuen
-generischen Market-Core (ro_market_data.py), der
-Orderbook, Trades, Ticker und Symbols absolut generisch,
-exchange-agnostisch und ohne Hardcodings verarbeitet.
-"""
-
-import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, HTTPException, Query, Request
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-
-# Reuse generische Market-Logik aus ro_market_data
-from backend.api.routers.ro_market_data import (
-    get_unified_orderbook,
-    get_trades_unified,
-    get_ticker as _md_get_ticker,
-    get_symbols as _md_get_symbols,
-    get_default_exchange,
-    json_response_with_decimals,
-)
-
-logger = logging.getLogger("ro-market-gateway")
-
-market_gateway_router = APIRouter()
-
-
-# =========================
-# HELPER: DISCOVERY
-# =========================
-
-
-def _get_available_exchanges() -> List[str]:
-    """Liest verfügbare Exchanges generisch aus der ExchangeFactory."""
-    try:
-        exchanges = ExchangeFactory.get_available_exchanges() or []
-        return exchanges
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges from ExchangeFactory: {e}", exc_info=True)
-        return []
-
-
-# =========================
-# META / CONFIG GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/meta")
-async def get_market_gateway_meta(
-    request: Request,
-):
-    """
-    Enterprise-Meta-Endpunkt für das Frontend.
-    Standardisiert alle Gateway-Metadaten.
-    """
-    try:
-        exchanges = _get_available_exchanges()
-        default_exchange = get_default_exchange()
-
-        supported_markets = ["spot", "futures"]
-
-        # KEINE HARTE LISTE MEHR – nur Dokumentation,
-        # parse_resolution() akzeptiert ALLE korrekten Formate
-        supported_resolutions = {
-            "format": "<int><unit>",
-            "units": ["s", "m", "h", "d", "w"],
-            "examples": ["1s", "5s", "30s", "1m", "5m", "15m", "1h", "4h", "1d", "1w"],
-            "description": "Alle durch parse_resolution() unterstützten Intervalle.",
-        }
-
-        data: Dict[str, Any] = {
-            "status": "ok",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "gateway": {
-                "name": "ro_market_gateway",
-                "version": "v1",
-            },
-            "exchanges": {
-                "available": exchanges,
-                "default": default_exchange,
-            },
-            "markets": {
-                "types": supported_markets,
-            },
-            "resolutions": supported_resolutions,
-            "endpoints": {
-                "orderbook": "/gw/orderbook",
-                "trades": "/gw/trades",
-                "ticker": "/gw/ticker",
-                "symbols": "/gw/symbols",
-                "history": "/gw/history",
-                "meta": "/gw/meta",
-            },
-        }
-
-        return json_response_with_decimals(
-            content=data,
-            headers={
-                "Cache-Control": "public, max-age=5",
-                "Vary": "Accept, Authorization",
-            },
-        )
-    except Exception as e:
-        logger.error(f"Market gateway meta failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway meta error: {e}")
-
-
-# =========================
-# ORDERBOOK GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/orderbook")
-async def gw_orderbook(
-    symbol: str = Query(..., description="Symbol, z. B. BTCUSDT"),
-    market_type: str = Query("spot", description="Market type (spot|futures)"),
-    limit: int = Query(15, ge=1, le=5000, description="Depth Level (Bids/Asks)"),
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional explizite Exchange; wenn None → Auto-Detection via SYMBOL_REGISTRY",
-    ),
-):
-    """
-    Gateway-Alias für Unified OrderBook (Live-REST).
-    """
-    try:
-        return await get_unified_orderbook(
-            symbol=symbol,
-            market_type=market_type,
-            limit=limit,
-            exchange=exchange,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"GW orderbook failed for {symbol}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway orderbook error: {e}")
-
-
-# =========================
-# TRADES GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/trades")
-async def gw_trades(
-    symbol: str = Query("BTCUSDT", description="Symbol, z. B. BTCUSDT"),
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional Exchange (wenn None → Default aus ExchangeFactory)",
-    ),
-    market: str = Query("spot", description="Market (spot|futures|usdtm|coinm|...)"),
-    limit: int = Query(100, gt=0, le=1000),
-):
-    """
-    Gateway-Alias für Unified Trades.
-    """
-    try:
-        return await get_trades_unified(
-            exchange=exchange,
-            symbol=symbol,
-            market=market,
-            limit=limit,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"GW trades failed for {exchange}/{symbol}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway trades error: {e}")
-
-
-# =========================
-# TICKER GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/ticker")
-async def gw_ticker(
-    exchange: Optional[str] = Query(
-        None,
-        description="Exchange (wenn None → Default aus ExchangeFactory)",
-    ),
-    symbol: Optional[str] = Query(
-        None,
-        description="Optional symbol filter, z. B. BTCUSDT",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Market type (spot|usdtm|usdcm|coinm|futures)",
-    ),
-):
-    """
-    Gateway-Alias für Unified Ticker.
-    """
-    try:
-        return await _md_get_ticker(
-            exchange=exchange,
-            symbol=symbol,
-            market_type=market_type,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"GW ticker failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway ticker error: {e}")
-
-
-# =========================
-# SYMBOLS GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/symbols")
-async def gw_symbols(
-    exchange: Optional[str] = Query(
-        None,
-        description="Exchange (binance|bitget|...); wenn None → Default aus ExchangeFactory",
-    ),
-    market: Optional[str] = Query(
-        None,
-        description="Filter nach Markt (spot|usdtm|coinm|usdcm|futures)",
-    ),
-):
-    """
-    Gateway-Alias für Unified Symbols.
-    """
-    try:
-        data = await _md_get_symbols(exchange=exchange, market=market)
-        return data
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"GW symbols failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway symbols error: {e}")
-
-
-# =========================
-# HISTORY / OHLC GATEWAY
-# =========================
-
-
-@market_gateway_router.get("/gw/history")
-async def gw_history(
-    symbol: str = Query(..., description="Symbol, z. B. BTCUSDT"),
-    exchange: Optional[str] = Query(
-        None,
-        description="Exchange (wenn None → Default aus ExchangeFactory)",
-    ),
-    resolution: str = Query(
-        "1m",
-        description="Chart-Interval – vollständig generisch (<int><unit>).",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Rolling Window (Anzahl letzter Candles).",
-    ),
-):
-    """
-    Gateway für OHLC-Historie über ClickHouse.
-    """
-    try:
-        ex = exchange or get_default_exchange()
-        interval_seconds, _ = parse_resolution(resolution)
-
-        candles = await get_ohlc_from_ch(
-            exchange=ex,
-            symbol=symbol,
-            interval_seconds=interval_seconds,
-            start=None,
-            end=None,
-            limit=limit,
-        )
-
-        payload: Dict[str, Any] = {
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "exchange": ex,
-            "symbol": symbol,
-            "resolution": resolution,
-            "interval_seconds": interval_seconds,
-            "count": len(candles) if isinstance(candles, list) else 0,
-            "data": candles,
-            "meta": {
-                "mode": "rolling_window",
-                "limit": limit,
-                "data_source": "clickhouse",
-            },
-        }
-
-        return json_response_with_decimals(
-            content=payload,
-            headers={
-                "Cache-Control": "public, max-age=3",
-                "Vary": "Accept, Authorization",
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"GW history failed for {symbol} ({resolution}): {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway history error: {e}")
-
-
-# =========================
-# HEALTH / STATUS
-# =========================
-
-
-@market_gateway_router.get("/gw/health")
-async def gw_health():
-    """
-    Lightweight Health-/Status-Endpunkt für das Gateway.
-    Nutzt ExchangeFactory + SYMBOL_REGISTRY.
-    """
-    try:
-        exchanges = _get_available_exchanges()
-        default_exchange = get_default_exchange()
-
-        reg_ok = False
-        cached_symbols = 0
-
-        try:
-            catalog = await SYMBOL_REGISTRY.catalog(default_exchange, Market.SPOT)  # type: ignore[name-defined]
-            cached_symbols = len(catalog)
-            reg_ok = cached_symbols > 0
-        except Exception as reg_err:
-            logger.warning(f"Registry health check failed for {default_exchange}: {reg_err}")
-
-        data: Dict[str, Any] = {
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "exchanges": {
-                "available": exchanges,
-                "default": default_exchange,
-            },
-            "symbol_registry": {
-                "ok": reg_ok,
-                "cached_symbols_default_exchange_spot": cached_symbols,
-            },
-        }
-
-        return json_response_with_decimals(
-            content=data,
-            headers={
-                "Cache-Control": "no-cache",
-                "Vary": "Accept, Authorization",
-            },
-        )
-    except Exception as e:
-        logger.error(f"GW health check failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Gateway health error: {e}")
-</file>
-
 <file path="backend/api/endpoint_mapper.py">
 """
 ZENTRALER ENDPOINT-MAPPER - Enterprise Grade
@@ -102739,488 +102532,6 @@ RS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
-<file path="backend/database/redis/rs_unified_manager.py">
-"""
-✅ ENTERPRISE UNIFIED REDIS MANAGER
-Environment-agnostic Redis connection mit Auto-Detection
-"""
-
-import os
-import logging
-import asyncio
-from typing import Optional, Dict, Any, List
-import redis.asyncio as redis
-from contextlib import asynccontextmanager
-
-logger = logging.getLogger("unified-redis")
-
-
-class RedisConnectionConfig:
-    """Redis Configuration mit Environment Detection"""
-    
-    def __init__(self):
-        self.environment = self._detect_environment()
-        self.config = self._get_config_for_environment()
-        self.max_connections = self._get_max_connections()
-        
-    def _detect_environment(self) -> str:
-        """Auto-detect ob Docker oder Localhost"""
-        # 1. Explicit Environment Variable
-        if os.getenv("DOCKER_ENV", "").lower() == "true":
-            return "docker"
-        
-        # 2. Docker Hostname Detection
-        if os.path.exists("/.dockerenv"):
-            return "docker"
-            
-        # 3. Redis Service Detection (versuche Docker-Service zuerst)
-        try:
-            test_redis = redis.Redis(host="redis", port=int(os.getenv("REDIS_PORT", "6379")), socket_connect_timeout=1)
-            # ✅ FIX: RuntimeWarning behoben - sync ping für Environment Detection
-            import redis as sync_redis
-            sync_test = sync_redis.Redis(host="redis", port=int(os.getenv("REDIS_PORT", "6379")), socket_connect_timeout=1)
-            sync_test.ping()
-            sync_test.close()
-            return "docker"
-        except Exception:
-            pass
-            
-        # 4. Default: Localhost
-        return "localhost"
-        
-    def _get_config_for_environment(self) -> Dict[str, Any]:
-        """Environment-spezifische Redis Config"""
-        if self.environment == "docker":
-            return {
-                "host": os.getenv("REDIS_HOST", "redis"),
-                "port": int(os.getenv("REDIS_PORT", "6379")),
-                "password": os.getenv("REDIS_PASSWORD", "") or None,
-                "db": int(os.getenv("REDIS_DB", "0")),
-                "decode_responses": True,
-                "socket_connect_timeout": 5,
-                "socket_timeout": 5,
-                "retry_on_timeout": True,
-                "health_check_interval": 30
-            }
-        else:  # localhost
-            return {
-                "host": os.getenv("REDIS_HOST", "localhost"), 
-                "port": int(os.getenv("REDIS_PORT", "6380")),
-                "password": os.getenv("REDIS_PASSWORD", "") or None,
-                "db": int(os.getenv("REDIS_DB", "0")),
-                "decode_responses": True,
-                "socket_connect_timeout": 5,
-                "socket_timeout": 5,
-                "retry_on_timeout": True,
-                "health_check_interval": 30
-            }
-    
-    def _get_max_connections(self) -> int:
-        """
-        Dynamisches max_connections:
-        1. ENV REDIS_MAX_CONNECTIONS (Priorität)
-        2. Fallback: 200 (Docker), 50 (Localhost)
-        3. Validation: > 0
-        """
-        default = 200 if self.environment == "docker" else 50
-        env_val = os.getenv("REDIS_MAX_CONNECTIONS")
-        
-        if env_val is not None:
-            try:
-                val = int(env_val)
-                if val > 0:
-                    return val
-                logger.warning(
-                    "REDIS_MAX_CONNECTIONS must be > 0, using default %s", default
-                )
-            except ValueError:
-                logger.warning(
-                    "Invalid REDIS_MAX_CONNECTIONS='%s', using default %s",
-                    env_val, default
-                )
-        return default
-
-
-class UnifiedRedisManager:
-    """
-    Enterprise Redis Manager mit:
-    - Auto Environment Detection
-    - Connection Pooling
-    - Circuit Breaker Pattern
-    - Health Monitoring
-    - Graceful Failover
-    """
-    
-    _instance = None
-    _redis = None
-    _config = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(UnifiedRedisManager, cls).__new__(cls)
-            cls._redis = None
-            cls._config = None
-        return cls._instance
-    
-    async def initialize(self):
-        """Initialize Redis connection mit Health Check"""
-        if self._redis is None:
-            self._config = RedisConnectionConfig()
-            
-            try:
-                # Connection Pool für bessere Performance mit dynamischem max_connections
-                self._max_connections = self._config.max_connections
-                self._redis = redis.Redis(
-                    connection_pool=redis.ConnectionPool(
-                        **self._config.config,
-                        max_connections=self._max_connections,
-                        retry_on_error=[redis.ConnectionError, redis.TimeoutError]
-                    )
-                )
-                
-                # Health Check
-                await self._redis.ping()
-                
-                logger.info(
-                    "✅ Unified Redis connected: %s (%s:%s, max_connections=%s)",
-                    self._config.environment,
-                    self._config.config["host"],
-                    self._config.config["port"],
-                    self._max_connections
-                )
-                
-                # Start Health Monitor
-                asyncio.create_task(self._health_monitor())
-                
-            except Exception as e:
-                logger.error(f"❌ Unified Redis connection failed: {e}")
-                self._redis = None
-                raise
-    
-    async def _health_monitor(self):
-        """Background Health Monitoring"""
-        while True:
-            try:
-                if self._redis:
-                    await self._redis.ping()
-                    logger.debug("✅ Redis health check passed")
-                await asyncio.sleep(30)  # Check every 30 seconds
-            except Exception as e:
-                logger.error(f"❌ Redis health check failed: {e}")
-                await asyncio.sleep(5)  # Retry faster on failure
-    
-    async def ping(self) -> bool:
-        """Simple health check"""
-        if not self._redis:
-            await self.initialize()
-            
-        if self._redis:
-            try:
-                await self._redis.ping()
-                return True
-            except Exception as e:
-                logger.error(f"Redis ping failed: {e}")
-                return False
-        return False
-    
-    async def get_connection(self) -> Optional[redis.Redis]:
-        """Get Redis connection with auto-initialization"""
-        if not self._redis:
-            await self.initialize()
-        return self._redis
-    
-    # ✅ ENTERPRISE: High-level Redis Operations mit Error Handling
-    
-    async def get(self, key: str) -> Optional[str]:
-        """Safe Redis GET mit Error Handling"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                return await redis_conn.get(key)
-        except Exception as e:
-            logger.error(f"Redis GET error for key '{key}': {e}")
-        return None
-    
-    async def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
-        """Safe Redis SET mit Error Handling"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                await redis_conn.set(key, value, ex=ex)
-                return True
-        except Exception as e:
-            logger.error(f"Redis SET error for key '{key}': {e}")
-        return False
-    
-    async def publish(self, channel: str, message: str) -> bool:
-        """Safe Redis PUBLISH mit Error Handling"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                await redis_conn.publish(channel, message)
-                return True
-        except Exception as e:
-            logger.error(f"Redis PUBLISH error for channel '{channel}': {e}")
-        return False
-    
-    async def xadd(self, stream: str, fields: Dict[str, Any], maxlen: Optional[int] = None) -> bool:
-        """Safe Redis XADD für Streams"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                await redis_conn.xadd(stream, fields, maxlen=maxlen)
-                return True
-        except Exception as e:
-            logger.error(f"Redis XADD error for stream '{stream}': {e}")
-        return False
-    
-    async def xread(self, streams: Dict[str, str], count: Optional[int] = None, block: Optional[int] = None) -> List:
-        """Safe Redis XREAD für Streams"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                return await redis_conn.xread(streams, count=count, block=block)
-        except Exception as e:
-            logger.error(f"Redis XREAD error: {e}")
-        return []
-    
-    async def xrevrange(self, stream: str, max: str = "+", min: str = "-", count: Optional[int] = None) -> List:
-        """Safe Redis XREVRANGE für Streams"""
-        try:
-            redis_conn = await self.get_connection()
-            if redis_conn:
-                return await redis_conn.xrevrange(stream, max=max, min=min, count=count)
-        except Exception as e:
-            logger.error(f"Redis XREVRANGE error for stream '{stream}': {e}")
-        return []
-    
-    async def close(self):
-        """Graceful connection cleanup"""
-        if self._redis:
-            try:
-                await self._redis.close()
-                logger.info("🛑 Unified Redis connection closed")
-            except Exception as e:
-                logger.error(f"Error closing Redis connection: {e}")
-            finally:
-                self._redis = None
-    
-    async def get_redis_server_stats(self) -> Dict[str, Any]:
-        """
-        Redis Server-Metriken:
-        - connected_clients: Aktuelle Verbindungen
-        - blocked_clients: Blockierte Clients
-        - maxclients: Server-Limit
-        - server_client_utilization: connected / maxclients
-        """
-        stats = {
-            "ok": False,
-            "error": None,
-            "connected_clients": None,
-            "blocked_clients": None,
-            "maxclients": None,
-            "server_client_utilization": None,
-        }
-        
-        try:
-            redis_conn = await self.get_connection()
-            if not redis_conn:
-                stats["error"] = "no_connection"
-                return stats
-            
-            info_clients = await redis_conn.info("clients")
-            config = await redis_conn.config_get("maxclients")
-            
-            connected = info_clients.get("connected_clients")
-            blocked = info_clients.get("blocked_clients")
-            maxclients_raw = config.get("maxclients")
-            maxclients = int(maxclients_raw) if maxclients_raw is not None else None
-            
-            stats["connected_clients"] = connected
-            stats["blocked_clients"] = blocked
-            stats["maxclients"] = maxclients
-            
-            if maxclients and connected is not None:
-                stats["server_client_utilization"] = round(
-                    connected / maxclients, 4
-                )
-            
-            stats["ok"] = True
-            return stats
-            
-        except Exception as e:
-            stats["error"] = str(e)
-            logger.error(f"Redis server stats failed: {e}")
-            return stats
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get comprehensive Redis status"""
-        return {
-            "environment": self._config.environment if self._config else "unknown",
-            "config": self._config.config if self._config else {},
-            "connected": self._redis is not None,
-            "instance_id": id(self),
-            "singleton": True,
-            "pool_max_connections": self._max_connections if hasattr(self, '_max_connections') else None
-        }
-
-
-# ✅ ENTERPRISE: Global Singleton Instance
-rs_unified_manager = UnifiedRedisManager()
-
-
-# ✅ ENTERPRISE: Context Manager für sichere Redis Operations
-@asynccontextmanager
-async def redis_operation():
-    """Context Manager für sichere Redis-Operationen"""
-    try:
-        redis_conn = await rs_unified_manager.get_connection()
-        if not redis_conn:
-            raise ConnectionError("Redis connection not available")
-        yield redis_conn
-    except Exception as e:
-        logger.error(f"Redis operation failed: {e}")
-        raise
-    finally:
-        # Connection wird vom Pool verwaltet, nicht hier geschlossen
-        pass
-
-
-# ✅ ENTERPRISE: Convenience Functions
-async def get_redis() -> redis.Redis:
-    """Get Redis connection - Convenience Function"""
-    return await rs_unified_manager.get_connection()
-
-
-async def redis_health_check() -> Dict[str, Any]:
-    """Comprehensive Redis Health Check"""
-    status = rs_unified_manager.get_status()
-    
-    # Test basic operations
-    try:
-        test_key = "health_check_test"
-        await rs_unified_manager.set(test_key, "ok", ex=10)
-        value = await rs_unified_manager.get(test_key)
-        status["operations_working"] = value == "ok"
-    except Exception as e:
-        status["operations_working"] = False
-        status["error"] = str(e)
-    
-    # ✅ Server Stats hinzufügen
-    try:
-        server_stats = await rs_unified_manager.get_redis_server_stats()
-    except Exception as e:
-        logger.error(f"Redis server stats failed in health_check: {e}")
-        server_stats = {}
-    
-    status["server_stats"] = server_stats
-    return status
-
-
-# =====================================================
-# 🚀 ENTERPRISE USER SETTINGS CACHE (wie in README gefordert)
-# =====================================================
-
-import json
-from typing import Dict, Any, Optional
-
-class UserSettingsCache:
-    """Redis Cache für User Settings mit TTL Management - Enterprise Grade + rs_ Lane System"""
-    
-    def __init__(self, redis_client=None):
-        # Migriere zu rs_ Lane System
-        try:
-            from backend.database.redis import unified_rs_service
-            self.rs_service = unified_rs_service
-            self.use_rs_system = True
-        except ImportError:
-            # Fallback zu Unified Redis Manager
-            self.redis = redis_client or rs_unified_manager
-            self.use_rs_system = False
-            
-        self.key_prefix = "usrset:"
-        self.ttl = 300  # 5 Minuten TTL
-    
-    def _key(self, user_id: str) -> str:
-        return f"{self.key_prefix}{user_id}"
-    
-    async def get(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get user settings from Redis cache über rs_ Lane System"""
-        try:
-            if self.use_rs_system:
-                # Nutze rs_ Lane System für Cache Access
-                from backend.services.adapter.cache_service import rs_cache
-                return await rs_cache.get(self._key(user_id))
-            else:
-                # Fallback zu Unified Redis Manager
-                cached = await self.redis.get(self._key(user_id))
-                if cached:
-                    return json.loads(cached)
-        except Exception as e:
-            logger.warning(f"Redis get failed for user {user_id}: {e}")
-        return None
-    
-    async def set(self, user_id: str, settings: Dict[str, Any]) -> bool:
-        """Set user settings in Redis cache with TTL über rs_ Lane System"""
-        try:
-            if self.use_rs_system:
-                # Nutze rs_ Lane System für Cache Access
-                from backend.services.adapter.cache_service import rs_cache
-                return await rs_cache.set(self._key(user_id), settings, self.ttl)
-            else:
-                # Fallback zu Unified Redis Manager
-                await self.redis.set(
-                    self._key(user_id),
-                    json.dumps(settings, ensure_ascii=False),
-                    ex=self.ttl
-                )
-                return True
-        except Exception as e:
-            logger.warning(f"Redis set failed for user {user_id}: {e}")
-            return False
-    
-    async def invalidate(self, user_id: str) -> bool:
-        """Remove user settings from Redis cache über rs_ Lane System"""
-        try:
-            if self.use_rs_system:
-                # Nutze rs_ Lane System für Cache Access
-                from backend.services.adapter.cache_service import rs_cache
-                return await rs_cache.delete(self._key(user_id))
-            else:
-                # Fallback zu Unified Redis Manager
-                redis_conn = await self.redis.get_connection()
-                if redis_conn:
-                    await redis_conn.delete(self._key(user_id))
-                    return True
-        except Exception as e:
-            logger.warning(f"Redis invalidate failed for user {user_id}: {e}")
-        return False
-
-# Add to UnifiedRedisManager  
-def get_user_settings_cache() -> UserSettingsCache:
-    """Factory für UserSettingsCache - Enterprise Grade"""
-    return UserSettingsCache(rs_unified_manager)
-
-
-# =====================================================
-# 🚀 rs_ LANE SYSTEM INTEGRATION (Task 22)
-# =====================================================
-
-def get_rs_lane_integration() -> Dict[str, Any]:
-    """
-    Integration Point für rs_ Lane System
-    Ermöglicht rs_ Lane System Zugriff auf Unified Redis Manager
-    """
-    return {
-        "unified_manager": rs_unified_manager,
-        "connection_factory": get_redis,
-        "health_check": redis_health_check,
-        "user_cache": get_user_settings_cache(),
-        "integration_status": "active",
-        "compatible_with_rs_lanes": True
-    }
-</file>
-
 <file path="backend/database/tables/db_market/scripts/delete_exchanges.py">
 #!/usr/bin/env python3
 """
@@ -105088,6 +104399,349 @@ async def discover_trade_streams(
     # 5. Fertig – Rückgabe für Aggregator
     # ----------------------------------------------------------------------
     return streams_final, active_symbols, existing_streams
+</file>
+
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(payloads)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+</file>
+
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+        })
+
+        # keep-alive
+        while True:
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text("pong")
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
 </file>
 
 <file path="diag_py/deep_analysis.sh">
@@ -107012,6 +106666,196 @@ export class UserSettingsAPI extends BaseAPI {
       }
       throw error;
     }
+  }
+}
+</file>
+
+<file path="frontend/src/services/api/websocket.ts">
+import { RingBuffer } from '../../lib/RingBuffer';
+
+/**
+ * FINAL WebSocketService
+ * - Connects to backend gateway: ws://localhost:8100/ws/{exchange}/{symbol}/{market}
+ * - Reconnect without losing listeners
+ * - Emits full message for message.type (no message.data assumptions)
+ */
+export class WebSocketService {
+  private static instance: WebSocketService;
+
+  private ws: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private readonly maxReconnectAttempts = 8;
+
+  private listeners: Map<string, Function[]> = new Map();
+  private currentUrl: string = '';
+
+  private messageQueue = new RingBuffer<string>(500);
+  private flushing = false;
+  private flushInterval: number | null = null;
+
+  static getInstance(): WebSocketService {
+    if (!WebSocketService.instance) {
+      WebSocketService.instance = new WebSocketService();
+    }
+    return WebSocketService.instance;
+  }
+
+  connect(symbol: string, market: string, exchange: string): void {
+    const base =
+      (import.meta as any)?.env?.VITE_BACKEND_WS_URL ||
+      'ws://localhost:8100/ws';
+
+    const ex = String(exchange || '').toLowerCase();
+    const sym = String(symbol || '').toUpperCase();
+    const mkt = String(market || 'spot').toLowerCase();
+
+    const wsUrl = `${base}/${ex}/${sym}/${mkt}`;
+
+    if (this.ws && this.currentUrl === wsUrl && this.ws.readyState === WebSocket.OPEN) return;
+
+    this.closeSocketOnly(); // KEEP listeners
+    this.currentUrl = wsUrl;
+
+    this.ws = new WebSocket(wsUrl);
+    this.setupEventHandlers();
+  }
+
+  private setupEventHandlers(): void {
+    if (!this.ws) return;
+
+    this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
+      this.emit('connected', { url: this.currentUrl, ts: Date.now() });
+    };
+
+    this.ws.onmessage = (event: MessageEvent) => {
+      this.messageQueue.push(event.data);
+      if (!this.flushInterval) this.startFlushLoop();
+    };
+
+    this.ws.onclose = (event: CloseEvent) => {
+      this.emit('disconnected', { code: event.code, reason: event.reason });
+      this.handleReconnect();
+    };
+
+    this.ws.onerror = (error: Event) => {
+      this.emit('error', error);
+    };
+  }
+
+  private dispatchInbound(message: any): void {
+    if (message && typeof message === 'object') {
+      message.clientReceivedAt = performance.now();
+    }
+
+    this.emit('message', message);
+
+    if (message && typeof message.type === 'string') {
+      this.emit(message.type, message);
+    } else {
+      this.emit('raw_message', message);
+    }
+  }
+
+  private flushMessages(): void {
+    if (this.flushing) return;
+    this.flushing = true;
+
+    // robust even in background tabs:
+    setTimeout(() => {
+      let raw: string | undefined;
+      let processed = 0;
+      const maxBatch = 200;
+
+      while ((raw = this.messageQueue.shift()) && processed < maxBatch) {
+        try {
+          this.dispatchInbound(JSON.parse(raw));
+        } catch (e) {
+          this.emit('error', e);
+        }
+        processed++;
+      }
+
+      this.flushing = false;
+    }, 0);
+  }
+
+  private startFlushLoop(): void {
+    if (this.flushInterval) return;
+
+    this.flushInterval = window.setInterval(() => {
+      if (!this.messageQueue.isEmpty()) this.flushMessages();
+    }, 8); // 8ms ≈ 125Hz
+  }
+
+  private stopFlushLoop(): void {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+  }
+
+  private handleReconnect(): void {
+    if (!this.currentUrl) return;
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('error', new Error('Max reconnection attempts reached'));
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(250 * this.reconnectAttempts, 2000);
+
+    setTimeout(() => {
+      if (!this.currentUrl) return;
+      this.connectFromUrl(this.currentUrl);
+    }, delay);
+  }
+
+  private connectFromUrl(url: string): void {
+    this.closeSocketOnly();
+    this.currentUrl = url;
+    this.ws = new WebSocket(url);
+    this.setupEventHandlers();
+  }
+
+  subscribe(event: string, callback: Function): void {
+    if (!this.listeners.has(event)) this.listeners.set(event, []);
+    this.listeners.get(event)!.push(callback);
+  }
+
+  unsubscribe(event: string, callback: Function): void {
+    const arr = this.listeners.get(event);
+    if (!arr) return;
+    const i = arr.indexOf(callback);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  private emit(event: string, data: any): void {
+    const arr = this.listeners.get(event) || [];
+    for (const cb of [...arr]) {
+      try { cb(data); } catch {}
+    }
+  }
+
+  private closeSocketOnly(): void {
+    this.stopFlushLoop();
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
+    this.messageQueue.clear();
+  }
+
+  disconnect(): void {
+    this.closeSocketOnly();
+    this.currentUrl = '';
+    this.reconnectAttempts = 0;
+  }
+
+  destroy(): void {
+    this.disconnect();
+    this.listeners.clear();
   }
 }
 </file>
@@ -188453,6 +188297,11 @@ final_path = "/api/historical" + "" + "/backfill/start"
 **Ende der Analyse** 🎉
 </file>
 
+<file path="TEST_LLM_UPDATE.md">
+# LLM Auto-Update Test
+Timestamp: Sun Feb 15 19:22:45 CET 2026
+</file>
+
 <file path="backend/api/routers/ro_settings.py">
 # backend/api/routers/ro_settings.py
 """
@@ -201411,6 +201260,578 @@ class BackfillLoopService:
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+</file>
+
 <file path="backend/services/usecases/unified_historical.py">
 import asyncio
 import logging
@@ -202495,1104 +202916,6 @@ while true; do
 done
 </file>
 
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-# Load .env file before any other imports that depend on env vars
-env_path = Path(__file__).parent.parent / "config" / ".env"
-load_dotenv(env_path)
-logger_env = logging.getLogger("main.env")
-logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-app.include_router(
-    ws_router,
-    prefix="/ws",
-    tags=["websocket"],
-)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
-</file>
-
 <file path="backend/services/adapter/unified_aggregator.py">
 import asyncio
 import logging
@@ -204103,426 +203426,541 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
 import asyncio
-import websockets
-import json
 import logging
-import time
-from datetime import datetime
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
 
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
+# Load .env file before any other imports that depend on env vars
+env_path = Path(__file__).parent.parent / "config" / ".env"
+load_dotenv(env_path)
+logger_env = logging.getLogger("main.env")
+logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
 
-logger = logging.getLogger(__name__)
+# =============================
+# CORE INIT COMPONENTS
+# =============================
 
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
 
-def _resolve_market_enum(market: str) -> Market:
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
     """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
     
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
     """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    from typing import Dict, List, Any, Tuple
     
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
     try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
 
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
         
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting (kein externer Import nötig)
-                await self.broadcast_to_frontend({
-                    "type": "trade_data", 
-                    "exchange": exchange, 
-                    "symbol": symbol,
-                    "data": trade_data
-                })
-                
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, message_data: Dict):
-        """Broadcast Nachricht an Frontend WebSocket Connections"""
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            message_type = message_data.get("type", "")
-            exchange = message_data.get("exchange", "")
-            symbol = message_data.get("symbol", "")
-            data = message_data.get("data", {})
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
             
             if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {message_data}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+                continue
 
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
 
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
         try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
 
-# Global instance
-ws_manager = CentralizedWsManager()
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
 </file>
 
 <file path="backend/websocket/ws_message_parsers.py">
@@ -205099,6 +204537,427 @@ def get_ws_message_parser(exchange: str) -> BaseMessageParser:
     """Hole Message Parser für Exchange"""
     parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
     return parser_class(exchange)
+</file>
+
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                if not trade_data:
+                    return  # Keine Trade-Daten in Message
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
+                from backend.database.redis import unified_rs_service
+                
+                # Nutze rs_ Lane System für Redis Operations
+                success = await unified_rs_service.add_trade(
+                    exchange, symbol, trade_data, market
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                
+                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
+                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
+                await self.broadcast_to_frontend(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    message_type="trade_data",
+                    data=trade_data
+                )
+                
+                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
 </file>
 
 <file path="backend/services/adapter/collector_starter.py">
