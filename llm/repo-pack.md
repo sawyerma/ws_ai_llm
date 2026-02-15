@@ -104879,6 +104879,216 @@ async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, mar
             pass
 </file>
 
+<file path="backend/websocket/ws_unified.py">
+"""
+✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT - Delegiert zu ws_manager für echte WebSockets
+Ersetzt die SIMULATION mit ECHTER WebSocket-Delegation an ws_manager.py
+"""
+
+import logging
+from datetime import datetime
+from typing import Dict, Optional
+
+from .ws_manager import ws_manager
+
+logger = logging.getLogger("universal-websocket-service")
+
+class UniversalWsService:
+    """
+    ✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT
+    
+    Service Layer für alle Exchange WebSocket-Verbindungen:
+    - Delegiert alle technischen WebSocket-Operationen an ws_manager
+    - ws_manager: Echte WebSocket-Verbindungen zu Exchanges
+    - ws_lanes: State Management & Health Tracking
+    - ws_registry: Lane Registry & System Health
+    
+    KEINE SIMULATION MEHR - NUR ECHTE EXCHANGE-VERBINDUNGEN!
+    """
+    
+    def __init__(self):
+        self.active_lanes: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
+        self.running = False
+        
+    async def start(self):
+        """Startet den Universal WebSocket Service"""
+        if self.running:
+            logger.info("Universal WebSocket Service already running")
+            return
+            
+        logger.info("🚀 Starting Universal WebSocket Service (REAL WebSockets)")
+        self.running = True
+        logger.info("✅ Universal WebSocket Service started")
+    
+    async def start_exchange_websocket(self, exchange: str, symbol: str, market_type: str) -> str:
+        """
+        Startet WebSocket für eine Exchange/Symbol Kombination
+        ✅ DELEGIERT AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
+        
+        Args:
+            exchange: Exchange Name (binance, gateio, etc.)
+            symbol: Trading Symbol (BTCUSDT, ETHUSDT, etc.)
+            market_type: Market Type (spot, usdtm)
+        
+        Returns:
+            lane_key: Eindeutiger Key für diese WebSocket Lane
+        """
+        lane_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if lane_key in self.active_lanes:
+            logger.info(f"WebSocket lane already active: {lane_key}")
+            return lane_key
+            
+        try:
+            # ✅ DELEGIERE AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
+            # ws_manager verbindet zu Exchange API und startet Message Loop
+            lane = await ws_manager.start_websocket_lane(
+                exchange=exchange,
+                symbol=symbol,
+                market=market_type
+            )
+            
+            # Speichere Referenz zur Lane
+            self.active_lanes[lane_key] = {
+                "exchange": exchange,
+                "symbol": symbol,  
+                "market_type": market_type,
+                "started_at": datetime.now(),
+                "lane": lane,  # ✅ ECHTE LANE REFERENZ!
+                "simulated": False  # ✅ KEINE SIMULATION MEHR!
+            }
+            
+            logger.info(f"✅ WebSocket lane started (REAL): {lane_key}")
+            return lane_key
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start WebSocket lane {lane_key}: {e}")
+            raise
+    
+    async def stop_exchange_websocket(self, exchange: str, symbol: str, market_type: str):
+        """Stoppt WebSocket für eine Exchange/Symbol Kombination"""
+        lane_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if lane_key not in self.active_lanes:
+            logger.warning(f"WebSocket lane not active: {lane_key}")
+            return
+            
+        try:
+            # ✅ DELEGIERE AN ws_manager ZUM STOPPEN
+            ws_manager.stop_websocket_lane(exchange, symbol, market_type)
+            
+            # Aus aktiven Lanes entfernen
+            del self.active_lanes[lane_key]
+            
+            logger.info(f"✅ WebSocket lane stopped: {lane_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to stop WebSocket lane {lane_key}: {e}")
+    
+    async def stop(self):
+        """Stoppt den Universal WebSocket Service und alle aktiven Lanes"""
+        if not self.running:
+            return
+            
+        logger.info("🛑 Stopping Universal WebSocket Service")
+        self.running = False
+        
+        # Alle aktiven Lanes stoppen
+        active_lanes_copy = list(self.active_lanes.keys())
+        for lane_key in active_lanes_copy:
+            exchange, symbol, market_type = lane_key.split(":")
+            await self.stop_exchange_websocket(exchange, symbol, market_type)
+                
+        logger.info("✅ Universal WebSocket Service stopped")
+    
+    def get_service_status(self) -> Dict:
+        """
+        Status des Universal WebSocket Service
+        ✅ ENTHÄLT ECHTEN ws_manager STATUS!
+        """
+        # ✅ HOLE ECHTEN ws_manager STATUS
+        ws_manager_status = ws_manager.get_all_status()
+        
+        return {
+            "service": "universal_ws_service",
+            "running": self.running,
+            "total_active_lanes": len(self.active_lanes),
+            "active_exchanges": list(set(info["exchange"] for info in self.active_lanes.values())),
+            "implementation": "delegated_to_ws_manager",  # ✅ ECHTE DELEGATION!
+            "ws_manager_status": ws_manager_status,  # ✅ ECHTER ws_manager STATUS!
+            "lanes": {
+                lane_key: {
+                    "exchange": info["exchange"],
+                    "symbol": info["symbol"],
+                    "market_type": info["market_type"],
+                    "started_at": info["started_at"].isoformat(),
+                    "simulated": False,  # ✅ KEINE SIMULATION MEHR!
+                    "lane_health": (
+                        info["lane"].get_health() 
+                        if "lane" in info and hasattr(info["lane"], "get_health") 
+                        else {}
+                    )
+                }
+                for lane_key, info in self.active_lanes.items()
+            }
+        }
+    
+    def get_exchange_lanes(self, exchange: str):
+        """Alle aktiven Lanes für eine Exchange"""
+        return [
+            {
+                "lane_key": lane_key,
+                "symbol": info["symbol"],
+                "market_type": info["market_type"],
+                "started_at": info["started_at"].isoformat()
+            }
+            for lane_key, info in self.active_lanes.items()
+            if info["exchange"] == exchange
+        ]
+    
+    def get_symbol_lanes(self, symbol: str):
+        """Alle aktiven Lanes für ein Symbol (über alle Exchanges)"""
+        return [
+            {
+                "lane_key": lane_key,
+                "exchange": info["exchange"],
+                "market_type": info["market_type"],
+                "started_at": info["started_at"].isoformat()
+            }
+            for lane_key, info in self.active_lanes.items()
+            if info["symbol"] == symbol
+        ]
+
+
+# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
+universal_ws_service = UniversalWsService()
+
+# ✅ SERVICE API - Einfache Funktionen für Collectors & main.py
+async def start_websocket_service():
+    """Startet den Universal WebSocket Service"""
+    await universal_ws_service.start()
+
+async def stop_websocket_service():
+    """Stoppt den Universal WebSocket Service"""
+    await universal_ws_service.stop()
+
+async def start_exchange_connection(exchange: str, symbol: str, market_type: str = "spot") -> str:
+    """Startet WebSocket Verbindung für Exchange - API für main.py & Collectors"""
+    return await universal_ws_service.start_exchange_websocket(exchange, symbol, market_type)
+
+async def stop_exchange_connection(exchange: str, symbol: str, market_type: str = "spot"):
+    """Stoppt WebSocket Verbindung für Exchange - API für main.py & Collectors"""
+    await universal_ws_service.stop_exchange_websocket(exchange, symbol, market_type)
+
+def get_service_status() -> Dict:
+    """Service Status - API für Health Checks"""
+    return universal_ws_service.get_service_status()
+
+def get_exchange_status(exchange: str):
+    """Exchange Status - API für Exchange Health"""
+    return universal_ws_service.get_exchange_lanes(exchange)
+</file>
+
 <file path="diag_py/deep_analysis.sh">
 #!/bin/bash
 
@@ -190987,216 +191197,6 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="backend/websocket/ws_unified.py">
-"""
-✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT - Delegiert zu ws_manager für echte WebSockets
-Ersetzt die SIMULATION mit ECHTER WebSocket-Delegation an ws_manager.py
-"""
-
-import logging
-from datetime import datetime
-from typing import Dict, Optional
-
-from .ws_manager import ws_manager
-
-logger = logging.getLogger("universal-websocket-service")
-
-class UniversalWsService:
-    """
-    ✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT
-    
-    Service Layer für alle Exchange WebSocket-Verbindungen:
-    - Delegiert alle technischen WebSocket-Operationen an ws_manager
-    - ws_manager: Echte WebSocket-Verbindungen zu Exchanges
-    - ws_lanes: State Management & Health Tracking
-    - ws_registry: Lane Registry & System Health
-    
-    KEINE SIMULATION MEHR - NUR ECHTE EXCHANGE-VERBINDUNGEN!
-    """
-    
-    def __init__(self):
-        self.active_lanes: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
-        self.running = False
-        
-    async def start(self):
-        """Startet den Universal WebSocket Service"""
-        if self.running:
-            logger.info("Universal WebSocket Service already running")
-            return
-            
-        logger.info("🚀 Starting Universal WebSocket Service (REAL WebSockets)")
-        self.running = True
-        logger.info("✅ Universal WebSocket Service started")
-    
-    async def start_exchange_websocket(self, exchange: str, symbol: str, market_type: str) -> str:
-        """
-        Startet WebSocket für eine Exchange/Symbol Kombination
-        ✅ DELEGIERT AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
-        
-        Args:
-            exchange: Exchange Name (binance, gateio, etc.)
-            symbol: Trading Symbol (BTCUSDT, ETHUSDT, etc.)
-            market_type: Market Type (spot, usdtm)
-        
-        Returns:
-            lane_key: Eindeutiger Key für diese WebSocket Lane
-        """
-        lane_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if lane_key in self.active_lanes:
-            logger.info(f"WebSocket lane already active: {lane_key}")
-            return lane_key
-            
-        try:
-            # ✅ DELEGIERE AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
-            # ws_manager verbindet zu Exchange API und startet Message Loop
-            lane = await ws_manager.start_websocket_lane(
-                exchange=exchange,
-                symbol=symbol,
-                market=market_type
-            )
-            
-            # Speichere Referenz zur Lane
-            self.active_lanes[lane_key] = {
-                "exchange": exchange,
-                "symbol": symbol,  
-                "market_type": market_type,
-                "started_at": datetime.now(),
-                "lane": lane,  # ✅ ECHTE LANE REFERENZ!
-                "simulated": False  # ✅ KEINE SIMULATION MEHR!
-            }
-            
-            logger.info(f"✅ WebSocket lane started (REAL): {lane_key}")
-            return lane_key
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start WebSocket lane {lane_key}: {e}")
-            raise
-    
-    async def stop_exchange_websocket(self, exchange: str, symbol: str, market_type: str):
-        """Stoppt WebSocket für eine Exchange/Symbol Kombination"""
-        lane_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if lane_key not in self.active_lanes:
-            logger.warning(f"WebSocket lane not active: {lane_key}")
-            return
-            
-        try:
-            # ✅ DELEGIERE AN ws_manager ZUM STOPPEN
-            ws_manager.stop_websocket_lane(exchange, symbol, market_type)
-            
-            # Aus aktiven Lanes entfernen
-            del self.active_lanes[lane_key]
-            
-            logger.info(f"✅ WebSocket lane stopped: {lane_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to stop WebSocket lane {lane_key}: {e}")
-    
-    async def stop(self):
-        """Stoppt den Universal WebSocket Service und alle aktiven Lanes"""
-        if not self.running:
-            return
-            
-        logger.info("🛑 Stopping Universal WebSocket Service")
-        self.running = False
-        
-        # Alle aktiven Lanes stoppen
-        active_lanes_copy = list(self.active_lanes.keys())
-        for lane_key in active_lanes_copy:
-            exchange, symbol, market_type = lane_key.split(":")
-            await self.stop_exchange_websocket(exchange, symbol, market_type)
-                
-        logger.info("✅ Universal WebSocket Service stopped")
-    
-    def get_service_status(self) -> Dict:
-        """
-        Status des Universal WebSocket Service
-        ✅ ENTHÄLT ECHTEN ws_manager STATUS!
-        """
-        # ✅ HOLE ECHTEN ws_manager STATUS
-        ws_manager_status = ws_manager.get_all_status()
-        
-        return {
-            "service": "universal_ws_service",
-            "running": self.running,
-            "total_active_lanes": len(self.active_lanes),
-            "active_exchanges": list(set(info["exchange"] for info in self.active_lanes.values())),
-            "implementation": "delegated_to_ws_manager",  # ✅ ECHTE DELEGATION!
-            "ws_manager_status": ws_manager_status,  # ✅ ECHTER ws_manager STATUS!
-            "lanes": {
-                lane_key: {
-                    "exchange": info["exchange"],
-                    "symbol": info["symbol"],
-                    "market_type": info["market_type"],
-                    "started_at": info["started_at"].isoformat(),
-                    "simulated": False,  # ✅ KEINE SIMULATION MEHR!
-                    "lane_health": (
-                        info["lane"].get_health() 
-                        if "lane" in info and hasattr(info["lane"], "get_health") 
-                        else {}
-                    )
-                }
-                for lane_key, info in self.active_lanes.items()
-            }
-        }
-    
-    def get_exchange_lanes(self, exchange: str):
-        """Alle aktiven Lanes für eine Exchange"""
-        return [
-            {
-                "lane_key": lane_key,
-                "symbol": info["symbol"],
-                "market_type": info["market_type"],
-                "started_at": info["started_at"].isoformat()
-            }
-            for lane_key, info in self.active_lanes.items()
-            if info["exchange"] == exchange
-        ]
-    
-    def get_symbol_lanes(self, symbol: str):
-        """Alle aktiven Lanes für ein Symbol (über alle Exchanges)"""
-        return [
-            {
-                "lane_key": lane_key,
-                "exchange": info["exchange"],
-                "market_type": info["market_type"],
-                "started_at": info["started_at"].isoformat()
-            }
-            for lane_key, info in self.active_lanes.items()
-            if info["symbol"] == symbol
-        ]
-
-
-# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
-universal_ws_service = UniversalWsService()
-
-# ✅ SERVICE API - Einfache Funktionen für Collectors & main.py
-async def start_websocket_service():
-    """Startet den Universal WebSocket Service"""
-    await universal_ws_service.start()
-
-async def stop_websocket_service():
-    """Stoppt den Universal WebSocket Service"""
-    await universal_ws_service.stop()
-
-async def start_exchange_connection(exchange: str, symbol: str, market_type: str = "spot") -> str:
-    """Startet WebSocket Verbindung für Exchange - API für main.py & Collectors"""
-    return await universal_ws_service.start_exchange_websocket(exchange, symbol, market_type)
-
-async def stop_exchange_connection(exchange: str, symbol: str, market_type: str = "spot"):
-    """Stoppt WebSocket Verbindung für Exchange - API für main.py & Collectors"""
-    await universal_ws_service.stop_exchange_websocket(exchange, symbol, market_type)
-
-def get_service_status() -> Dict:
-    """Service Status - API für Health Checks"""
-    return universal_ws_service.get_service_status()
-
-def get_exchange_status(exchange: str):
-    """Exchange Status - API für Exchange Health"""
-    return universal_ws_service.get_exchange_lanes(exchange)
-</file>
-
 <file path="frontend/src/services/api/market.ts">
 import { BaseAPI } from './base';
 
@@ -203193,6 +203193,543 @@ async def get_supported_historical_exchanges():
     )
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+# Load .env file before any other imports that depend on env vars
+env_path = Path(__file__).parent.parent / "config" / ".env"
+load_dotenv(env_path)
+logger_env = logging.getLogger("main.env")
+logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="backend/services/usecases/unified_historical.py">
 import asyncio
 import logging
@@ -204275,543 +204812,6 @@ while true; do
   echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
   sleep "$REFRESH_INTERVAL"
 done
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-# Load .env file before any other imports that depend on env vars
-env_path = Path(__file__).parent.parent / "config" / ".env"
-load_dotenv(env_path)
-logger_env = logging.getLogger("main.env")
-logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
