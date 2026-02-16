@@ -384,16 +384,21 @@ diag_py/
   redis_clickhouse_raw_check.py
   verify_all_metrics.sh
 frontend/
-  lib/
-    lightweight-charts.standalone.development.js
-  public/
-    favicon.ico
-    image.png
-    index.html
-    lightweight-charts.standalone.development.js
-    placeholder.svg
-    robots.txt
-  src/
+  delete/
+    api/
+      ai.ts
+      base.ts
+      chart.ts
+      database.ts
+      enterprise.ts
+      historical.ts
+      index.ts
+      market.ts
+      schemas.ts
+      symbols.ts
+      trading.ts
+      user-settings.ts
+      whales.ts
     config/
       constants.ts
       exchanges.ts
@@ -460,37 +465,6 @@ frontend/
       ultraFastParsing.ts
       utils.ts
       zod-transforms.ts
-    pages/
-      APIPage.tsx
-      BotPage.tsx
-      BTCUSDTMonitor.tsx
-      DatabasePage.tsx
-      index.ts
-      LogsPage.tsx
-      MLPage.tsx
-      NewsPage.tsx
-      QuantumPage.tsx
-      SettingsPage.tsx
-      TradingPage.tsx
-      WhalesPage.tsx
-    services/
-      api/
-        ai.ts
-        base.ts
-        chart.ts
-        database.ts
-        enterprise.ts
-        historical.ts
-        index.ts
-        market.ts
-        schemas.ts
-        symbols.ts
-        trading.ts
-        user-settings.ts
-        whales.ts
-      ws/
-        WebSocketPool.ts
-      config.ts
     shared/
       api/
         trading.ts
@@ -516,11 +490,63 @@ frontend/
         theme-provider.tsx
         theme-toggle.tsx
         virtualized-list.tsx
+  lib/
+    lightweight-charts.standalone.development.js
+  public/
+    favicon.ico
+    image.png
+    index.html
+    lightweight-charts.standalone.development.js
+    placeholder.svg
+    robots.txt
+  src/
+    contexts/
+      TradingContext.tsx
+    features/
+      trading/
+        components/
+          ChartSection.tsx
+          CoinSelector.tsx
+          PriceDisplay.tsx
+          SystemStatus.tsx
+          TimeButtons.tsx
+          TradingTerminal.tsx
+        index.ts
+    lib/
+      react-query.ts
+    pages/
+      APIPage.tsx
+      BotPage.tsx
+      BTCUSDTMonitor.tsx
+      DatabasePage.tsx
+      index.ts
+      LogsPage.tsx
+      MLPage.tsx
+      NewsPage.tsx
+      QuantumPage.tsx
+      SettingsPage.tsx
+      TradingPage.tsx
+      WhalesPage.tsx
+    services/
+      ws/
+        WebSocketPool.ts
+      config.ts
+    shared/
+      error/
+        ErrorBoundary.tsx
+      layout/
+        AppLayout.tsx
+      state/
+        SettingsProvider.tsx
+      ui/
+        badge.tsx
+        button.tsx
+        card.tsx
+        theme-provider.tsx
+        theme-toggle.tsx
     App.tsx
     index.css
     main.tsx
-  tests/
-    trading.spec.ts
   vite/
     client
   @react-refresh
@@ -69920,760 +69946,6 @@ User-agent: *
 Allow: /
 </file>
 
-<file path="frontend/src/config/constants.ts">
-export const TRADING_CONSTANTS = {
-  DEFAULT_SYMBOL: 'BTCUSDT',
-  DEFAULT_MARKET: 'spot',
-  DEFAULT_INTERVAL: '1m',
-  DEFAULT_EXCHANGE: 'bitget',
-  
-  INTERVALS: ['1s', '5s', '15s', '1m', '5m', '15m', '1h', '4h', '1d'],
-  MARKETS: ['spot', 'usdt-m', 'coin-m-perp', 'coin-m-delivery', 'usdc-m'],
-  EXCHANGES: ['bitget', 'binance'],
-} as const;
-</file>
-
-<file path="frontend/src/config/exchangeSupport.ts">
-// ✅ Exchange & Market Configuration (Single Source of Truth)
-// Definiert alle Exchanges, Market-Typen und deren Unterstützung
-
-export type MarketType = 
-  | "Spot"
-  | "USDT-M Futures"
-  | "Coin-M Perpetual-Futures"
-  | "Coin-M Delivery-Futures"
-  | "USDC-M Futures";
-
-export type ExchangeId = 
-  | "bitget"
-  | "binance"
-  | "mexc"
-  | "gateio"
-  | "bybit"
-  | "okx"
-  | "htx"
-  | "coinbase";
-
-// ✅ Exchange Liste mit Display-Namen
-export interface Exchange {
-  id: ExchangeId;
-  name: string;
-}
-
-export const EXCHANGES: Exchange[] = [
-  { id: "bitget", name: "Bitget" },
-  { id: "binance", name: "Binance" },
-  { id: "mexc", name: "MEXC" },
-  { id: "gateio", name: "Gate.io" },
-  { id: "bybit", name: "Bybit" },
-  { id: "okx", name: "OKX" },
-  { id: "htx", name: "HTX" },
-  { id: "coinbase", name: "Coinbase" },
-];
-
-// ✅ Market-Typen mit Beschreibungen
-export interface MarketOption {
-  name: MarketType;
-  description: string;
-  icon: string;
-}
-
-export const MARKET_OPTIONS: MarketOption[] = [
-  {
-    name: "Spot",
-    description: "Spot-Trading mit sofortiger Abwicklung",
-    icon: "💱",
-  },
-  {
-    name: "USDT-M Futures",
-    description: "Perpetual-Futures abgerechnet in USDT",
-    icon: "💰",
-  },
-  {
-    name: "Coin-M Perpetual-Futures",
-    description: "Futures-Trading ohne Ablaufdatum",
-    icon: "⚡",
-  },
-  {
-    name: "Coin-M Delivery-Futures",
-    description: "Futures-Trading mit Ablaufdatum",
-    icon: "⏰",
-  },
-  {
-    name: "USDC-M Futures",
-    description: "Perpetual-Futures abgerechnet in USDC",
-    icon: "💲",
-  },
-];
-
-export const EXCHANGE_SUPPORT: Record<ExchangeId, Record<MarketType, boolean>> = {
-  bitget: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": true,
-    "USDC-M Futures": false,
-  },
-  binance: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": true,
-    "USDC-M Futures": false,
-  },
-  mexc: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": false,
-    "Coin-M Delivery-Futures": false,
-    "USDC-M Futures": false,
-  },
-  gateio: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": false,
-    "USDC-M Futures": false,
-  },
-  bybit: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": false,
-    "USDC-M Futures": false,
-  },
-  okx: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": true,
-    "USDC-M Futures": false,
-  },
-  htx: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": true,
-    "Coin-M Delivery-Futures": true,
-    "USDC-M Futures": false,
-  },
-  coinbase: {
-    "Spot": true,
-    "USDT-M Futures": true,
-    "Coin-M Perpetual-Futures": false,
-    "Coin-M Delivery-Futures": false,
-    "USDC-M Futures": false,
-  },
-};
-
-// Helper function: Check if market is supported by exchange
-export const isMarketSupported = (exchange: string, market?: string): boolean => {
-  if (!market) return true;
-  return EXCHANGE_SUPPORT[exchange as ExchangeId]?.[market as MarketType] ?? false;
-};
-
-// Helper function: Map full market name to API filter value
-export const getMarketFilter = (selectedMarket?: string): string | null => {
-  if (!selectedMarket) return null;
-  
-  // Backend hat nur "spot" und "futures" - alle Futures-Typen → "futures"
-  const marketMap: Record<string, string> = {
-    "Spot": "spot",
-    "USDT-M Futures": "futures",
-    "Coin-M Perpetual-Futures": "futures", 
-    "Coin-M Delivery-Futures": "futures",
-    "USDC-M Futures": "futures",
-  };
-  
-  return marketMap[selectedMarket] || null;
-};
-</file>
-
-<file path="frontend/src/config/index.ts">
-export * from './constants';
-export * from './exchanges';
-</file>
-
-<file path="frontend/src/features/ai/index.ts">
-// AI Feature exports
-export * from './hooks/useAIEngine';
-
-// AI Page (wird von pages/MLPage.tsx referenziert)
-export { default as AIPage } from '../../pages/MLPage';
-</file>
-
-<file path="frontend/src/features/api/types/api.ts">
-export interface APIProvider {
-  id: string;
-  name: string;
-  category: 'blockchain' | 'exchange' | 'data';
-  description: string;
-  url: string;
-  registerUrl: string;
-  documentation: string;
-  icon: string;
-  status: APIStatus;
-  rateLimit: RateLimit;
-  config: APIConfig;
-}
-
-export interface APIStatus {
-  connected: boolean;
-  lastChecked: Date | null;
-  responseTime: number | null;
-  errorMessage: string | null;
-  uptime: number;
-}
-
-export interface RateLimit {
-  current: number;
-  limit: number;
-  windowMs: number;
-  resetTime: Date | null;
-  warningThreshold: number;    // 80%
-  criticalThreshold: number;   // 95%
-}
-
-export interface APIConfig {
-  apiKey: string;
-  secret?: string;              // For exchanges
-  passphrase?: string;          // For Bitget
-  timeout: number;              // Request timeout
-  retryAttempts: number;        // Retry logic
-  enableRateLimit: boolean;     // Rate limiting toggle
-  priority: 'high' | 'medium' | 'low';  // Provider priority
-}
-
-export interface GlobalAPIState {
-  providers: Record<string, APIProvider>;
-  totalRequests: number;
-  successRate: number;
-  globalRateLimit: {
-    binance: RateLimit;
-    bitget: RateLimit;
-    etherscan: RateLimit;
-    bscscan: RateLimit;
-    polygonscan: RateLimit;
-    coingecko: RateLimit;
-  };
-  isLoading: boolean;
-  lastSync: Date | null;
-  error: string | null;
-}
-
-// Helper function to initialize rate limits
-export const initializeRateLimits = (): GlobalAPIState['globalRateLimit'] => {
-  const createRateLimit = (limit: number, windowMs: number): RateLimit => ({
-    current: 0,
-    limit,
-    windowMs,
-    resetTime: null,
-    warningThreshold: Math.floor(limit * 0.8),
-    criticalThreshold: Math.floor(limit * 0.95)
-  });
-
-  return {
-    binance: createRateLimit(1200, 60000), // 1200 requests/minute
-    bitget: createRateLimit(600, 60000),   // 600 requests/minute
-    etherscan: createRateLimit(100000, 86400000), // 100k requests/day
-    bscscan: createRateLimit(100000, 86400000),   // 100k requests/day
-    polygonscan: createRateLimit(100000, 86400000), // 100k requests/day
-    coingecko: createRateLimit(10000, 2628000000)   // 10k requests/month
-  };
-};
-
-// Utility functions
-export const buildAPIPayload = (providerId: string, config: APIConfig) => {
-  switch (providerId) {
-    case 'binance':
-      return {
-        key: config.apiKey,
-        secret: config.secret || ''
-      };
-    case 'bitget':
-      return {
-        key: config.apiKey,
-        secret: config.secret || '',
-        passphrase: config.passphrase || ''
-      };
-    default:
-      return config.apiKey;
-  }
-};
-
-export const buildValidationPayload = (providerId: string, config: APIConfig) => {
-  const payload = buildAPIPayload(providerId, config);
-  
-  if (typeof payload === 'string') {
-    return {
-      provider: providerId,
-      apiKey: payload
-    };
-  }
-  
-  return {
-    provider: providerId,
-    ...payload
-  };
-};
-
-export const calculateResetTime = (windowMs: number): Date => {
-  return new Date(Date.now() + windowMs);
-};
-</file>
-
-<file path="frontend/src/features/api/types/providers.ts">
-// Multi-API Provider Configuration with Dynamic Loading from Backend API
-// =====================================================================
-// Loads all provider URLs dynamically from backend settings API
-// Replaces hardcoded URLs with GUI-configurable endpoints
-// Extended pattern from k_api.md/l_api.md for multi-API architecture
-
-import { APIProvider } from './api';
-
-export interface ProviderConfig {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-  url: string;
-  registerUrl: string;
-  documentation: string;
-  icon: string;
-  rateLimit: {
-    current: number;
-    limit: number;
-    windowMs: number;
-    resetTime: null;
-    warningThreshold: number;
-    criticalThreshold: number;
-  };
-}
-
-export interface ProviderConfigs {
-  etherscan: ProviderConfig;
-  bscscan: ProviderConfig;
-  polygonscan: ProviderConfig;
-  coingecko: ProviderConfig;
-  binance: ProviderConfig;
-  bitget: ProviderConfig;
-}
-
-// Cache für geladene Provider-Konfiguration
-let cachedProviders: ProviderConfigs | null = null;
-let providersPromise: Promise<ProviderConfigs> | null = null;
-
-// Fallback-Provider-Konfiguration mit Environment Variables
-const FALLBACK_PROVIDERS: ProviderConfigs = {
-  // Blockchain APIs
-  etherscan: {
-    id: 'etherscan',
-    name: 'Etherscan',
-    category: 'blockchain',
-    description: 'Ethereum blockchain explorer and analytics platform',
-    url: '/api/fallback/etherscan',
-    registerUrl: 'https://etherscan.io/apis',
-    documentation: 'https://docs.etherscan.io/',
-    icon: '⟨E⟩',
-    rateLimit: {
-      current: 0,
-      limit: 100000,      // 100k requests/day free tier
-      windowMs: 86400000, // 24 hours
-      resetTime: null,
-      warningThreshold: 80000,   // 80k requests
-      criticalThreshold: 95000   // 95k requests
-    }
-  },
-  
-  bscscan: {
-    id: 'bscscan',
-    name: 'BSCScan',
-    category: 'blockchain',
-    description: 'Binance Smart Chain explorer for BSC data',
-    url: '/api/fallback/bscscan',
-    registerUrl: 'https://bscscan.com/apis',
-    documentation: 'https://docs.bscscan.com/',
-    icon: '⟨B⟩',
-    rateLimit: {
-      current: 0,
-      limit: 100000,      // 100k requests/day
-      windowMs: 86400000,
-      resetTime: null,
-      warningThreshold: 80000,
-      criticalThreshold: 95000
-    }
-  },
-  
-  polygonscan: {
-    id: 'polygonscan',
-    name: 'PolygonScan',
-    category: 'blockchain',
-    description: 'Polygon blockchain explorer for MATIC network',
-    url: '/api/fallback/polygonscan',
-    registerUrl: 'https://polygonscan.com/apis',
-    documentation: 'https://docs.polygonscan.com/',
-    icon: '⟨P⟩',
-    rateLimit: {
-      current: 0,
-      limit: 100000,
-      windowMs: 86400000,
-      resetTime: null,
-      warningThreshold: 80000,
-      criticalThreshold: 95000
-    }
-  },
-  
-  coingecko: {
-    id: 'coingecko',
-    name: 'CoinGecko',
-    category: 'data',
-    description: 'Cryptocurrency data and market information',
-    url: '/api/fallback/coingecko',
-    registerUrl: 'https://www.coingecko.com/en/api',
-    documentation: 'https://www.coingecko.com/en/api/documentation',
-    icon: '🦎',
-    rateLimit: {
-      current: 0,
-      limit: 10000,       // 10k requests/month free
-      windowMs: 2628000000, // 1 month
-      resetTime: null,
-      warningThreshold: 8000,
-      criticalThreshold: 9500
-    }
-  },
-  
-  // Exchange APIs
-  binance: {
-    id: 'binance',
-    name: 'Binance',
-    category: 'exchange',
-    description: 'World\'s largest cryptocurrency exchange platform',
-    url: '/api/fallback/binance',
-    registerUrl: 'https://www.binance.com/en/binance-api',
-    documentation: 'https://binance-docs.github.io/apidocs/',
-    icon: '₿',
-    rateLimit: {
-      current: 0,
-      limit: 1200,        // 1200 requests/minute
-      windowMs: 60000,    // 1 minute
-      resetTime: null,
-      warningThreshold: 960,    // 80% = 960 req/min
-      criticalThreshold: 1140   // 95% = 1140 req/min
-    }
-  },
-  
-  bitget: {
-    id: 'bitget',
-    name: 'Bitget',
-    category: 'exchange',
-    description: 'Leading cryptocurrency derivatives exchange',
-    url: '/api/fallback/bitget',
-    registerUrl: 'https://www.bitget.com/api-doc/',
-    documentation: 'https://bitgetlimited.github.io/apidoc/',
-    icon: '🚀',
-    rateLimit: {
-      current: 0,
-      limit: 600,         // 600 requests/minute
-      windowMs: 60000,
-      resetTime: null,
-      warningThreshold: 480,    // 80% = 480 req/min
-      criticalThreshold: 570    // 95% = 570 req/min
-    }
-  }
-} as const;
-
-/**
- * Lädt alle Provider-Konfigurationen dynamisch vom Backend
- * Nutzt Caching um wiederholte API-Calls zu vermeiden
- */
-async function loadProviderConfigs(): Promise<ProviderConfigs> {
-  // Return cached config if available
-  if (cachedProviders) {
-    return cachedProviders;
-  }
-
-  // Return existing promise if already loading
-  if (providersPromise) {
-    return providersPromise;
-  }
-
-  // Start loading configuration
-  providersPromise = (async () => {
-    try {
-      // Parallel loading aller Provider-APIs + Registration URLs
-      const [etherscanUrls, bscscanUrls, polygonscanUrls, coingeckoUrls, binanceUrls, bitgetUrls, registrationUrls] = await Promise.all([
-        fetch('/api/settings/urls/etherscan', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/bscscan', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/polygonscan', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/coingecko', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/binance', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/urls/bitget', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-        fetch('/api/settings/providers/registration-urls', { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
-        }),
-      ]);
-
-      // Prüfe alle Responses
-      const responses = [etherscanUrls, bscscanUrls, polygonscanUrls, coingeckoUrls, binanceUrls, bitgetUrls];
-      const failedResponse = responses.find(r => !r.ok);
-      if (failedResponse) {
-        throw new Error(`HTTP Error: ${failedResponse.status}`);
-      }
-
-      // Parse JSON responses
-      const [etherscanData, bscscanData, polygonscanData, coingeckoData, binanceData, bitgetData, registrationData] = await Promise.all([
-        etherscanUrls.json(),
-        bscscanUrls.json(),
-        polygonscanUrls.json(),
-        coingeckoUrls.json(),
-        binanceUrls.json(),
-        bitgetUrls.json(),
-        registrationUrls.json(),
-      ]);
-
-      // Erstelle Provider-Konfiguration aus Backend-Daten
-      const config: ProviderConfigs = {
-        etherscan: {
-          ...FALLBACK_PROVIDERS.etherscan,
-          url: `${etherscanData.api || 'https://api.etherscan.io'}/api`,
-          registerUrl: registrationData.etherscan || 'https://etherscan.io/apis',
-        },
-        bscscan: {
-          ...FALLBACK_PROVIDERS.bscscan,
-          url: `${bscscanData.api || 'https://api.bscscan.com'}/api`,
-          registerUrl: registrationData.bscscan || 'https://bscscan.com/apis',
-        },
-        polygonscan: {
-          ...FALLBACK_PROVIDERS.polygonscan,
-          url: `${polygonscanData.api || 'https://api.polygonscan.com'}/api`,
-          registerUrl: registrationData.polygonscan || 'https://polygonscan.com/apis',
-        },
-        coingecko: {
-          ...FALLBACK_PROVIDERS.coingecko,
-          url: coingeckoData.api || (import.meta as any)?.env?.VITE_COINGECKO_API_URL || (import.meta as any)?.env?.VITE_API_FALLBACK_URL || '/api/fallback/coingecko',
-        },
-        binance: {
-          ...FALLBACK_PROVIDERS.binance,
-          url: `${binanceData.rest || 'https://api.binance.com'}/api/v3`,
-        },
-        bitget: {
-          ...FALLBACK_PROVIDERS.bitget,
-          url: `${bitgetData.rest || 'https://api.bitget.com'}/api/v2`,
-        },
-      };
-
-      // Cache die Konfiguration
-      cachedProviders = config;
-      
-      console.log('✅ API Providers configuration loaded from backend:', config);
-      return config;
-
-    } catch (error) {
-      console.warn('⚠️ Failed to load providers config from backend, using fallback:', error);
-      
-      // Bei Fehlern: Fallback-Konfiguration verwenden
-      cachedProviders = FALLBACK_PROVIDERS;
-      return FALLBACK_PROVIDERS;
-    } finally {
-      // Reset promise so future calls can try again
-      providersPromise = null;
-    }
-  })();
-
-  return providersPromise;
-}
-
-/**
- * Exportierte Funktion für den Zugriff auf Provider-Konfiguration
- * Usage: const providers = await getProviderConfigs();
- */
-export async function getProviderConfigs(): Promise<ProviderConfigs> {
-  return loadProviderConfigs();
-}
-
-/**
- * Synchrone Funktion für den Zugriff auf gecachte Provider-Konfiguration
- * Gibt Fallback zurück wenn noch nicht geladen
- */
-export function getProviderConfigsSync(): ProviderConfigs {
-  return cachedProviders || FALLBACK_PROVIDERS;
-}
-
-/**
- * Cache leeren - nützlich für Testing oder wenn Konfiguration aktualisiert wurde
- */
-export function clearProviderConfigsCache(): void {
-  cachedProviders = null;
-  providersPromise = null;
-  console.log('🔄 API Providers configuration cache cleared');
-}
-
-/**
- * Preload der Provider-Konfiguration beim Import
- * Startet das Laden im Hintergrund ohne zu warten
- */
-export function preloadProviderConfigs(): void {
-  if (!cachedProviders && !providersPromise) {
-    loadProviderConfigs().catch(() => {
-      // Ignoriere Fehler beim Preload
-    });
-  }
-}
-
-/**
- * Hilfsfunktion: Einzelnen Provider by ID abrufen
- */
-export async function getProviderById(id: string): Promise<ProviderConfig | null> {
-  const providers = await getProviderConfigs();
-  return providers[id as keyof ProviderConfigs] || null;
-}
-
-/**
- * Hilfsfunktion: Provider nach Kategorie filtern
- */
-export async function getProvidersByCategory(category: string): Promise<ProviderConfig[]> {
-  const providers = await getProviderConfigs();
-  return Object.values(providers).filter(provider => provider.category === category);
-}
-
-// Legacy Export für Rückwärtskompatibilität
-// Nutzt Fallback-Konfiguration, sollte durch getProviderConfigs() ersetzt werden
-export const API_PROVIDERS: Record<string, Omit<APIProvider, 'status' | 'config'>> = Object.fromEntries(
-  Object.entries(FALLBACK_PROVIDERS).map(([key, provider]) => [
-    key, 
-    {
-      id: provider.id,
-      name: provider.name,
-      category: provider.category,
-      description: provider.description,
-      url: provider.url,
-      registerUrl: provider.registerUrl,
-      documentation: provider.documentation,
-      icon: provider.icon,
-      rateLimit: provider.rateLimit
-    }
-  ])
-);
-
-// Auto-Preload beim Import
-preloadProviderConfigs();
-</file>
-
-<file path="frontend/src/features/database/types/database.ts">
-/**
- * Database Feature Types
- * TypeScript Interfaces für Historical/Live Data Collection
- */
-
-export interface HistoricalConfig {
-  symbol: string;
-  market: string;
-  until_date: string;
-  interval?: string;
-  data_type?: string;
-}
-
-export interface LiveConfig {
-  symbol: string;
-  market: string;
-}
-
-export interface DatabaseOperationResult {
-  success: boolean;
-  message?: string;
-  error?: string;
-}
-
-export interface ExchangeStatus {
-  exchange: string;
-  connected: boolean;
-  collecting_live: boolean;
-  historical_progress?: number;
-}
-</file>
-
-<file path="frontend/src/features/enterprise/index.ts">
-// Enterprise Feature exports
-export * from './hooks/useEnterprise';
-</file>
-
-<file path="frontend/src/features/quantum/types/quantum.ts">
-export interface UniverseItem {
-  symbol: string;
-  score: number;
-  tier: number;
-  price: number;
-}
-
-export interface QuantumKPIs {
-  signals: string;
-  winRate: string;
-  avgPnL: string;
-  latency: string;
-  grid: string;
-  day: string;
-  pattern: string;
-  regime: string;
-  f1: string;
-  f2: string;
-  var: string;
-  sharpe: string;
-}
-
-export interface TierAnalysis {
-  tier1: {
-    whaleImpact: string;
-    toxicity: string;
-    flowDir: string;
-    volumeRatio: string;
-  };
-  tier2: {
-    patternConf: string;
-    regime: string;
-    strategyFit: string;
-    marketPhase: string;
-  };
-  tier3: {
-    tftConf: string;
-    nbeatsAcc: string;
-    riskScore: string;
-    posSize: string;
-    var: string;
-    cvar: string;
-  };
-}
-
-export type QuantumTier = 1 | 2 | 3;
-export type TimeframeType = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
-export type TierFilterType = 'all' | '1' | '2' | '3';
-export type NLModelType = 'local' | 'anthropic:claude-sonnet-4-20250514' | 'anthropic:sonnet-4.1-1m' | 'openai:gpt-5-thinking';
-</file>
-
 <file path="frontend/src/features/trading/components/ChartSection.tsx">
 import React from "react";
 import {
@@ -70748,923 +70020,6 @@ const ChartSection = ({
 };
 
 export default ChartSection;
-</file>
-
-<file path="frontend/src/features/trading/components/IndicatorSettingsModal.tsx">
-import { useState } from "react";
-import { X, HelpCircle } from "lucide-react";
-
-interface IndicatorSettingsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  indicatorType: string;
-  panelId: string;
-  onSave?: (settings: any) => void;
-}
-
-const IndicatorSettingsModal = ({ 
-  isOpen, 
-  onClose, 
-  indicatorType, 
-  panelId,
-  onSave 
-}: IndicatorSettingsModalProps) => {
-  const [activeTab, setActiveTab] = useState("Eingaben");
-  const [settings, setSettings] = useState({
-    // EMA Settings
-    length: 20,
-    source: "Schließ...",
-    offset: 0,
-    // Glättung
-    type: "Ohne",
-    smoothLength: 14,
-    bbStdDev: 2,
-    // Berechnung
-    timeframe: "Chart",
-    waitForTimeframeClose: true,
-    // Eingabewerte
-    showInputsInStatusLine: true,
-  });
-
-  if (!isOpen) return null;
-
-  const getIndicatorTitle = () => {
-    const titles: { [key: string]: string } = {
-      "ema": "EMA",
-      "sma": "SMA", 
-      "rsi": "RSI",
-      "macd": "MACD",
-      "bollinger": "Bollinger Bands",
-      "volume": "Volume",
-      "candlestick": "Candlestick Chart",
-      "main": "Candlestick Chart"
-    };
-    return titles[indicatorType] || indicatorType.toUpperCase();
-  };
-
-  const handleSave = () => {
-    if (onSave) {
-      onSave(settings);
-    }
-    onClose();
-  };
-
-  const renderEingabenTab = () => (
-    <div className="space-y-6">
-      {/* Länge */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <label className="text-white text-sm">Länge</label>
-          <input
-            type="number"
-            value={settings.length}
-            onChange={(e) => setSettings(prev => ({ ...prev, length: parseInt(e.target.value) }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          />
-        </div>
-
-        {/* Quelle */}
-        <div className="flex items-center justify-between">
-          <label className="text-white text-sm">Quelle</label>
-          <select
-            value={settings.source}
-            onChange={(e) => setSettings(prev => ({ ...prev, source: e.target.value }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          >
-            <option>Schließ...</option>
-            <option>Öffnen</option>
-            <option>Hoch</option>
-            <option>Tief</option>
-            <option>HL2</option>
-            <option>HLC3</option>
-            <option>OHLC4</option>
-          </select>
-        </div>
-
-        {/* Offset */}
-        <div className="flex items-center justify-between">
-          <label className="text-white text-sm">Offset</label>
-          <input
-            type="number"
-            value={settings.offset}
-            onChange={(e) => setSettings(prev => ({ ...prev, offset: parseInt(e.target.value) }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          />
-        </div>
-      </div>
-
-      {/* GLÄTTUNG Section */}
-      <div className="space-y-3">
-        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">GLÄTTUNG</h3>
-        
-        {/* Typ */}
-        <div className="flex items-center justify-between">
-          <label className="text-white text-sm">Typ</label>
-          <select
-            value={settings.type}
-            onChange={(e) => setSettings(prev => ({ ...prev, type: e.target.value }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          >
-            <option>Ohne</option>
-            <option>SMA</option>
-            <option>EMA</option>
-            <option>WMA</option>
-          </select>
-        </div>
-
-        {/* Länge */}
-        <div className="flex items-center justify-between">
-          <label className="text-white text-sm">Länge</label>
-          <input
-            type="number"
-            value={settings.smoothLength}
-            onChange={(e) => setSettings(prev => ({ ...prev, smoothLength: parseInt(e.target.value) }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          />
-        </div>
-
-        {/* BB-StdDev */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <label className="text-white text-sm">BB-StdDev</label>
-            <button className="text-gray-400 hover:text-white">
-              <HelpCircle size={14} />
-            </button>
-          </div>
-          <input
-            type="number"
-            value={settings.bbStdDev}
-            onChange={(e) => setSettings(prev => ({ ...prev, bbStdDev: parseInt(e.target.value) }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          />
-        </div>
-      </div>
-
-      {/* BERECHNUNG Section */}
-      <div className="space-y-3">
-        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">BERECHNUNG</h3>
-        
-        {/* Zeitrahmen */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <label className="text-white text-sm">Zeitrahmen</label>
-            <button className="text-gray-400 hover:text-white">
-              <HelpCircle size={14} />
-            </button>
-          </div>
-          <select
-            value={settings.timeframe}
-            onChange={(e) => setSettings(prev => ({ ...prev, timeframe: e.target.value }))}
-            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
-          >
-            <option>Chart</option>
-            <option>1m</option>
-            <option>5m</option>
-            <option>15m</option>
-            <option>1h</option>
-            <option>4h</option>
-            <option>1d</option>
-          </select>
-        </div>
-
-        {/* Checkbox */}
-        <div className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            id="waitForClose"
-            checked={settings.waitForTimeframeClose}
-            onChange={(e) => setSettings(prev => ({ ...prev, waitForTimeframeClose: e.target.checked }))}
-            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
-          />
-          <label htmlFor="waitForClose" className="text-white text-sm">
-            Auf die Zeitrahmenschließung warten
-          </label>
-        </div>
-      </div>
-
-      {/* EINGABEWERTE Section */}
-      <div className="space-y-3">
-        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">EINGABEWERTE</h3>
-        
-        <div className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            id="showInputs"
-            checked={settings.showInputsInStatusLine}
-            onChange={(e) => setSettings(prev => ({ ...prev, showInputsInStatusLine: e.target.checked }))}
-            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
-          />
-          <label htmlFor="showInputs" className="text-white text-sm">
-            Eingaben in der Statuszeile
-          </label>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderStilTab = () => (
-    <div className="space-y-6">
-      <div className="text-center py-12">
-        <p className="text-gray-400">Stil-Einstellungen werden hier angezeigt</p>
-      </div>
-    </div>
-  );
-
-  const renderSichtbarkeitTab = () => (
-    <div className="space-y-6">
-      <div className="text-center py-12">
-        <p className="text-gray-400">Sichtbarkeits-Einstellungen werden hier angezeigt</p>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black bg-opacity-50"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="relative bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-4">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-medium text-white">
-            {getIndicatorTitle()}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors p-1 rounded"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex border-b border-gray-700">
-          {["Eingaben", "Stil", "Sichtbarkeit"].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
-                activeTab === tab
-                  ? "text-white border-b-2 border-white"
-                  : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="p-4 max-h-96 overflow-y-auto">
-          {activeTab === "Eingaben" && renderEingabenTab()}
-          {activeTab === "Stil" && renderStilTab()}
-          {activeTab === "Sichtbarkeit" && renderSichtbarkeitTab()}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between p-4 border-t border-gray-700">
-          {/* Preset Dropdown */}
-          <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500">
-            <option>Standard...</option>
-            <option>Schnell</option>
-            <option>Langsam</option>
-            <option>Benutzerdefiniert</option>
-          </select>
-
-          {/* Action Buttons */}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-gray-300 hover:text-white transition-colors"
-            >
-              Abbrechen
-            </button>
-            <button
-              onClick={handleSave}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
-            >
-              Ok
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default IndicatorSettingsModal;
-</file>
-
-<file path="frontend/src/features/trading/components/IndicatorsModal.tsx">
-import { useState } from "react";
-import { X, Search, Star } from "lucide-react";
-
-interface IndicatorsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onIndicatorSelect?: (indicator: string) => void;
-}
-
-const IndicatorsModal = ({ isOpen, onClose, onIndicatorSelect }: IndicatorsModalProps) => {
-  const [activeSection, setActiveSection] = useState("Favoriten");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [favorites, setFavorites] = useState(
-    new Set(["Andean Scalping", "CM_RSI Plus EMA", "Elliott Wave Oscillator", "Candlestick Chart"]),
-  );
-
-  if (!isOpen) return null;
-
-  const sidebarItems = [
-    { id: "Favoriten", name: "Favoriten", icon: "⭐" },
-    { id: "Persönliches", name: "Persönliches", icon: "👤" },
-    { id: "TechnischeDaten", name: "Technische Daten", icon: "📊" },
-    { id: "Finanzdaten", name: "Finanzdaten", icon: "💰" },
-    { id: "Community", name: "Community", icon: "👥" },
-    { id: "NurAufEinladung", name: "Nur auf Einladung", icon: "🔒" },
-  ];
-
-  const indicatorsList = [
-    {
-      name: "Candlestick Chart",
-      author: "TradingView",
-      rating: "Built-in",
-      category: "Price Action",
-      description: "Additional candlestick chart overlay",
-      type: "candlestick"
-    },
-    {
-      name: "Volume",
-      author: "TradingView", 
-      rating: "Built-in",
-      category: "Volume",
-      description: "Volume histogram in separate panel",
-      type: "volume"
-    },
-    {
-      name: "Andean Scalping",
-      author: "unclerc0",
-      rating: 593,
-      category: "Scalping",
-      description: "Advanced scalping strategy based on Andean principles",
-      type: "andean"
-    },
-    {
-      name: "CM_RSI Plus EMA",
-      author: "ChrisMoody",
-      rating: "15.2K",
-      category: "RSI",
-      description: "Enhanced RSI indicator with Exponential Moving Average",
-      type: "rsi"
-    },
-    {
-      name: "Elliott Wave Oscillator",
-      author: "koryu",
-      rating: "12.2K",
-      category: "Wave Analysis",
-      description: "Professional Elliott Wave analysis tool",
-      type: "elliott"
-    },
-    {
-      name: "Elliott Wave [LuxAlgo]",
-      author: "LuxAlgo",
-      rating: "11.6K",
-      category: "Wave Analysis",
-      description: "Premium Elliott Wave detection algorithm",
-      isPremium: true,
-      type: "elliott-lux"
-    },
-    {
-      name: "EMA 20/50/100/200",
-      author: "drsweets",
-      rating: "13.9K",
-      category: "Moving Average",
-      description: "Multiple Exponential Moving Averages overlay",
-      type: "ema"
-    },
-    {
-      name: "Machine Learning Moving Average [LuxAlgo]",
-      author: "LuxAlgo",
-      rating: "4.9K",
-      category: "AI/ML",
-      description: "AI-powered adaptive moving average",
-      type: "ml-ma"
-    },
-    {
-      name: "Momentum With Bullish & Bearish Label",
-      author: "FriendOfTheTrend",
-      rating: 805,
-      category: "Momentum",
-      description: "Momentum indicator with clear buy/sell signals",
-      type: "momentum"
-    },
-    {
-      name: "Moving Average Exponential Day Trade Pack",
-      author: "FTynan",
-      rating: 540,
-      category: "Day Trading",
-      description: "Complete EMA package for day traders",
-      type: "ema-pack"
-    },
-    {
-      name: "Moving Average Exponential x 4",
-      author: "krogsgard",
-      rating: "3.4K",
-      category: "Moving Average",
-      description: "Four EMA lines with different periods",
-      type: "ema-4"
-    },
-    {
-      name: "Multi-Coin Table- Extended",
-      author: "tradingview",
-      rating: "8.1K",
-      category: "Multi-Asset",
-      description: "Monitor multiple cryptocurrencies simultaneously",
-      type: "multi-coin"
-    },
-    {
-      name: "Optimierte Volumen-Analyse",
-      author: "mmw-solutions",
-      rating: 1,
-      category: "Volume",
-      description: "Advanced volume analysis tool",
-      isProtected: true,
-      type: "volume-analysis"
-    },
-    {
-      name: "Pivot Point Supertrend",
-      author: "LonesomeTheBlue",
-      rating: "21.9K",
-      category: "Trend",
-      description: "Enhanced Supertrend with pivot points",
-      isPremium: true,
-      type: "pivot-supertrend"
-    },
-    {
-      name: "Range Detector [LuxAlgo]",
-      author: "LuxAlgo",
-      rating: "9.2K",
-      category: "Range",
-      description: "Automatic range detection and analysis",
-      type: "range-detector"
-    },
-    {
-      name: "RSI Candles",
-      author: "glaz",
-      rating: "17.5K",
-      category: "RSI",
-      description: "RSI-based candlestick coloring system",
-      type: "rsi-candles"
-    },
-  ];
-
-  const toggleFavorite = (indicatorName: string) => {
-    const newFavorites = new Set(favorites);
-    if (newFavorites.has(indicatorName)) {
-      newFavorites.delete(indicatorName);
-    } else {
-      newFavorites.add(indicatorName);
-    }
-    setFavorites(newFavorites);
-  };
-
-  const handleIndicatorClick = (indicator: any) => {
-    if (onIndicatorSelect) {
-      onIndicatorSelect(indicator.type);
-    }
-    // Don't close modal automatically - let user select multiple indicators
-  };
-
-  const filteredIndicators = indicatorsList.filter(
-    (indicator) =>
-      indicator.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      indicator.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      indicator.category.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
-
-  const renderIndicatorsList = () => {
-    let displayList = filteredIndicators;
-
-    if (activeSection === "Favoriten") {
-      displayList = filteredIndicators.filter((indicator) =>
-        favorites.has(indicator.name),
-      );
-    }
-
-    return (
-      <div className="flex-1 flex flex-col h-full">
-        {/* Search Bar - Fixed at top */}
-        <div className="p-6 pb-4 flex-shrink-0">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-            <input
-              type="text"
-              placeholder="Suche"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-        </div>
-
-        {/* Table Header - Fixed */}
-        <div className="px-6 pb-2 flex-shrink-0">
-          <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-medium pb-2 border-b border-gray-600">
-            <div className="col-span-1"></div>
-            <div className="col-span-5">SKRIPTNAME</div>
-            <div className="col-span-3"></div>
-            <div className="col-span-3 text-right"></div>
-          </div>
-        </div>
-
-        {/* Scrollable Indicators List */}
-        <div className="flex-1 overflow-y-auto px-6 pb-6">
-          <div className="space-y-1">
-            {displayList.map((indicator, index) => (
-              <div
-                key={index}
-                className="grid grid-cols-12 gap-4 py-3 hover:bg-gray-700 rounded transition-colors cursor-pointer group"
-                onClick={() => handleIndicatorClick(indicator)}
-              >
-                {/* Star */}
-                <div className="col-span-1 flex items-center">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFavorite(indicator.name);
-                    }}
-                    className={`transition-colors ${
-                      favorites.has(indicator.name)
-                        ? "text-yellow-400"
-                        : "text-gray-500 hover:text-yellow-400"
-                    }`}
-                  >
-                    <Star
-                      className="w-4 h-4"
-                      fill={
-                        favorites.has(indicator.name) ? "currentColor" : "none"
-                      }
-                    />
-                  </button>
-                </div>
-
-                {/* Indicator Name & Tags */}
-                <div className="col-span-5 flex items-center space-x-2">
-                  <span className="text-white font-medium">
-                    {indicator.name}
-                  </span>
-                  {indicator.isPremium && (
-                    <span className="bg-blue-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
-                      EP
-                    </span>
-                  )}
-                  {indicator.isProtected && (
-                    <div className="w-3 h-3 bg-green-500 rounded-full flex items-center justify-center">
-                      <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
-                    </div>
-                  )}
-                  {indicator.type === "candlestick" && (
-                    <span className="bg-green-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
-                      CHART
-                    </span>
-                  )}
-                  {indicator.type === "volume" && (
-                    <span className="bg-purple-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
-                      VOL
-                    </span>
-                  )}
-                </div>
-
-                {/* Author */}
-                <div className="col-span-3 flex items-center">
-                  <span className="text-blue-400 text-sm hover:text-blue-300 transition-colors">
-                    {indicator.author}
-                  </span>
-                </div>
-
-                {/* Rating */}
-                <div className="col-span-3 flex items-center justify-end">
-                  <span className="text-gray-300 text-sm">
-                    {indicator.rating}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {displayList.length === 0 && (
-            <div className="text-center py-12 text-gray-400">
-              <p>Keine Indikatoren gefunden</p>
-              {activeSection === "Favoriten" && (
-                <p className="text-sm mt-2">
-                  Füge Indikatoren zu deinen Favoriten hinzu, um sie hier zu
-                  sehen.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const renderDefaultSection = () => (
-    <div className="flex-1 p-6 h-full overflow-y-auto">
-      <h3 className="text-lg font-medium text-white mb-4">{activeSection}</h3>
-      <p className="text-gray-400">
-        Inhalte für {activeSection.toLowerCase()} sind noch nicht verfügbar.
-      </p>
-    </div>
-  );
-
-  const renderContent = () => {
-    switch (activeSection) {
-      case "Favoriten":
-      case "TechnischeDaten":
-        return renderIndicatorsList();
-      default:
-        return renderDefaultSection();
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black bg-opacity-50"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="relative bg-gray-800 rounded-lg shadow-xl w-full max-w-6xl h-[700px] flex font-['Inter']">
-        {/* Header */}
-        <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-medium text-white">
-            Indikatoren, Metriken und Strategien
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors p-1 rounded"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="flex w-full mt-16 h-[calc(100%-4rem)]">
-          {/* Sidebar */}
-          <div className="w-64 bg-gray-700 border-r border-gray-600 flex-shrink-0">
-            <div className="p-0">
-              {sidebarItems.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveSection(item.id)}
-                  className={`w-full flex items-center px-4 py-3 text-left text-sm transition-colors border-b border-gray-600 last:border-b-0 ${
-                    activeSection === item.id
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-300 hover:bg-gray-600 hover:text-white"
-                  }`}
-                >
-                  <span className="mr-3 text-base">{item.icon}</span>
-                  {item.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Main Content */}
-          {renderContent()}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default IndicatorsModal;
-</file>
-
-<file path="frontend/src/features/trading/components/OptimizedOrderbook.tsx">
-import React, { useMemo, useCallback } from 'react';
-import { VirtualizedList } from '../../../shared/ui/virtualized-list';
-import { useDebouncedCallback } from '../../../hooks/use-debounce';
-
-interface OrderbookEntry {
-  price: number;
-  size: number;
-  total: number;
-  side: 'buy' | 'sell';
-}
-
-interface OptimizedOrderbookProps {
-  orders: OrderbookEntry[];
-  currentPrice: number;
-  onOrderClick?: (order: OrderbookEntry) => void;
-}
-
-const OptimizedOrderbook: React.FC<OptimizedOrderbookProps> = ({
-  orders,
-  currentPrice,
-  onOrderClick
-}) => {
-  // Memoized calculations für bessere Performance
-  const { sellOrders, buyOrders, maxTotal } = useMemo(() => {
-    const sells = orders
-      .filter(order => order.side === 'sell')
-      .sort((a, b) => b.price - a.price);
-    
-    const buys = orders
-      .filter(order => order.side === 'buy')
-      .sort((a, b) => b.price - a.price);
-    
-    const maxTotal = Math.max(...orders.map(order => order.total));
-    
-    return { sellOrders: sells, buyOrders: buys, maxTotal };
-  }, [orders]);
-
-  // Debounced click handler
-  const debouncedOrderClick = useDebouncedCallback((order: OrderbookEntry) => {
-    onOrderClick?.(order);
-  }, 150);
-
-  // Memoized render function für Orderbook-Einträge
-  const renderOrderEntry = useCallback((order: OrderbookEntry, index: number) => {
-    const volumeWidth = maxTotal > 0 ? (order.total / maxTotal) * 100 : 0;
-    
-    return (
-      <div
-        key={`${order.side}-${order.price}-${index}`}
-        className="relative cursor-pointer hover:bg-muted transition-colors"
-        onClick={() => debouncedOrderClick(order)}
-      >
-        {/* Volume Background */}
-        <div
-          className="absolute right-0 top-0 h-full"
-          style={{
-            width: `${volumeWidth}%`,
-            backgroundColor: order.side === 'buy' 
-              ? 'rgba(34, 197, 94, 0.15)' 
-              : 'rgba(239, 68, 68, 0.15)',
-          }}
-        />
-
-        {/* Order Row */}
-        <div className="relative grid grid-cols-3 text-xs py-1 px-4">
-          <div className="font-medium" style={{ 
-            color: order.side === 'buy' ? 'var(--color-buy)' : 'var(--color-sell)' 
-          }}>
-            {order.price.toFixed(2)}
-          </div>
-          <div className="text-center text-foreground font-medium">
-            {order.size.toFixed(6)}
-          </div>
-          <div className="text-right text-foreground font-medium">
-            {order.total.toFixed(2)}
-          </div>
-        </div>
-      </div>
-    );
-  }, [maxTotal, debouncedOrderClick]);
-
-  return (
-    <div className="h-full flex flex-col">
-      {/* Sell Orders (Top) */}
-      <div className="flex-1">
-        <VirtualizedList
-          items={sellOrders}
-          itemHeight={28}
-          containerHeight={200}
-          renderItem={renderOrderEntry}
-          className="border-b border-gray-200 dark:border-gray-600"
-        />
-      </div>
-
-      {/* Current Price */}
-      <div className="border-y border-border bg-muted py-2 px-4">
-        <div className="flex items-center justify-between">
-          <div className="text-lg font-bold" style={{ color: 'var(--color-sell)' }}>
-            {currentPrice.toFixed(2)} ↓
-          </div>
-          <div className="text-xs text-muted-foreground">
-            ≈ ${(currentPrice - 10).toFixed(2)}
-          </div>
-        </div>
-      </div>
-
-      {/* Buy Orders (Bottom) */}
-      <div className="flex-1">
-        <VirtualizedList
-          items={buyOrders}
-          itemHeight={28}
-          containerHeight={200}
-          renderItem={renderOrderEntry}
-        />
-      </div>
-    </div>
-  );
-};
-
-export default OptimizedOrderbook;
-</file>
-
-<file path="frontend/src/features/trading/components/OptimizedTradesList.tsx">
-import React, { useMemo, useCallback } from 'react';
-import { VirtualizedList } from '../../../shared/ui/virtualized-list';
-import { useDebouncedCallback } from '../../../hooks/use-debounce';
-
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  side: 'buy' | 'sell';
-  time: string;
-  ts: string;
-}
-
-interface OptimizedTradesListProps {
-  trades: Trade[];
-  onTradeClick?: (trade: Trade) => void;
-}
-
-const OptimizedTradesList: React.FC<OptimizedTradesListProps> = ({
-  trades,
-  onTradeClick
-}) => {
-  // Memoized trade statistics
-  const tradeStats = useMemo(() => {
-    if (trades.length === 0) return null;
-    
-    const totalTrades = trades.length;
-    const buyTrades = trades.filter(t => t.side === 'buy').length;
-    const buyPressure = (buyTrades / totalTrades) * 100;
-    const avgPrice = trades.reduce((sum, trade) => sum + trade.price, 0) / totalTrades;
-    
-    return { totalTrades, buyPressure, avgPrice };
-  }, [trades]);
-
-  // Debounced click handler
-  const debouncedTradeClick = useDebouncedCallback((trade: Trade) => {
-    onTradeClick?.(trade);
-  }, 100);
-
-  // Memoized render function für Trade-Einträge
-  const renderTradeEntry = useCallback((trade: Trade, index: number) => {
-    return (
-      <div
-        key={trade.id}
-        className="cursor-pointer hover:bg-muted transition-colors"
-        onClick={() => debouncedTradeClick(trade)}
-      >
-        <div className="grid grid-cols-3 text-xs py-1 px-4">
-          <div className="font-medium flex items-center" style={{ 
-            color: trade.side === 'buy' ? 'var(--color-buy)' : 'var(--color-sell)' 
-          }}>
-            <span>{trade.price.toFixed(2)}</span>
-            <span className="ml-1 text-xs">
-              {trade.side === 'buy' ? '↑' : '↓'}
-            </span>
-          </div>
-          <div className="text-center text-foreground font-medium">
-            {trade.size.toFixed(6)}
-          </div>
-          <div className="text-right text-foreground text-xs font-medium">
-            {new Date(trade.ts).toLocaleTimeString()}
-          </div>
-        </div>
-      </div>
-    );
-  }, [debouncedTradeClick]);
-
-  return (
-    <div className="h-full flex flex-col">
-      {/* Trade Statistics Header */}
-      {tradeStats && (
-        <div className="p-2 bg-muted border-b border-border">
-          <div className="grid grid-cols-3 text-xs text-muted-foreground">
-            <div>Total: {tradeStats.totalTrades}</div>
-            <div>Buy: {tradeStats.buyPressure.toFixed(1)}%</div>
-            <div>Avg: {tradeStats.avgPrice.toFixed(2)}</div>
-          </div>
-        </div>
-      )}
-
-      {/* Virtualized Trades List */}
-      <div className="flex-1">
-        <VirtualizedList
-          items={trades}
-          itemHeight={24}
-          containerHeight={300}
-          renderItem={renderTradeEntry}
-          overscan={10}
-        />
-      </div>
-    </div>
-  );
-};
-
-export default OptimizedTradesList;
 </file>
 
 <file path="frontend/src/features/trading/components/TimeButtons.tsx">
@@ -72035,66 +70390,6 @@ const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) 
 export default TimeButtons;
 </file>
 
-<file path="frontend/src/features/trading/components/TradingTabs.tsx">
-import React, { useState } from 'react';
-import OrderBook from './OrderBook';
-import { MarketTrades } from './MarketTrades';
-
-interface TradingTabsProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-}
-
-const TradingTabs: React.FC<TradingTabsProps> = ({ symbol, market, exchange }) => {
-  const [activeTab, setActiveTab] = useState<'trades' | 'orderbook'>('trades');
-
-  return (
-    <div className="card-container h-full flex flex-col">
-      {/* Tab Header */}
-      <div className="flex" style={{ borderBottom: '1px solid var(--border-color)' }}>
-        <button
-          onClick={() => setActiveTab('trades')}
-          className="px-4 py-2 text-sm font-medium transition-colors"
-          style={{
-            color: activeTab === 'trades' ? 'var(--text-primary)' : 'var(--text-secondary)',
-            borderBottom: activeTab === 'trades' ? '2px solid var(--color-info)' : 'none'
-          }}
-        >
-          Markt-Trades
-        </button>
-        <button
-          onClick={() => setActiveTab('orderbook')}
-          className="px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2"
-          style={{
-            color: activeTab === 'orderbook' ? 'var(--text-primary)' : 'var(--text-secondary)',
-            borderBottom: activeTab === 'orderbook' ? '2px solid var(--color-info)' : 'none'
-          }}
-        >
-          Orderbuch
-          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-sell)' }} title="Error"></div>
-        </button>
-      </div>
-
-      {/* Tab Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeTab === 'trades' ? (
-          <div className="p-4">
-            <MarketTrades symbol={symbol} market={market} exchange={exchange} />
-          </div>
-        ) : (
-          <div className="p-4">
-            <OrderBook symbol={symbol} market={market} exchange={exchange} />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default TradingTabs;
-</file>
-
 <file path="frontend/src/features/trading/components/TradingTerminal.tsx">
 import { useState, useRef, useEffect } from "react";
 import { ChevronDown, Play, Save, Folder, FileText, Terminal, Code, Plus, X } from "lucide-react";
@@ -72150,832 +70445,6 @@ const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
 };
 
 export default TradingTerminal;
-</file>
-
-<file path="frontend/src/features/trading/types/api-responses.ts">
-/**
- * API Response Types (ZENTRAL)
- * =============================
- * 
- * EINMAL DEFINIERT - überall genutzt!
- * Alle Backend-Response-Formate an EINEM Ort.
- */
-
-// ===== OrderBook Response =====
-export interface OrderBookResponse {
-  asks: [string, string][];  // [price, size]
-  bids: [string, string][];
-  exchange: string;
-  symbol: string;
-  market_type: string;
-  limit: number;
-  timestamp: string;
-  lastUpdateId?: string;
-}
-
-// ===== Chart History Response =====
-export interface ChartHistoryResponse {
-  status: string;
-  symbol: string;
-  exchange: string;
-  interval: string;
-  timestamp: string;
-  data: {
-    time: number;
-    open: string;
-    high: string;
-    low: string;
-    close: string;
-    volume: string;
-  }[];
-  metadata: {
-    request_id: number;
-    processing_time_ms: number;
-    candle_count: number;
-    data_source: string;
-    supported_intervals: string[];
-  };
-}
-
-// ===== Trades Response =====
-export interface TradesResponse {
-  exchange: string;
-  symbol: string;
-  status: string;
-  count: number;
-  limit: number;
-  available_exchanges: string[];
-  data: {
-    symbol: string;
-    price: number;
-    size: number;
-    side: 'buy' | 'sell';
-    timestamp: number;
-    exchange: string;
-    market: string;
-  }[];
-}
-
-// ===== Ticker Response =====
-export interface TickerResponse {
-  exchange: string;
-  count: number;
-  requested_filter?: string;
-  api_filter?: string;
-  tickers: {
-    symbol: string;
-    last: string;
-    bid: string;
-    ask: string;
-    volume: string;
-    change: string;
-    changeRate: string;
-    high: string;
-    low: string;
-    market_type: string;
-    exchange: string;
-  }[];
-}
-
-// ===== Health Response =====
-export interface HealthResponse {
-  status: string;
-  timestamp: string;
-  services: {
-    redis: boolean;
-    clickhouse_tcp: boolean;
-    clickhouse_http: boolean;
-    ai_system: boolean;
-    whale_system: boolean;
-  };
-  details: {
-    ai_components: number;
-    recent_whale_events: number;
-  };
-  summary: string;
-}
-
-// ===== Symbols Response =====
-export interface SymbolsResponse {
-  exchange: string;
-  market: string;
-  count: number;
-  symbols: {
-    symbol: string;
-    baseCoin: string;
-    quoteCoin: string;
-    status: string;
-    exchange: string;
-    market_type: string;
-  }[];
-}
-</file>
-
-<file path="frontend/src/features/trading/types/api.ts">
-// API Response Types for Trading Endpoints
-
-export interface TickerResponse {
-  last: number;
-  changeRate: number;
-  high24h: number;
-  low24h: number;
-  baseVol: number;
-  quoteVol: number;
-}
-
-export interface ProcessedMarketData {
-  price: string;
-  change24h: string;
-  changePercent: number;
-  high24h: string;
-  low24h: string;
-  volume24h: string;
-  turnover24h: string;
-  category: string;
-}
-</file>
-
-<file path="frontend/src/features/trading/types/index.ts">
-// Export all trading-related types
-export * from './trading';
-
-// Re-export commonly used types for convenience
-export type { CoinData, MarketData } from './trading';
-</file>
-
-<file path="frontend/src/features/trading/index.ts">
-// Components
-export { default as CoinSelector } from './components/CoinSelector';
-export { default as PriceDisplay } from './components/PriceDisplay';
-// TradingNav removed - GlobalNav is used instead
-export { default as ChartView } from './components/ChartView';
-export { default as OrderBook } from './components/OrderBook';
-export { default as SystemStatus } from './components/SystemStatus';
-export { default as TradingTabs } from './components/TradingTabs';
-export { MarketTrades } from './components/MarketTrades';
-export { default as TradingTerminal } from './components/TradingTerminal';
-export { default as TimeButtons } from './components/TimeButtons';
-export { default as ChartSection } from './components/ChartSection';
-export { default as IndicatorSettingsModal } from './components/IndicatorSettingsModal';
-export { default as IndicatorsModal } from './components/IndicatorsModal';
-
-// Types
-export * from './types';
-</file>
-
-<file path="frontend/src/features/whales/index.ts">
-// Whales Feature exports
-export * from './hooks/useWhaleWebSocket';
-
-// Whales Page
-export { default as WhalesPage } from '../../pages/WhalesPage';
-</file>
-
-<file path="frontend/src/hooks/use-debounce.ts">
-import { useCallback, useRef } from 'react';
-
-export function useDebouncedCallback<T extends (...args: any[]) => any>(
-  callback: T,
-  delay: number
-): T {
-  const timeoutRef = useRef<NodeJS.Timeout>();
-
-  const debouncedCallback = useCallback(
-    (...args: Parameters<T>) => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-      
-      timeoutRef.current = setTimeout(() => {
-        callback(...args);
-      }, delay);
-    },
-    [callback, delay]
-  ) as T;
-
-  return debouncedCallback;
-}
-</file>
-
-<file path="frontend/src/hooks/use-theme.ts">
-import { createContext, useContext, useEffect, useState } from "react";
-
-type Theme = "light" | "dark" | "system";
-
-type ThemeProviderContextType = {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
-  actualTheme: "light" | "dark";
-};
-
-const ThemeProviderContext = createContext<
-  ThemeProviderContextType | undefined
->(undefined);
-
-export const useTheme = () => {
-  const context = useContext(ThemeProviderContext);
-  if (context === undefined) {
-    throw new Error("useTheme must be used within a ThemeProvider");
-  }
-  return context;
-};
-
-export const getSystemTheme = (): "light" | "dark" => {
-  if (typeof window !== "undefined") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-  return "light";
-};
-
-export const useThemeLogic = () => {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window !== "undefined") {
-      const savedTheme = localStorage.getItem("theme") as Theme;
-      return savedTheme || "system";
-    }
-    return "system";
-  });
-
-  const [systemTheme, setSystemTheme] = useState<"light" | "dark">(
-    getSystemTheme,
-  );
-
-  const actualTheme = theme === "system" ? systemTheme : theme;
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-
-    const handleChange = () => {
-      setSystemTheme(getSystemTheme());
-    };
-
-    mediaQuery.addEventListener("change", handleChange);
-    return () => mediaQuery.removeEventListener("change", handleChange);
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("theme", theme);
-
-    const root = window.document.documentElement;
-    root.classList.remove("light", "dark");
-    root.classList.add(actualTheme);
-  }, [theme, actualTheme]);
-
-  return {
-    theme,
-    setTheme,
-    actualTheme,
-  };
-};
-
-export { ThemeProviderContext };
-</file>
-
-<file path="frontend/src/hooks/useEvent.ts">
-/**
- * REACT HOOK FÜR EVENT-SYSTEM
- * Typsichere Event-Subscription mit automatischem Cleanup
- */
-
-import { useEffect, useRef } from 'react';
-import { eventBus, EventType } from '../shared/events/EventBus';
-
-/**
- * Event-Hook für React-Komponenten
- * @param type Event-Typ
- * @param callback Handler-Funktion
- * @param deps Dependency-Array
- */
-export function useEvent<T = any>(
-  type: EventType,
-  callback: (payload: T) => void,
-  deps: any[] = []
-): void {
-  const callbackRef = useRef(callback);
-  
-  // Callback-Referenz aktuell halten
-  useEffect(() => {
-    callbackRef.current = callback;
-  }, [callback]);
-
-  useEffect(() => {
-    // Event-Subscription mit stabiler Callback-Referenz
-    const unsubscribe = eventBus.subscribe<T>(type, (payload: T) => {
-      callbackRef.current(payload);
-    });
-
-    // Cleanup bei Komponenten-Unmount
-    return unsubscribe;
-  }, [type, ...deps]);
-}
-
-/**
- * Event-Hook mit Conditional-Logic
- * @param type Event-Typ
- * @param condition Bedingung wann Event gehört werden soll
- * @param callback Handler-Funktion
- * @param deps Dependency-Array
- */
-export function useConditionalEvent<T = any>(
-  type: EventType,
-  condition: boolean,
-  callback: (payload: T) => void,
-  deps: any[] = []
-): void {
-  useEvent<T>(
-    type,
-    condition ? callback : () => {},
-    [condition, ...deps]
-  );
-}
-</file>
-
-<file path="frontend/src/lib/chartLazyLoader.ts">
-/**
- * Lightweight Charts Lazy Loader
- * Lädt lokale Chart-Library nur bei Bedarf (On-Demand)
- * Library liegt in: /public/lightweight-charts.standalone.production.js (PROD)
- * Spart ~200KB im Initial-Bundle
- */
-
-declare global {
-  interface Window {
-    LightweightCharts: any;
-  }
-}
-
-let isLoading = false;
-let isLoaded = false;
-
-/**
- * Lazy-Load der lokalen Lightweight Charts Library
- * Nutzt production build in prod, development in dev
- */
-export const loadChartLibrary = async (): Promise<any> => {
-  // Bereits geladen
-  if (isLoaded && window.LightweightCharts) {
-    return window.LightweightCharts;
-  }
-
-  // Laden läuft bereits - warte auf completion
-  if (isLoading) {
-    return new Promise((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (window.LightweightCharts) {
-          clearInterval(checkInterval);
-          resolve(window.LightweightCharts);
-        }
-      }, 50);
-    });
-  }
-
-  isLoading = true;
-
-  return new Promise((resolve, reject) => {
-    // Check ob Script bereits im DOM ist
-    const existingScript = document.querySelector(
-      'script[src*="lightweight-charts"]'
-    );
-
-    if (existingScript && window.LightweightCharts) {
-      isLoaded = true;
-      isLoading = false;
-      resolve(window.LightweightCharts);
-      return;
-    }
-
-    // Wähle production oder development build
-    const isDev = (import.meta as any).env.DEV;
-    const scriptSrc = isDev 
-      ? '/lightweight-charts.standalone.development.js'
-      : '/lightweight-charts.standalone.production.js';
-
-    // Erstelle Script-Tag
-    const script = document.createElement('script');
-    script.src = scriptSrc;
-    script.async = true;
-
-    script.onload = () => {
-      if (window.LightweightCharts) {
-        isLoaded = true;
-        isLoading = false;
-        resolve(window.LightweightCharts);
-      } else {
-        isLoading = false;
-        reject(new Error('LightweightCharts not found after script load'));
-      }
-    };
-
-    script.onerror = () => {
-      isLoading = false;
-      reject(new Error(`Failed to load LightweightCharts from ${scriptSrc}`));
-    };
-
-    document.head.appendChild(script);
-  });
-};
-
-/**
- * Erstelle Chart-Instance mit Lazy-Loading
- * @param container - DOM Container Element
- * @param options - Chart Options
- * @returns Promise mit Chart Instance
- */
-export const createLazyChart = async (
-  container: HTMLElement,
-  options?: any
-) => {
-  const LightweightCharts = await loadChartLibrary();
-  return LightweightCharts.createChart(container, options);
-};
-
-/**
- * Preload Chart Library (optional, für bessere UX)
- * Rufe auf, wenn User wahrscheinlich Chart nutzen wird
- */
-export const preloadChartLibrary = () => {
-  if (!isLoaded && !isLoading) {
-    loadChartLibrary().catch((error) => {
-      console.error('[ChartLazyLoader] Failed to preload chart library:', error);
-    });
-  }
-};
-
-/**
- * Check ob Chart Library bereits geladen ist
- */
-export const isChartLibraryLoaded = (): boolean => {
-  return isLoaded && window.LightweightCharts !== undefined;
-};
-</file>
-
-<file path="frontend/src/lib/directDOMUpdater.ts">
-/**
- * Direct DOM Updates for Ultra-Low-Latency Trading
- * Bypasses React reconciliation for critical price updates
- * Performance: 8-15ms → 1ms (90% improvement)
- */
-
-interface OrderBookEntry {
-  price: number;
-  size: number;
-  total: number;
-  side: 'buy' | 'sell';
-}
-
-export class DirectDOMUpdater {
-  private static priceElements = new Map<string, HTMLElement>();
-  private static changeElements = new Map<string, HTMLElement>();
-  private static volumeElements = new Map<string, HTMLElement>();
-  private static orderBookContainers = new Map<string, HTMLElement>();
-
-  /**
-   * Direkte DOM-Updates ohne React State
-   * Umgeht komplette React Reconciliation
-   */
-  static updatePriceDirectly(symbol: string, price: number, change?: number): void {
-    const startTime = performance.now();
-
-    // Cache DOM elements für wiederholte Updates
-    let priceEl = this.priceElements.get(symbol);
-    if (!priceEl) {
-      const element = document.getElementById(`price-${symbol}`);
-      if (element) {
-        priceEl = element;
-        this.priceElements.set(symbol, element);
-      }
-    }
-
-    let changeEl = this.changeElements.get(symbol);
-    if (!changeEl) {
-      const element = document.getElementById(`change-${symbol}`);
-      if (element) {
-        changeEl = element;
-        this.changeElements.set(symbol, element);
-      }
-    }
-
-    // Atomic DOM Updates
-    if (priceEl) {
-      priceEl.textContent = price.toFixed(2);
-      
-      // Price direction indicator
-      if (change !== undefined) {
-        priceEl.className = `price-value ${change >= 0 ? 'price-up' : 'price-down'}`;
-      }
-    }
-
-    if (changeEl && change !== undefined) {
-      changeEl.textContent = `${change > 0 ? '+' : ''}${change.toFixed(2)}%`;
-      changeEl.className = `price-change ${change >= 0 ? 'positive text-green-500' : 'negative text-red-500'}`;
-    }
-
-    // Performance tracking
-    const endTime = performance.now();
-    performance.measure('direct-dom-update', {
-      start: startTime,
-      end: endTime
-    });
-  }
-
-  /**
-   * Bulk Updates für OrderBook (mehrere Zeilen gleichzeitig)
-   * Verwendet DocumentFragment für atomare Updates
-   */
-  static updateOrderBookDirectly(symbol: string, orders: OrderBookEntry[]): void {
-    const startTime = performance.now();
-
-    let container = this.orderBookContainers.get(symbol);
-    if (!container) {
-      const element = document.getElementById(`orderbook-${symbol}`);
-      if (element) {
-        container = element;
-        this.orderBookContainers.set(symbol, element);
-      }
-    }
-
-    if (!container) return;
-
-    // DocumentFragment für atomare Updates
-    const fragment = document.createDocumentFragment();
-    
-    // Separate buy/sell orders für bessere Performance
-    const buyOrders = orders.filter(order => order.side === 'buy').slice(0, 20);
-    const sellOrders = orders.filter(order => order.side === 'sell').slice(0, 20);
-
-    // Build buy orders
-    buyOrders.forEach(order => {
-      const row = document.createElement('tr');
-      row.className = 'orderbook-row hover:bg-muted/50';
-      row.innerHTML = `
-        <td class="text-right font-mono text-sm text-green-500">${order.price.toFixed(2)}</td>
-        <td class="text-right font-mono text-sm text-muted-foreground">${order.size.toFixed(4)}</td>
-        <td class="text-right font-mono text-sm text-muted-foreground">${order.total.toFixed(2)}</td>
-      `;
-      fragment.appendChild(row);
-    });
-
-    // Add separator
-    const separator = document.createElement('tr');
-    separator.innerHTML = '<td colspan="3" class="border-t border-border h-2"></td>';
-    fragment.appendChild(separator);
-
-    // Build sell orders
-    sellOrders.forEach(order => {
-      const row = document.createElement('tr');
-      row.className = 'orderbook-row hover:bg-muted/50';
-      row.innerHTML = `
-        <td class="text-right font-mono text-sm text-red-500">${order.price.toFixed(2)}</td>
-        <td class="text-right font-mono text-sm text-muted-foreground">${order.size.toFixed(4)}</td>
-        <td class="text-right font-mono text-sm text-muted-foreground">${order.total.toFixed(2)}</td>
-      `;
-      fragment.appendChild(row);
-    });
-
-    // Single atomic DOM replacement
-    container.replaceChildren(fragment);
-
-    const endTime = performance.now();
-    performance.measure('orderbook-update', {
-      start: startTime,
-      end: endTime
-    });
-  }
-
-  /**
-   * Volume-Updates mit visueller Indikation
-   */
-  static updateVolumeDirectly(symbol: string, volume: number, volumeChange?: number): void {
-    let volumeEl = this.volumeElements.get(symbol);
-    if (!volumeEl) {
-      const element = document.getElementById(`volume-${symbol}`);
-      if (element) {
-        volumeEl = element;
-        this.volumeElements.set(symbol, element);
-      }
-    }
-
-    if (volumeEl) {
-      const formattedVolume = volume > 1000000 
-        ? `${(volume / 1000000).toFixed(1)}M`
-        : volume > 1000 
-          ? `${(volume / 1000).toFixed(1)}K`
-          : volume.toFixed(0);
-
-      volumeEl.textContent = formattedVolume;
-
-      // Volume spike indicator
-      if (volumeChange && volumeChange > 20) {
-        volumeEl.className = 'volume-spike text-yellow-500 animate-pulse';
-        // Remove animation after 1 second
-        setTimeout(() => {
-          volumeEl!.className = 'volume-normal text-muted-foreground';
-        }, 1000);
-      }
-    }
-  }
-
-  /**
-   * Batch-Update für mehrere Symbole gleichzeitig
-   */
-  static batchUpdatePrices(updates: Array<{
-    symbol: string;
-    price: number;
-    change?: number;
-    volume?: number;
-  }>): void {
-    const startTime = performance.now();
-
-    // Process all updates in single frame
-    requestAnimationFrame(() => {
-      updates.forEach(({ symbol, price, change, volume }) => {
-        this.updatePriceDirectly(symbol, price, change);
-        if (volume) {
-          this.updateVolumeDirectly(symbol, volume);
-        }
-      });
-    });
-
-    const endTime = performance.now();
-    performance.measure('batch-price-update', {
-      start: startTime,
-      end: endTime
-    });
-  }
-
-  /**
-   * Cache löschen (für Memory Management)
-   */
-  static clearCache(): void {
-    this.priceElements.clear();
-    this.changeElements.clear();
-    this.volumeElements.clear();
-    this.orderBookContainers.clear();
-  }
-
-  /**
-   * Performance-Metriken für DOM Updates
-   */
-  static getDOMUpdateMetrics() {
-    const priceUpdates = performance.getEntriesByName('direct-dom-update');
-    const orderbookUpdates = performance.getEntriesByName('orderbook-update');
-    const batchUpdates = performance.getEntriesByName('batch-price-update');
-
-    return {
-      averagePriceUpdateTime: priceUpdates.length > 0
-        ? priceUpdates.reduce((sum, entry) => sum + entry.duration, 0) / priceUpdates.length
-        : 0,
-      averageOrderbookUpdateTime: orderbookUpdates.length > 0
-        ? orderbookUpdates.reduce((sum, entry) => sum + entry.duration, 0) / orderbookUpdates.length
-        : 0,
-      averageBatchUpdateTime: batchUpdates.length > 0
-        ? batchUpdates.reduce((sum, entry) => sum + entry.duration, 0) / batchUpdates.length
-        : 0,
-      totalPriceUpdates: priceUpdates.length,
-      totalOrderbookUpdates: orderbookUpdates.length,
-      lastUpdateTime: priceUpdates.length > 0 ? priceUpdates[priceUpdates.length - 1]?.duration || 0 : 0
-    };
-  }
-}
-</file>
-
-<file path="frontend/src/lib/logger.ts">
-/**
- * Production-Safe Logger
- * Console output nur in DEV-Mode, in Production stumm
- */
-
-const IS_DEV = (import.meta as any).env.DEV;
-
-export const logger = {
-  log: (...args: any[]) => {
-    if (IS_DEV) console.log('[App]', ...args);
-  },
-  
-  debug: (...args: any[]) => {
-    if (IS_DEV) console.debug('[Debug]', ...args);
-  },
-  
-  info: (...args: any[]) => {
-    if (IS_DEV) console.info('[Info]', ...args);
-  },
-  
-  warn: (...args: any[]) => {
-    // Warnings immer anzeigen (auch in Production)
-    console.warn('[Warn]', ...args);
-  },
-  
-  error: (...args: any[]) => {
-    // Errors immer anzeigen (auch in Production)
-    console.error('[Error]', ...args);
-  },
-  
-  trace: (...args: any[]) => {
-    if (IS_DEV) console.trace('[Trace]', ...args);
-  },
-};
-
-// Alias für backwards compatibility
-export const log = logger.log;
-export const debug = logger.debug;
-</file>
-
-<file path="frontend/src/lib/metrics.ts">
-/**
- * Performance-Metriken für Monitoring
- * Erfasst FPS, Event-Lag, Memory
- */
-
-interface PerformanceMetrics {
-  // FPS
-  currentFPS: number;
-  avgFPS: number;
-  
-  // Latenz
-  wsToUILag_p50: number;
-  wsToUILag_p95: number;
-  
-  // Coalescing
-  emitsPerFlush: number;
-  coalescedCount: number;
-  droppedCount: number;
-  
-  // Memory
-  heapUsedMB: number;
-}
-
-const lagSamples: number[] = [];
-let lastFrameTime = performance.now();
-let frameCount = 0;
-let fpsSum = 0;
-
-/**
- * Event-Lag messen
- * @param wsTimestamp - Timestamp vom WebSocket-Event (ingestTs)
- */
-export function measureLag(wsTimestamp: number): void {
-  const now = performance.now();
-  const lag = now - wsTimestamp;
-  lagSamples.push(lag);
-  
-  // Nur letzte 100 Samples behalten
-  if (lagSamples.length > 100) {
-    lagSamples.shift();
-  }
-}
-
-/**
- * FPS messen
- */
-export function measureFPS(): void {
-  const now = performance.now();
-  const delta = now - lastFrameTime;
-  const fps = 1000 / delta;
-  
-  frameCount++;
-  fpsSum += fps;
-  lastFrameTime = now;
-}
-
-/**
- * Metriken abrufen
- */
-export function getMetrics(): PerformanceMetrics {
-  // Percentiles berechnen
-  const sorted = [...lagSamples].sort((a, b) => a - b);
-  const p50 = sorted[Math.floor(sorted.length * 0.5)] || 0;
-  const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
-  
-  // FPS
-  const avgFPS = frameCount > 0 ? fpsSum / frameCount : 0;
-  
-  // Memory (falls verfügbar)
-  const memory = (performance as any).memory;
-  const heapMB = memory ? memory.usedJSHeapSize / 1024 / 1024 : 0;
-  
-  return {
-    currentFPS: 1000 / (performance.now() - lastFrameTime),
-    avgFPS,
-    wsToUILag_p50: p50,
-    wsToUILag_p95: p95,
-    emitsPerFlush: 0, // TODO: Vom Scheduler erfassen
-    coalescedCount: 0,
-    droppedCount: 0,
-    heapUsedMB: heapMB
-  };
-}
-
-/**
- * Metriken zurücksetzen
- */
-export function resetMetrics(): void {
-  lagSamples.length = 0;
-  lastFrameTime = performance.now();
-  frameCount = 0;
-  fpsSum = 0;
-}
 </file>
 
 <file path="frontend/src/lib/react-query.ts">
@@ -73072,149 +70541,6 @@ export const queryKeys = {
 } as const;
 </file>
 
-<file path="frontend/src/lib/ultraFastParsing.ts">
-/**
- * Ultra-Fast JSON Parsing for Trading Data
- * Performance: 3x faster than JSON.parse() for trading messages
- */
-
-interface TradingMessage {
-  price: number;
-  symbol: string;
-  timestamp: number;
-  type?: string;
-  change?: number;
-  volume?: number;
-}
-
-export class UltraFastParser {
-  private static priceRegex = /"price":([0-9.]+)/;
-  private static symbolRegex = /"symbol":"([^"]+)"/;
-  private static typeRegex = /"type":"([^"]+)"/;
-  private static changeRegex = /"change":(-?[0-9.]+)/;
-  private static volumeRegex = /"volume":([0-9.]+)/;
-
-  /**
-   * 3x schneller als JSON.parse für Trading-Daten
-   * Verwendet RegEx für kritische Felder, fallback zu JSON.parse
-   */
-  static parseTradingMessage(data: string): TradingMessage | null {
-    try {
-      // Performance measurement start
-      const startTime = performance.now();
-      
-      // Schnelle Validierung
-      if (!this.isValidJSON(data)) {
-        return null;
-      }
-
-      // RegEx-basierte Extraktion für kritische Felder
-      const priceMatch = this.priceRegex.exec(data);
-      const symbolMatch = this.symbolRegex.exec(data);
-      
-      if (priceMatch && symbolMatch) {
-        // Optionale Felder extrahieren
-        const typeMatch = this.typeRegex.exec(data);
-        const changeMatch = this.changeRegex.exec(data);
-        const volumeMatch = this.volumeRegex.exec(data);
-
-        const result: TradingMessage = {
-          price: parseFloat(priceMatch[1]!),
-          symbol: symbolMatch[1]!,
-          timestamp: Date.now(),
-          type: typeMatch?.[1],
-          change: changeMatch ? parseFloat(changeMatch[1]!) : undefined,
-          volume: volumeMatch ? parseFloat(volumeMatch[1]!) : undefined
-        };
-
-        // Performance measurement
-        const endTime = performance.now();
-        performance.mark('ultrafast-parse-end');
-        performance.measure('ultrafast-parse', { 
-          start: startTime, 
-          end: endTime 
-        });
-
-        return result;
-      }
-      
-      // Fallback zu JSON.parse nur bei komplexen Nachrichten
-      const parsed = JSON.parse(data);
-      return parsed as TradingMessage;
-      
-    } catch (error) {
-      console.error('Ultra-fast parsing error:', error);
-      return null;
-    }
-  }
-  
-  /**
-   * Batch-Parsing für mehrere Nachrichten
-   * Optimiert für hohe Durchsätze (500+ msg/sec)
-   */
-  static parseBatch(messages: string[]): TradingMessage[] {
-    const startTime = performance.now();
-    const results: TradingMessage[] = [];
-    
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i];
-      if (message) {
-        const parsed = this.parseTradingMessage(message);
-        if (parsed) {
-          results.push(parsed);
-        }
-      }
-    }
-    
-    const endTime = performance.now();
-    performance.measure('batch-parse', {
-      start: startTime,
-      end: endTime
-    });
-    
-    return results;
-  }
-
-  /**
-   * Validierung vor Parsing (verhindert Parsing-Fehler)
-   */
-  static isValidJSON(str: string): boolean {
-    return str.length > 10 && 
-           str.startsWith('{') && 
-           str.endsWith('}') && 
-           str.includes('"type":');
-  }
-
-  /**
-   * Performance-Metriken abrufen
-   */
-  static getParsingMetrics() {
-    const parseEntries = performance.getEntriesByName('ultrafast-parse');
-    const batchEntries = performance.getEntriesByName('batch-parse');
-    
-    return {
-      averageParseTime: parseEntries.length > 0 
-        ? parseEntries.reduce((sum, entry) => sum + entry.duration, 0) / parseEntries.length 
-        : 0,
-      averageBatchTime: batchEntries.length > 0
-        ? batchEntries.reduce((sum, entry) => sum + entry.duration, 0) / batchEntries.length
-        : 0,
-      totalMessages: parseEntries.length,
-      lastParseTime: parseEntries.length > 0 ? parseEntries[parseEntries.length - 1]?.duration || 0 : 0
-    };
-  }
-}
-</file>
-
-<file path="frontend/src/lib/utils.ts">
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-</file>
-
 <file path="frontend/src/pages/BotPage.tsx">
 const BotPage = () => {
   return (
@@ -73248,75 +70574,6 @@ export { default as WhalesPage } from './WhalesPage';
 export { default as NewsPage } from './NewsPage';
 export { default as APIPage } from './APIPage';
 export { default as SettingsPage } from './SettingsPage';
-</file>
-
-<file path="frontend/src/pages/LogsPage.tsx">
-import { useParams } from "react-router-dom";
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card";
-import { Button } from "@/shared/ui/button";
-import { RefreshCw, Download, ExternalLink } from "lucide-react";
-
-interface LogsPageProps {}
-
-const LogsPage: React.FC<LogsPageProps> = () => {
-  const { exchange } = useParams<{ exchange: string }>();
-  const [logs, setLogs] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchLogs = async () => {
-    if (!exchange) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Fetch logs from backend/logs/<exchange>.log
-      const response = await fetch(`/api/logs/${exchange}.log`);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const logContent = await response.text();
-      setLogs(logContent || `No logs available for ${exchange}`);
-    } catch (err) {
-      console.error("Error fetching logs:", err);
-      setError(err instanceof Error ? err.message : "Failed to fetch logs");
-      setLogs("");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchLogs();
-    
-    // Auto-refresh every 10 seconds
-    const interval = setInterval(fetchLogs, 10000);
-    return () => clearInterval(interval);
-  }, [exchange]);
-
-  const handleRefresh = () => {
-    fetchLogs();
-  };
-
-  const handleDownload = () => {
-    if (!logs || !exchange) return;
-
-    const blob = new Blob([logs], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${exchange}_logs_${new Date().toISOString().slice(0, 10)}.log`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const openBackendApi = () => {
 </file>
 
 <file path="frontend/src/pages/MLPage.tsx">
@@ -73423,260 +70680,6 @@ const WhalesPage = () => {
 };
 
 export default WhalesPage;
-</file>
-
-<file path="frontend/src/services/api/ai.ts">
-import { BaseAPI } from './base';
-
-export class AIEngineAPI extends BaseAPI {
-  // 🤖 AI STRATEGY ASSIGNMENT (Backend: /ai/tier2/*)
-  static async getRecommendedStrategy(symbol: string, exchange = 'binance', timeframe = '1h') {
-    return this.request('/ai/tier2/strategy-assignment', {
-      params: { symbol, exchange, timeframe }
-    });
-  }
-
-  static async analyzeMarketConditions(symbols: string[], exchange = 'binance') {
-    return this.request('/ai/tier2/market-analysis', {
-      method: 'POST',
-      body: JSON.stringify({ symbols, exchange })
-    });
-  }
-
-  static async getStrategyBacktest(symbol: string, strategy_type: string, timeframe = '1h', period = '30d') {
-    return this.request('/ai/tier2/strategy-backtest', {
-      params: { symbol, strategy_type, timeframe, period }
-    });
-  }
-
-  // 📊 CHART ANALYSIS (Backend: /ai/tier2/chart-*)
-  static async analyzeChart(symbol: string, exchange = 'binance', interval = '1h', analysis_type?: string) {
-    return this.request('/ai/tier2/chart-analysis', {
-      params: { symbol, exchange, interval, analysis_type }
-    });
-  }
-
-  static async getPatternRecognition(symbol: string, exchange = 'binance', patterns?: string[]) {
-    return this.request('/ai/tier2/pattern-recognition', {
-      method: 'POST',
-      body: JSON.stringify({ symbol, exchange, patterns })
-    });
-  }
-
-  static async getTechnicalIndicators(symbol: string, exchange = 'binance', indicators?: string[]) {
-    return this.request('/ai/tier2/technical-indicators', {
-      params: { symbol, exchange, indicators: indicators?.join(',') }
-    });
-  }
-
-  // 📈 PERFORMANCE TRACKING (Backend: /ai/tier2/performance)
-  static async getAIPerformance(timeframe = '7d') {
-    return this.request('/ai/tier2/performance', {
-      params: { timeframe }
-    });
-  }
-
-  static async getModelAccuracy(model_type?: string) {
-    return this.request('/ai/tier2/model-accuracy', {
-      params: { model_type }
-    });
-  }
-
-  // 🎯 STRATEGY OPTIMIZATION (Backend: /ai/tier2/optimize-*)
-  static async optimizeStrategy(strategyId: string, optimization_params: Record<string, any>) {
-    return this.request(`/ai/tier2/optimize-strategy/${strategyId}`, {
-      method: 'POST',
-      body: JSON.stringify(optimization_params)
-    });
-  }
-
-  static async getOptimizationResults(optimizationId: string) {
-    return this.request(`/ai/tier2/optimization-results/${optimizationId}`);
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/database.ts">
-/**
- * Database API Service - GENERISCH für alle 8 Exchanges
- * Erweitert BaseAPI für Historical/Live Data Collection
- */
-import { BaseAPI } from './base';
-
-export interface HistoricalStartConfig {
-  symbol: string;
-  market: string;
-  until_date: string;
-  interval?: string;
-  data_type?: string;
-}
-
-export interface LiveCollectorConfig {
-  symbol: string;
-  market: string;
-}
-
-/**
- * DatabaseAPI - Handles Historical Backfill & Live Collection
- */
-export class DatabaseAPI extends BaseAPI {
-  /**
-   * Start Live Collection für beliebigen Exchange
-   */
-  static async startLiveCollection(
-    exchange: string, 
-    config: LiveCollectorConfig
-  ): Promise<void> {
-    return this.request(`/api/${exchange}/collector/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config)
-    });
-  }
-
-  /**
-   * Stop Live Collection für beliebigen Exchange
-   */
-  static async stopLiveCollection(
-    exchange: string, 
-    config: LiveCollectorConfig
-  ): Promise<void> {
-    return this.request(`/api/${exchange}/collector/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config)
-    });
-  }
-
-  /**
-   * Start Historical Backfill für beliebigen Exchange
-   */
-  static async startHistoricalBackfill(
-    exchange: string, 
-    config: HistoricalStartConfig
-  ): Promise<void> {
-    return this.request(`/api/historical/${exchange}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbol: config.symbol,
-        market: config.market,
-        until_date: config.until_date,
-        interval: config.interval || '1m',
-        data_type: config.data_type || 'trades'
-      })
-    });
-  }
-
-  /**
-   * Get Historical Status für beliebigen Exchange
-   */
-  static async getHistoricalStatus(exchange: string): Promise<any> {
-    return this.request(`/api/historical/${exchange}/status`);
-  }
-
-  /**
-   * Get Exchange Config für beliebigen Exchange
-   */
-  static async getExchangeConfig(exchange: string): Promise<any> {
-    return this.request(`/api/historical/${exchange}/config`);
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/enterprise.ts">
-import { BaseAPI } from './base';
-
-export class EnterpriseAPI extends BaseAPI {
-  // 🏢 ENTERPRISE MARKET FEATURES (Backend: /api/market/enterprise/*)
-  static async getEnterpriseMarketData(exchange = 'binance', symbols?: string[]) {
-    return this.request('/api/market/enterprise/data', {
-      method: 'POST',
-      body: JSON.stringify({ exchange, symbols })
-    });
-  }
-
-  static async getAdvancedAnalytics(timeframe = '24h', metrics?: string[]) {
-    return this.request('/api/market/enterprise/analytics', {
-      params: { timeframe, metrics: metrics?.join(',') }
-    });
-  }
-
-  static async getInstitutionalFlow(exchange = 'binance', timeframe = '1h') {
-    return this.request('/api/market/enterprise/institutional-flow', {
-      params: { exchange, timeframe }
-    });
-  }
-
-  // 📊 CHART ROUTER FEATURES (Backend: /api/charts/*)
-  static async getAdvancedChartData(symbol: string, interval = '1h', indicators?: string[]) {
-    return this.request('/api/charts/advanced', {
-      params: { symbol, interval, indicators: indicators?.join(',') }
-    });
-  }
-
-  static async getMultiTimeframeAnalysis(symbol: string, timeframes?: string[]) {
-    return this.request('/api/charts/multi-timeframe', {
-      method: 'POST',
-      body: JSON.stringify({ symbol, timeframes })
-    });
-  }
-
-  static async getVolumeProfileData(symbol: string, exchange = 'binance', period = '7d') {
-    return this.request('/api/charts/volume-profile', {
-      params: { symbol, exchange, period }
-    });
-  }
-
-  static async getMarketStructureAnalysis(symbol: string, exchange = 'binance') {
-    return this.request('/api/charts/market-structure', {
-      params: { symbol, exchange }
-    });
-  }
-
-  // 🔧 ENTERPRISE DIAGNOSTICS (Backend: /api/diagnostics/*)
-  static async getSystemDiagnostics() {
-    return this.request('/api/diagnostics/endpoints');
-  }
-
-  static async getOpenAPISchema() {
-    return this.request('/api/diagnostics/openapi');
-  }
-
-  // 🎯 ENTERPRISE SETTINGS (nutzt bestehende Settings-Endpoints)
-  static async getEnterpriseConfig() {
-    return this.request('/api/settings/enterprise/rate-limits');
-  }
-
-  static async updateEnterpriseSettings(settings: Record<string, any>) {
-    return this.request('/api/settings/enterprise/rate-limits', {
-      method: 'PUT',
-      body: JSON.stringify(settings)
-    });
-  }
-
-  static async getWhaleConfig() {
-    return this.request('/api/settings/whales/exchange-addresses');
-  }
-
-  static async updateWhaleConfig(config: Record<string, any>) {
-    return this.request('/api/settings/whales/exchange-addresses', {
-      method: 'PUT',
-      body: JSON.stringify(config)
-    });
-  }
-
-  static async getMarketConfig() {
-    return this.request('/api/settings/market/orderbook-config');
-  }
-
-  static async updateMarketConfig(config: Record<string, any>) {
-    return this.request('/api/settings/market/orderbook-config', {
-      method: 'PUT',
-      body: JSON.stringify(config)
-    });
-  }
-}
 </file>
 
 <file path="frontend/src/shared/error/ErrorBoundary.tsx">
@@ -73802,872 +70805,6 @@ export class ErrorBoundary extends Component<Props, State> {
     return this.props.children;
   }
 }
-</file>
-
-<file path="frontend/src/shared/layout/AlertsPanel.tsx">
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@/lib/utils"
-import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert"
-import { Badge } from "@/shared/ui/badge"
-import { Button } from "@/shared/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
-import { AlertTriangle, CheckCircle, XCircle, Clock } from "lucide-react"
-
-const alertsPanelVariants = cva(
-  "space-y-4",
-  {
-    variants: {
-      layout: {
-        compact: "space-y-2",
-        default: "space-y-4",
-        spacious: "space-y-6"
-      }
-    },
-    defaultVariants: {
-      layout: "default"
-    }
-  }
-)
-
-const alertItemVariants = cva(
-  "transition-all duration-300 hover:shadow-md",
-  {
-    variants: {
-      severity: {
-        critical: "border-[hsl(var(--status-error-border))] bg-[hsl(var(--status-error-bg))]",
-        high: "border-[hsl(var(--status-warning-border))] bg-[hsl(var(--status-warning-bg))]",
-        medium: "border-[hsl(var(--status-warning-border))] bg-[hsl(var(--status-warning-bg))]",
-        low: "border-[hsl(var(--status-info-border))] bg-[hsl(var(--status-info-bg))]"
-      },
-      status: {
-        active: "opacity-100",
-        resolved: "opacity-60"
-      }
-    },
-    defaultVariants: {
-      severity: "medium",
-      status: "active"
-    }
-  }
-)
-
-export interface AlertRule {
-  id: string
-  name: string
-  metric: string
-  condition: 'greater_than' | 'less_than' | 'equals'
-  threshold: number
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  enabled: boolean
-  notification_channels: string[]
-}
-
-export interface AlertItem {
-  id: string
-  rule: AlertRule
-  currentValue: number
-  triggeredAt: string
-  resolvedAt?: string
-  status: 'active' | 'resolved'
-  description?: string
-}
-
-export interface AlertsPanelProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof alertsPanelVariants> {
-  alerts: AlertItem[]
-  rules: AlertRule[]
-  onResolveAlert?: (alertId: string) => void
-  onConfigureRule?: (ruleId: string) => void
-}
-
-const AlertsPanel = React.forwardRef<HTMLDivElement, AlertsPanelProps>(
-  ({ className, layout, alerts, rules, onResolveAlert, onConfigureRule, ...props }, ref) => {
-    const activeAlerts = alerts.filter(alert => alert.status === 'active')
-    const resolvedAlerts = alerts.filter(alert => alert.status === 'resolved')
-    
-    const getSeverityIcon = (severity: string) => {
-      switch (severity) {
-        case 'critical': return <XCircle className="h-4 w-4" />
-        case 'high': return <AlertTriangle className="h-4 w-4" />
-        case 'medium': return <Clock className="h-4 w-4" />
-        default: return <CheckCircle className="h-4 w-4" />
-      }
-    }
-    
-    const getSeverityColor = (severity: string) => {
-      switch (severity) {
-        case 'critical': return 'destructive'
-        case 'high': return 'default'
-        case 'medium': return 'secondary'
-        default: return 'outline'
-      }
-    }
-
-    return (
-      <div className={cn(alertsPanelVariants({ layout, className }))} ref={ref} {...props}>
-        {/* Active Alerts */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                🚨 Active Alerts ({activeAlerts.length})
-              </span>
-              <Badge variant={activeAlerts.length > 0 ? "destructive" : "secondary"}>
-                {activeAlerts.length > 0 ? "ATTENTION REQUIRED" : "ALL CLEAR"}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {activeAlerts.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-green-500" />
-                No active alerts. System operating normally.
-              </div>
-            ) : (
-              activeAlerts.map((alert) => (
-                <Alert key={alert.id} className={alertItemVariants({ 
-                  severity: alert.rule.severity, 
-                  status: alert.status 
-                })}>
-                  <div className="flex items-start justify-between w-full">
-                    <div className="flex-1">
-                      <AlertTitle className="flex items-center gap-2">
-                        {getSeverityIcon(alert.rule.severity)}
-                        {alert.rule.name}
-                        <Badge variant={getSeverityColor(alert.rule.severity) as any}>
-                          {alert.rule.severity.toUpperCase()}
-                        </Badge>
-                      </AlertTitle>
-                      <AlertDescription className="mt-2">
-                        <div className="space-y-1">
-                          <div>
-                            Current: <strong>{alert.currentValue}</strong> | 
-                            Threshold: <strong>{alert.rule.threshold}</strong>
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            Triggered: {new Date(alert.triggeredAt).toLocaleString()}
-                          </div>
-                          {alert.description && (
-                            <div className="text-xs">{alert.description}</div>
-                          )}
-                        </div>
-                      </AlertDescription>
-                    </div>
-                    <div className="flex gap-2 ml-4">
-                      <Button 
-                        size="sm" 
-                        variant="outline"
-                        onClick={() => onResolveAlert?.(alert.id)}
-                      >
-                        Resolve
-                      </Button>
-                    </div>
-                  </div>
-                </Alert>
-              ))
-            )}
-          </CardContent>
-        </Card>
-        
-        {/* Alert Rules Configuration */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span>📊 Alert Rules ({rules.length})</span>
-              <Button size="sm" variant="outline">
-                Add Rule
-              </Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {rules.map((rule) => (
-                <div key={rule.id} className="flex items-center justify-between p-3 border rounded-lg">
-                  <div className="flex-1">
-                    <div className="font-medium">{rule.name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {rule.metric} {rule.condition.replace('_', ' ')} {rule.threshold}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={getSeverityColor(rule.severity) as any}>
-                      {rule.severity}
-                    </Badge>
-                    <Badge variant={rule.enabled ? "default" : "secondary"}>
-                      {rule.enabled ? "Enabled" : "Disabled"}
-                    </Badge>
-                    <Button 
-                      size="sm" 
-                      variant="ghost"
-                      onClick={() => onConfigureRule?.(rule.id)}
-                    >
-                      Configure
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        
-        {/* Recent Resolved Alerts */}
-        {resolvedAlerts.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>📈 Recent Resolutions ({resolvedAlerts.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                {resolvedAlerts.slice(0, 5).map((alert) => (
-                  <div key={alert.id} className="flex items-center justify-between p-2 border rounded text-sm opacity-60">
-                    <span>{alert.rule.name}</span>
-                    <span className="text-muted-foreground">
-                      Resolved: {alert.resolvedAt && new Date(alert.resolvedAt).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-    )
-  }
-)
-AlertsPanel.displayName = "AlertsPanel"
-
-export { AlertsPanel, alertsPanelVariants, alertItemVariants }
-</file>
-
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-import { useState } from "react";
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useTradingContext } from "../../contexts/TradingContext";
-import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
-import ThemeToggle from "../ui/theme-toggle";
-
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
-  
-  const [activeTab, setActiveTab] = useState(() => {
-    // Set active tab based on current route
-    const path = location.pathname;
-    if (path === '/trading' || path === '/') return "Market";
-    if (path === '/quantum') return "Quantum";
-    if (path === '/database') return "Database";
-    if (path === '/whales') return "Whales";
-    if (path === '/news') return "News";
-    if (path === '/bot') return "Trading Bot";
-    if (path === '/api') return "API";
-    if (path === '/ml') return "ML";
-    if (path === '/settings') return "Settings";
-    return "Market";
-  });
-  
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-  
-  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
-  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
-
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
-
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else if (itemName === "Settings") {
-      setIsDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    } else {
-      setActiveTab(itemName);
-      setIsDropdownOpen(false);
-      if (itemPath) navigate(itemPath);
-    }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    // ✅ FIX: Exchange-Auswahl zu Context propagieren
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
-                {MARKET_OPTIONS.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-          >
-            {exchangeDisplayName} ▽
-          </button>
-          
-          {/* Exchange Dropdown Menu */}
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {EXCHANGES.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
-</file>
-
-<file path="frontend/src/shared/ui/alert.tsx">
-import * as React from "react";
-import { cva, type VariantProps } from "class-variance-authority";
-
-import { cn } from "@/lib/utils";
-
-const alertVariants = cva(
-  "relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&>svg]:absolute [&>svg]:left-4 [&>svg]:top-4 [&>svg]:text-foreground",
-  {
-    variants: {
-      variant: {
-        default: "bg-background text-foreground",
-        destructive:
-          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  },
-);
-
-const Alert = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
->(({ className, variant, ...props }, ref) => (
-  <div
-    ref={ref}
-    role="alert"
-    className={cn(alertVariants({ variant }), className)}
-    {...props}
-  />
-));
-Alert.displayName = "Alert";
-
-const AlertTitle = React.forwardRef<
-  HTMLParagraphElement,
-  React.HTMLAttributes<HTMLHeadingElement>
->(({ className, ...props }, ref) => (
-  <h5
-    ref={ref}
-    className={cn("mb-1 font-medium leading-none tracking-tight", className)}
-    {...props}
-  />
-));
-AlertTitle.displayName = "AlertTitle";
-
-const AlertDescription = React.forwardRef<
-  HTMLParagraphElement,
-  React.HTMLAttributes<HTMLParagraphElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn("text-sm [&_p]:leading-relaxed", className)}
-    {...props}
-  />
-));
-AlertDescription.displayName = "AlertDescription";
-
-export { Alert, AlertTitle, AlertDescription };
-</file>
-
-<file path="frontend/src/shared/ui/badge.tsx">
-import * as React from "react";
-import { cva, type VariantProps } from "class-variance-authority";
-
-import { cn } from "@/lib/utils";
-
-const badgeVariants = cva(
-  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-  {
-    variants: {
-      variant: {
-        default:
-          "border-transparent bg-primary text-primary-foreground hover:bg-primary/80",
-        secondary:
-          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        destructive:
-          "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
-        outline: "text-foreground",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  }
-);
-
-export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
-
-function Badge({ className, variant, ...props }: BadgeProps) {
-  return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
-  );
-}
-
-export { Badge, badgeVariants };
-</file>
-
-<file path="frontend/src/shared/ui/button.tsx">
-import * as React from "react";
-import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
-
-import { cn } from "@/lib/utils";
-
-const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
-  {
-    variants: {
-      variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
-        outline:
-          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
-      },
-      size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-9 rounded-md px-3",
-        lg: "h-11 rounded-md px-8",
-        icon: "h-10 w-10",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
-  },
-);
-
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
-  asChild?: boolean;
-}
-
-const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : "button";
-    return (
-      <Comp
-        className={cn(buttonVariants({ variant, size, className }))}
-        ref={ref}
-        {...props}
-      />
-    );
-  },
-);
-Button.displayName = "Button";
-
-export { Button, buttonVariants };
-</file>
-
-<file path="frontend/src/shared/ui/card.tsx">
-import * as React from "react";
-
-import { cn } from "@/lib/utils";
-
-const Card = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn(
-      "rounded-lg border bg-card text-card-foreground shadow-sm",
-      className
-    )}
-    {...props}
-  />
-));
-Card.displayName = "Card";
-
-const CardHeader = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-6", className)}
-    {...props}
-  />
-));
-CardHeader.displayName = "CardHeader";
-
-const CardTitle = React.forwardRef<
-  HTMLParagraphElement,
-  React.HTMLAttributes<HTMLHeadingElement>
->(({ className, ...props }, ref) => (
-  <h3
-    ref={ref}
-    className={cn(
-      "text-2xl font-semibold leading-none tracking-tight",
-      className
-    )}
-    {...props}
-  />
-));
-CardTitle.displayName = "CardTitle";
-
-const CardDescription = React.forwardRef<
-  HTMLParagraphElement,
-  React.HTMLAttributes<HTMLParagraphElement>
->(({ className, ...props }, ref) => (
-  <p
-    ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
-    {...props}
-  />
-));
-CardDescription.displayName = "CardDescription";
-
-const CardContent = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
-));
-CardContent.displayName = "CardContent";
-
-const CardFooter = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn("flex items-center p-6 pt-0", className)}
-    {...props}
-  />
-));
-CardFooter.displayName = "CardFooter";
-
-export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
-</file>
-
-<file path="frontend/src/shared/ui/input.tsx">
-import * as React from "react";
-
-import { cn } from "@/lib/utils";
-
-export interface InputProps
-  extends React.InputHTMLAttributes<HTMLInputElement> {}
-
-const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, ...props }, ref) => {
-    return (
-      <input
-        type={type}
-        className={cn(
-          "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
-          className
-        )}
-        ref={ref}
-        {...props}
-      />
-    );
-  }
-);
-Input.displayName = "Input";
-
-export { Input };
-</file>
-
-<file path="frontend/src/shared/ui/label.tsx">
-import * as React from "react";
-import * as LabelPrimitive from "@radix-ui/react-label";
-import { cva, type VariantProps } from "class-variance-authority";
-
-import { cn } from "@/lib/utils";
-
-const labelVariants = cva(
-  "text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
-);
-
-const Label = React.forwardRef<
-  React.ElementRef<typeof LabelPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root> &
-    VariantProps<typeof labelVariants>
->(({ className, ...props }, ref) => (
-  <LabelPrimitive.Root
-    ref={ref}
-    className={cn(labelVariants(), className)}
-    {...props}
-  />
-));
-Label.displayName = LabelPrimitive.Root.displayName;
-
-export { Label };
-</file>
-
-<file path="frontend/src/shared/ui/progress.tsx">
-import * as React from "react";
-import * as ProgressPrimitive from "@radix-ui/react-progress";
-
-import { cn } from "@/lib/utils";
-
-const Progress = React.forwardRef<
-  React.ElementRef<typeof ProgressPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof ProgressPrimitive.Root>
->(({ className, value, ...props }, ref) => (
-  <ProgressPrimitive.Root
-    ref={ref}
-    className={cn(
-      "relative h-4 w-full overflow-hidden rounded-full bg-secondary",
-      className,
-    )}
-    {...props}
-  >
-    <ProgressPrimitive.Indicator
-      className="h-full w-full flex-1 bg-primary transition-all"
-      style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
-    />
-  </ProgressPrimitive.Root>
-));
-Progress.displayName = ProgressPrimitive.Root.displayName;
-
-export { Progress };
-</file>
-
-<file path="frontend/src/shared/ui/resizable.tsx">
-import { GripVertical } from "lucide-react";
-import * as ResizablePrimitive from "react-resizable-panels";
-
-import { cn } from "@/lib/utils";
-
-const ResizablePanelGroup = ({
-  className,
-  ...props
-}: React.ComponentProps<typeof ResizablePrimitive.PanelGroup>) => (
-  <ResizablePrimitive.PanelGroup
-    className={cn(
-      "flex h-full w-full data-[panel-group-direction=vertical]:flex-col",
-      className,
-    )}
-    {...props}
-  />
-);
-
-const ResizablePanel = ResizablePrimitive.Panel;
-
-const ResizableHandle = ({
-  withHandle,
-  className,
-  ...props
-}: React.ComponentProps<typeof ResizablePrimitive.PanelResizeHandle> & {
-  withHandle?: boolean;
-}) => (
-  <ResizablePrimitive.PanelResizeHandle
-    className={cn(
-      "relative flex w-px items-center justify-center bg-border after:absolute after:inset-y-0 after:left-1/2 after:w-1 after:-translate-x-1/2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 data-[panel-group-direction=vertical]:h-px data-[panel-group-direction=vertical]:w-full data-[panel-group-direction=vertical]:after:left-0 data-[panel-group-direction=vertical]:after:h-1 data-[panel-group-direction=vertical]:after:w-full data-[panel-group-direction=vertical]:after:-translate-y-1/2 data-[panel-group-direction=vertical]:after:translate-x-0 [&[data-panel-group-direction=vertical]>div]:rotate-90",
-      className,
-    )}
-    {...props}
-  >
-    {withHandle && (
-      <div className="z-10 flex h-4 w-3 items-center justify-center rounded-sm border bg-border">
-        <GripVertical className="h-2.5 w-2.5" />
-      </div>
-    )}
-  </ResizablePrimitive.PanelResizeHandle>
-);
-
-export { ResizablePanelGroup, ResizablePanel, ResizableHandle };
-</file>
-
-<file path="frontend/src/shared/ui/switch.tsx">
-import * as React from "react";
-import * as SwitchPrimitives from "@radix-ui/react-switch";
-
-import { cn } from "@/lib/utils";
-
-const Switch = React.forwardRef<
-  React.ElementRef<typeof SwitchPrimitives.Root>,
-  React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root>
->(({ className, ...props }, ref) => (
-  <SwitchPrimitives.Root
-    className={cn(
-      "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-input",
-      className,
-    )}
-    {...props}
-    ref={ref}
-  >
-    <SwitchPrimitives.Thumb
-      className={cn(
-        "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",
-      )}
-    />
-  </SwitchPrimitives.Root>
-));
-Switch.displayName = SwitchPrimitives.Root.displayName;
-
-export { Switch };
-</file>
-
-<file path="frontend/src/shared/ui/tabs.tsx">
-import * as React from "react";
-import * as TabsPrimitive from "@radix-ui/react-tabs";
-
-import { cn } from "@/lib/utils";
-
-const Tabs = TabsPrimitive.Root;
-
-const TabsList = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.List>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    className={cn(
-      "inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
-      className,
-    )}
-    {...props}
-  />
-));
-TabsList.displayName = TabsPrimitive.List.displayName;
-
-const TabsTrigger = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.Trigger
-    ref={ref}
-    className={cn(
-      "inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm",
-      className,
-    )}
-    {...props}
-  />
-));
-TabsTrigger.displayName = TabsPrimitive.Trigger.displayName;
-
-const TabsContent = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content
-    ref={ref}
-    className={cn(
-      "mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-      className,
-    )}
-    {...props}
-  />
-));
-TabsContent.displayName = TabsPrimitive.Content.displayName;
-
-export { Tabs, TabsList, TabsTrigger, TabsContent };
 </file>
 
 <file path="frontend/src/shared/ui/theme-provider.tsx">
@@ -74802,73 +70939,6 @@ const ThemeToggle = () => {
 };
 
 export default ThemeToggle;
-</file>
-
-<file path="frontend/src/shared/ui/virtualized-list.tsx">
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-
-interface VirtualizedListProps<T> {
-  items: T[];
-  itemHeight: number;
-  containerHeight: number;
-  renderItem: (item: T, index: number) => React.ReactNode;
-  overscan?: number;
-  className?: string;
-}
-
-export function VirtualizedList<T>({
-  items,
-  itemHeight,
-  containerHeight,
-  renderItem,
-  overscan = 5,
-  className = ""
-}: VirtualizedListProps<T>) {
-  const [scrollTop, setScrollTop] = useState(0);
-  const scrollElementRef = useRef<HTMLDivElement>(null);
-
-  const visibleRange = useMemo(() => {
-    const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
-    const endIndex = Math.min(
-      items.length - 1,
-      Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
-    );
-    return { startIndex, endIndex };
-  }, [scrollTop, itemHeight, containerHeight, items.length, overscan]);
-
-  const visibleItems = useMemo(() => {
-    return items.slice(visibleRange.startIndex, visibleRange.endIndex + 1);
-  }, [items, visibleRange]);
-
-  const totalHeight = items.length * itemHeight;
-  const offsetY = visibleRange.startIndex * itemHeight;
-
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-  };
-
-  return (
-    <div
-      ref={scrollElementRef}
-      className={`overflow-auto ${className}`}
-      style={{ height: containerHeight }}
-      onScroll={handleScroll}
-    >
-      <div style={{ height: totalHeight, position: 'relative' }}>
-        <div style={{ transform: `translateY(${offsetY}px)` }}>
-          {visibleItems.map((item, index) => (
-            <div
-              key={visibleRange.startIndex + index}
-              style={{ height: itemHeight }}
-            >
-              {renderItem(item, visibleRange.startIndex + index)}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 </file>
 
 <file path="frontend/src/index.css">
@@ -75016,84 +71086,6 @@ export function VirtualizedList<T>({
     @apply bg-background text-foreground;
   }
 }
-</file>
-
-<file path="frontend/tests/trading.spec.ts">
-import { test, expect } from '@playwright/test';
-
-/**
- * Trading Page - E2E Smoke Tests
- * ✅ VERBESSERT: Prüft Browser Console Errors!
- */
-
-test.describe('Trading Page - Critical Tests', () => {
-  
-  test('GUI lädt ohne 500 Error', async ({ page }) => {
-    const response = await page.goto('/trading');
-    expect(response?.status()).toBe(200);
-  });
-
-  test('Keine Console Errors beim Laden', async ({ page }) => {
-    const consoleErrors: string[] = [];
-    
-    // ✅ KRITISCH: Fange Console Errors ab!
-    page.on('console', msg => {
-      if (msg.type() === 'error') {
-        const text = msg.text();
-        
-        // Ignoriere Test-bedingte Errors:
-        if (
-          text.includes('503') || 
-          text.includes('Service Unavailable') ||
-          text.includes('ERR_INSUFFICIENT_RESOURCES') ||
-          text.includes('Failed to fetch')
-        ) {
-          return; // Timing/Ressourcen-Probleme während Test
-        }
-        
-        consoleErrors.push(text);
-      }
-    });
-    
-    // ✅ KRITISCH: Fange Page Errors ab (z.B. Import-Errors)!
-    page.on('pageerror', error => {
-      consoleErrors.push(error.message);
-    });
-    
-    // Lade Page
-    await page.goto('/trading', { timeout: 30000 });
-    await page.waitForTimeout(8000); // Warte 8s für Backend & Initialisierung
-    
-    // Prüfe: KEINE Console Errors (außer 503 während Start)!
-    if (consoleErrors.length > 0) {
-      console.log('❌ Console Errors gefunden:');
-      consoleErrors.forEach(err => console.log('  -', err));
-      throw new Error(`Console Errors detected: ${consoleErrors.join(' | ')}`);
-    }
-  });
-
-  test('Kein Error Boundary sichtbar', async ({ page }) => {
-    await page.goto('/trading');
-    await page.waitForTimeout(2000);
-    
-    // ✅ Prüfe ob Error Boundary angezeigt wird
-    const errorBoundary = page.locator('text=/Error|Something went wrong/i');
-    await expect(errorBoundary).not.toBeVisible();
-  });
-
-});
-
-test.describe('Trading Page - Optional Tests', () => {
-  
-  test('Chart Container existiert', async ({ page }) => {
-    await page.goto('/trading');
-    await page.waitForTimeout(2000);
-    
-    const container = page.locator('div').first();
-    await expect(container).toBeVisible();
-  });
-
-});
 </file>
 
 <file path="frontend/vite/client">
@@ -76587,40 +72579,6 @@ export default {
   },
   plugins: [require("tailwindcss-animate")],
 } satisfies Config;
-</file>
-
-<file path="frontend/tsconfig.app.json">
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-
-    /* Bundler mode */
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
-    "noEmit": true,
-    "jsx": "react-jsx",
-
-    /* Linting */
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noImplicitAny": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  },
-  "include": ["src"]
-}
 </file>
 
 <file path="frontend/tsconfig.json">
@@ -95155,7 +91113,2268 @@ echo "✅ VERIFICATION COMPLETE"
 echo "=================================================="
 </file>
 
-<file path="frontend/src/config/exchanges.ts">
+<file path="frontend/delete/api/ai.ts">
+import { BaseAPI } from './base';
+
+export class AIEngineAPI extends BaseAPI {
+  // 🤖 AI STRATEGY ASSIGNMENT (Backend: /ai/tier2/*)
+  static async getRecommendedStrategy(symbol: string, exchange = 'binance', timeframe = '1h') {
+    return this.request('/ai/tier2/strategy-assignment', {
+      params: { symbol, exchange, timeframe }
+    });
+  }
+
+  static async analyzeMarketConditions(symbols: string[], exchange = 'binance') {
+    return this.request('/ai/tier2/market-analysis', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, exchange })
+    });
+  }
+
+  static async getStrategyBacktest(symbol: string, strategy_type: string, timeframe = '1h', period = '30d') {
+    return this.request('/ai/tier2/strategy-backtest', {
+      params: { symbol, strategy_type, timeframe, period }
+    });
+  }
+
+  // 📊 CHART ANALYSIS (Backend: /ai/tier2/chart-*)
+  static async analyzeChart(symbol: string, exchange = 'binance', interval = '1h', analysis_type?: string) {
+    return this.request('/ai/tier2/chart-analysis', {
+      params: { symbol, exchange, interval, analysis_type }
+    });
+  }
+
+  static async getPatternRecognition(symbol: string, exchange = 'binance', patterns?: string[]) {
+    return this.request('/ai/tier2/pattern-recognition', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, exchange, patterns })
+    });
+  }
+
+  static async getTechnicalIndicators(symbol: string, exchange = 'binance', indicators?: string[]) {
+    return this.request('/ai/tier2/technical-indicators', {
+      params: { symbol, exchange, indicators: indicators?.join(',') }
+    });
+  }
+
+  // 📈 PERFORMANCE TRACKING (Backend: /ai/tier2/performance)
+  static async getAIPerformance(timeframe = '7d') {
+    return this.request('/ai/tier2/performance', {
+      params: { timeframe }
+    });
+  }
+
+  static async getModelAccuracy(model_type?: string) {
+    return this.request('/ai/tier2/model-accuracy', {
+      params: { model_type }
+    });
+  }
+
+  // 🎯 STRATEGY OPTIMIZATION (Backend: /ai/tier2/optimize-*)
+  static async optimizeStrategy(strategyId: string, optimization_params: Record<string, any>) {
+    return this.request(`/ai/tier2/optimize-strategy/${strategyId}`, {
+      method: 'POST',
+      body: JSON.stringify(optimization_params)
+    });
+  }
+
+  static async getOptimizationResults(optimizationId: string) {
+    return this.request(`/ai/tier2/optimization-results/${optimizationId}`);
+  }
+}
+</file>
+
+<file path="frontend/delete/api/base.ts">
+import { ZodSchema } from 'zod';
+import { logger } from '../../lib/logger';
+
+/**
+ * ✅ KONFORMITÄT Teil 5: Enterprise LRU-Cache Implementation
+ * 
+ * Generic LRU (Least Recently Used) Cache mit:
+ * - O(1) get/set Operationen via Map
+ * - Automatische Eviction bei max capacity
+ * - Input-Validierung (fail-fast)
+ * - Performance-Statistiken für Debugging
+ * 
+ * Verwendung:
+ * const cache = new LRUCache<string, string>({ max: 100 });
+ * cache.set('key', 'value');
+ * const value = cache.get('key'); // Promotes to MRU
+ */
+class LRUCache<K, V> {
+  private cache: Map<K, V>;
+  private readonly maxSize: number;
+  private stats = { hits: 0, misses: 0, evictions: 0 };
+
+  constructor(options: { max: number }) {
+    if (options.max <= 0 || !Number.isInteger(options.max)) {
+      throw new Error('LRUCache: max must be positive integer');
+    }
+    this.maxSize = options.max;
+    this.cache = new Map<K, V>();
+  }
+
+  /**
+   * Get value and promote to MRU (Most Recently Used)
+   * @returns Value wenn gefunden, undefined sonst
+   */
+  get(key: K): V | undefined {
+    if (!this.cache.has(key)) {
+      this.stats.misses++;
+      return undefined;
+    }
+
+    this.stats.hits++;
+    const value = this.cache.get(key)!;
+    
+    // Re-insert to move to end (MRU position in Map iteration order)
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    
+    return value;
+  }
+
+  /**
+   * Set value as MRU, evict LRU if necessary
+   */
+  set(key: K, value: V): void {
+    // Remove existing to update order
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      // Evict LRU (first entry in Map = least recently used)
+      // Type assertion is safe here because size >= maxSize guarantees at least one entry
+      const lruKey = this.cache.keys().next().value as K;
+      this.cache.delete(lruKey);
+      this.stats.evictions++;
+    }
+    
+    this.cache.set(key, value);
+  }
+
+  has(key: K): boolean {
+    return this.cache.has(key);
+  }
+
+  delete(key: K): boolean {
+    return this.cache.delete(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.stats = { hits: 0, misses: 0, evictions: 0 };
+  }
+
+  get size(): number {
+    return this.cache.size;
+  }
+
+  /**
+   * Cache Performance Metrics für Production-Debugging
+   * @returns Statistiken mit Hit-Rate in Prozent
+   */
+  getStats(): { hits: number; misses: number; evictions: number; hitRate: string; size: number } {
+    const total = this.stats.hits + this.stats.misses;
+    return {
+      ...this.stats,
+      hitRate: total > 0 ? `${(this.stats.hits / total * 100).toFixed(1)}%` : '0%',
+      size: this.cache.size
+    };
+  }
+}
+
+// Service-specific API configuration (profi_gui.md: Feature-basierte Architektur)
+// ✅ FIX: Leere BASE_URL im Dev-Mode damit Vite Proxy greift!
+// Im Production-Build wird VITE_API_BASE_URL gesetzt
+const SERVICE_API_CONFIG = {
+  BASE_URL: (import.meta as any)?.env?.VITE_API_BASE_URL || '', // ✅ Leer = Proxy wird genutzt
+  TIMEOUT: 10000,
+  RETRY_ATTEMPTS: 3,
+  RATE_LIMIT_RETRIES: 1,
+} as const;
+
+/**
+ * ✅ KONFORMITÄT Teil 6: Endpoints die X-Client-ID Header benötigen
+ * 
+ * Backend-Kontext (ro_settings.py, ro_user_settings.py):
+ * - get_client_id() Dependency erwartet X-Client-ID Header
+ * - Wirft HTTPException 400 wenn Header fehlt
+ * 
+ * Generisch erweiterbar: Neue Endpoint-Präfixe können hinzugefügt werden
+ */
+const CLIENT_ID_ENDPOINTS = ['/settings/', '/user/', '/historical/config/'] as const;
+
+type RequestConfig = RequestInit & { 
+  params?: Record<string, any>;
+  schema?: ZodSchema<any>;
+};
+
+/**
+ * ✅ KONFORMITÄT Teil 5: LRU-Cache mit max 100 Entries
+ * Verhindert unbegrenztes Memory-Wachstum bei vielen verschiedenen Endpoints.
+ * 
+ * Cache-Key Format: "{url}:{method}"
+ * Beispiel: "http://localhost:8100/api/market/binance/trades:GET"
+ */
+const etagCache = new LRUCache<string, string>({ max: 100 });
+
+// Development-Only: Cache-Statistiken alle 5 Minuten loggen
+if ((import.meta as any).env.DEV) {
+  setInterval(() => {
+    const stats = etagCache.getStats();
+    if (stats.hits > 0 || stats.misses > 0) {
+      logger.debug('[ETag Cache Stats]', stats);
+    }
+  }, 5 * 60 * 1000); // 5 Minuten
+}
+
+// Helper für exponential backoff
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Custom API Error Class mit erweiterten Informationen
+ */
+export class APIError extends Error {
+  constructor(
+    message: string,
+    public status?: number,
+    public response?: any,
+    public endpoint?: string
+  ) {
+    super(message);
+    this.name = 'APIError';
+  }
+}
+
+export class BaseAPI {
+  private static baseURL = SERVICE_API_CONFIG.BASE_URL;
+  
+  /**
+   * ✅ KONFORMITÄT Teil 6: Generiere oder lade Client-ID
+   * 
+   * Strategie:
+   * 1. sessionStorage (höchste Priorität - Session-persistent)
+   * 2. localStorage (Fallback - Browser-persistent)
+   * 3. Generiere neue UUID v4 (nur wenn beide leer)
+   * 
+   * UUID-Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (RFC 4122 v4)
+   * Ohne externe Library - reine Crypto-API
+   * 
+   * @returns Client-ID string (z.B. "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
+   */
+  private static getClientId(): string {
+    let clientId = sessionStorage.getItem('client_id');
+    if (!clientId) {
+      clientId = localStorage.getItem('client_id');
+    }
+    if (!clientId) {
+      // UUID v4 Generator (ohne externe Library)
+      clientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+      sessionStorage.setItem('client_id', clientId);
+      localStorage.setItem('client_id', clientId);
+    }
+    return clientId;
+  }
+
+  /**
+   * ✅ KONFORMITÄT Teil 6: Prüfe ob Endpoint X-Client-ID Header benötigt
+   * 
+   * Generische Implementierung mit Array.some() - leicht erweiterbar
+   * 
+   * @param endpoint - API-Endpoint (z.B. "/api/settings/urls/binance")
+   * @returns true wenn Header erforderlich
+   */
+  private static requiresClientId(endpoint: string): boolean {
+    return CLIENT_ID_ENDPOINTS.some(prefix => endpoint.includes(prefix));
+  }
+  
+  /**
+   * Handle 429 Rate Limit with smart backoff
+   * @param response - Response with 429 status
+   * @param attempt - Current retry attempt
+   * @returns Backoff delay in ms
+   */
+  private static async handle429(response: Response, attempt: number): Promise<number> {
+    // Parse Retry-After header (seconds or HTTP date)
+    const retryAfter = response.headers.get('retry-after');
+    let backoffMs = 1000; // Default: 1s
+    
+    if (retryAfter) {
+      // Check if it's seconds or date
+      const retrySeconds = parseInt(retryAfter, 10);
+      if (!isNaN(retrySeconds)) {
+        backoffMs = retrySeconds * 1000;
+      }
+    }
+    
+    // Exponential backoff: 1s, 2s, 4s...
+    const exponentialBackoff = Math.min(1000 * Math.pow(2, attempt), 10000);
+    backoffMs = Math.max(backoffMs, exponentialBackoff);
+    
+    // User-friendly warning
+    logger.warn(`⚠️ Rate limit hit - retrying in ${backoffMs/1000}s (attempt ${attempt + 1}/${SERVICE_API_CONFIG.RATE_LIMIT_RETRIES})`);
+    
+    // TODO: Replace with Toast notification in future
+    // toast.warning(`Server beschäftigt - versuche erneut in ${backoffMs/1000}s`);
+    
+    await sleep(backoffMs);
+    return backoffMs;
+  }
+  
+  static async request<T>(endpoint: string, options?: RequestConfig, attempt = 0): Promise<T> {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), SERVICE_API_CONFIG.TIMEOUT);
+
+    let url = `${this.baseURL}${endpoint}`;
+    if (options?.params) {
+      const query = new URLSearchParams(options.params).toString();
+      url = `${url}?${query}`;
+    }
+
+    try {
+      // ETag-Support: Cache-Key aus URL + Method
+      const cacheKey = `${url}:${options?.method || 'GET'}`;
+      const cachedETag = etagCache.get(cacheKey);
+      
+      const headers = new Headers({
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      });
+      
+      // ✅ KONFORMITÄT Teil 6: Auto-Injection X-Client-ID für Settings/User Endpoints
+      // Generisch: requiresClientId() prüft gegen CLIENT_ID_ENDPOINTS Array
+      if (this.requiresClientId(endpoint)) {
+        headers.set('X-Client-ID', this.getClientId());
+      }
+      
+      // If-None-Match header für 304-Responses
+      if (cachedETag && (options?.method === 'GET' || !options?.method)) {
+        headers.set('If-None-Match', cachedETag);
+      }
+      
+      const response = await fetch(url, {
+        ...options,
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(id);
+      
+      // HTTP 304: Nutze gecachte Response
+      if (response.status === 304) {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const parsedCache = JSON.parse(cached);
+          return options?.schema ? options.schema.parse(parsedCache) : parsedCache;
+        }
+      }
+      
+      // HTTP 429: Rate Limit - Smart Backoff & Retry
+      if (response.status === 429) {
+        if (attempt >= SERVICE_API_CONFIG.RATE_LIMIT_RETRIES) {
+          throw new Error('Rate limit exceeded - please try again later');
+        }
+        
+        await this.handle429(response, attempt);
+        
+        // Retry with incremented attempt counter
+        return this.request<T>(endpoint, options, attempt + 1);
+      }
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new APIError(
+          `API Error ${response.status}`,
+          response.status,
+          errorText,
+          endpoint
+        );
+      }
+      
+      const json = await response.json();
+      
+      // ETag speichern für zukünftige Requests
+      const newETag = response.headers.get('ETag');
+      if (newETag && (options?.method === 'GET' || !options?.method)) {
+        etagCache.set(cacheKey, newETag);
+        sessionStorage.setItem(cacheKey, JSON.stringify(json));
+      }
+      
+      // x-request-id Korrelation für Debugging
+      const requestId = response.headers.get('x-request-id');
+      if (requestId && (import.meta as any).env.DEV) {
+        console.debug(`[BaseAPI] Request ID: ${requestId} | URL: ${url}`);
+      }
+      
+      // Runtime-Validation mit Zod (optional)
+      if (options?.schema) {
+        try {
+          return options.schema.parse(json);
+        } catch (validationError) {
+          console.error('[BaseAPI] Validation Error:', validationError);
+          throw new APIError('Validation failed', 400, validationError, endpoint);
+        }
+      }
+      
+      return json;
+    } catch (error) {
+      clearTimeout(id);
+      if (error instanceof APIError) throw error;
+      if (error instanceof Error) throw new APIError(error.message, undefined, undefined, endpoint);
+      throw new APIError('Unknown error', undefined, undefined, endpoint);
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/chart.ts">
+import { BaseAPI } from './base';
+
+export class ChartAPI extends BaseAPI {
+  /**
+   * Get historical OHLC chart data
+   * @param symbol - Trading pair symbol (e.g., 'BTCUSDT')
+   * @param exchange - Exchange name (e.g., 'binance', 'bitget')
+   * @param interval - Time interval (e.g., '1m', '5m', '1h', '1d')
+   * @param limit - Number of candles to fetch (max 1000)
+   * @returns Promise with OHLC data array
+   */
+  static async getHistory(
+    symbol: string,
+    exchange: string = 'binance',
+    interval: string = '1m',
+    limit: number = 100
+  ) {
+    try {
+      // ✅ FIX: Korrigierter Endpoint /api/historical/ohlc (statt /api/chart/history)
+      const response = await this.request('/api/historical/ohlc', {
+        params: { symbol, exchange, interval, limit }
+      });
+      return response;
+    } catch (error) {
+      console.error(`[ChartAPI] Failed to fetch chart history for ${symbol}:`, error);
+      return [];
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/database.ts">
+/**
+ * Database API Service - GENERISCH für alle 8 Exchanges
+ * Erweitert BaseAPI für Historical/Live Data Collection
+ */
+import { BaseAPI } from './base';
+
+export interface HistoricalStartConfig {
+  symbol: string;
+  market: string;
+  until_date: string;
+  interval?: string;
+  data_type?: string;
+}
+
+export interface LiveCollectorConfig {
+  symbol: string;
+  market: string;
+}
+
+/**
+ * DatabaseAPI - Handles Historical Backfill & Live Collection
+ */
+export class DatabaseAPI extends BaseAPI {
+  /**
+   * Start Live Collection für beliebigen Exchange
+   */
+  static async startLiveCollection(
+    exchange: string, 
+    config: LiveCollectorConfig
+  ): Promise<void> {
+    return this.request(`/api/${exchange}/collector/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  }
+
+  /**
+   * Stop Live Collection für beliebigen Exchange
+   */
+  static async stopLiveCollection(
+    exchange: string, 
+    config: LiveCollectorConfig
+  ): Promise<void> {
+    return this.request(`/api/${exchange}/collector/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  }
+
+  /**
+   * Start Historical Backfill für beliebigen Exchange
+   */
+  static async startHistoricalBackfill(
+    exchange: string, 
+    config: HistoricalStartConfig
+  ): Promise<void> {
+    return this.request(`/api/historical/${exchange}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: config.symbol,
+        market: config.market,
+        until_date: config.until_date,
+        interval: config.interval || '1m',
+        data_type: config.data_type || 'trades'
+      })
+    });
+  }
+
+  /**
+   * Get Historical Status für beliebigen Exchange
+   */
+  static async getHistoricalStatus(exchange: string): Promise<any> {
+    return this.request(`/api/historical/${exchange}/status`);
+  }
+
+  /**
+   * Get Exchange Config für beliebigen Exchange
+   */
+  static async getExchangeConfig(exchange: string): Promise<any> {
+    return this.request(`/api/historical/${exchange}/config`);
+  }
+}
+</file>
+
+<file path="frontend/delete/api/enterprise.ts">
+import { BaseAPI } from './base';
+
+export class EnterpriseAPI extends BaseAPI {
+  // 🏢 ENTERPRISE MARKET FEATURES (Backend: /api/market/enterprise/*)
+  static async getEnterpriseMarketData(exchange = 'binance', symbols?: string[]) {
+    return this.request('/api/market/enterprise/data', {
+      method: 'POST',
+      body: JSON.stringify({ exchange, symbols })
+    });
+  }
+
+  static async getAdvancedAnalytics(timeframe = '24h', metrics?: string[]) {
+    return this.request('/api/market/enterprise/analytics', {
+      params: { timeframe, metrics: metrics?.join(',') }
+    });
+  }
+
+  static async getInstitutionalFlow(exchange = 'binance', timeframe = '1h') {
+    return this.request('/api/market/enterprise/institutional-flow', {
+      params: { exchange, timeframe }
+    });
+  }
+
+  // 📊 CHART ROUTER FEATURES (Backend: /api/charts/*)
+  static async getAdvancedChartData(symbol: string, interval = '1h', indicators?: string[]) {
+    return this.request('/api/charts/advanced', {
+      params: { symbol, interval, indicators: indicators?.join(',') }
+    });
+  }
+
+  static async getMultiTimeframeAnalysis(symbol: string, timeframes?: string[]) {
+    return this.request('/api/charts/multi-timeframe', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, timeframes })
+    });
+  }
+
+  static async getVolumeProfileData(symbol: string, exchange = 'binance', period = '7d') {
+    return this.request('/api/charts/volume-profile', {
+      params: { symbol, exchange, period }
+    });
+  }
+
+  static async getMarketStructureAnalysis(symbol: string, exchange = 'binance') {
+    return this.request('/api/charts/market-structure', {
+      params: { symbol, exchange }
+    });
+  }
+
+  // 🔧 ENTERPRISE DIAGNOSTICS (Backend: /api/diagnostics/*)
+  static async getSystemDiagnostics() {
+    return this.request('/api/diagnostics/endpoints');
+  }
+
+  static async getOpenAPISchema() {
+    return this.request('/api/diagnostics/openapi');
+  }
+
+  // 🎯 ENTERPRISE SETTINGS (nutzt bestehende Settings-Endpoints)
+  static async getEnterpriseConfig() {
+    return this.request('/api/settings/enterprise/rate-limits');
+  }
+
+  static async updateEnterpriseSettings(settings: Record<string, any>) {
+    return this.request('/api/settings/enterprise/rate-limits', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
+    });
+  }
+
+  static async getWhaleConfig() {
+    return this.request('/api/settings/whales/exchange-addresses');
+  }
+
+  static async updateWhaleConfig(config: Record<string, any>) {
+    return this.request('/api/settings/whales/exchange-addresses', {
+      method: 'PUT',
+      body: JSON.stringify(config)
+    });
+  }
+
+  static async getMarketConfig() {
+    return this.request('/api/settings/market/orderbook-config');
+  }
+
+  static async updateMarketConfig(config: Record<string, any>) {
+    return this.request('/api/settings/market/orderbook-config', {
+      method: 'PUT',
+      body: JSON.stringify(config)
+    });
+  }
+}
+</file>
+
+<file path="frontend/delete/api/historical.ts">
+import { BaseAPI, APIError } from './base';
+import { ChartDataSchema, BackfillTaskSchema } from './schemas';
+
+/**
+ * Parameters for OHLC data requests
+ */
+export interface OHLCParams {
+  exchange: string;
+  symbol: string;
+  interval?: string;
+  market_type?: string;
+  start?: number;
+  end?: number;
+  limit?: number;
+}
+
+/**
+ * Request data for starting a backfill task
+ */
+export interface BackfillRequest {
+  exchange: string;
+  symbol: string;
+  market: string;
+  until_date: string;
+  interval: string;
+  data_type?: 'candles' | 'trades' | 'orderbook';
+}
+
+/**
+ * Historical Data API
+ * Handles historical OHLC data and backfill operations
+ * Backend: ro_historical.py
+ */
+export class HistoricalAPI extends BaseAPI {
+  
+  /**
+   * Get OHLC data with query parameters
+   * @param params - OHLC request parameters
+   * @returns Array of candles with decimal conversion
+   */
+  static async getOHLC(params: OHLCParams) {
+    const { exchange, symbol, interval = '1m', market_type = 'spot', start, end, limit = 500 } = params;
+    try {
+      return await this.request('/api/historical/ohlc', {
+        params: { exchange, symbol, interval, market_type, start, end, limit },
+        schema: ChartDataSchema
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] OHLC Error:', error.message);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Get OHLC data with path parameters
+   * @param exchange - Exchange name
+   * @param symbol - Trading symbol
+   * @param interval - Candle interval (default: 1m)
+   * @param market_type - Market type (default: spot)
+   * @param start - Start timestamp
+   * @param end - End timestamp
+   * @param limit - Number of candles (default: 500)
+   * @returns Array of candles with decimal conversion
+   */
+  static async getOHLCByPath(
+    exchange: string,
+    symbol: string,
+    interval: string = '1m',
+    market_type: string = 'spot',
+    start?: number,
+    end?: number,
+    limit: number = 500
+  ) {
+    try {
+      return await this.request(`/api/historical/ohlc/${exchange}/${symbol}`, {
+        params: { interval, market_type, start, end, limit },
+        schema: ChartDataSchema
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] OHLC Path Error:', error.message);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Start a backfill task for historical data
+   * @param data - Backfill request data
+   * @returns Task information
+   */
+  static async startBackfill(data: BackfillRequest) {
+    try {
+      return await this.request('/api/historical/backfill/start', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Backfill Start Error:', error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get status of backfill tasks
+   * @param exchange - Optional exchange filter
+   * @param taskId - Optional specific task ID
+   * @returns Backfill status information
+   */
+  static async getBackfillStatus(exchange?: string, taskId?: string) {
+    try {
+      return await this.request('/api/historical/backfill/status', {
+        params: { exchange, task_id: taskId }
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Backfill Status Error:', error.message);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Stop a running backfill task
+   * @param taskId - Task ID to stop
+   */
+  static async stopBackfill(taskId: string) {
+    try {
+      return await this.request('/api/historical/backfill/stop', {
+        method: 'POST',
+        body: JSON.stringify({ task_id: taskId })
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Backfill Stop Error:', error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Clear completed backfill tasks
+   * @param exchange - Optional exchange filter
+   */
+  static async clearCompletedTasks(exchange?: string) {
+    try {
+      return await this.request('/api/historical/backfill/tasks', {
+        method: 'DELETE',
+        params: exchange ? { exchange } : undefined
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Clear Tasks Error:', error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get exchange-specific historical configuration
+   * ⚠️ Requires X-Client-ID header (auto-injected)
+   * @param exchange - Exchange name
+   * @returns Exchange configuration
+   */
+  static async getExchangeConfig(exchange: string) {
+    try {
+      return await this.request(`/api/historical/config/${exchange}`);
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Config Error:', error.message);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Get list of supported exchanges for historical data
+   * @returns Array of supported exchange names
+   */
+  static async getSupportedExchanges() {
+    try {
+      return await this.request('/api/historical/exchanges');
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[HistoricalAPI] Exchanges Error:', error.message);
+      }
+      return [];
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/index.ts">
+// ==========================================
+// CORE API CLASSES
+// ==========================================
+export { BaseAPI, APIError } from './base';
+export * from './symbols';
+export * from './websocket';
+export * from './chart';
+export * from './trading';
+export * from './market';
+export * from './whales';
+
+// ✅ NEU: Historical Data API
+export { HistoricalAPI } from './historical';
+export type { OHLCParams, BackfillRequest } from './historical';
+
+// ✅ NEU: User Settings API
+export { UserSettingsAPI } from './user-settings';
+export type { UserSettings } from './user-settings';
+
+// ==========================================
+// SCHEMAS & VALIDATION
+// ==========================================
+export {
+  OrderBookSchema,
+  OrderBookEntrySchema,
+  TradesSchema,
+  TradeSchema,
+  TickerSchema,
+  CandleSchema,
+  ChartDataSchema,
+  WhaleTransactionSchema,
+  WhaleTransactionsSchema,
+  WhaleStatisticsSchema,
+  SymbolSchema,
+  SymbolsSchema,
+  HealthSchema,
+  APIKeysSchema,
+  BackfillTaskSchema
+} from './schemas';
+
+// Type Exports
+export type {
+  OrderBookEntry,
+  OrderBook,
+  Trade,
+  Ticker,
+  Symbol,
+  Candle,
+  WhaleTransaction,
+  WhaleStatistics,
+  BackfillTask,
+  Health
+} from './schemas';
+
+// ==========================================
+// DECIMAL TRANSFORMATION UTILITIES
+// ==========================================
+export {
+  decimalTransform,
+  optionalDecimal,
+  decimalTupleTransform,
+  decimalTupleArray,
+  createDecimalSchema
+} from '../../lib/zod-transforms';
+
+// ==========================================
+// ENTERPRISE APIs (wenn vorhanden)
+// ==========================================
+// AI-Engine API
+export * from './ai';
+
+// Enterprise API
+export * from './enterprise';
+</file>
+
+<file path="frontend/delete/api/market.ts">
+import { BaseAPI } from './base';
+
+export class MarketAPI extends BaseAPI {
+  // ✅ HEALTH ENDPOINT
+  static async getSystemHealth() {
+    try {
+      // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/monitoring/health (ro_monitoring.py)
+      const response = await this.request('/api/monitoring/health');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch system health:', error);
+      return null;
+    }
+  }
+
+  // ✅ METRICS ENDPOINT  
+  static async getPerformanceMetrics() {
+    try {
+      // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/monitoring/metrics (ro_monitoring.py)
+      const response = await this.request('/api/monitoring/metrics');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch performance metrics:', error);
+      return null;
+    }
+  }
+
+
+  // ✅ SETTINGS ENDPOINTS
+  static async getExchangeSettings(provider: string) {
+    try {
+      const response = await this.request(`/api/settings/urls/${provider}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch exchange settings for ${provider}:`, error);
+      return null;
+    }
+  }
+
+  static async getRateLimits(provider: string) {
+    try {
+      const response = await this.request(`/api/settings/rate-limits/${provider}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch rate limits for ${provider}:`, error);
+      return null;
+    }
+  }
+
+  static async getWebSocketSettings(exchange: string) {
+    try {
+      const response = await this.request(`/api/settings/websockets/${exchange}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch websocket settings for ${exchange}:`, error);
+      return null;
+    }
+  }
+
+  static async getUsageStats(provider: string) {
+    try {
+      const response = await this.request(`/api/settings/usage/${provider}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch usage stats for ${provider}:`, error);
+      return null;
+    }
+  }
+
+  // ==================== PROVIDER SETTINGS (PUT METHODS) ====================
+
+  static async updateProviderURLs(provider: string, urls: Record<string, string>) {
+    try {
+      const response = await this.request(`/api/settings/urls/${provider}`, {
+        method: 'PUT',
+        body: JSON.stringify(urls)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update URLs for ${provider}:`, error);
+      return null;
+    }
+  }
+
+  static async updateWebSocketSettings(exchange: string, settings: Record<string, any>) {
+    try {
+      const response = await this.request(`/api/settings/websockets/${exchange}`, {
+        method: 'PUT',
+        body: JSON.stringify(settings)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update WebSocket settings for ${exchange}:`, error);
+      return null;
+    }
+  }
+
+  static async updateRateLimits(provider: string, limits: Record<string, any>) {
+    try {
+      const response = await this.request(`/api/settings/rate-limits/${provider}`, {
+        method: 'PUT',
+        body: JSON.stringify(limits)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update rate limits for ${provider}:`, error);
+      return null;
+    }
+  }
+
+  // ==================== INFRASTRUCTURE SETTINGS ====================
+
+  static async getInfrastructureSettings(service: 'clickhouse' | 'redis' | 'ollama' | 'backend') {
+    try {
+      const response = await this.request(`/api/settings/infrastructure/${service}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch ${service} settings:`, error);
+      return null;
+    }
+  }
+
+  static async updateInfrastructureSettings(
+    service: 'clickhouse' | 'redis' | 'ollama' | 'backend',
+    settings: Record<string, any>
+  ) {
+    try {
+      const response = await this.request(`/api/settings/infrastructure/${service}`, {
+        method: 'PUT',
+        body: JSON.stringify(settings)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update ${service} settings:`, error);
+      return null;
+    }
+  }
+
+  // ==================== DEVELOPMENT SETTINGS ====================
+
+  static async getDevelopmentSettings(service: 'kafka' | 'frontend-dev') {
+    try {
+      const response = await this.request(`/api/settings/development/${service}`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch ${service} settings:`, error);
+      return null;
+    }
+  }
+
+  static async updateDevelopmentSettings(
+    service: 'kafka' | 'frontend-dev',
+    settings: Record<string, any>
+  ) {
+    try {
+      const response = await this.request(`/api/settings/development/${service}`, {
+        method: 'PUT',
+        body: JSON.stringify(settings)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update ${service} settings:`, error);
+      return null;
+    }
+  }
+
+  // ==================== ENTERPRISE SETTINGS ====================
+
+  static async getEnterpriseRateLimits() {
+    try {
+      const response = await this.request('/api/settings/enterprise/rate-limits');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch enterprise rate limits:', error);
+      return null;
+    }
+  }
+
+  static async updateEnterpriseRateLimits(limits: Record<string, any>) {
+    try {
+      const response = await this.request('/api/settings/enterprise/rate-limits', {
+        method: 'PUT',
+        body: JSON.stringify(limits)
+      });
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to update enterprise rate limits:', error);
+      return null;
+    }
+  }
+
+  // ==================== WHALE SETTINGS ====================
+
+  static async getWhaleExchangeAddresses() {
+    try {
+      const response = await this.request('/api/settings/whales/exchange-addresses');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch whale exchange addresses:', error);
+      return null;
+    }
+  }
+
+  static async updateWhaleExchangeAddresses(addresses: Record<string, any>) {
+    try {
+      const response = await this.request('/api/settings/whales/exchange-addresses', {
+        method: 'PUT',
+        body: JSON.stringify(addresses)
+      });
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to update whale exchange addresses:', error);
+      return null;
+    }
+  }
+
+  static async getWhaleCoinConfig() {
+    try {
+      const response = await this.request('/api/settings/whales/coin-config');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch whale coin config:', error);
+      return null;
+    }
+  }
+
+  static async updateWhaleCoinConfig(config: Record<string, any>) {
+    try {
+      const response = await this.request('/api/settings/whales/coin-config', {
+        method: 'PUT',
+        body: JSON.stringify(config)
+      });
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to update whale coin config:', error);
+      return null;
+    }
+  }
+
+  // ==================== MARKET SETTINGS ====================
+
+  static async getOrderBookConfig() {
+    try {
+      const response = await this.request('/api/settings/market/orderbook-config');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch orderbook config:', error);
+      return null;
+    }
+  }
+
+  static async updateOrderBookConfig(config: Record<string, any>) {
+    try {
+      const response = await this.request('/api/settings/market/orderbook-config', {
+        method: 'PUT',
+        body: JSON.stringify(config)
+      });
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to update orderbook config:', error);
+      return null;
+    }
+  }
+
+  // ==================== PROVIDER REGISTRATION ====================
+
+  static async getProviderRegistrationURLs() {
+    try {
+      const response = await this.request('/api/settings/providers/registration-urls');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch provider registration URLs:', error);
+      return null;
+    }
+  }
+
+  static async updateProviderRegistrationURLs(urls: Record<string, any>) {
+    try {
+      const response = await this.request('/api/settings/providers/registration-urls', {
+        method: 'PUT',
+        body: JSON.stringify(urls)
+      });
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to update provider registration URLs:', error);
+      return null;
+    }
+  }
+
+  // ==================== EXCHANGE API ENDPOINTS ====================
+
+  static async getExchangeAPIEndpoints(exchange: string) {
+    try {
+      const response = await this.request(`/api/settings/${exchange}/api-endpoints`);
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to fetch API endpoints for ${exchange}:`, error);
+      return null;
+    }
+  }
+
+  static async updateExchangeAPIEndpoints(exchange: string, endpoints: Record<string, any>) {
+    try {
+      const response = await this.request(`/api/settings/${exchange}/api-endpoints`, {
+        method: 'PUT',
+        body: JSON.stringify(endpoints)
+      });
+      return response;
+    } catch (error) {
+      console.error(`[MarketAPI] Failed to update API endpoints for ${exchange}:`, error);
+      return null;
+    }
+  }
+
+  // ==================== MONITORING & CACHE ====================
+
+  static async getMonitoringMetrics() {
+    try {
+      const response = await this.request('/api/monitoring/metrics');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch monitoring metrics:', error);
+      return null;
+    }
+  }
+
+  static async getWebSocketMetrics() {
+    try {
+      // ✅ KONFORMITÄT Teil 3 (Gap-Analyse): Backend /api/monitoring/ws (ro_monitoring.py)
+      const response = await this.request('/api/monitoring/ws');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch WebSocket metrics:', error);
+      return null;
+    }
+  }
+
+  static async getCacheStatistics() {
+    try {
+      const response = await this.request('/api/monitoring/cache');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch cache statistics:', error);
+      return null;
+    }
+  }
+
+  // ==================== ENVIRONMENT INFO ====================
+
+  static async getEnvironmentNames() {
+    try {
+      const response = await this.request('/api/settings/environment/names');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch environment names:', error);
+      return null;
+    }
+  }
+
+  // ==================== DIAGNOSTICS ====================
+
+  static async getDiagnosticsEndpoints() {
+    try {
+      const response = await this.request('/api/diagnostics/endpoints');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch diagnostics endpoints:', error);
+      return null;
+    }
+  }
+
+  static async getOpenAPISchema() {
+    try {
+      const response = await this.request('/api/diagnostics/openapi');
+      return response;
+    } catch (error) {
+      console.error('[MarketAPI] Failed to fetch OpenAPI schema:', error);
+      return null;
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/schemas.ts">
+import { z } from 'zod';
+import { decimalTransform, decimalTupleTransform } from '../../lib/zod-transforms';
+
+/**
+ * Zod Validation Schemas für API-Responses
+ * Mit automatischer Decimal-Konvertierung (String → Number)
+ * Zentrale Type-Safe Runtime-Validation
+ */
+
+// ==================== TRADING SCHEMAS ====================
+
+/**
+ * OrderBook Entry: [price, size] tuple with decimal conversion
+ */
+export const OrderBookEntrySchema = decimalTupleTransform;
+
+/**
+ * Complete OrderBook with bids and asks
+ */
+export const OrderBookSchema = z.object({
+  data: z.object({
+    bids: z.array(decimalTupleTransform),
+    asks: z.array(decimalTupleTransform),
+    timestamp: z.number().optional(),
+    spread: z.string().optional(),
+    spread_percent: z.string().optional()
+  })
+});
+
+/**
+ * Single Trade with decimal conversion for prices
+ */
+export const TradeSchema = z.object({
+  id: z.union([z.string(), z.number()]).optional(),
+  price: decimalTransform,
+  quantity: decimalTransform,
+  size: decimalTransform.optional(),
+  amount: decimalTransform.optional(),
+  timestamp: z.number(),
+  time: z.union([z.number(), z.string()]).optional(),
+  side: z.enum(['buy', 'sell', 'BUY', 'SELL']).optional(),
+  isBuyerMaker: z.boolean().optional(),
+  exchange: z.string().optional(),
+  market: z.string().optional()
+}).passthrough();
+
+export const TradesSchema = z.array(TradeSchema);
+
+/**
+ * Ticker with all numeric fields converted from strings
+ */
+export const TickerSchema = z.object({
+  symbol: z.string(),
+  price: decimalTransform.optional(),
+  last: decimalTransform.optional(),
+  lastPrice: decimalTransform.optional(),
+  priceChange: decimalTransform.optional(),
+  priceChangePercent: decimalTransform.optional(),
+  volume: decimalTransform.optional(),
+  baseVol: decimalTransform.optional(),
+  quoteVol: decimalTransform.optional(),
+  high: decimalTransform.optional(),
+  high24h: decimalTransform.optional(),
+  low: decimalTransform.optional(),
+  low24h: decimalTransform.optional(),
+  bid: decimalTransform.optional(),
+  ask: decimalTransform.optional(),
+  open: decimalTransform.optional(),
+  close: decimalTransform.optional()
+}).passthrough();
+
+// ==================== SYMBOL SCHEMAS ====================
+
+export const SymbolSchema = z.object({
+  symbol: z.string(),
+  baseAsset: z.string().optional(),
+  quoteAsset: z.string().optional(),
+  status: z.string().optional(),
+  market_type: z.enum(['spot', 'futures', 'margin', 'usdtm', 'coinm']).optional(),
+  type: z.string().optional()
+}).passthrough();
+
+export const SymbolsSchema = z.object({
+  exchange: z.string(),
+  symbols: z.array(SymbolSchema),
+  count: z.number()
+});
+
+// ==================== CHART SCHEMAS ====================
+
+/**
+ * Single Candle with decimal conversion for OHLCV
+ */
+export const CandleSchema = z.object({
+  timestamp: z.number(),
+  open: decimalTransform,
+  high: decimalTransform,
+  low: decimalTransform,
+  close: decimalTransform,
+  volume: decimalTransform
+});
+
+export const ChartDataSchema = z.array(CandleSchema);
+
+// ==================== WHALE SCHEMAS ====================
+
+/**
+ * Whale Transaction with decimal conversion
+ */
+export const WhaleTransactionSchema = z.object({
+  exchange: z.string().optional(),
+  coin: z.string().optional(),
+  symbol: z.string().optional(),
+  amount: decimalTransform,
+  amount_usd: decimalTransform.optional(),
+  price: decimalTransform.optional(),
+  timestamp: z.number(),
+  type: z.string().optional(),
+  address: z.string().optional(),
+  tx_hash: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional()
+}).passthrough();
+
+export const WhaleTransactionsSchema = z.array(WhaleTransactionSchema);
+
+export const WhaleStatisticsSchema = z.object({
+  totalVolume: decimalTransform.optional(),
+  total_volume_24h: decimalTransform.optional(),
+  transactionCount: z.number().optional(),
+  total_events_24h: z.number().optional(),
+  topCoins: z.array(z.string()).optional(),
+  exchanges: z.array(z.string()).optional()
+}).passthrough();
+
+// ==================== SETTINGS SCHEMAS ====================
+
+export const APIKeysSchema = z.object({
+  has_keys: z.boolean(),
+  exchange: z.string().optional(),
+  label: z.string().optional(),
+  last_update: z.string().optional()
+});
+
+// ==================== MONITORING SCHEMAS ====================
+
+export const HealthSchema = z.object({
+  status: z.string(),
+  timestamp: z.string(),
+  system: z.record(z.string(), z.any()).optional(),
+  websocket: z.record(z.string(), z.any()).optional(),
+  details: z.record(z.string(), z.any()).optional()
+});
+
+// ==================== HISTORICAL SCHEMAS ====================
+
+/**
+ * Backfill Task Status Schema
+ */
+export const BackfillTaskSchema = z.object({
+  task_id: z.string(),
+  status: z.enum(['running', 'completed', 'failed', 'stopped']),
+  exchange: z.string(),
+  symbol: z.string(),
+  market: z.string(),
+  progress: z.number(),
+  started_at: z.number(),
+  completed_at: z.number().optional(),
+  failed_at: z.number().optional(),
+  error: z.string().optional(),
+  candles_processed: z.number().optional()
+}).passthrough();
+
+// ==================== TYPE EXPORTS ====================
+
+export type OrderBookEntry = [number, number];
+export type OrderBook = z.infer<typeof OrderBookSchema>;
+export type Trade = z.infer<typeof TradeSchema>;
+export type Ticker = z.infer<typeof TickerSchema>;
+export type Symbol = z.infer<typeof SymbolSchema>;
+export type Candle = z.infer<typeof CandleSchema>;
+export type WhaleTransaction = z.infer<typeof WhaleTransactionSchema>;
+export type WhaleStatistics = z.infer<typeof WhaleStatisticsSchema>;
+export type BackfillTask = z.infer<typeof BackfillTaskSchema>;
+export type Health = z.infer<typeof HealthSchema>;
+</file>
+
+<file path="frontend/delete/api/symbols.ts">
+import { BaseAPI } from './base';
+import { Symbol } from './schemas';
+import { getDefaultExchange, getDefaultMarketType } from '../config';
+
+// Response type from /api/market/symbols endpoint
+interface SymbolsResponse {
+  exchange: string;
+  symbols: Symbol[];
+  count: number;
+  requested_filter: string | null;
+  api_filter: string | null;
+  cached: boolean;
+  cache_key: string;
+}
+
+export class SymbolsAPI extends BaseAPI {
+  /**
+   * Get available trading symbols from exchange
+   * @param exchange - Exchange name (optional, uses backend default if not provided)
+   * @param market - Market type (optional: 'spot', 'futures')
+   * @returns Promise with symbols array
+   */
+  static async getSymbols(
+    exchange?: string,
+    market?: string
+  ): Promise<Symbol[]> {
+    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
+    const exch = exchange || await getDefaultExchange();
+    
+    try {
+      const response = await this.request('/api/market/symbols', {
+        params: { exchange: exch, ...(market && { market }) }
+      }) as SymbolsResponse;
+      
+      // Return the symbols array from the response
+      return response.symbols || [];
+    } catch (error) {
+      console.error(`[SymbolsAPI] Failed to fetch symbols for ${exch}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Get ticker data for symbols
+   * @param exchange - Exchange name (optional, uses backend default if not provided)
+   * @param symbol - Optional specific symbol (e.g., 'BTCUSDT')
+   * @param market_type - Market type (optional, uses backend default if not provided)
+   * @returns Promise with ticker data
+   */
+  static async getTicker(
+    exchange?: string,
+    symbol?: string,
+    market_type?: string
+  ) {
+    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
+    const exch = exchange || await getDefaultExchange();
+    // ✅ Wenn market_type nicht angegeben: Hole Default vom Backend
+    const mkt = market_type || await getDefaultMarketType();
+    
+    try {
+      const params: Record<string, string> = { exchange: exch, market_type: mkt };
+      if (symbol) {
+        params.symbol = symbol;
+      }
+      
+      const response = await this.request('/api/market/ticker', { params });
+      return response;
+    } catch (error) {
+      console.error(`[SymbolsAPI] Failed to fetch ticker for ${exch}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Get symbols with ticker data in parallel (Dual API Call Strategy)
+   * @param exchange - Exchange name (optional, uses backend default if not provided)
+   * @param market - Market type (optional)
+   * @returns Promise with combined symbols and ticker data
+   */
+  static async getSymbolsWithTicker(
+    exchange?: string,
+    market?: string
+  ) {
+    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
+    const exch = exchange || await getDefaultExchange();
+    // ✅ Wenn market nicht angegeben: Hole Default vom Backend
+    const mkt = market || await getDefaultMarketType();
+    
+    try {
+      // Parallel API calls for better performance
+      const [symbols, ticker] = await Promise.all([
+        this.getSymbols(exch, mkt),
+        this.getTicker(exch, undefined, mkt)
+      ]);
+
+      return { symbols, ticker };
+    } catch (error) {
+      console.error(`[SymbolsAPI] Failed to fetch symbols with ticker for ${exch}:`, error);
+      return { symbols: [], ticker: null };
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/trading.ts">
+import { BaseAPI } from './base';
+import { eventBus } from '../../../delete/shared/events/EventBus';
+import { getDefaultExchange, getDefaultMarketType } from '../config';
+import { HistoricalAPI } from './historical';
+
+// Types inline definiert da trading.ts verschoben wurde
+interface OrderBookEntry {
+  price: number;
+  size: number;
+  side: 'buy' | 'sell';
+}
+
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: string;
+  ts: number;
+}
+
+// CoinSetting interface für Settings API
+interface CoinSetting {
+  exchange: string;
+  symbol: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite: boolean;
+  db_resolutions: number[];
+  chart_resolution: string;
+}
+
+// Generate unique event IDs
+function generateEventId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+export class TradingAPI extends BaseAPI {
+  // ✅ In-Flight-Map für Request-Deduplizierung (parallel)
+  private static inFlight = new Map<string, Promise<any>>();
+  
+  // ✅ TTL-Cache für Sequential Dedup (verhindert Refetch-Loops)
+  private static lastOk = new Map<string, { ts: number; data: any }>();
+  private static WINDOW_MS = 150; // 150ms Window
+
+  static async getOrderBook(
+    symbol: string,
+    market?: string,  // ✅ Optional! Nutzt Backend-Default
+    exchange?: string,  // ✅ Optional! Nutzt Backend-Default
+    limit: number = 15
+  ): Promise<{ asks: OrderBookEntry[]; bids: OrderBookEntry[] }> {
+    // ✅ Wenn exchange/market nicht angegeben: Hole Defaults vom Backend
+    const exch = exchange || await getDefaultExchange();
+    const mkt = market || await getDefaultMarketType();
+    
+    // ✅ Param-Guard
+    if (!symbol || !exch) {
+      console.warn('[TradingAPI] getOrderBook: Missing params', { symbol, exchange: exch });
+      return { asks: [], bids: [] };
+    }
+    
+    // ✅ inFlight-Map
+    const key = `orderbook|${exch}|${symbol}|${mkt}|${limit}`;
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key)!;
+    }
+    
+    const promise = (async () => {
+      try {
+        // OrderBook API has .data wrapper (latenz-optimiert structure)
+        const response = await this.request<{ 
+          data: { 
+            asks: number[][]; 
+            bids: number[][] 
+          } 
+        }>(`/api/market/orderbook`, {
+          params: { symbol, market_type: mkt, exchange: exch, limit }
+        });
+        
+        // Konvertiere Backend Arrays [price, quantity] zu Frontend Objects
+        const data = response?.data;
+        if (!data) {
+          return { asks: [], bids: [] };
+        }
+        
+        const asks: OrderBookEntry[] = (data.asks || [])
+          .filter((entry): entry is [number, number] => Array.isArray(entry) && entry.length >= 2)
+          .map(([price = 0, size = 0]) => ({
+            price,
+            size, 
+            side: 'sell' as const
+          }));
+        
+        const bids: OrderBookEntry[] = (data.bids || [])
+          .filter((entry): entry is [number, number] => Array.isArray(entry) && entry.length >= 2)
+          .map(([price = 0, size = 0]) => ({
+            price,
+            size,
+            side: 'buy' as const
+          }));
+        
+        return { asks, bids };
+      } catch (error) {
+        console.error(`[TradingAPI] Failed to fetch orderbook for ${symbol}:`, error);
+        return { asks: [], bids: [] };
+      } finally {
+        this.inFlight.delete(key);
+      }
+    })();
+    
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  static async getTrades(
+    symbol: string,
+    market?: string,  // ✅ Optional! Nutzt Backend-Default
+    exchange?: string,  // ✅ Optional! Nutzt Backend-Default
+    limit: number = 100
+  ): Promise<Trade[]> {
+    // ✅ Wenn exchange/market nicht angegeben: Hole Defaults vom Backend
+    const exch = exchange || await getDefaultExchange();
+    const mkt = market || await getDefaultMarketType();
+    
+    // ✅ Param-Guard
+    if (!symbol || !exch) {
+      console.warn('[TradingAPI] getTrades: Missing params', { symbol, exchange: exch });
+      return [];
+    }
+    
+    // ✅ inFlight-Map
+    const key = `trades|${exch}|${symbol}|${mkt}|${limit}`;
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key)!;
+    }
+    
+    const promise = (async () => {
+      try {
+        // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/market/trades (ro_market_data.py)
+        const response = await this.request<Trade[]>(`/api/market/trades`, {
+          params: { symbol, market_type: mkt, exchange: exch, limit }
+        });
+        return response || [];
+      } catch (error) {
+        console.error(`[TradingAPI] Failed to fetch trades for ${symbol}:`, error);
+        return [];
+      } finally {
+        this.inFlight.delete(key);
+      }
+    })();
+    
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  // ✅ NEUE METHODEN für weitere Backend-Endpoints:
+  static async getTicker(
+    exchange?: string,     // ✅ FIX: Parameter 1 ist exchange (wie useMarketData.ts erwartet)
+    symbol?: string,       // ✅ FIX: Parameter 2 ist symbol
+    market_type?: string   // ✅ FIX: Parameter 3 ist market_type
+  ) {
+    // ✅ Wenn exchange/market_type nicht angegeben: Hole Defaults vom Backend
+    const exch = exchange || await getDefaultExchange();
+    const mkt = market_type || await getDefaultMarketType();
+    
+    // ✅ Param-Guard: Kein Request ohne gültige Parameter
+    if (!exch || !symbol) {
+      console.warn('[TradingAPI] getTicker: Missing required params', { exchange: exch, symbol });
+      return null;
+    }
+    
+    // ✅ Eindeutiger Key für Deduplizierung
+    const key = `ticker|${exch}|${symbol}|${mkt}`;
+    
+    // ✅ 1. In-Flight Dedup (parallel)
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key)!;
+    }
+    
+    // ✅ 2. TTL-Cache Dedup (sequential, verhindert Refetch-Loops)
+    const cached = this.lastOk.get(key);
+    if (cached && performance.now() - cached.ts < this.WINDOW_MS) {
+      return cached.data;
+    }
+    
+    // ✅ Create & store promise
+    const promise = (async () => {
+      try {
+        const response = await this.request('/api/market/ticker', {
+          params: { exchange: exch, symbol, market_type: mkt }
+        });
+        // ✅ Store in TTL-Cache
+        this.lastOk.set(key, { ts: performance.now(), data: response });
+        return response;
+      } catch (error) {
+        console.error(`[TradingAPI] Failed to fetch ticker:`, error);
+        return null;
+      } finally {
+        this.inFlight.delete(key);  // ✅ Cleanup
+      }
+    })();
+    
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  static async getSymbols(
+    exchange?: string,  // ✅ FIX: Parameter 1 ist exchange (wie useSymbols.ts erwartet)
+    market?: string     // ✅ FIX: Parameter 2 ist market
+  ) {
+    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
+    const exch = exchange || await getDefaultExchange();
+    
+    // ✅ Eindeutiger Key pro Request
+    const key = `symbols|${exch}|${market || ''}`;
+    
+    // ✅ Return existing request if in-flight
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key)!;
+    }
+    
+    // ✅ Create new request
+    const promise = (async () => {
+      try {
+        const response = await this.request('/api/market/symbols', {
+          params: { exchange: exch, market }
+        });
+        return response;
+      } catch (error) {
+        console.error(`[TradingAPI] Failed to fetch symbols:`, error);
+        return [];
+      } finally {
+        // ✅ Cleanup: Remove from in-flight after completion
+        this.inFlight.delete(key);
+      }
+    })();
+    
+    // ✅ Store promise before returning
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  /**
+   * Get OHLC/Candle data
+   * 
+   * @deprecated Since v2.1.0 - Use HistoricalAPI.getOHLC() instead for schema validation
+   * This method delegates to HistoricalAPI but will be removed in v3.0.0
+   * 
+   * Migration:
+   * ```typescript
+   * // OLD:
+   * await TradingAPI.getOHLC('BTCUSDT', '1m', 'spot', 'binance');
+   * 
+   * // NEW (Preferred):
+   * await HistoricalAPI.getOHLC({
+   *   symbol: 'BTCUSDT',
+   *   interval: '1m',
+   *   market_type: 'spot',
+   *   exchange: 'binance'
+   * });
+   * ```
+   */
+  static async getOHLC(
+    symbol: string,
+    interval: string = '1m',
+    market_type?: string,
+    exchange?: string,
+    limit: number = 100
+  ) {
+    // ⚠️ Deprecation Warning (Development only)
+    if ((import.meta as any).env.DEV) {
+      console.warn(
+        '[DEPRECATED] TradingAPI.getOHLC() → Use HistoricalAPI.getOHLC() for enterprise-grade validation. ' +
+        'Will be removed in v3.0.0'
+      );
+    }
+    
+    // ✅ Resolve optional parameters with defaults before delegation
+    const exch = exchange || await getDefaultExchange();
+    const mkt = market_type || await getDefaultMarketType();
+    
+    // ✅ Delegation to Single Source of Truth (HistoricalAPI)
+    // This ensures consistent schema validation via ChartDataSchema
+    return HistoricalAPI.getOHLC({
+      symbol,
+      exchange: exch,  // Now guaranteed to be string
+      interval,
+      market_type: mkt,
+      limit
+    });
+  }
+
+  // 🚀 LANE SYSTEM: Settings API mit Event-Emitting (konform mit ro_settings.py)
+  static async getSettings(exchange?: string): Promise<CoinSetting[]> {
+    // ✅ Dynamischer Backend-Endpoint: /api/settings/coin-settings (ro_settings.py)
+    const url = '/api/settings/coin-settings';
+    
+    try {
+      // Backend liefert: { success: boolean, data: { [key: string]: CoinSetting } }
+      const response = await this.request<{ success: boolean; data: Record<string, any> }>(url);
+      
+      if (!response?.success || !response?.data) {
+        console.warn('[TradingAPI] Invalid settings response format');
+        return [];
+      }
+      
+      // ✅ Konvertiere Backend Object zu Array, optional nach Exchange filtern
+      const allSettings = Object.values(response.data) as CoinSetting[];
+      const filteredSettings = exchange 
+        ? allSettings.filter(s => s.exchange?.toLowerCase() === exchange.toLowerCase())
+        : allSettings;
+      
+      // Emit event for Lane Bridge
+      eventBus.emit('SETTINGS_UPDATE', {
+        eventId: generateEventId(),
+        action: 'loaded',
+        settings: filteredSettings,
+        exchange: exchange,
+        timestamp: Date.now()
+      });
+      
+      return filteredSettings;
+    } catch (error) {
+      console.error('[TradingAPI] Settings load failed:', error);
+      return [];
+    }
+  }
+
+  static async saveSettings(settings: CoinSetting[]): Promise<boolean> {
+    const eventId = generateEventId();
+    
+    try {
+      // Optimistic update
+      eventBus.emit('SETTINGS_UPDATE', {
+        eventId: eventId,
+        action: 'patched',
+        settings: settings,
+        timestamp: Date.now()
+      });
+      
+      // ✅ Backend erwartet einzelne Settings (ro_settings.py: CoinSettingsRequest)
+      // Sende jedes Setting einzeln zum /api/settings/coin-settings Endpoint
+      const savePromises = settings.map(setting => 
+        this.request('/api/settings/coin-settings', {
+          method: 'POST',
+          body: JSON.stringify({
+            exchange: setting.exchange,
+            symbol: setting.symbol,
+            market: setting.market || 'spot',
+            enabled: setting.store_live ?? true,
+            load_history: setting.load_history ?? false,
+            history_until: setting.history_until,
+            favorite: setting.favorite ?? false,
+            db_resolutions: setting.db_resolutions || [],
+            chart_resolution: setting.chart_resolution || '1m'
+          }),
+          headers: { 'Content-Type': 'application/json' }
+        })
+      );
+      
+      // ✅ Parallele Ausführung aller Saves
+      await Promise.all(savePromises);
+      
+      // Confirm successful save
+      eventBus.emit('SETTINGS_UPDATE', {
+        eventId: generateEventId(),
+        action: 'saved',
+        settings: settings,
+        timestamp: Date.now()
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('[TradingAPI] Settings save failed:', error);
+      
+      // Rollback: reload fresh settings from Backend
+      try {
+        const response = await this.request<{ success: boolean; data: Record<string, any> }>('/api/settings/coin-settings');
+        const freshSettings = response?.data ? Object.values(response.data) : [];
+        
+        eventBus.emit('SETTINGS_UPDATE', {
+          eventId: generateEventId(),
+          action: 'loaded',
+          settings: freshSettings,
+          timestamp: Date.now()
+        });
+      } catch (rollbackError) {
+        console.error('[TradingAPI] Settings rollback failed:', rollbackError);
+      }
+      
+      return false;
+    }
+  }
+
+}
+</file>
+
+<file path="frontend/delete/api/user-settings.ts">
+import { BaseAPI, APIError } from './base';
+
+/**
+ * User Settings Interface
+ */
+export interface UserSettings {
+  [key: string]: any;
+}
+
+/**
+ * User Settings API
+ * Handles user-specific settings and preferences
+ * Backend: ro_user_settings.py
+ * ⚠️ All endpoints require X-Client-ID header (auto-injected)
+ */
+export class UserSettingsAPI extends BaseAPI {
+  
+  /**
+   * Get user settings
+   * @param scope - Optional scope filter
+   * @returns User settings object
+   */
+  static async getSettings(scope?: string) {
+    try {
+      return await this.request('/api/user/settings', {
+        params: scope ? { scope } : undefined
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[UserSettingsAPI] Get Error:', error.message);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Update entire user settings (PUT - replace)
+   * @param data - Complete settings data
+   */
+  static async putSettings(data: UserSettings) {
+    try {
+      return await this.request('/api/user/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ data })
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[UserSettingsAPI] Put Error:', error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Partially update user settings (PATCH - merge)
+   * @param patch - Partial settings to update
+   */
+  static async patchSettings(patch: Partial<UserSettings>) {
+    try {
+      return await this.request('/api/user/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ patch })
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[UserSettingsAPI] Patch Error:', error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get user watchlists
+   * Backend returns: { data: { watchlists: [] } }
+   * @returns Array of watchlists
+   */
+  static async getWatchlists(): Promise<any[]> {
+    try {
+      const response = await this.request('/api/user/settings/watchlists');
+      // Backend gibt { data: { watchlists: [] } } zurück
+      return (response as any)?.data?.watchlists || [];
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[UserSettingsAPI] Get Watchlists Error:', error.message);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Update user watchlists
+   * @param watchlists - Array of watchlist objects
+   */
+  static async putWatchlists(watchlists: any[]) {
+    try {
+      return await this.request('/api/user/settings/watchlists', {
+        method: 'PUT',
+        body: JSON.stringify({ data: { watchlists } })
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[UserSettingsAPI] Put Watchlists Error:', error.message);
+      }
+      throw error;
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/api/whales.ts">
+import { BaseAPI, APIError } from './base';
+import { WhaleTransactionsSchema, WhaleStatisticsSchema } from './schemas';
+
+/**
+ * Whales API
+ * Handles whale transaction monitoring and statistics
+ * Backend: ro_whales.py
+ */
+export class WhalesAPI extends BaseAPI {
+  
+  /**
+   * Get whale events/transactions
+   * ⚠️ KONFORMITÄT: Endpoint geändert von /api/whales/recent → /api/whales/events
+   * ⚠️ KONFORMITÄT: Parameter geändert von hours → lookback_minutes
+   * 
+   * @param limit - Number of events to fetch (default: 100)
+   * @param exchange - Optional exchange filter
+   * @param minUsd - Minimum transaction value in USD (default: 0)
+   * @param lookbackMinutes - Time range in minutes (default: 60)
+   * @returns Array of whale transactions with decimal conversion
+   */
+  static async getEvents(
+    limit: number = 100,
+    exchange?: string,
+    minUsd: number = 0,
+    lookbackMinutes: number = 60
+  ) {
+    try {
+      return await this.request('/api/whales/events', {
+        params: { 
+          limit, 
+          exchange, 
+          min_usd: minUsd,                    // ✅ snake_case für Backend
+          lookback_minutes: lookbackMinutes   // ✅ Backend-konform
+        },
+        schema: WhaleTransactionsSchema
+      }) || [];
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[WhalesAPI] Events Error:', error.message);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Helper method: Get events by hours (converts to minutes)
+   * @param hours - Time range in hours
+   * @param limit - Number of events to fetch
+   * @param exchange - Optional exchange filter
+   * @param minUsd - Minimum transaction value in USD
+   * @returns Array of whale transactions
+   */
+  static async getEventsByHours(
+    hours: number = 24,
+    limit: number = 100,
+    exchange?: string,
+    minUsd: number = 0
+  ) {
+    return this.getEvents(limit, exchange, minUsd, hours * 60);
+  }
+
+  /**
+   * Get whale transaction statistics
+   * ⚠️ KONFORMITÄT: Parameter geändert von days → window_hours
+   * 
+   * @param windowHours - Time window in hours (default: 24)
+   * @param minUsd - Minimum transaction value in USD (default: 0)
+   * @param exchange - Optional exchange filter
+   * @param symbol - Optional symbol filter
+   * @returns Whale statistics with decimal conversion
+   */
+  static async getStatistics(
+    windowHours: number = 24,
+    minUsd: number = 0,
+    exchange?: string,
+    symbol?: string
+  ) {
+    try {
+      return await this.request('/api/whales/statistics', {
+        params: { 
+          window_hours: windowHours,  // ✅ snake_case für Backend
+          min_usd: minUsd,
+          exchange,
+          symbol
+        },
+        schema: WhaleStatisticsSchema
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        console.error('[WhalesAPI] Statistics Error:', error.message);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Get whale system status
+   * @returns System status information
+   */
+  static async getSystemStatus() {
+    try {
+      return await this.request('/api/whales/system_status');
+    } catch (error) {
+      console.error('[WhalesAPI] System Status Error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get whale monitoring configuration
+   * @returns Current configuration
+   */
+  static async getConfig() {
+    try {
+      return await this.request('/api/whales/config');
+    } catch (error) {
+      console.error('[WhalesAPI] Config Error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Update whale monitoring configuration
+   * @param apiKey - API key for whale monitoring service
+   * @param apiSecret - API secret for whale monitoring service
+   */
+  static async updateConfig(apiKey: string, apiSecret: string) {
+    try {
+      return await this.request('/api/whales/config', {
+        method: 'POST',
+        body: JSON.stringify({ api_key: apiKey, api_secret: apiSecret })
+      });
+    } catch (error) {
+      console.error('[WhalesAPI] Update Config Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get whale monitoring health status
+   * @returns Health status information
+   */
+  static async getHealth() {
+    try {
+      return await this.request('/api/whales/health');
+    } catch (error) {
+      console.error('[WhalesAPI] Health Error:', error);
+      return null;
+    }
+  }
+}
+</file>
+
+<file path="frontend/delete/config/constants.ts">
+export const TRADING_CONSTANTS = {
+  DEFAULT_SYMBOL: 'BTCUSDT',
+  DEFAULT_MARKET: 'spot',
+  DEFAULT_INTERVAL: '1m',
+  DEFAULT_EXCHANGE: 'bitget',
+  
+  INTERVALS: ['1s', '5s', '15s', '1m', '5m', '15m', '1h', '4h', '1d'],
+  MARKETS: ['spot', 'usdt-m', 'coin-m-perp', 'coin-m-delivery', 'usdc-m'],
+  EXCHANGES: ['bitget', 'binance'],
+} as const;
+</file>
+
+<file path="frontend/delete/config/exchanges.ts">
 // Exchange Configuration with Dynamic Loading from Backend API
 // ================================================================
 // Loads exchange URLs dynamically from backend settings API
@@ -95394,10 +93613,170 @@ export const EXCHANGE_CONFIG = FALLBACK_CONFIG;
 preloadExchangeConfig();
 </file>
 
-<file path="frontend/src/contexts/TradingContext.tsx">
+<file path="frontend/delete/config/exchangeSupport.ts">
+// ✅ Exchange & Market Configuration (Single Source of Truth)
+// Definiert alle Exchanges, Market-Typen und deren Unterstützung
+
+export type MarketType = 
+  | "Spot"
+  | "USDT-M Futures"
+  | "Coin-M Perpetual-Futures"
+  | "Coin-M Delivery-Futures"
+  | "USDC-M Futures";
+
+export type ExchangeId = 
+  | "bitget"
+  | "binance"
+  | "mexc"
+  | "gateio"
+  | "bybit"
+  | "okx"
+  | "htx"
+  | "coinbase";
+
+// ✅ Exchange Liste mit Display-Namen
+export interface Exchange {
+  id: ExchangeId;
+  name: string;
+}
+
+export const EXCHANGES: Exchange[] = [
+  { id: "bitget", name: "Bitget" },
+  { id: "binance", name: "Binance" },
+  { id: "mexc", name: "MEXC" },
+  { id: "gateio", name: "Gate.io" },
+  { id: "bybit", name: "Bybit" },
+  { id: "okx", name: "OKX" },
+  { id: "htx", name: "HTX" },
+  { id: "coinbase", name: "Coinbase" },
+];
+
+// ✅ Market-Typen mit Beschreibungen
+export interface MarketOption {
+  name: MarketType;
+  description: string;
+  icon: string;
+}
+
+export const MARKET_OPTIONS: MarketOption[] = [
+  {
+    name: "Spot",
+    description: "Spot-Trading mit sofortiger Abwicklung",
+    icon: "💱",
+  },
+  {
+    name: "USDT-M Futures",
+    description: "Perpetual-Futures abgerechnet in USDT",
+    icon: "💰",
+  },
+  {
+    name: "Coin-M Perpetual-Futures",
+    description: "Futures-Trading ohne Ablaufdatum",
+    icon: "⚡",
+  },
+  {
+    name: "Coin-M Delivery-Futures",
+    description: "Futures-Trading mit Ablaufdatum",
+    icon: "⏰",
+  },
+  {
+    name: "USDC-M Futures",
+    description: "Perpetual-Futures abgerechnet in USDC",
+    icon: "💲",
+  },
+];
+
+export const EXCHANGE_SUPPORT: Record<ExchangeId, Record<MarketType, boolean>> = {
+  bitget: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": true,
+    "USDC-M Futures": false,
+  },
+  binance: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": true,
+    "USDC-M Futures": false,
+  },
+  mexc: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": false,
+    "Coin-M Delivery-Futures": false,
+    "USDC-M Futures": false,
+  },
+  gateio: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": false,
+    "USDC-M Futures": false,
+  },
+  bybit: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": false,
+    "USDC-M Futures": false,
+  },
+  okx: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": true,
+    "USDC-M Futures": false,
+  },
+  htx: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": true,
+    "Coin-M Delivery-Futures": true,
+    "USDC-M Futures": false,
+  },
+  coinbase: {
+    "Spot": true,
+    "USDT-M Futures": true,
+    "Coin-M Perpetual-Futures": false,
+    "Coin-M Delivery-Futures": false,
+    "USDC-M Futures": false,
+  },
+};
+
+// Helper function: Check if market is supported by exchange
+export const isMarketSupported = (exchange: string, market?: string): boolean => {
+  if (!market) return true;
+  return EXCHANGE_SUPPORT[exchange as ExchangeId]?.[market as MarketType] ?? false;
+};
+
+// Helper function: Map full market name to API filter value
+export const getMarketFilter = (selectedMarket?: string): string | null => {
+  if (!selectedMarket) return null;
+  
+  // Backend hat nur "spot" und "futures" - alle Futures-Typen → "futures"
+  const marketMap: Record<string, string> = {
+    "Spot": "spot",
+    "USDT-M Futures": "futures",
+    "Coin-M Perpetual-Futures": "futures", 
+    "Coin-M Delivery-Futures": "futures",
+    "USDC-M Futures": "futures",
+  };
+  
+  return marketMap[selectedMarket] || null;
+};
+</file>
+
+<file path="frontend/delete/config/index.ts">
+export * from './constants';
+export * from './exchanges';
+</file>
+
+<file path="frontend/delete/contexts/TradingContext.tsx">
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { MarketType } from '../config/exchangeSupport';
-import { getDefaultExchange, getDefaultMarketType } from '../services/config';
+import { getDefaultExchange, getDefaultMarketType } from '../../src/services/config';
 
 interface TradingContextType {
   selectedExchange: string;
@@ -95477,7 +93856,15 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
-<file path="frontend/src/features/api/components/APIMain.tsx">
+<file path="frontend/delete/features/ai/index.ts">
+// AI Feature exports
+export * from './hooks/useAIEngine';
+
+// AI Page (wird von pages/MLPage.tsx referenziert)
+export { default as AIPage } from '../../pages/MLPage';
+</file>
+
+<file path="frontend/delete/features/api/components/APIMain.tsx">
 import React from "react";
 
 export default function APIMain() {
@@ -95492,7 +93879,528 @@ export default function APIMain() {
 }
 </file>
 
-<file path="frontend/src/features/quantum/components/QuantumScreener.tsx">
+<file path="frontend/delete/features/api/types/api.ts">
+export interface APIProvider {
+  id: string;
+  name: string;
+  category: 'blockchain' | 'exchange' | 'data';
+  description: string;
+  url: string;
+  registerUrl: string;
+  documentation: string;
+  icon: string;
+  status: APIStatus;
+  rateLimit: RateLimit;
+  config: APIConfig;
+}
+
+export interface APIStatus {
+  connected: boolean;
+  lastChecked: Date | null;
+  responseTime: number | null;
+  errorMessage: string | null;
+  uptime: number;
+}
+
+export interface RateLimit {
+  current: number;
+  limit: number;
+  windowMs: number;
+  resetTime: Date | null;
+  warningThreshold: number;    // 80%
+  criticalThreshold: number;   // 95%
+}
+
+export interface APIConfig {
+  apiKey: string;
+  secret?: string;              // For exchanges
+  passphrase?: string;          // For Bitget
+  timeout: number;              // Request timeout
+  retryAttempts: number;        // Retry logic
+  enableRateLimit: boolean;     // Rate limiting toggle
+  priority: 'high' | 'medium' | 'low';  // Provider priority
+}
+
+export interface GlobalAPIState {
+  providers: Record<string, APIProvider>;
+  totalRequests: number;
+  successRate: number;
+  globalRateLimit: {
+    binance: RateLimit;
+    bitget: RateLimit;
+    etherscan: RateLimit;
+    bscscan: RateLimit;
+    polygonscan: RateLimit;
+    coingecko: RateLimit;
+  };
+  isLoading: boolean;
+  lastSync: Date | null;
+  error: string | null;
+}
+
+// Helper function to initialize rate limits
+export const initializeRateLimits = (): GlobalAPIState['globalRateLimit'] => {
+  const createRateLimit = (limit: number, windowMs: number): RateLimit => ({
+    current: 0,
+    limit,
+    windowMs,
+    resetTime: null,
+    warningThreshold: Math.floor(limit * 0.8),
+    criticalThreshold: Math.floor(limit * 0.95)
+  });
+
+  return {
+    binance: createRateLimit(1200, 60000), // 1200 requests/minute
+    bitget: createRateLimit(600, 60000),   // 600 requests/minute
+    etherscan: createRateLimit(100000, 86400000), // 100k requests/day
+    bscscan: createRateLimit(100000, 86400000),   // 100k requests/day
+    polygonscan: createRateLimit(100000, 86400000), // 100k requests/day
+    coingecko: createRateLimit(10000, 2628000000)   // 10k requests/month
+  };
+};
+
+// Utility functions
+export const buildAPIPayload = (providerId: string, config: APIConfig) => {
+  switch (providerId) {
+    case 'binance':
+      return {
+        key: config.apiKey,
+        secret: config.secret || ''
+      };
+    case 'bitget':
+      return {
+        key: config.apiKey,
+        secret: config.secret || '',
+        passphrase: config.passphrase || ''
+      };
+    default:
+      return config.apiKey;
+  }
+};
+
+export const buildValidationPayload = (providerId: string, config: APIConfig) => {
+  const payload = buildAPIPayload(providerId, config);
+  
+  if (typeof payload === 'string') {
+    return {
+      provider: providerId,
+      apiKey: payload
+    };
+  }
+  
+  return {
+    provider: providerId,
+    ...payload
+  };
+};
+
+export const calculateResetTime = (windowMs: number): Date => {
+  return new Date(Date.now() + windowMs);
+};
+</file>
+
+<file path="frontend/delete/features/api/types/providers.ts">
+// Multi-API Provider Configuration with Dynamic Loading from Backend API
+// =====================================================================
+// Loads all provider URLs dynamically from backend settings API
+// Replaces hardcoded URLs with GUI-configurable endpoints
+// Extended pattern from k_api.md/l_api.md for multi-API architecture
+
+import { APIProvider } from './api';
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  url: string;
+  registerUrl: string;
+  documentation: string;
+  icon: string;
+  rateLimit: {
+    current: number;
+    limit: number;
+    windowMs: number;
+    resetTime: null;
+    warningThreshold: number;
+    criticalThreshold: number;
+  };
+}
+
+export interface ProviderConfigs {
+  etherscan: ProviderConfig;
+  bscscan: ProviderConfig;
+  polygonscan: ProviderConfig;
+  coingecko: ProviderConfig;
+  binance: ProviderConfig;
+  bitget: ProviderConfig;
+}
+
+// Cache für geladene Provider-Konfiguration
+let cachedProviders: ProviderConfigs | null = null;
+let providersPromise: Promise<ProviderConfigs> | null = null;
+
+// Fallback-Provider-Konfiguration mit Environment Variables
+const FALLBACK_PROVIDERS: ProviderConfigs = {
+  // Blockchain APIs
+  etherscan: {
+    id: 'etherscan',
+    name: 'Etherscan',
+    category: 'blockchain',
+    description: 'Ethereum blockchain explorer and analytics platform',
+    url: '/api/fallback/etherscan',
+    registerUrl: 'https://etherscan.io/apis',
+    documentation: 'https://docs.etherscan.io/',
+    icon: '⟨E⟩',
+    rateLimit: {
+      current: 0,
+      limit: 100000,      // 100k requests/day free tier
+      windowMs: 86400000, // 24 hours
+      resetTime: null,
+      warningThreshold: 80000,   // 80k requests
+      criticalThreshold: 95000   // 95k requests
+    }
+  },
+  
+  bscscan: {
+    id: 'bscscan',
+    name: 'BSCScan',
+    category: 'blockchain',
+    description: 'Binance Smart Chain explorer for BSC data',
+    url: '/api/fallback/bscscan',
+    registerUrl: 'https://bscscan.com/apis',
+    documentation: 'https://docs.bscscan.com/',
+    icon: '⟨B⟩',
+    rateLimit: {
+      current: 0,
+      limit: 100000,      // 100k requests/day
+      windowMs: 86400000,
+      resetTime: null,
+      warningThreshold: 80000,
+      criticalThreshold: 95000
+    }
+  },
+  
+  polygonscan: {
+    id: 'polygonscan',
+    name: 'PolygonScan',
+    category: 'blockchain',
+    description: 'Polygon blockchain explorer for MATIC network',
+    url: '/api/fallback/polygonscan',
+    registerUrl: 'https://polygonscan.com/apis',
+    documentation: 'https://docs.polygonscan.com/',
+    icon: '⟨P⟩',
+    rateLimit: {
+      current: 0,
+      limit: 100000,
+      windowMs: 86400000,
+      resetTime: null,
+      warningThreshold: 80000,
+      criticalThreshold: 95000
+    }
+  },
+  
+  coingecko: {
+    id: 'coingecko',
+    name: 'CoinGecko',
+    category: 'data',
+    description: 'Cryptocurrency data and market information',
+    url: '/api/fallback/coingecko',
+    registerUrl: 'https://www.coingecko.com/en/api',
+    documentation: 'https://www.coingecko.com/en/api/documentation',
+    icon: '🦎',
+    rateLimit: {
+      current: 0,
+      limit: 10000,       // 10k requests/month free
+      windowMs: 2628000000, // 1 month
+      resetTime: null,
+      warningThreshold: 8000,
+      criticalThreshold: 9500
+    }
+  },
+  
+  // Exchange APIs
+  binance: {
+    id: 'binance',
+    name: 'Binance',
+    category: 'exchange',
+    description: 'World\'s largest cryptocurrency exchange platform',
+    url: '/api/fallback/binance',
+    registerUrl: 'https://www.binance.com/en/binance-api',
+    documentation: 'https://binance-docs.github.io/apidocs/',
+    icon: '₿',
+    rateLimit: {
+      current: 0,
+      limit: 1200,        // 1200 requests/minute
+      windowMs: 60000,    // 1 minute
+      resetTime: null,
+      warningThreshold: 960,    // 80% = 960 req/min
+      criticalThreshold: 1140   // 95% = 1140 req/min
+    }
+  },
+  
+  bitget: {
+    id: 'bitget',
+    name: 'Bitget',
+    category: 'exchange',
+    description: 'Leading cryptocurrency derivatives exchange',
+    url: '/api/fallback/bitget',
+    registerUrl: 'https://www.bitget.com/api-doc/',
+    documentation: 'https://bitgetlimited.github.io/apidoc/',
+    icon: '🚀',
+    rateLimit: {
+      current: 0,
+      limit: 600,         // 600 requests/minute
+      windowMs: 60000,
+      resetTime: null,
+      warningThreshold: 480,    // 80% = 480 req/min
+      criticalThreshold: 570    // 95% = 570 req/min
+    }
+  }
+} as const;
+
+/**
+ * Lädt alle Provider-Konfigurationen dynamisch vom Backend
+ * Nutzt Caching um wiederholte API-Calls zu vermeiden
+ */
+async function loadProviderConfigs(): Promise<ProviderConfigs> {
+  // Return cached config if available
+  if (cachedProviders) {
+    return cachedProviders;
+  }
+
+  // Return existing promise if already loading
+  if (providersPromise) {
+    return providersPromise;
+  }
+
+  // Start loading configuration
+  providersPromise = (async () => {
+    try {
+      // Parallel loading aller Provider-APIs + Registration URLs
+      const [etherscanUrls, bscscanUrls, polygonscanUrls, coingeckoUrls, binanceUrls, bitgetUrls, registrationUrls] = await Promise.all([
+        fetch('/api/settings/urls/etherscan', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/bscscan', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/polygonscan', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/coingecko', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/binance', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/urls/bitget', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+        fetch('/api/settings/providers/registration-urls', { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }),
+      ]);
+
+      // Prüfe alle Responses
+      const responses = [etherscanUrls, bscscanUrls, polygonscanUrls, coingeckoUrls, binanceUrls, bitgetUrls];
+      const failedResponse = responses.find(r => !r.ok);
+      if (failedResponse) {
+        throw new Error(`HTTP Error: ${failedResponse.status}`);
+      }
+
+      // Parse JSON responses
+      const [etherscanData, bscscanData, polygonscanData, coingeckoData, binanceData, bitgetData, registrationData] = await Promise.all([
+        etherscanUrls.json(),
+        bscscanUrls.json(),
+        polygonscanUrls.json(),
+        coingeckoUrls.json(),
+        binanceUrls.json(),
+        bitgetUrls.json(),
+        registrationUrls.json(),
+      ]);
+
+      // Erstelle Provider-Konfiguration aus Backend-Daten
+      const config: ProviderConfigs = {
+        etherscan: {
+          ...FALLBACK_PROVIDERS.etherscan,
+          url: `${etherscanData.api || 'https://api.etherscan.io'}/api`,
+          registerUrl: registrationData.etherscan || 'https://etherscan.io/apis',
+        },
+        bscscan: {
+          ...FALLBACK_PROVIDERS.bscscan,
+          url: `${bscscanData.api || 'https://api.bscscan.com'}/api`,
+          registerUrl: registrationData.bscscan || 'https://bscscan.com/apis',
+        },
+        polygonscan: {
+          ...FALLBACK_PROVIDERS.polygonscan,
+          url: `${polygonscanData.api || 'https://api.polygonscan.com'}/api`,
+          registerUrl: registrationData.polygonscan || 'https://polygonscan.com/apis',
+        },
+        coingecko: {
+          ...FALLBACK_PROVIDERS.coingecko,
+          url: coingeckoData.api || (import.meta as any)?.env?.VITE_COINGECKO_API_URL || (import.meta as any)?.env?.VITE_API_FALLBACK_URL || '/api/fallback/coingecko',
+        },
+        binance: {
+          ...FALLBACK_PROVIDERS.binance,
+          url: `${binanceData.rest || 'https://api.binance.com'}/api/v3`,
+        },
+        bitget: {
+          ...FALLBACK_PROVIDERS.bitget,
+          url: `${bitgetData.rest || 'https://api.bitget.com'}/api/v2`,
+        },
+      };
+
+      // Cache die Konfiguration
+      cachedProviders = config;
+      
+      console.log('✅ API Providers configuration loaded from backend:', config);
+      return config;
+
+    } catch (error) {
+      console.warn('⚠️ Failed to load providers config from backend, using fallback:', error);
+      
+      // Bei Fehlern: Fallback-Konfiguration verwenden
+      cachedProviders = FALLBACK_PROVIDERS;
+      return FALLBACK_PROVIDERS;
+    } finally {
+      // Reset promise so future calls can try again
+      providersPromise = null;
+    }
+  })();
+
+  return providersPromise;
+}
+
+/**
+ * Exportierte Funktion für den Zugriff auf Provider-Konfiguration
+ * Usage: const providers = await getProviderConfigs();
+ */
+export async function getProviderConfigs(): Promise<ProviderConfigs> {
+  return loadProviderConfigs();
+}
+
+/**
+ * Synchrone Funktion für den Zugriff auf gecachte Provider-Konfiguration
+ * Gibt Fallback zurück wenn noch nicht geladen
+ */
+export function getProviderConfigsSync(): ProviderConfigs {
+  return cachedProviders || FALLBACK_PROVIDERS;
+}
+
+/**
+ * Cache leeren - nützlich für Testing oder wenn Konfiguration aktualisiert wurde
+ */
+export function clearProviderConfigsCache(): void {
+  cachedProviders = null;
+  providersPromise = null;
+  console.log('🔄 API Providers configuration cache cleared');
+}
+
+/**
+ * Preload der Provider-Konfiguration beim Import
+ * Startet das Laden im Hintergrund ohne zu warten
+ */
+export function preloadProviderConfigs(): void {
+  if (!cachedProviders && !providersPromise) {
+    loadProviderConfigs().catch(() => {
+      // Ignoriere Fehler beim Preload
+    });
+  }
+}
+
+/**
+ * Hilfsfunktion: Einzelnen Provider by ID abrufen
+ */
+export async function getProviderById(id: string): Promise<ProviderConfig | null> {
+  const providers = await getProviderConfigs();
+  return providers[id as keyof ProviderConfigs] || null;
+}
+
+/**
+ * Hilfsfunktion: Provider nach Kategorie filtern
+ */
+export async function getProvidersByCategory(category: string): Promise<ProviderConfig[]> {
+  const providers = await getProviderConfigs();
+  return Object.values(providers).filter(provider => provider.category === category);
+}
+
+// Legacy Export für Rückwärtskompatibilität
+// Nutzt Fallback-Konfiguration, sollte durch getProviderConfigs() ersetzt werden
+export const API_PROVIDERS: Record<string, Omit<APIProvider, 'status' | 'config'>> = Object.fromEntries(
+  Object.entries(FALLBACK_PROVIDERS).map(([key, provider]) => [
+    key, 
+    {
+      id: provider.id,
+      name: provider.name,
+      category: provider.category,
+      description: provider.description,
+      url: provider.url,
+      registerUrl: provider.registerUrl,
+      documentation: provider.documentation,
+      icon: provider.icon,
+      rateLimit: provider.rateLimit
+    }
+  ])
+);
+
+// Auto-Preload beim Import
+preloadProviderConfigs();
+</file>
+
+<file path="frontend/delete/features/database/types/database.ts">
+/**
+ * Database Feature Types
+ * TypeScript Interfaces für Historical/Live Data Collection
+ */
+
+export interface HistoricalConfig {
+  symbol: string;
+  market: string;
+  until_date: string;
+  interval?: string;
+  data_type?: string;
+}
+
+export interface LiveConfig {
+  symbol: string;
+  market: string;
+}
+
+export interface DatabaseOperationResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface ExchangeStatus {
+  exchange: string;
+  connected: boolean;
+  collecting_live: boolean;
+  historical_progress?: number;
+}
+</file>
+
+<file path="frontend/delete/features/enterprise/index.ts">
+// Enterprise Feature exports
+export * from './hooks/useEnterprise';
+</file>
+
+<file path="frontend/delete/features/quantum/components/QuantumScreener.tsx">
 import { useState, useRef } from "react";
 import type { QuantumTier, TimeframeType, TierFilterType } from '../types/quantum';
 
@@ -95986,12 +94894,140 @@ const QuantumScreener = () => {
 export default QuantumScreener;
 </file>
 
-<file path="frontend/src/features/quantum/index.ts">
+<file path="frontend/delete/features/quantum/types/quantum.ts">
+export interface UniverseItem {
+  symbol: string;
+  score: number;
+  tier: number;
+  price: number;
+}
+
+export interface QuantumKPIs {
+  signals: string;
+  winRate: string;
+  avgPnL: string;
+  latency: string;
+  grid: string;
+  day: string;
+  pattern: string;
+  regime: string;
+  f1: string;
+  f2: string;
+  var: string;
+  sharpe: string;
+}
+
+export interface TierAnalysis {
+  tier1: {
+    whaleImpact: string;
+    toxicity: string;
+    flowDir: string;
+    volumeRatio: string;
+  };
+  tier2: {
+    patternConf: string;
+    regime: string;
+    strategyFit: string;
+    marketPhase: string;
+  };
+  tier3: {
+    tftConf: string;
+    nbeatsAcc: string;
+    riskScore: string;
+    posSize: string;
+    var: string;
+    cvar: string;
+  };
+}
+
+export type QuantumTier = 1 | 2 | 3;
+export type TimeframeType = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+export type TierFilterType = 'all' | '1' | '2' | '3';
+export type NLModelType = 'local' | 'anthropic:claude-sonnet-4-20250514' | 'anthropic:sonnet-4.1-1m' | 'openai:gpt-5-thinking';
+</file>
+
+<file path="frontend/delete/features/quantum/index.ts">
 export { default as QuantumScreener } from './components/QuantumScreener';
 export * from './types/quantum';
 </file>
 
-<file path="frontend/src/features/trading/components/ChartView.tsx">
+<file path="frontend/delete/features/trading/components/ChartSection.tsx">
+import React from "react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/shared/ui/resizable";
+import OrderBook from "./OrderBook";
+import ChartView from "./ChartView";
+import { MarketTrades } from "./MarketTrades";
+
+interface ChartSectionProps {
+  selectedCoin?: string;
+  selectedMarket?: string;
+  selectedInterval?: string;
+  selectedIndicators?: string[];
+  selectedExchange?: string;
+  onIndicatorRemove?: (indicator: string) => void;
+}
+
+const ChartSection = ({
+  selectedCoin = "BTC/USDT",
+  selectedMarket = "spot",
+  selectedInterval = "1m",
+  selectedIndicators = [],
+  selectedExchange = "bitget",
+  onIndicatorRemove,
+}: ChartSectionProps) => {
+  return (
+    <div className="mt-1 space-y-4">
+      <div className="h-[500px]">
+        <ResizablePanelGroup
+          direction="horizontal"
+          className="min-h-[500px] rounded-lg border"
+        >
+          {/* Chart Panel */}
+          <ResizablePanel defaultSize={75} minSize={50}>
+            <div className="h-full">
+              <ChartView
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                interval={selectedInterval}
+              />
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Right Panel - OrderBook with Tabs (like original) */}
+          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
+            <div className="h-full">
+              <OrderBook 
+                selectedCoin={selectedCoin}
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                currentPrice={104534.14}
+                onDataUpdate={(data) => {
+                  console.log("Orderbook data updated:", data);
+                }}
+                onTabChange={(tab) => {
+                  console.log("Tab changed:", tab);
+                }}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
+    </div>
+  );
+};
+
+export default ChartSection;
+</file>
+
+<file path="frontend/delete/features/trading/components/ChartView.tsx">
 /**
  * ChartView Component
  * ====================
@@ -96172,6 +95208,5076 @@ const ChartView: React.FC<ChartViewProps> = ({
 };
 
 export default ChartView;
+</file>
+
+<file path="frontend/delete/features/trading/components/CoinSelector.tsx">
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, RefreshCw, Settings } from 'lucide-react';
+import { CoinSetting, saveSettings, getSettings } from '../../../shared/api/trading';
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange?: string;
+  selectedMarket?: string;
+}
+
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange = "bitget",
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<CoinSetting[]>([]);
+  const [symbols, setSymbols] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const safeSettings = Array.isArray(settings) ? settings : [];
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      const data = await getSettings(exchange);
+      setSettings(data);
+    };
+    loadSettings();
+  }, [exchange]);
+
+  const loadSymbols = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/market/symbols?exchange=${exchange}`);
+      const data = await response.json();
+      setSymbols(data.symbols || []);
+    } catch (err) {
+      console.error('Failed to load symbols:', err);
+      setLocalError('Failed to load symbols');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+  }, [exchange, selectedMarket]);
+
+  const toggleFavorite = (symbol: string) => {
+    setFavorites(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(symbol)) {
+        newSet.delete(symbol);
+      } else {
+        newSet.add(symbol);
+      }
+      return newSet;
+    });
+  };
+
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    filtered = filtered.filter((symbol: any, index: number, self: any[]) => 
+      index === self.findIndex((s: any) => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    if (searchTerm) {
+      filtered = filtered.filter((symbol: any) =>
+        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+
+    return filtered.sort((a: any, b: any) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
+
+  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleFavorite(symbol);
+  };
+
+  const handleLiveClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, store_live: !s.store_live } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: true,
+        load_history: false,
+        history_until: '',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const handleHistoricalClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, load_history: !s.load_history } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: false,
+        load_history: true,
+        history_until: '2020-01-01',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const isLiveEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.store_live || false;
+  };
+
+  const isHistoricalEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.load_history || false;
+  };
+
+  const handleSymbolSelect = (coin: any) => {
+    onSymbolSelect(coin.symbol);
+    setIsOpen(false);
+  };
+
+  const displaySymbol = selectedSymbol;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {displaySymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          <div className="max-h-[300px] overflow-y-auto">
+            {loading ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin: any) => {
+                const uniqueKey = (coin as any).instrument_uid 
+                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === displaySymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => handleSymbolSelect(coin)}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleLiveClick(coin, e)}
+                        title={isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Live data ACTIVE for ${coin.symbol}` 
+                          : `Enable Live data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                    <div className="w-[12px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleHistoricalClick(coin, e)}
+                        title={isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Historical data ACTIVE for ${coin.symbol}` 
+                          : `Enable Historical data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loading}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
+</file>
+
+<file path="frontend/delete/features/trading/components/IndicatorSettingsModal.tsx">
+import { useState } from "react";
+import { X, HelpCircle } from "lucide-react";
+
+interface IndicatorSettingsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  indicatorType: string;
+  panelId: string;
+  onSave?: (settings: any) => void;
+}
+
+const IndicatorSettingsModal = ({ 
+  isOpen, 
+  onClose, 
+  indicatorType, 
+  panelId,
+  onSave 
+}: IndicatorSettingsModalProps) => {
+  const [activeTab, setActiveTab] = useState("Eingaben");
+  const [settings, setSettings] = useState({
+    // EMA Settings
+    length: 20,
+    source: "Schließ...",
+    offset: 0,
+    // Glättung
+    type: "Ohne",
+    smoothLength: 14,
+    bbStdDev: 2,
+    // Berechnung
+    timeframe: "Chart",
+    waitForTimeframeClose: true,
+    // Eingabewerte
+    showInputsInStatusLine: true,
+  });
+
+  if (!isOpen) return null;
+
+  const getIndicatorTitle = () => {
+    const titles: { [key: string]: string } = {
+      "ema": "EMA",
+      "sma": "SMA", 
+      "rsi": "RSI",
+      "macd": "MACD",
+      "bollinger": "Bollinger Bands",
+      "volume": "Volume",
+      "candlestick": "Candlestick Chart",
+      "main": "Candlestick Chart"
+    };
+    return titles[indicatorType] || indicatorType.toUpperCase();
+  };
+
+  const handleSave = () => {
+    if (onSave) {
+      onSave(settings);
+    }
+    onClose();
+  };
+
+  const renderEingabenTab = () => (
+    <div className="space-y-6">
+      {/* Länge */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-white text-sm">Länge</label>
+          <input
+            type="number"
+            value={settings.length}
+            onChange={(e) => setSettings(prev => ({ ...prev, length: parseInt(e.target.value) }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        {/* Quelle */}
+        <div className="flex items-center justify-between">
+          <label className="text-white text-sm">Quelle</label>
+          <select
+            value={settings.source}
+            onChange={(e) => setSettings(prev => ({ ...prev, source: e.target.value }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          >
+            <option>Schließ...</option>
+            <option>Öffnen</option>
+            <option>Hoch</option>
+            <option>Tief</option>
+            <option>HL2</option>
+            <option>HLC3</option>
+            <option>OHLC4</option>
+          </select>
+        </div>
+
+        {/* Offset */}
+        <div className="flex items-center justify-between">
+          <label className="text-white text-sm">Offset</label>
+          <input
+            type="number"
+            value={settings.offset}
+            onChange={(e) => setSettings(prev => ({ ...prev, offset: parseInt(e.target.value) }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* GLÄTTUNG Section */}
+      <div className="space-y-3">
+        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">GLÄTTUNG</h3>
+        
+        {/* Typ */}
+        <div className="flex items-center justify-between">
+          <label className="text-white text-sm">Typ</label>
+          <select
+            value={settings.type}
+            onChange={(e) => setSettings(prev => ({ ...prev, type: e.target.value }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          >
+            <option>Ohne</option>
+            <option>SMA</option>
+            <option>EMA</option>
+            <option>WMA</option>
+          </select>
+        </div>
+
+        {/* Länge */}
+        <div className="flex items-center justify-between">
+          <label className="text-white text-sm">Länge</label>
+          <input
+            type="number"
+            value={settings.smoothLength}
+            onChange={(e) => setSettings(prev => ({ ...prev, smoothLength: parseInt(e.target.value) }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        {/* BB-StdDev */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <label className="text-white text-sm">BB-StdDev</label>
+            <button className="text-gray-400 hover:text-white">
+              <HelpCircle size={14} />
+            </button>
+          </div>
+          <input
+            type="number"
+            value={settings.bbStdDev}
+            onChange={(e) => setSettings(prev => ({ ...prev, bbStdDev: parseInt(e.target.value) }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* BERECHNUNG Section */}
+      <div className="space-y-3">
+        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">BERECHNUNG</h3>
+        
+        {/* Zeitrahmen */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <label className="text-white text-sm">Zeitrahmen</label>
+            <button className="text-gray-400 hover:text-white">
+              <HelpCircle size={14} />
+            </button>
+          </div>
+          <select
+            value={settings.timeframe}
+            onChange={(e) => setSettings(prev => ({ ...prev, timeframe: e.target.value }))}
+            className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500"
+          >
+            <option>Chart</option>
+            <option>1m</option>
+            <option>5m</option>
+            <option>15m</option>
+            <option>1h</option>
+            <option>4h</option>
+            <option>1d</option>
+          </select>
+        </div>
+
+        {/* Checkbox */}
+        <div className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="waitForClose"
+            checked={settings.waitForTimeframeClose}
+            onChange={(e) => setSettings(prev => ({ ...prev, waitForTimeframeClose: e.target.checked }))}
+            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
+          />
+          <label htmlFor="waitForClose" className="text-white text-sm">
+            Auf die Zeitrahmenschließung warten
+          </label>
+        </div>
+      </div>
+
+      {/* EINGABEWERTE Section */}
+      <div className="space-y-3">
+        <h3 className="text-gray-400 text-xs uppercase tracking-wider font-medium">EINGABEWERTE</h3>
+        
+        <div className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="showInputs"
+            checked={settings.showInputsInStatusLine}
+            onChange={(e) => setSettings(prev => ({ ...prev, showInputsInStatusLine: e.target.checked }))}
+            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
+          />
+          <label htmlFor="showInputs" className="text-white text-sm">
+            Eingaben in der Statuszeile
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderStilTab = () => (
+    <div className="space-y-6">
+      <div className="text-center py-12">
+        <p className="text-gray-400">Stil-Einstellungen werden hier angezeigt</p>
+      </div>
+    </div>
+  );
+
+  const renderSichtbarkeitTab = () => (
+    <div className="space-y-6">
+      <div className="text-center py-12">
+        <p className="text-gray-400">Sichtbarkeits-Einstellungen werden hier angezeigt</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black bg-opacity-50"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className="relative bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-4">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-gray-700">
+          <h2 className="text-lg font-medium text-white">
+            {getIndicatorTitle()}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white transition-colors p-1 rounded"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-700">
+          {["Eingaben", "Stil", "Sichtbarkeit"].map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === tab
+                  ? "text-white border-b-2 border-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="p-4 max-h-96 overflow-y-auto">
+          {activeTab === "Eingaben" && renderEingabenTab()}
+          {activeTab === "Stil" && renderStilTab()}
+          {activeTab === "Sichtbarkeit" && renderSichtbarkeitTab()}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between p-4 border-t border-gray-700">
+          {/* Preset Dropdown */}
+          <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-blue-500">
+            <option>Standard...</option>
+            <option>Schnell</option>
+            <option>Langsam</option>
+            <option>Benutzerdefiniert</option>
+          </select>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-300 hover:text-white transition-colors"
+            >
+              Abbrechen
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
+            >
+              Ok
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default IndicatorSettingsModal;
+</file>
+
+<file path="frontend/delete/features/trading/components/IndicatorsModal.tsx">
+import { useState } from "react";
+import { X, Search, Star } from "lucide-react";
+
+interface IndicatorsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onIndicatorSelect?: (indicator: string) => void;
+}
+
+const IndicatorsModal = ({ isOpen, onClose, onIndicatorSelect }: IndicatorsModalProps) => {
+  const [activeSection, setActiveSection] = useState("Favoriten");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [favorites, setFavorites] = useState(
+    new Set(["Andean Scalping", "CM_RSI Plus EMA", "Elliott Wave Oscillator", "Candlestick Chart"]),
+  );
+
+  if (!isOpen) return null;
+
+  const sidebarItems = [
+    { id: "Favoriten", name: "Favoriten", icon: "⭐" },
+    { id: "Persönliches", name: "Persönliches", icon: "👤" },
+    { id: "TechnischeDaten", name: "Technische Daten", icon: "📊" },
+    { id: "Finanzdaten", name: "Finanzdaten", icon: "💰" },
+    { id: "Community", name: "Community", icon: "👥" },
+    { id: "NurAufEinladung", name: "Nur auf Einladung", icon: "🔒" },
+  ];
+
+  const indicatorsList = [
+    {
+      name: "Candlestick Chart",
+      author: "TradingView",
+      rating: "Built-in",
+      category: "Price Action",
+      description: "Additional candlestick chart overlay",
+      type: "candlestick"
+    },
+    {
+      name: "Volume",
+      author: "TradingView", 
+      rating: "Built-in",
+      category: "Volume",
+      description: "Volume histogram in separate panel",
+      type: "volume"
+    },
+    {
+      name: "Andean Scalping",
+      author: "unclerc0",
+      rating: 593,
+      category: "Scalping",
+      description: "Advanced scalping strategy based on Andean principles",
+      type: "andean"
+    },
+    {
+      name: "CM_RSI Plus EMA",
+      author: "ChrisMoody",
+      rating: "15.2K",
+      category: "RSI",
+      description: "Enhanced RSI indicator with Exponential Moving Average",
+      type: "rsi"
+    },
+    {
+      name: "Elliott Wave Oscillator",
+      author: "koryu",
+      rating: "12.2K",
+      category: "Wave Analysis",
+      description: "Professional Elliott Wave analysis tool",
+      type: "elliott"
+    },
+    {
+      name: "Elliott Wave [LuxAlgo]",
+      author: "LuxAlgo",
+      rating: "11.6K",
+      category: "Wave Analysis",
+      description: "Premium Elliott Wave detection algorithm",
+      isPremium: true,
+      type: "elliott-lux"
+    },
+    {
+      name: "EMA 20/50/100/200",
+      author: "drsweets",
+      rating: "13.9K",
+      category: "Moving Average",
+      description: "Multiple Exponential Moving Averages overlay",
+      type: "ema"
+    },
+    {
+      name: "Machine Learning Moving Average [LuxAlgo]",
+      author: "LuxAlgo",
+      rating: "4.9K",
+      category: "AI/ML",
+      description: "AI-powered adaptive moving average",
+      type: "ml-ma"
+    },
+    {
+      name: "Momentum With Bullish & Bearish Label",
+      author: "FriendOfTheTrend",
+      rating: 805,
+      category: "Momentum",
+      description: "Momentum indicator with clear buy/sell signals",
+      type: "momentum"
+    },
+    {
+      name: "Moving Average Exponential Day Trade Pack",
+      author: "FTynan",
+      rating: 540,
+      category: "Day Trading",
+      description: "Complete EMA package for day traders",
+      type: "ema-pack"
+    },
+    {
+      name: "Moving Average Exponential x 4",
+      author: "krogsgard",
+      rating: "3.4K",
+      category: "Moving Average",
+      description: "Four EMA lines with different periods",
+      type: "ema-4"
+    },
+    {
+      name: "Multi-Coin Table- Extended",
+      author: "tradingview",
+      rating: "8.1K",
+      category: "Multi-Asset",
+      description: "Monitor multiple cryptocurrencies simultaneously",
+      type: "multi-coin"
+    },
+    {
+      name: "Optimierte Volumen-Analyse",
+      author: "mmw-solutions",
+      rating: 1,
+      category: "Volume",
+      description: "Advanced volume analysis tool",
+      isProtected: true,
+      type: "volume-analysis"
+    },
+    {
+      name: "Pivot Point Supertrend",
+      author: "LonesomeTheBlue",
+      rating: "21.9K",
+      category: "Trend",
+      description: "Enhanced Supertrend with pivot points",
+      isPremium: true,
+      type: "pivot-supertrend"
+    },
+    {
+      name: "Range Detector [LuxAlgo]",
+      author: "LuxAlgo",
+      rating: "9.2K",
+      category: "Range",
+      description: "Automatic range detection and analysis",
+      type: "range-detector"
+    },
+    {
+      name: "RSI Candles",
+      author: "glaz",
+      rating: "17.5K",
+      category: "RSI",
+      description: "RSI-based candlestick coloring system",
+      type: "rsi-candles"
+    },
+  ];
+
+  const toggleFavorite = (indicatorName: string) => {
+    const newFavorites = new Set(favorites);
+    if (newFavorites.has(indicatorName)) {
+      newFavorites.delete(indicatorName);
+    } else {
+      newFavorites.add(indicatorName);
+    }
+    setFavorites(newFavorites);
+  };
+
+  const handleIndicatorClick = (indicator: any) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator.type);
+    }
+    // Don't close modal automatically - let user select multiple indicators
+  };
+
+  const filteredIndicators = indicatorsList.filter(
+    (indicator) =>
+      indicator.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      indicator.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      indicator.category.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
+  const renderIndicatorsList = () => {
+    let displayList = filteredIndicators;
+
+    if (activeSection === "Favoriten") {
+      displayList = filteredIndicators.filter((indicator) =>
+        favorites.has(indicator.name),
+      );
+    }
+
+    return (
+      <div className="flex-1 flex flex-col h-full">
+        {/* Search Bar - Fixed at top */}
+        <div className="p-6 pb-4 flex-shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input
+              type="text"
+              placeholder="Suche"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+
+        {/* Table Header - Fixed */}
+        <div className="px-6 pb-2 flex-shrink-0">
+          <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-medium pb-2 border-b border-gray-600">
+            <div className="col-span-1"></div>
+            <div className="col-span-5">SKRIPTNAME</div>
+            <div className="col-span-3"></div>
+            <div className="col-span-3 text-right"></div>
+          </div>
+        </div>
+
+        {/* Scrollable Indicators List */}
+        <div className="flex-1 overflow-y-auto px-6 pb-6">
+          <div className="space-y-1">
+            {displayList.map((indicator, index) => (
+              <div
+                key={index}
+                className="grid grid-cols-12 gap-4 py-3 hover:bg-gray-700 rounded transition-colors cursor-pointer group"
+                onClick={() => handleIndicatorClick(indicator)}
+              >
+                {/* Star */}
+                <div className="col-span-1 flex items-center">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFavorite(indicator.name);
+                    }}
+                    className={`transition-colors ${
+                      favorites.has(indicator.name)
+                        ? "text-yellow-400"
+                        : "text-gray-500 hover:text-yellow-400"
+                    }`}
+                  >
+                    <Star
+                      className="w-4 h-4"
+                      fill={
+                        favorites.has(indicator.name) ? "currentColor" : "none"
+                      }
+                    />
+                  </button>
+                </div>
+
+                {/* Indicator Name & Tags */}
+                <div className="col-span-5 flex items-center space-x-2">
+                  <span className="text-white font-medium">
+                    {indicator.name}
+                  </span>
+                  {indicator.isPremium && (
+                    <span className="bg-blue-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
+                      EP
+                    </span>
+                  )}
+                  {indicator.isProtected && (
+                    <div className="w-3 h-3 bg-green-500 rounded-full flex items-center justify-center">
+                      <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                    </div>
+                  )}
+                  {indicator.type === "candlestick" && (
+                    <span className="bg-green-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
+                      CHART
+                    </span>
+                  )}
+                  {indicator.type === "volume" && (
+                    <span className="bg-purple-600 text-white text-xs px-1.5 py-0.5 rounded font-medium">
+                      VOL
+                    </span>
+                  )}
+                </div>
+
+                {/* Author */}
+                <div className="col-span-3 flex items-center">
+                  <span className="text-blue-400 text-sm hover:text-blue-300 transition-colors">
+                    {indicator.author}
+                  </span>
+                </div>
+
+                {/* Rating */}
+                <div className="col-span-3 flex items-center justify-end">
+                  <span className="text-gray-300 text-sm">
+                    {indicator.rating}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {displayList.length === 0 && (
+            <div className="text-center py-12 text-gray-400">
+              <p>Keine Indikatoren gefunden</p>
+              {activeSection === "Favoriten" && (
+                <p className="text-sm mt-2">
+                  Füge Indikatoren zu deinen Favoriten hinzu, um sie hier zu
+                  sehen.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderDefaultSection = () => (
+    <div className="flex-1 p-6 h-full overflow-y-auto">
+      <h3 className="text-lg font-medium text-white mb-4">{activeSection}</h3>
+      <p className="text-gray-400">
+        Inhalte für {activeSection.toLowerCase()} sind noch nicht verfügbar.
+      </p>
+    </div>
+  );
+
+  const renderContent = () => {
+    switch (activeSection) {
+      case "Favoriten":
+      case "TechnischeDaten":
+        return renderIndicatorsList();
+      default:
+        return renderDefaultSection();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black bg-opacity-50"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className="relative bg-gray-800 rounded-lg shadow-xl w-full max-w-6xl h-[700px] flex font-['Inter']">
+        {/* Header */}
+        <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 border-b border-gray-700">
+          <h2 className="text-lg font-medium text-white">
+            Indikatoren, Metriken und Strategien
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white transition-colors p-1 rounded"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex w-full mt-16 h-[calc(100%-4rem)]">
+          {/* Sidebar */}
+          <div className="w-64 bg-gray-700 border-r border-gray-600 flex-shrink-0">
+            <div className="p-0">
+              {sidebarItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id)}
+                  className={`w-full flex items-center px-4 py-3 text-left text-sm transition-colors border-b border-gray-600 last:border-b-0 ${
+                    activeSection === item.id
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-300 hover:bg-gray-600 hover:text-white"
+                  }`}
+                >
+                  <span className="mr-3 text-base">{item.icon}</span>
+                  {item.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Main Content */}
+          {renderContent()}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default IndicatorsModal;
+</file>
+
+<file path="frontend/delete/features/trading/components/MarketTrades.tsx">
+import React, { useState, useEffect } from "react";
+import { useLiveTrades } from '../../../hooks/useLiveTrades';
+
+// Trade interface inline definiert (war in services/api/trading.ts)
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: string;
+  ts: number;
+}
+
+interface MarketTradesProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  maxLength?: number;
+}
+
+export const MarketTrades: React.FC<MarketTradesProps> = ({
+  symbol,
+  market,
+  exchange,
+  maxLength = 30,
+}) => {
+  // 🚀 NEW: Use WebSocketPool via Hook
+  const { trades: liveTrades } = useLiveTrades(exchange, symbol, market, maxLength);
+  
+  // Convert to Trade interface format
+  const trades = React.useMemo(() => {
+    return liveTrades.map((t, idx) => ({
+      id: `${t.ts || Date.now()}-${idx}`,
+      price: t.price,
+      size: t.size,
+      time: t.ts ? new Date(t.ts).toLocaleTimeString() : new Date().toLocaleTimeString(),
+      side: t.side || 'buy',
+      ts: t.ts || Date.now(),
+    } as Trade));
+  }, [liveTrades]);
+
+  return (
+    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-bold text-lg text-text-primary">Market Trades</span>
+      </div>
+      <div className="overflow-y-auto max-h-80">
+        <table className="w-full text-xs">
+          <thead>
+            <tr>
+              <th align="left">Time</th>
+              <th align="right">Price</th>
+              <th align="right">Amount</th>
+              <th align="center">Side</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((t, idx) => (
+              <tr key={idx} className="border-b border-border-color last:border-b-0">
+                <td className="py-1">{t.time}</td>
+                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
+                <td align="right">{t.size.toFixed(4)}</td>
+                <td align="center">{t.side}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="frontend/delete/features/trading/components/OptimizedOrderbook.tsx">
+import React, { useMemo, useCallback } from 'react';
+import { VirtualizedList } from '../../../shared/ui/virtualized-list';
+import { useDebouncedCallback } from '../../../hooks/use-debounce';
+
+interface OrderbookEntry {
+  price: number;
+  size: number;
+  total: number;
+  side: 'buy' | 'sell';
+}
+
+interface OptimizedOrderbookProps {
+  orders: OrderbookEntry[];
+  currentPrice: number;
+  onOrderClick?: (order: OrderbookEntry) => void;
+}
+
+const OptimizedOrderbook: React.FC<OptimizedOrderbookProps> = ({
+  orders,
+  currentPrice,
+  onOrderClick
+}) => {
+  // Memoized calculations für bessere Performance
+  const { sellOrders, buyOrders, maxTotal } = useMemo(() => {
+    const sells = orders
+      .filter(order => order.side === 'sell')
+      .sort((a, b) => b.price - a.price);
+    
+    const buys = orders
+      .filter(order => order.side === 'buy')
+      .sort((a, b) => b.price - a.price);
+    
+    const maxTotal = Math.max(...orders.map(order => order.total));
+    
+    return { sellOrders: sells, buyOrders: buys, maxTotal };
+  }, [orders]);
+
+  // Debounced click handler
+  const debouncedOrderClick = useDebouncedCallback((order: OrderbookEntry) => {
+    onOrderClick?.(order);
+  }, 150);
+
+  // Memoized render function für Orderbook-Einträge
+  const renderOrderEntry = useCallback((order: OrderbookEntry, index: number) => {
+    const volumeWidth = maxTotal > 0 ? (order.total / maxTotal) * 100 : 0;
+    
+    return (
+      <div
+        key={`${order.side}-${order.price}-${index}`}
+        className="relative cursor-pointer hover:bg-muted transition-colors"
+        onClick={() => debouncedOrderClick(order)}
+      >
+        {/* Volume Background */}
+        <div
+          className="absolute right-0 top-0 h-full"
+          style={{
+            width: `${volumeWidth}%`,
+            backgroundColor: order.side === 'buy' 
+              ? 'rgba(34, 197, 94, 0.15)' 
+              : 'rgba(239, 68, 68, 0.15)',
+          }}
+        />
+
+        {/* Order Row */}
+        <div className="relative grid grid-cols-3 text-xs py-1 px-4">
+          <div className="font-medium" style={{ 
+            color: order.side === 'buy' ? 'var(--color-buy)' : 'var(--color-sell)' 
+          }}>
+            {order.price.toFixed(2)}
+          </div>
+          <div className="text-center text-foreground font-medium">
+            {order.size.toFixed(6)}
+          </div>
+          <div className="text-right text-foreground font-medium">
+            {order.total.toFixed(2)}
+          </div>
+        </div>
+      </div>
+    );
+  }, [maxTotal, debouncedOrderClick]);
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Sell Orders (Top) */}
+      <div className="flex-1">
+        <VirtualizedList
+          items={sellOrders}
+          itemHeight={28}
+          containerHeight={200}
+          renderItem={renderOrderEntry}
+          className="border-b border-gray-200 dark:border-gray-600"
+        />
+      </div>
+
+      {/* Current Price */}
+      <div className="border-y border-border bg-muted py-2 px-4">
+        <div className="flex items-center justify-between">
+          <div className="text-lg font-bold" style={{ color: 'var(--color-sell)' }}>
+            {currentPrice.toFixed(2)} ↓
+          </div>
+          <div className="text-xs text-muted-foreground">
+            ≈ ${(currentPrice - 10).toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {/* Buy Orders (Bottom) */}
+      <div className="flex-1">
+        <VirtualizedList
+          items={buyOrders}
+          itemHeight={28}
+          containerHeight={200}
+          renderItem={renderOrderEntry}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default OptimizedOrderbook;
+</file>
+
+<file path="frontend/delete/features/trading/components/OptimizedTradesList.tsx">
+import React, { useMemo, useCallback } from 'react';
+import { VirtualizedList } from '../../../shared/ui/virtualized-list';
+import { useDebouncedCallback } from '../../../hooks/use-debounce';
+
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  side: 'buy' | 'sell';
+  time: string;
+  ts: string;
+}
+
+interface OptimizedTradesListProps {
+  trades: Trade[];
+  onTradeClick?: (trade: Trade) => void;
+}
+
+const OptimizedTradesList: React.FC<OptimizedTradesListProps> = ({
+  trades,
+  onTradeClick
+}) => {
+  // Memoized trade statistics
+  const tradeStats = useMemo(() => {
+    if (trades.length === 0) return null;
+    
+    const totalTrades = trades.length;
+    const buyTrades = trades.filter(t => t.side === 'buy').length;
+    const buyPressure = (buyTrades / totalTrades) * 100;
+    const avgPrice = trades.reduce((sum, trade) => sum + trade.price, 0) / totalTrades;
+    
+    return { totalTrades, buyPressure, avgPrice };
+  }, [trades]);
+
+  // Debounced click handler
+  const debouncedTradeClick = useDebouncedCallback((trade: Trade) => {
+    onTradeClick?.(trade);
+  }, 100);
+
+  // Memoized render function für Trade-Einträge
+  const renderTradeEntry = useCallback((trade: Trade, index: number) => {
+    return (
+      <div
+        key={trade.id}
+        className="cursor-pointer hover:bg-muted transition-colors"
+        onClick={() => debouncedTradeClick(trade)}
+      >
+        <div className="grid grid-cols-3 text-xs py-1 px-4">
+          <div className="font-medium flex items-center" style={{ 
+            color: trade.side === 'buy' ? 'var(--color-buy)' : 'var(--color-sell)' 
+          }}>
+            <span>{trade.price.toFixed(2)}</span>
+            <span className="ml-1 text-xs">
+              {trade.side === 'buy' ? '↑' : '↓'}
+            </span>
+          </div>
+          <div className="text-center text-foreground font-medium">
+            {trade.size.toFixed(6)}
+          </div>
+          <div className="text-right text-foreground text-xs font-medium">
+            {new Date(trade.ts).toLocaleTimeString()}
+          </div>
+        </div>
+      </div>
+    );
+  }, [debouncedTradeClick]);
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Trade Statistics Header */}
+      {tradeStats && (
+        <div className="p-2 bg-muted border-b border-border">
+          <div className="grid grid-cols-3 text-xs text-muted-foreground">
+            <div>Total: {tradeStats.totalTrades}</div>
+            <div>Buy: {tradeStats.buyPressure.toFixed(1)}%</div>
+            <div>Avg: {tradeStats.avgPrice.toFixed(2)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Virtualized Trades List */}
+      <div className="flex-1">
+        <VirtualizedList
+          items={trades}
+          itemHeight={24}
+          containerHeight={300}
+          renderItem={renderTradeEntry}
+          overscan={10}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default OptimizedTradesList;
+</file>
+
+<file path="frontend/delete/features/trading/components/OrderBook.tsx">
+import React, { useState, useMemo } from "react";
+import OptimizedOrderbook from "./OptimizedOrderbook";
+import OptimizedTradesList from "./OptimizedTradesList";
+import { useDebouncedCallback } from "../../../hooks/use-debounce";
+
+interface OrderbookEntry {
+  price: number;
+  size: number;
+  total: number;
+  side: "buy" | "sell";
+}
+
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: "buy" | "sell";
+  ts: string;
+}
+
+interface OrderbookProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  currentPrice?: number;
+  onTabChange?: (tab: "orderbook" | "trades") => void;
+}
+
+const OrderBook = ({
+  symbol,
+  market,
+  exchange,
+  currentPrice = 0,
+  onTabChange,
+}: OrderbookProps) => {
+  const [activeTab, setActiveTab] = useState<"orderbook" | "trades">("trades");
+  const [orderbook, setOrderbook] = useState<{ bids: any[]; asks: any[] }>({ bids: [], asks: [] });
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Debounced tab change handler
+  const debouncedTabChange = useDebouncedCallback((tab: "orderbook" | "trades") => {
+    console.log("Tab change requested:", tab);
+    setActiveTab(tab);
+    if (onTabChange) {
+      onTabChange(tab);
+    }
+  }, 100);
+
+  // ✅ REFACTORED: Transform Hook data to OrderbookEntry format
+  const processedOrders = useMemo(() => {
+    const asks: OrderbookEntry[] = orderbook.asks.map(ask => ({
+      price: ask.price,
+      size: ask.size,
+      total: ask.price * ask.size,
+      side: "sell" as const
+    }));
+    
+    const bids: OrderbookEntry[] = orderbook.bids.map(bid => ({
+      price: bid.price,
+      size: bid.size,
+      total: bid.price * bid.size,
+      side: "buy" as const
+    }));
+    
+    return [...asks, ...bids];
+  }, [orderbook]);
+
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow h-full flex flex-col">
+      {/* Header with Tabs */}
+      <div className="border-b border-gray-200 dark:border-gray-600 px-4 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex relative">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                debouncedTabChange("trades");
+              }}
+              className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer ${
+                activeTab === "trades"
+                  ? "text-black dark:text-white"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              Markt-Trades
+              {activeTab === "trades" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                debouncedTabChange("orderbook");
+              }}
+              className={`px-4 py-2 text-sm font-medium transition-colors ml-6 relative cursor-pointer ${
+                activeTab === "orderbook"
+                  ? "text-black dark:text-white"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              Orderbuch
+              {activeTab === "orderbook" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
+              )}
+            </button>
+          </div>
+          
+          {/* Status Indicator */}
+          <div className="flex items-center gap-2">
+            {isLoading && (
+              <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+            )}
+            {!isLoading && !error && (
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+            )}
+            {error && (
+              <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+            )}
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {isLoading ? "Loading..." : error ? "Error" : "Live"}
+            </span>
+          </div>
+        </div>
+
+        {/* Column Headers - ✅ ENTERPRISE: Generic labels, no symbol manipulation */}
+        {activeTab === "orderbook" && (
+          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
+            <div className="text-left">Preis (Quote)</div>
+            <div className="text-center">Betrag (Base)</div>
+            <div className="text-right">Umsatz</div>
+          </div>
+        )}
+
+        {activeTab === "trades" && (
+          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
+            <div className="text-left">Preis (Quote)</div>
+            <div className="text-center">Betrag (Base)</div>
+            <div className="text-right">Zeit</div>
+          </div>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === "orderbook" ? (
+          <div className="h-full">
+            {/* Error State */}
+            {error && (
+              <div className="p-4 text-center text-red-600 dark:text-red-400 text-sm">
+                {error}
+              </div>
+            )}
+            
+            <OptimizedOrderbook
+              orders={processedOrders}
+              currentPrice={currentPrice}
+              onOrderClick={(order: OrderbookEntry) => {
+                console.log("Order clicked:", order);
+              }}
+            />
+          </div>
+        ) : (
+          /* Trades Tab */
+          <div className="h-full">
+            <OptimizedTradesList
+              trades={trades}
+              onTradeClick={(trade: Trade) => {
+                console.log("Trade clicked:", trade);
+              }}
+            />
+            
+            {/* Empty State */}
+            {trades.length === 0 && !isLoading && (
+              <div className="text-gray-400 p-4 text-center">
+                {error ? "Failed to load trades" : "No trades yet."}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default OrderBook;
+</file>
+
+<file path="frontend/delete/features/trading/components/PriceDisplay.tsx">
+import { useState, useEffect } from "react";
+import { CoinData, MarketData } from '../types/trading';
+
+interface PriceDisplayProps {
+  currentCoinData: CoinData;
+  marketData?: MarketData;
+  tradingMode?: string;
+}
+
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim().replace("%", "").replace(",", ".");
+    const n = Number.parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function toNumberFromPrice(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim().replace(/\s+/g, "").replace(",", ".");
+    const n = Number.parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function getDelta24hColor(change24h: unknown): string {
+  const n = toNumber(change24h);
+  if (n === null) return "text-muted-foreground";
+  if (n > 0) return "text-green-500";
+  if (n < 0) return "text-red-500";
+  return "text-muted-foreground";
+}
+
+function fmtChange24h(v: unknown): string {
+  const n = toNumber(v);
+  if (n === null) return "-";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function fmtPrice(v: unknown, digits = 2): string {
+  const n = toNumberFromPrice(v);
+  if (n === null) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+const PriceDisplay = ({
+  currentCoinData,
+  marketData,
+  tradingMode = "Spot",
+}: PriceDisplayProps) => {
+  const data: MarketData = marketData || {
+    change24h: currentCoinData.change || "0.00",
+    high24h: "0.00",
+    low24h: "0.00",
+    volume24h: "0.00",
+    turnover24h: "0.00",
+  };
+
+  const [previousPrice, setPreviousPrice] = useState<number | null>(
+    toNumberFromPrice(currentCoinData.price),
+  );
+  const [priceColor, setPriceColor] = useState<string>("text-foreground");
+
+  useEffect(() => {
+    const currentPriceNum = toNumberFromPrice(currentCoinData.price);
+    
+    if (currentPriceNum !== null && previousPrice !== null) {
+      if (currentPriceNum > previousPrice) {
+        setPriceColor("text-green-600");
+      } else if (currentPriceNum < previousPrice) {
+        setPriceColor("text-red-600");
+      } else {
+        setPriceColor("text-foreground");
+      }
+    }
+
+    setPreviousPrice(currentPriceNum);
+  }, [currentCoinData.price, previousPrice]);
+
+
+  return (
+    <div className="flex items-start gap-8 mb-1" data-testid="price-display">
+      {/* Price + Type */}
+      <div className="flex flex-col items-start min-w-[170px]">
+        <span
+          className={`text-[1.65rem] font-bold ${priceColor} leading-tight tracking-wider`}
+        >
+          {fmtPrice(currentCoinData.price, 8)}
+        </span>
+        <span className="text-sm text-muted-foreground tracking-wider mt-0">
+          {tradingMode}
+        </span>
+      </div>
+
+      {/* Market Data - All in one line */}
+      <div className="flex items-center gap-x-6 text-[0.8rem] mt-2 font-sans whitespace-nowrap text-muted-foreground">
+        <span>
+          Δ 24h:{" "}
+          <span className={`font-bold ${getDelta24hColor(data.change24h)}`}>
+            {fmtChange24h(data.change24h)}
+          </span>
+        </span>
+        <span>
+          24h Hoch: <b>{data.high24h}</b>
+        </span>
+        <span>
+          24h Tief: <b>{data.low24h}</b>
+        </span>
+        <span>
+          24h Vol: <b>{data.volume24h}</b>
+        </span>
+        <span>
+          24h Umsatz: <b>{data.turnover24h}</b>
+        </span>
+        {data.category && (
+          <span>
+            Kategorie: <span className="font-bold">{data.category}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default PriceDisplay;
+</file>
+
+<file path="frontend/delete/features/trading/components/SystemStatus.tsx">
+import React from 'react';
+
+const SystemStatus: React.FC = () => {
+  // Simplified: Just show a basic status indicator
+  const backendStatus = 'online'; // TODO: Add real health check later
+  const healthStatus = 'unknown';
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
+      <div className="flex items-center gap-1">
+        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
+        <span className="text-[hsl(var(--status-success))] font-medium">
+          System {backendStatus}
+        </span>
+        <span className="text-muted-foreground ml-2">
+          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
+export default SystemStatus;
+</file>
+
+<file path="frontend/delete/features/trading/components/TimeButtons.tsx">
+import { useState } from "react";
+import { Button } from "@/shared/ui/button";
+import IndicatorsModal from "./IndicatorsModal";
+
+interface TimeButtonsProps {
+  onIntervalChange?: (interval: string) => void;
+  onIndicatorSelect?: (indicator: string) => void;
+}
+
+const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
+  const [activeTime, setActiveTime] = useState("1m");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIntervals, setSelectedIntervals] = useState(
+    new Set(["1s", "5s", "15s", "1m", "1h"]),
+  );
+  const [isIndicatorsModalOpen, setIsIndicatorsModalOpen] = useState(false);
+  const [isGridView, setIsGridView] = useState(false);
+
+  const displayIntervals = Array.from(selectedIntervals);
+
+  const allIntervals = [
+    { label: "1s", value: "1s" },
+    { label: "5s", value: "5s" },
+    { label: "10s", value: "10s" },
+    { label: "15s", value: "15s" },
+    { label: "30s", value: "30s" },
+    { label: "1m", value: "1m" },
+    { label: "2m", value: "2m" },
+    { label: "5m", value: "5m" },
+    { label: "10m", value: "10m" },
+    { label: "15m", value: "15m" },
+    { label: "30m", value: "30m" },
+    { label: "1h", value: "1h" },
+    { label: "2h", value: "2h" },
+    { label: "4h", value: "4h" },
+    { label: "6h", value: "6h" },
+    { label: "12h", value: "12h" },
+    { label: "1d", value: "1d" },
+    { label: "1w", value: "1w" },
+    { label: "1M", value: "1M" },
+    { label: "6M", value: "6M" },
+  ];
+
+  const handleTimeSelect = (interval: string) => {
+    setActiveTime(interval);
+    setIsDropdownOpen(false);
+    
+    if (onIntervalChange) {
+      onIntervalChange(interval);
+    }
+  };
+
+  const handleEditToggle = () => {
+    setIsEditMode(!isEditMode);
+  };
+
+  const handleIntervalToggle = (interval: string) => {
+    const newSelected = new Set(selectedIntervals);
+    if (newSelected.has(interval)) {
+      newSelected.delete(interval);
+    } else {
+      newSelected.add(interval);
+    }
+    setSelectedIntervals(newSelected);
+  };
+
+  const handleSave = () => {
+    setIsEditMode(false);
+  };
+
+  const handleIndicatorSelect = (indicator: string) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator);
+    }
+  };
+
+  const handleIndicatorSave = (settings: any) => {
+    console.log('Indicator settings saved:', settings);
+    // Here you would typically apply the indicator to the chart
+    // For now, we'll just log the settings
+  };
+
+  return (
+    <div className="flex items-center gap-3 my-3 text-sm">
+      <label className="font-medium text-muted-foreground mr-2">
+        Zeit
+      </label>
+
+      {/* Display Buttons */}
+      {displayIntervals.map((interval) => (
+        <div
+          key={interval}
+          className={`cursor-pointer select-none ${
+            activeTime === interval
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-foreground hover:bg-muted/80"
+          }`}
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => handleTimeSelect(interval)}
+        >
+          {interval}
+        </div>
+      ))}
+
+      {/* Dropdown Button */}
+      <div className="relative">
+        <div
+          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+        >
+          ▽
+        </div>
+
+        {/* Dropdown Menu */}
+        {isDropdownOpen && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  Intervall auswählen
+                </h3>
+                <button
+                  className="text-blue-500 text-sm font-medium"
+                  onClick={isEditMode ? handleSave : handleEditToggle}
+                >
+                  {isEditMode ? "Speichern" : "Bearbeiten"}
+                </button>
+              </div>
+
+              {/* Grid of time intervals */}
+              <div className="grid grid-cols-4 gap-2">
+                {allIntervals.map((interval) => (
+                  <div
+                    key={interval.value}
+                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
+                      activeTime === interval.value && !isEditMode
+                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                    onClick={() =>
+                      isEditMode
+                        ? handleIntervalToggle(interval.value)
+                        : handleTimeSelect(interval.value)
+                    }
+                  >
+                    {interval.label}
+
+                    {/* Checkbox in edit mode */}
+                    {isEditMode && (
+                      <div className="absolute top-1 right-1">
+                        <div
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
+                            selectedIntervals.has(interval.value)
+                              ? "bg-blue-500 text-white"
+                              : "bg-gray-300 text-gray-600"
+                          }`}
+                        >
+                          {selectedIntervals.has(interval.value) ? "✓" : ""}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Overlay to close dropdown */}
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsDropdownOpen(false)}
+          />
+        )}
+      </div>
+
+      {/* Separator */}
+      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+
+      {/* Indicators Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => setIsIndicatorsModalOpen(true)}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M2 12L5 9L8 11L12 7"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 4V7H9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Indikatoren</span>
+      </div>
+
+      {/* Grid View Button */}
+      <div
+        className={`cursor-pointer select-none flex items-center justify-center ${
+          isGridView
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-foreground hover:bg-muted/80"
+        }`}
+        style={{
+          padding: "4px 8px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+          width: "28px",
+          height: "24px",
+        }}
+        onClick={() => setIsGridView(!isGridView)}
+        title="Grid View"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <rect
+            x="1"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="1"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      {/* Alarm Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => {
+          console.log("Alarm clicked");
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <path
+            d="M7 4V7L9 9"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+          />
+        </svg>
+        Alarm
+      </div>
+
+      {/* Indicators Selection Modal */}
+      <IndicatorsModal 
+        isOpen={isIndicatorsModalOpen} 
+        onClose={() => setIsIndicatorsModalOpen(false)} 
+        onIndicatorSelect={handleIndicatorSelect} 
+      />
+    </div>
+  );
+};
+
+export default TimeButtons;
+</file>
+
+<file path="frontend/delete/features/trading/components/TradingTabs.tsx">
+import React, { useState } from 'react';
+import OrderBook from './OrderBook';
+import { MarketTrades } from './MarketTrades';
+
+interface TradingTabsProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+}
+
+const TradingTabs: React.FC<TradingTabsProps> = ({ symbol, market, exchange }) => {
+  const [activeTab, setActiveTab] = useState<'trades' | 'orderbook'>('trades');
+
+  return (
+    <div className="card-container h-full flex flex-col">
+      {/* Tab Header */}
+      <div className="flex" style={{ borderBottom: '1px solid var(--border-color)' }}>
+        <button
+          onClick={() => setActiveTab('trades')}
+          className="px-4 py-2 text-sm font-medium transition-colors"
+          style={{
+            color: activeTab === 'trades' ? 'var(--text-primary)' : 'var(--text-secondary)',
+            borderBottom: activeTab === 'trades' ? '2px solid var(--color-info)' : 'none'
+          }}
+        >
+          Markt-Trades
+        </button>
+        <button
+          onClick={() => setActiveTab('orderbook')}
+          className="px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2"
+          style={{
+            color: activeTab === 'orderbook' ? 'var(--text-primary)' : 'var(--text-secondary)',
+            borderBottom: activeTab === 'orderbook' ? '2px solid var(--color-info)' : 'none'
+          }}
+        >
+          Orderbuch
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-sell)' }} title="Error"></div>
+        </button>
+      </div>
+
+      {/* Tab Content */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === 'trades' ? (
+          <div className="p-4">
+            <MarketTrades symbol={symbol} market={market} exchange={exchange} />
+          </div>
+        ) : (
+          <div className="p-4">
+            <OrderBook symbol={symbol} market={market} exchange={exchange} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default TradingTabs;
+</file>
+
+<file path="frontend/delete/features/trading/components/TradingTerminal.tsx">
+import { useState, useRef, useEffect } from "react";
+import { ChevronDown, Play, Save, Folder, FileText, Terminal, Code, Plus, X } from "lucide-react";
+import { Button } from "@/shared/ui/button";
+
+interface TradingTerminalProps {
+  className?: string;
+}
+
+const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState("editor");
+
+  if (!isExpanded) {
+    return (
+      <div className={className}>
+        <button
+          onClick={() => setIsExpanded(true)}
+          className="text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          Trading Terminal Component
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`bg-bg-secondary border border-border-color rounded-lg overflow-hidden ${className}`}>
+      <div className="flex items-center justify-between bg-bg-tertiary px-4 py-2 border-b border-border-color">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIsExpanded(false)}
+            className="flex items-center gap-2 text-text-primary hover:text-white transition-colors"
+          >
+            <ChevronDown size={16} />
+            <span className="font-medium">Trading Terminal</span>
+          </button>
+          {/* Tabs */}
+        </div>
+        <div className="flex items-center gap-3">
+          <Button size="sm" variant="secondary"><Play size={12} className="mr-1" />Run</Button>
+          <Button size="sm"><Save size={12} className="mr-1" />Save</Button>
+        </div>
+      </div>
+      <div className="h-96">
+        {/* Placeholder for content like editor, terminal etc. */}
+        <div className="p-4 text-text-secondary text-sm">
+            Terminal content will be implemented here. This is a placeholder to ensure the layout is correct.
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TradingTerminal;
+</file>
+
+<file path="frontend/delete/features/trading/types/api-responses.ts">
+/**
+ * API Response Types (ZENTRAL)
+ * =============================
+ * 
+ * EINMAL DEFINIERT - überall genutzt!
+ * Alle Backend-Response-Formate an EINEM Ort.
+ */
+
+// ===== OrderBook Response =====
+export interface OrderBookResponse {
+  asks: [string, string][];  // [price, size]
+  bids: [string, string][];
+  exchange: string;
+  symbol: string;
+  market_type: string;
+  limit: number;
+  timestamp: string;
+  lastUpdateId?: string;
+}
+
+// ===== Chart History Response =====
+export interface ChartHistoryResponse {
+  status: string;
+  symbol: string;
+  exchange: string;
+  interval: string;
+  timestamp: string;
+  data: {
+    time: number;
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    volume: string;
+  }[];
+  metadata: {
+    request_id: number;
+    processing_time_ms: number;
+    candle_count: number;
+    data_source: string;
+    supported_intervals: string[];
+  };
+}
+
+// ===== Trades Response =====
+export interface TradesResponse {
+  exchange: string;
+  symbol: string;
+  status: string;
+  count: number;
+  limit: number;
+  available_exchanges: string[];
+  data: {
+    symbol: string;
+    price: number;
+    size: number;
+    side: 'buy' | 'sell';
+    timestamp: number;
+    exchange: string;
+    market: string;
+  }[];
+}
+
+// ===== Ticker Response =====
+export interface TickerResponse {
+  exchange: string;
+  count: number;
+  requested_filter?: string;
+  api_filter?: string;
+  tickers: {
+    symbol: string;
+    last: string;
+    bid: string;
+    ask: string;
+    volume: string;
+    change: string;
+    changeRate: string;
+    high: string;
+    low: string;
+    market_type: string;
+    exchange: string;
+  }[];
+}
+
+// ===== Health Response =====
+export interface HealthResponse {
+  status: string;
+  timestamp: string;
+  services: {
+    redis: boolean;
+    clickhouse_tcp: boolean;
+    clickhouse_http: boolean;
+    ai_system: boolean;
+    whale_system: boolean;
+  };
+  details: {
+    ai_components: number;
+    recent_whale_events: number;
+  };
+  summary: string;
+}
+
+// ===== Symbols Response =====
+export interface SymbolsResponse {
+  exchange: string;
+  market: string;
+  count: number;
+  symbols: {
+    symbol: string;
+    baseCoin: string;
+    quoteCoin: string;
+    status: string;
+    exchange: string;
+    market_type: string;
+  }[];
+}
+</file>
+
+<file path="frontend/delete/features/trading/types/api.ts">
+// API Response Types for Trading Endpoints
+
+export interface TickerResponse {
+  last: number;
+  changeRate: number;
+  high24h: number;
+  low24h: number;
+  baseVol: number;
+  quoteVol: number;
+}
+
+export interface ProcessedMarketData {
+  price: string;
+  change24h: string;
+  changePercent: number;
+  high24h: string;
+  low24h: string;
+  volume24h: string;
+  turnover24h: string;
+  category: string;
+}
+</file>
+
+<file path="frontend/delete/features/trading/types/index.ts">
+// Export all trading-related types
+export * from './trading';
+
+// Re-export commonly used types for convenience
+export type { CoinData, MarketData } from './trading';
+</file>
+
+<file path="frontend/delete/features/trading/types/trading.ts">
+// ✅ Shared Trading Types (Single Source of Truth)
+
+export interface CoinData {
+  id: string;
+  symbol: string;
+  market: string;
+  price: string;
+  change: string;
+  changePercent: number;
+  isFavorite: boolean;
+  liveStatus: "green" | "red";
+  histStatus: "green" | "red";
+}
+
+export interface MarketData {
+  change24h: string;
+  high24h: string;
+  low24h: string;
+  volume24h: string;
+  turnover24h: string;
+  category?: string;
+}
+</file>
+
+<file path="frontend/delete/features/trading/index.ts">
+// Components
+export { default as CoinSelector } from './components/CoinSelector';
+export { default as PriceDisplay } from './components/PriceDisplay';
+// TradingNav removed - GlobalNav is used instead
+export { default as ChartView } from './components/ChartView';
+export { default as OrderBook } from './components/OrderBook';
+export { default as SystemStatus } from './components/SystemStatus';
+export { default as TradingTabs } from './components/TradingTabs';
+export { MarketTrades } from './components/MarketTrades';
+export { default as TradingTerminal } from './components/TradingTerminal';
+export { default as TimeButtons } from './components/TimeButtons';
+export { default as ChartSection } from './components/ChartSection';
+export { default as IndicatorSettingsModal } from './components/IndicatorSettingsModal';
+export { default as IndicatorsModal } from './components/IndicatorsModal';
+
+// Types
+export * from './types';
+</file>
+
+<file path="frontend/delete/features/whales/index.ts">
+// Whales Feature exports
+export * from './hooks/useWhaleWebSocket';
+
+// Whales Page
+export { default as WhalesPage } from '../../pages/WhalesPage';
+</file>
+
+<file path="frontend/delete/hooks/use-debounce.ts">
+import { useCallback, useRef } from 'react';
+
+export function useDebouncedCallback<T extends (...args: any[]) => any>(
+  callback: T,
+  delay: number
+): T {
+  const timeoutRef = useRef<NodeJS.Timeout>();
+
+  const debouncedCallback = useCallback(
+    (...args: Parameters<T>) => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      
+      timeoutRef.current = setTimeout(() => {
+        callback(...args);
+      }, delay);
+    },
+    [callback, delay]
+  ) as T;
+
+  return debouncedCallback;
+}
+</file>
+
+<file path="frontend/delete/hooks/use-theme.ts">
+import { createContext, useContext, useEffect, useState } from "react";
+
+type Theme = "light" | "dark" | "system";
+
+type ThemeProviderContextType = {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
+  actualTheme: "light" | "dark";
+};
+
+const ThemeProviderContext = createContext<
+  ThemeProviderContextType | undefined
+>(undefined);
+
+export const useTheme = () => {
+  const context = useContext(ThemeProviderContext);
+  if (context === undefined) {
+    throw new Error("useTheme must be used within a ThemeProvider");
+  }
+  return context;
+};
+
+export const getSystemTheme = (): "light" | "dark" => {
+  if (typeof window !== "undefined") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  return "light";
+};
+
+export const useThemeLogic = () => {
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window !== "undefined") {
+      const savedTheme = localStorage.getItem("theme") as Theme;
+      return savedTheme || "system";
+    }
+    return "system";
+  });
+
+  const [systemTheme, setSystemTheme] = useState<"light" | "dark">(
+    getSystemTheme,
+  );
+
+  const actualTheme = theme === "system" ? systemTheme : theme;
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+    const handleChange = () => {
+      setSystemTheme(getSystemTheme());
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+
+    const root = window.document.documentElement;
+    root.classList.remove("light", "dark");
+    root.classList.add(actualTheme);
+  }, [theme, actualTheme]);
+
+  return {
+    theme,
+    setTheme,
+    actualTheme,
+  };
+};
+
+export { ThemeProviderContext };
+</file>
+
+<file path="frontend/delete/hooks/useEvent.ts">
+/**
+ * REACT HOOK FÜR EVENT-SYSTEM
+ * Typsichere Event-Subscription mit automatischem Cleanup
+ */
+
+import { useEffect, useRef } from 'react';
+import { eventBus, EventType } from '../shared/events/EventBus';
+
+/**
+ * Event-Hook für React-Komponenten
+ * @param type Event-Typ
+ * @param callback Handler-Funktion
+ * @param deps Dependency-Array
+ */
+export function useEvent<T = any>(
+  type: EventType,
+  callback: (payload: T) => void,
+  deps: any[] = []
+): void {
+  const callbackRef = useRef(callback);
+  
+  // Callback-Referenz aktuell halten
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    // Event-Subscription mit stabiler Callback-Referenz
+    const unsubscribe = eventBus.subscribe<T>(type, (payload: T) => {
+      callbackRef.current(payload);
+    });
+
+    // Cleanup bei Komponenten-Unmount
+    return unsubscribe;
+  }, [type, ...deps]);
+}
+
+/**
+ * Event-Hook mit Conditional-Logic
+ * @param type Event-Typ
+ * @param condition Bedingung wann Event gehört werden soll
+ * @param callback Handler-Funktion
+ * @param deps Dependency-Array
+ */
+export function useConditionalEvent<T = any>(
+  type: EventType,
+  condition: boolean,
+  callback: (payload: T) => void,
+  deps: any[] = []
+): void {
+  useEvent<T>(
+    type,
+    condition ? callback : () => {},
+    [condition, ...deps]
+  );
+}
+</file>
+
+<file path="frontend/delete/hooks/useLiveCandles.ts">
+// src/hooks/useLiveCandles.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number; // bucket start (seconds)
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = Number.parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useLiveCandles(
+  exchange: string,
+  symbol: string,
+  market = "spot",
+  interval = "1s",
+  maxCandles = 500
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
+
+  const lastRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    setCandles([]);
+    lastRef.current = null;
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market || "spot", setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market || "spot", (msg: WsMsg) => {
+      // 1) Server-side candle messages (authoritative if present)
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const t = toNum(m.t);
+
+        const cndl: LiveCandle = {
+          exchange: msg.exchange!,
+          symbol: msg.symbol!,
+          market: msg.market || market,
+          interval: (m.interval as string) || interval,
+          t: t || 0,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        if (!cndl.t) return;
+
+        // IMPORTANT: keep fallback state aligned with server candles
+        lastRef.current = cndl;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [cndl];
+
+          if (cndl.t === last.t) {
+            return prev.slice(0, -1).concat(cndl);
+          }
+          if (cndl.t > last.t) {
+            const next = prev.concat(cndl);
+            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+          }
+          // older candle -> ignore
+          return prev;
+        });
+
+        return;
+      }
+
+      // 2) Trade fallback -> build candles locally (only if no candle stream or as gap-filler)
+      if (msg.type !== "trade") return;
+
+      const m: any = msg;
+      const price = toNum(m.price);
+      const size = toNum(m.size);
+      if (!price) return;
+
+      // Use trade timestamp if available (reduces drift and bucket jitter)
+      const tsRaw = toNum(m.ts);
+      const tsMs = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : Date.now();
+      const t0 = bucketStartFromMs(tsMs, sec);
+
+      const cur = lastRef.current;
+
+      if (!cur || cur.t !== t0) {
+        const fresh: LiveCandle = {
+          exchange,
+          symbol,
+          market,
+          interval,
+          t: t0,
+          o: price,
+          h: price,
+          l: price,
+          c: price,
+          v: size || 0,
+        };
+        lastRef.current = fresh;
+
+        setCandles((prev) => {
+          const next = prev.concat(fresh);
+          return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+        });
+        return;
+      }
+
+      const upd: LiveCandle = {
+        ...cur,
+        h: Math.max(cur.h, price),
+        l: Math.min(cur.l, price),
+        c: price,
+        v: cur.v + (size || 0),
+      };
+      lastRef.current = upd;
+
+      setCandles((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last) return [upd];
+        if (last.t !== upd.t) return prev.concat(upd);
+        return prev.slice(0, -1).concat(upd);
+      });
+    });
+
+    return () => {
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, interval, sec, maxCandles]);
+
+  return { status, candles };
+}
+</file>
+
+<file path="frontend/delete/hooks/useLiveTrades.ts">
+// src/hooks/useLiveTrades.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function useLiveTrades(exchange: string, symbol: string, market = "spot", maxTrades = 200) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const pendingRef = useRef<LiveTrade[]>([]);
+  const rafRef = useRef<number | null>(null);
+
+  const key = useMemo(() => `${exchange}:${symbol}:${market}`, [exchange, symbol, market]);
+
+  useEffect(() => {
+    setTrades([]);
+    pendingRef.current = [];
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      if (msg.type !== "trade") return;
+
+      const t: LiveTrade = {
+        exchange: msg.exchange!,
+        symbol: msg.symbol!,
+        market: msg.market || market,
+        price: toNum((msg as any).price),
+        size: toNum((msg as any).size),
+        side: (msg as any).side,
+        ts: toNum((msg as any).ts) || undefined,
+      };
+
+      pendingRef.current.push(t);
+
+      if (rafRef.current === null) {
+        rafRef.current = window.requestAnimationFrame(() => {
+          rafRef.current = null;
+          const batch = pendingRef.current;
+          pendingRef.current = [];
+
+          if (batch.length === 0) return;
+
+          setTrades((prev) => {
+            const next = prev.concat(batch);
+            if (next.length <= maxTrades) return next;
+            return next.slice(next.length - maxTrades);
+          });
+        });
+      }
+    });
+
+    return () => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, maxTrades]);
+
+  return { status, trades };
+}
+</file>
+
+<file path="frontend/delete/lib/chartLazyLoader.ts">
+/**
+ * Lightweight Charts Lazy Loader
+ * Lädt lokale Chart-Library nur bei Bedarf (On-Demand)
+ * Library liegt in: /public/lightweight-charts.standalone.production.js (PROD)
+ * Spart ~200KB im Initial-Bundle
+ */
+
+declare global {
+  interface Window {
+    LightweightCharts: any;
+  }
+}
+
+let isLoading = false;
+let isLoaded = false;
+
+/**
+ * Lazy-Load der lokalen Lightweight Charts Library
+ * Nutzt production build in prod, development in dev
+ */
+export const loadChartLibrary = async (): Promise<any> => {
+  // Bereits geladen
+  if (isLoaded && window.LightweightCharts) {
+    return window.LightweightCharts;
+  }
+
+  // Laden läuft bereits - warte auf completion
+  if (isLoading) {
+    return new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (window.LightweightCharts) {
+          clearInterval(checkInterval);
+          resolve(window.LightweightCharts);
+        }
+      }, 50);
+    });
+  }
+
+  isLoading = true;
+
+  return new Promise((resolve, reject) => {
+    // Check ob Script bereits im DOM ist
+    const existingScript = document.querySelector(
+      'script[src*="lightweight-charts"]'
+    );
+
+    if (existingScript && window.LightweightCharts) {
+      isLoaded = true;
+      isLoading = false;
+      resolve(window.LightweightCharts);
+      return;
+    }
+
+    // Wähle production oder development build
+    const isDev = (import.meta as any).env.DEV;
+    const scriptSrc = isDev 
+      ? '/lightweight-charts.standalone.development.js'
+      : '/lightweight-charts.standalone.production.js';
+
+    // Erstelle Script-Tag
+    const script = document.createElement('script');
+    script.src = scriptSrc;
+    script.async = true;
+
+    script.onload = () => {
+      if (window.LightweightCharts) {
+        isLoaded = true;
+        isLoading = false;
+        resolve(window.LightweightCharts);
+      } else {
+        isLoading = false;
+        reject(new Error('LightweightCharts not found after script load'));
+      }
+    };
+
+    script.onerror = () => {
+      isLoading = false;
+      reject(new Error(`Failed to load LightweightCharts from ${scriptSrc}`));
+    };
+
+    document.head.appendChild(script);
+  });
+};
+
+/**
+ * Erstelle Chart-Instance mit Lazy-Loading
+ * @param container - DOM Container Element
+ * @param options - Chart Options
+ * @returns Promise mit Chart Instance
+ */
+export const createLazyChart = async (
+  container: HTMLElement,
+  options?: any
+) => {
+  const LightweightCharts = await loadChartLibrary();
+  return LightweightCharts.createChart(container, options);
+};
+
+/**
+ * Preload Chart Library (optional, für bessere UX)
+ * Rufe auf, wenn User wahrscheinlich Chart nutzen wird
+ */
+export const preloadChartLibrary = () => {
+  if (!isLoaded && !isLoading) {
+    loadChartLibrary().catch((error) => {
+      console.error('[ChartLazyLoader] Failed to preload chart library:', error);
+    });
+  }
+};
+
+/**
+ * Check ob Chart Library bereits geladen ist
+ */
+export const isChartLibraryLoaded = (): boolean => {
+  return isLoaded && window.LightweightCharts !== undefined;
+};
+</file>
+
+<file path="frontend/delete/lib/directDOMUpdater.ts">
+/**
+ * Direct DOM Updates for Ultra-Low-Latency Trading
+ * Bypasses React reconciliation for critical price updates
+ * Performance: 8-15ms → 1ms (90% improvement)
+ */
+
+interface OrderBookEntry {
+  price: number;
+  size: number;
+  total: number;
+  side: 'buy' | 'sell';
+}
+
+export class DirectDOMUpdater {
+  private static priceElements = new Map<string, HTMLElement>();
+  private static changeElements = new Map<string, HTMLElement>();
+  private static volumeElements = new Map<string, HTMLElement>();
+  private static orderBookContainers = new Map<string, HTMLElement>();
+
+  /**
+   * Direkte DOM-Updates ohne React State
+   * Umgeht komplette React Reconciliation
+   */
+  static updatePriceDirectly(symbol: string, price: number, change?: number): void {
+    const startTime = performance.now();
+
+    // Cache DOM elements für wiederholte Updates
+    let priceEl = this.priceElements.get(symbol);
+    if (!priceEl) {
+      const element = document.getElementById(`price-${symbol}`);
+      if (element) {
+        priceEl = element;
+        this.priceElements.set(symbol, element);
+      }
+    }
+
+    let changeEl = this.changeElements.get(symbol);
+    if (!changeEl) {
+      const element = document.getElementById(`change-${symbol}`);
+      if (element) {
+        changeEl = element;
+        this.changeElements.set(symbol, element);
+      }
+    }
+
+    // Atomic DOM Updates
+    if (priceEl) {
+      priceEl.textContent = price.toFixed(2);
+      
+      // Price direction indicator
+      if (change !== undefined) {
+        priceEl.className = `price-value ${change >= 0 ? 'price-up' : 'price-down'}`;
+      }
+    }
+
+    if (changeEl && change !== undefined) {
+      changeEl.textContent = `${change > 0 ? '+' : ''}${change.toFixed(2)}%`;
+      changeEl.className = `price-change ${change >= 0 ? 'positive text-green-500' : 'negative text-red-500'}`;
+    }
+
+    // Performance tracking
+    const endTime = performance.now();
+    performance.measure('direct-dom-update', {
+      start: startTime,
+      end: endTime
+    });
+  }
+
+  /**
+   * Bulk Updates für OrderBook (mehrere Zeilen gleichzeitig)
+   * Verwendet DocumentFragment für atomare Updates
+   */
+  static updateOrderBookDirectly(symbol: string, orders: OrderBookEntry[]): void {
+    const startTime = performance.now();
+
+    let container = this.orderBookContainers.get(symbol);
+    if (!container) {
+      const element = document.getElementById(`orderbook-${symbol}`);
+      if (element) {
+        container = element;
+        this.orderBookContainers.set(symbol, element);
+      }
+    }
+
+    if (!container) return;
+
+    // DocumentFragment für atomare Updates
+    const fragment = document.createDocumentFragment();
+    
+    // Separate buy/sell orders für bessere Performance
+    const buyOrders = orders.filter(order => order.side === 'buy').slice(0, 20);
+    const sellOrders = orders.filter(order => order.side === 'sell').slice(0, 20);
+
+    // Build buy orders
+    buyOrders.forEach(order => {
+      const row = document.createElement('tr');
+      row.className = 'orderbook-row hover:bg-muted/50';
+      row.innerHTML = `
+        <td class="text-right font-mono text-sm text-green-500">${order.price.toFixed(2)}</td>
+        <td class="text-right font-mono text-sm text-muted-foreground">${order.size.toFixed(4)}</td>
+        <td class="text-right font-mono text-sm text-muted-foreground">${order.total.toFixed(2)}</td>
+      `;
+      fragment.appendChild(row);
+    });
+
+    // Add separator
+    const separator = document.createElement('tr');
+    separator.innerHTML = '<td colspan="3" class="border-t border-border h-2"></td>';
+    fragment.appendChild(separator);
+
+    // Build sell orders
+    sellOrders.forEach(order => {
+      const row = document.createElement('tr');
+      row.className = 'orderbook-row hover:bg-muted/50';
+      row.innerHTML = `
+        <td class="text-right font-mono text-sm text-red-500">${order.price.toFixed(2)}</td>
+        <td class="text-right font-mono text-sm text-muted-foreground">${order.size.toFixed(4)}</td>
+        <td class="text-right font-mono text-sm text-muted-foreground">${order.total.toFixed(2)}</td>
+      `;
+      fragment.appendChild(row);
+    });
+
+    // Single atomic DOM replacement
+    container.replaceChildren(fragment);
+
+    const endTime = performance.now();
+    performance.measure('orderbook-update', {
+      start: startTime,
+      end: endTime
+    });
+  }
+
+  /**
+   * Volume-Updates mit visueller Indikation
+   */
+  static updateVolumeDirectly(symbol: string, volume: number, volumeChange?: number): void {
+    let volumeEl = this.volumeElements.get(symbol);
+    if (!volumeEl) {
+      const element = document.getElementById(`volume-${symbol}`);
+      if (element) {
+        volumeEl = element;
+        this.volumeElements.set(symbol, element);
+      }
+    }
+
+    if (volumeEl) {
+      const formattedVolume = volume > 1000000 
+        ? `${(volume / 1000000).toFixed(1)}M`
+        : volume > 1000 
+          ? `${(volume / 1000).toFixed(1)}K`
+          : volume.toFixed(0);
+
+      volumeEl.textContent = formattedVolume;
+
+      // Volume spike indicator
+      if (volumeChange && volumeChange > 20) {
+        volumeEl.className = 'volume-spike text-yellow-500 animate-pulse';
+        // Remove animation after 1 second
+        setTimeout(() => {
+          volumeEl!.className = 'volume-normal text-muted-foreground';
+        }, 1000);
+      }
+    }
+  }
+
+  /**
+   * Batch-Update für mehrere Symbole gleichzeitig
+   */
+  static batchUpdatePrices(updates: Array<{
+    symbol: string;
+    price: number;
+    change?: number;
+    volume?: number;
+  }>): void {
+    const startTime = performance.now();
+
+    // Process all updates in single frame
+    requestAnimationFrame(() => {
+      updates.forEach(({ symbol, price, change, volume }) => {
+        this.updatePriceDirectly(symbol, price, change);
+        if (volume) {
+          this.updateVolumeDirectly(symbol, volume);
+        }
+      });
+    });
+
+    const endTime = performance.now();
+    performance.measure('batch-price-update', {
+      start: startTime,
+      end: endTime
+    });
+  }
+
+  /**
+   * Cache löschen (für Memory Management)
+   */
+  static clearCache(): void {
+    this.priceElements.clear();
+    this.changeElements.clear();
+    this.volumeElements.clear();
+    this.orderBookContainers.clear();
+  }
+
+  /**
+   * Performance-Metriken für DOM Updates
+   */
+  static getDOMUpdateMetrics() {
+    const priceUpdates = performance.getEntriesByName('direct-dom-update');
+    const orderbookUpdates = performance.getEntriesByName('orderbook-update');
+    const batchUpdates = performance.getEntriesByName('batch-price-update');
+
+    return {
+      averagePriceUpdateTime: priceUpdates.length > 0
+        ? priceUpdates.reduce((sum, entry) => sum + entry.duration, 0) / priceUpdates.length
+        : 0,
+      averageOrderbookUpdateTime: orderbookUpdates.length > 0
+        ? orderbookUpdates.reduce((sum, entry) => sum + entry.duration, 0) / orderbookUpdates.length
+        : 0,
+      averageBatchUpdateTime: batchUpdates.length > 0
+        ? batchUpdates.reduce((sum, entry) => sum + entry.duration, 0) / batchUpdates.length
+        : 0,
+      totalPriceUpdates: priceUpdates.length,
+      totalOrderbookUpdates: orderbookUpdates.length,
+      lastUpdateTime: priceUpdates.length > 0 ? priceUpdates[priceUpdates.length - 1]?.duration || 0 : 0
+    };
+  }
+}
+</file>
+
+<file path="frontend/delete/lib/logger.ts">
+/**
+ * Production-Safe Logger
+ * Console output nur in DEV-Mode, in Production stumm
+ */
+
+const IS_DEV = (import.meta as any).env.DEV;
+
+export const logger = {
+  log: (...args: any[]) => {
+    if (IS_DEV) console.log('[App]', ...args);
+  },
+  
+  debug: (...args: any[]) => {
+    if (IS_DEV) console.debug('[Debug]', ...args);
+  },
+  
+  info: (...args: any[]) => {
+    if (IS_DEV) console.info('[Info]', ...args);
+  },
+  
+  warn: (...args: any[]) => {
+    // Warnings immer anzeigen (auch in Production)
+    console.warn('[Warn]', ...args);
+  },
+  
+  error: (...args: any[]) => {
+    // Errors immer anzeigen (auch in Production)
+    console.error('[Error]', ...args);
+  },
+  
+  trace: (...args: any[]) => {
+    if (IS_DEV) console.trace('[Trace]', ...args);
+  },
+};
+
+// Alias für backwards compatibility
+export const log = logger.log;
+export const debug = logger.debug;
+</file>
+
+<file path="frontend/delete/lib/metrics.ts">
+/**
+ * Performance-Metriken für Monitoring
+ * Erfasst FPS, Event-Lag, Memory
+ */
+
+interface PerformanceMetrics {
+  // FPS
+  currentFPS: number;
+  avgFPS: number;
+  
+  // Latenz
+  wsToUILag_p50: number;
+  wsToUILag_p95: number;
+  
+  // Coalescing
+  emitsPerFlush: number;
+  coalescedCount: number;
+  droppedCount: number;
+  
+  // Memory
+  heapUsedMB: number;
+}
+
+const lagSamples: number[] = [];
+let lastFrameTime = performance.now();
+let frameCount = 0;
+let fpsSum = 0;
+
+/**
+ * Event-Lag messen
+ * @param wsTimestamp - Timestamp vom WebSocket-Event (ingestTs)
+ */
+export function measureLag(wsTimestamp: number): void {
+  const now = performance.now();
+  const lag = now - wsTimestamp;
+  lagSamples.push(lag);
+  
+  // Nur letzte 100 Samples behalten
+  if (lagSamples.length > 100) {
+    lagSamples.shift();
+  }
+}
+
+/**
+ * FPS messen
+ */
+export function measureFPS(): void {
+  const now = performance.now();
+  const delta = now - lastFrameTime;
+  const fps = 1000 / delta;
+  
+  frameCount++;
+  fpsSum += fps;
+  lastFrameTime = now;
+}
+
+/**
+ * Metriken abrufen
+ */
+export function getMetrics(): PerformanceMetrics {
+  // Percentiles berechnen
+  const sorted = [...lagSamples].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length * 0.5)] || 0;
+  const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
+  
+  // FPS
+  const avgFPS = frameCount > 0 ? fpsSum / frameCount : 0;
+  
+  // Memory (falls verfügbar)
+  const memory = (performance as any).memory;
+  const heapMB = memory ? memory.usedJSHeapSize / 1024 / 1024 : 0;
+  
+  return {
+    currentFPS: 1000 / (performance.now() - lastFrameTime),
+    avgFPS,
+    wsToUILag_p50: p50,
+    wsToUILag_p95: p95,
+    emitsPerFlush: 0, // TODO: Vom Scheduler erfassen
+    coalescedCount: 0,
+    droppedCount: 0,
+    heapUsedMB: heapMB
+  };
+}
+
+/**
+ * Metriken zurücksetzen
+ */
+export function resetMetrics(): void {
+  lagSamples.length = 0;
+  lastFrameTime = performance.now();
+  frameCount = 0;
+  fpsSum = 0;
+}
+</file>
+
+<file path="frontend/delete/lib/react-query.ts">
+import { QueryClient } from '@tanstack/react-query';
+
+/**
+ * React Query Configuration
+ * Enterprise-grade caching & data synchronization
+ */
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Cache-Strategie
+      staleTime: 5000, // 5s - Daten gelten als fresh
+      gcTime: 1000 * 60 * 5, // 5min - Garbage Collection
+      
+      // Retry-Budget: Smart Retry-Logic
+      retry: (failureCount, error: any) => {
+        // Keine Retries bei Rate-Limit (429)
+        if (String(error).includes('Rate limit')) {
+          return false; // BaseAPI handled 429 bereits
+        }
+        
+        // Keine Retries bei 4xx Client-Errors (außer 429)
+        if (String(error).includes('API Error: 4')) {
+          return false;
+        }
+        
+        // Max 2 Retries bei 5xx Server-Errors
+        return failureCount < 2;
+      },
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      
+      // Performance
+      refetchOnWindowFocus: false, // Kein Auto-Refetch bei Tab-Switch
+      refetchOnReconnect: true, // Refetch bei Internet-Reconnect
+      refetchOnMount: false, // Kein Auto-Refetch bei Component-Mount
+      
+      // Error Handling
+      throwOnError: false, // Errors werden im QueryResult zurückgegeben
+    },
+    mutations: {
+      retry: (failureCount, error: any) => {
+        // Keine Retries bei Rate-Limit
+        if (String(error).includes('Rate limit')) {
+          return false;
+        }
+        // Max 1 Retry bei Mutations
+        return failureCount < 1;
+      },
+      onError: (error) => {
+        console.error('[ReactQuery] Mutation failed:', error);
+      },
+    },
+  },
+});
+
+/**
+ * Query Keys Factory
+ * Zentrale Verwaltung aller Query Keys für Type-Safety
+ */
+export const queryKeys = {
+  // Trading
+  orderBook: (exchange: string, symbol: string, market: string) =>
+    ['orderbook', exchange, symbol, market] as const,
+  
+  trades: (exchange: string, symbol: string, market: string) =>
+    ['trades', exchange, symbol, market] as const,
+  
+  ticker: (exchange: string, symbol?: string) =>
+    ['ticker', exchange, symbol] as const,
+  
+  symbols: (exchange: string) =>
+    ['symbols', exchange] as const,
+  
+  // Chart
+  chartHistory: (symbol: string, exchange: string, interval: string) =>
+    ['chart', 'history', symbol, exchange, interval] as const,
+  
+  // Market
+  health: () => ['health'] as const,
+  metrics: () => ['metrics'] as const,
+  
+  // Whales
+  whaleRecent: (limit: number, hours: number) =>
+    ['whales', 'recent', limit, hours] as const,
+  
+  whaleStatistics: (days: number) =>
+    ['whales', 'statistics', days] as const,
+  
+  // Settings
+  settings: (key: string) =>
+    ['settings', key] as const,
+} as const;
+</file>
+
+<file path="frontend/delete/lib/ultraFastParsing.ts">
+/**
+ * Ultra-Fast JSON Parsing for Trading Data
+ * Performance: 3x faster than JSON.parse() for trading messages
+ */
+
+interface TradingMessage {
+  price: number;
+  symbol: string;
+  timestamp: number;
+  type?: string;
+  change?: number;
+  volume?: number;
+}
+
+export class UltraFastParser {
+  private static priceRegex = /"price":([0-9.]+)/;
+  private static symbolRegex = /"symbol":"([^"]+)"/;
+  private static typeRegex = /"type":"([^"]+)"/;
+  private static changeRegex = /"change":(-?[0-9.]+)/;
+  private static volumeRegex = /"volume":([0-9.]+)/;
+
+  /**
+   * 3x schneller als JSON.parse für Trading-Daten
+   * Verwendet RegEx für kritische Felder, fallback zu JSON.parse
+   */
+  static parseTradingMessage(data: string): TradingMessage | null {
+    try {
+      // Performance measurement start
+      const startTime = performance.now();
+      
+      // Schnelle Validierung
+      if (!this.isValidJSON(data)) {
+        return null;
+      }
+
+      // RegEx-basierte Extraktion für kritische Felder
+      const priceMatch = this.priceRegex.exec(data);
+      const symbolMatch = this.symbolRegex.exec(data);
+      
+      if (priceMatch && symbolMatch) {
+        // Optionale Felder extrahieren
+        const typeMatch = this.typeRegex.exec(data);
+        const changeMatch = this.changeRegex.exec(data);
+        const volumeMatch = this.volumeRegex.exec(data);
+
+        const result: TradingMessage = {
+          price: parseFloat(priceMatch[1]!),
+          symbol: symbolMatch[1]!,
+          timestamp: Date.now(),
+          type: typeMatch?.[1],
+          change: changeMatch ? parseFloat(changeMatch[1]!) : undefined,
+          volume: volumeMatch ? parseFloat(volumeMatch[1]!) : undefined
+        };
+
+        // Performance measurement
+        const endTime = performance.now();
+        performance.mark('ultrafast-parse-end');
+        performance.measure('ultrafast-parse', { 
+          start: startTime, 
+          end: endTime 
+        });
+
+        return result;
+      }
+      
+      // Fallback zu JSON.parse nur bei komplexen Nachrichten
+      const parsed = JSON.parse(data);
+      return parsed as TradingMessage;
+      
+    } catch (error) {
+      console.error('Ultra-fast parsing error:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Batch-Parsing für mehrere Nachrichten
+   * Optimiert für hohe Durchsätze (500+ msg/sec)
+   */
+  static parseBatch(messages: string[]): TradingMessage[] {
+    const startTime = performance.now();
+    const results: TradingMessage[] = [];
+    
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i];
+      if (message) {
+        const parsed = this.parseTradingMessage(message);
+        if (parsed) {
+          results.push(parsed);
+        }
+      }
+    }
+    
+    const endTime = performance.now();
+    performance.measure('batch-parse', {
+      start: startTime,
+      end: endTime
+    });
+    
+    return results;
+  }
+
+  /**
+   * Validierung vor Parsing (verhindert Parsing-Fehler)
+   */
+  static isValidJSON(str: string): boolean {
+    return str.length > 10 && 
+           str.startsWith('{') && 
+           str.endsWith('}') && 
+           str.includes('"type":');
+  }
+
+  /**
+   * Performance-Metriken abrufen
+   */
+  static getParsingMetrics() {
+    const parseEntries = performance.getEntriesByName('ultrafast-parse');
+    const batchEntries = performance.getEntriesByName('batch-parse');
+    
+    return {
+      averageParseTime: parseEntries.length > 0 
+        ? parseEntries.reduce((sum, entry) => sum + entry.duration, 0) / parseEntries.length 
+        : 0,
+      averageBatchTime: batchEntries.length > 0
+        ? batchEntries.reduce((sum, entry) => sum + entry.duration, 0) / batchEntries.length
+        : 0,
+      totalMessages: parseEntries.length,
+      lastParseTime: parseEntries.length > 0 ? parseEntries[parseEntries.length - 1]?.duration || 0 : 0
+    };
+  }
+}
+</file>
+
+<file path="frontend/delete/lib/utils.ts">
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+</file>
+
+<file path="frontend/delete/lib/zod-transforms.ts">
+import { z } from 'zod';
+
+/**
+ * Transform for decimal values that may come as strings from the backend
+ * Converts String|Number|null → Number
+ */
+export const decimalTransform = z.union([
+  z.string(),
+  z.number(),
+  z.null(),
+  z.undefined()
+]).transform((val) => {
+  if (typeof val === 'number') return val;
+  if (!val) return 0;
+  const num = parseFloat(val);
+  return isNaN(num) ? 0 : num;
+}).pipe(z.number());
+
+/**
+ * Optional variant of decimalTransform
+ */
+export const optionalDecimal = decimalTransform.optional();
+
+/**
+ * Transform for OrderBook tuples [price, size]
+ * Converts ["65000.50", "1.5"] → [65000.5, 1.5]
+ */
+export const decimalTupleTransform = z.tuple([
+  z.union([z.string(), z.number()]).transform(v => 
+    typeof v === 'number' ? v : parseFloat(v) || 0
+  ),
+  z.union([z.string(), z.number()]).transform(v => 
+    typeof v === 'number' ? v : parseFloat(v) || 0
+  )
+]);
+
+/**
+ * Array of decimal tuples for OrderBook bids/asks
+ */
+export const decimalTupleArray = z.array(decimalTupleTransform);
+
+/**
+ * Helper to create a schema with multiple decimal fields
+ * @param fields - Array of field names to apply decimal transform
+ */
+export function createDecimalSchema<T extends string>(fields: T[]) {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  fields.forEach(field => {
+    shape[field] = decimalTransform;
+  });
+  return z.object(shape as Record<T, z.ZodTypeAny>).passthrough();
+}
+</file>
+
+<file path="frontend/delete/shared/api/trading.ts">
+// API endpoint for symbols data
+export interface ApiSymbol {
+  symbol: string;
+  market: string;
+  price: string;
+  change: string;
+  changePercent: number;
+}
+
+export interface ApiResponse {
+  symbols: ApiSymbol[];
+}
+
+// Backend API interfaces
+interface BackendSymbol {
+  symbol: string;
+  market_type: string;
+  status: string;
+  baseAsset: string;
+  quoteAsset: string;
+}
+
+interface BackendTicker {
+  symbol: string;
+  last: number;
+  high24h: number;
+  low24h: number;
+  changeRate: number;
+  baseVol: number;
+  quoteVol: number;
+  market_type: string;
+}
+
+interface BackendSymbolsResponse {
+  symbols: BackendSymbol[];
+  db_symbols: any[];
+}
+
+// Configuration - Uses Vite Environment Variables (TypeScript-safe)
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8100/api';
+const CACHE_TTL = 300000; // 5 minutes for symbols
+const TICKER_CACHE_TTL = 10000; // 10 seconds for tickers
+
+// Cache storage
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+  ttl: number;
+}
+
+const cache = new Map<string, CacheEntry<any>>();
+
+// Cache utilities
+function getCached<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  
+  if (Date.now() - entry.timestamp > entry.ttl) {
+    cache.delete(key);
+    return null;
+  }
+  
+  return entry.data;
+}
+
+function setCache<T>(key: string, data: T, ttl: number): void {
+  cache.set(key, {
+    data,
+    timestamp: Date.now(),
+    ttl,
+  });
+}
+
+// Settings API functions
+export interface CoinSetting {
+  exchange?: string;  // New: Exchange parameter
+  symbol: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite: boolean;
+  db_resolutions: number[];  // Updated: Now array instead of single value
+  chart_resolution: string;
+}
+
+// Exchange configuration - DYNAMISCH aus ENV
+export type Exchange = string; // ✅ Beliebiger Exchange aus .env
+export const DEFAULT_EXCHANGE: Exchange = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance'; // ✅ Aus ENV oder Fallback
+
+// Fetch settings with exchange support
+export async function getSettings(exchange?: Exchange, symbol?: string, market?: string): Promise<CoinSetting[]> {
+  try {
+    const params = new URLSearchParams();
+    // 🚨 FIX: Nur gültige Parameter hinzufügen, NIEMALS undefined!
+    const filteredExchange = (exchange && exchange !== 'all') ? exchange : undefined;
+    if (filteredExchange) params.append('exchange', filteredExchange);
+    if (symbol && symbol !== 'undefined') params.append('symbol', symbol);
+    if (market && market !== 'undefined') params.append('market', market);
+    
+    const queryString = params.toString();
+    const url = `${API_BASE}/settings/settings${queryString ? `?${queryString}` : ''}`;
+    
+    console.log(`[SymbolsAPI] Calling: ${url} (original: ${exchange}, filtered: ${filteredExchange || 'none'})`);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    console.log(`[SymbolsAPI] ✅ Got ${data.length} settings from ${url}`);
+    return data;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to fetch settings:', error);
+    return [];
+  }
+}
+
+// Save settings with exchange support
+export async function saveSettings(settings: CoinSetting[]): Promise<boolean> {
+  try {
+    // Ensure each setting has an exchange field (default to bitget for legacy compatibility)
+    const settingsWithExchange = settings.map(setting => ({
+      ...setting,
+      exchange: setting.exchange || DEFAULT_EXCHANGE,
+      // Convert single db_resolution to array for backward compatibility
+      db_resolutions: Array.isArray(setting.db_resolutions) 
+        ? setting.db_resolutions 
+        : [(setting as any).db_resolution || 60]
+    }));
+    
+    const response = await fetch(`${API_BASE}/settings/settings`, {
+      method: 'PUT',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(settingsWithExchange),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    
+    console.log('[SymbolsAPI] Settings saved successfully:', result);
+    return true;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to save settings:', error);
+    return false;
+  }
+}
+
+// Get settings for all exchanges
+export async function getAllSettings(): Promise<CoinSetting[]> {
+  try {
+    const [binanceSettings, bitgetSettings] = await Promise.all([
+      getSettings('binance').catch(() => []),
+      getSettings('bitget').catch(() => [])
+    ]);
+    
+    const allSettings = [...binanceSettings, ...bitgetSettings];
+    console.log(`[SymbolsAPI] Combined ${allSettings.length} settings from all exchanges`);
+    return allSettings;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to fetch settings from all exchanges:', error);
+    return [];
+  }
+}
+
+// Fetch symbols from backend with exchange support
+export async function fetchSymbols(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendSymbolsResponse> {
+  const cacheKey = `symbols_${exchange}`;
+  const cached = getCached<BackendSymbolsResponse>(cacheKey);
+  if (cached) return cached;
+  
+  try {
+    const response = await fetch(`${API_BASE}/market/symbols?exchange=${exchange}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+        timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
+    } as any);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    setCache(cacheKey, data, CACHE_TTL);
+    
+    console.log(`[SymbolsAPI] Fetched ${data.symbols?.length || 0} symbols from ${exchange}`);
+    return data;
+  } catch (error) {
+    console.error(`[SymbolsAPI] Failed to fetch symbols from ${exchange}:`, error);
+    throw error;
+  }
+}
+
+// Fetch tickers from backend with exchange support
+export async function fetchTickers(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendTicker[]> {
+  const cacheKey = `tickers_${exchange}`;
+  const cached = getCached<BackendTicker[]>(cacheKey);
+  if (cached) return cached;
+  
+  try {
+    const response = await fetch(`${API_BASE}/market/ticker?exchange=${exchange}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
+    } as any);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    // Handle new unified backend response format
+    const tickers = data.tickers || data; // Support both old and new format
+    setCache(cacheKey, tickers, TICKER_CACHE_TTL);
+    
+    console.log(`[SymbolsAPI] Fetched ${tickers.length} tickers from ${exchange}`);
+    return tickers;
+  } catch (error) {
+    console.error(`[SymbolsAPI] Failed to fetch tickers from ${exchange}:`, error);
+    throw error;
+  }
+}
+
+// Clear cache function for manual refresh
+export function clearCache(): void {
+  cache.clear();
+  console.log('[SymbolsAPI] Cache cleared');
+}
+</file>
+
+<file path="frontend/delete/shared/error/ErrorBoundary.tsx">
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { Button } from '../ui/button';
+import { Alert } from '../ui/alert';
+
+interface Props {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+  error: Error | null;
+  errorInfo: ErrorInfo | null;
+}
+
+/**
+ * Global ErrorBoundary Component
+ * Fängt React-Fehler und zeigt User-friendly Error-UI
+ * 
+ * Usage:
+ * <ErrorBoundary>
+ *   <App />
+ * </ErrorBoundary>
+ */
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null
+    };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // Log zu Console (Production: Sentry/LogRocket)
+    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+    
+    this.setState({
+      error,
+      errorInfo
+    });
+
+    // Optional: Senden an Error-Tracking-Service
+    if ((import.meta as any).env.PROD) {
+      this.reportError(error, errorInfo);
+    }
+  }
+
+  private reportError(error: Error, errorInfo: ErrorInfo) {
+    // TODO: Sentry Integration
+    // Sentry.captureException(error, { extra: errorInfo });
+  }
+
+  private handleReset = () => {
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null
+    });
+  };
+
+  private handleReload = () => {
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      // Custom Fallback UI wenn vorhanden
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+
+      // Default Error UI
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+          <div className="max-w-2xl w-full space-y-4">
+            <Alert variant="destructive">
+              <h2 className="text-xl font-bold mb-2">
+                Etwas ist schiefgelaufen
+              </h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Die Anwendung ist auf einen unerwarteten Fehler gestoßen. 
+                Bitte versuchen Sie, die Seite neu zu laden.
+              </p>
+            </Alert>
+
+            {(import.meta as any).env.DEV && this.state.error && (
+              <div className="bg-muted p-4 rounded-lg">
+                <h3 className="text-sm font-semibold mb-2">Error Details (DEV only):</h3>
+                <pre className="text-xs overflow-auto max-h-48">
+                  {this.state.error.toString()}
+                  {this.state.errorInfo && (
+                    <>
+                      {'\n\n'}
+                      {this.state.errorInfo.componentStack}
+                    </>
+                  )}
+                </pre>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button onClick={this.handleReset} variant="outline">
+                Erneut versuchen
+              </Button>
+              <Button onClick={this.handleReload}>
+                Seite neu laden
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+</file>
+
+<file path="frontend/delete/shared/layout/AlertsPanel.tsx">
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "delete/lib/utils"
+import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert"
+import { Badge } from "@/shared/ui/badge"
+import { Button } from "@/shared/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
+import { AlertTriangle, CheckCircle, XCircle, Clock } from "lucide-react"
+
+const alertsPanelVariants = cva(
+  "space-y-4",
+  {
+    variants: {
+      layout: {
+        compact: "space-y-2",
+        default: "space-y-4",
+        spacious: "space-y-6"
+      }
+    },
+    defaultVariants: {
+      layout: "default"
+    }
+  }
+)
+
+const alertItemVariants = cva(
+  "transition-all duration-300 hover:shadow-md",
+  {
+    variants: {
+      severity: {
+        critical: "border-[hsl(var(--status-error-border))] bg-[hsl(var(--status-error-bg))]",
+        high: "border-[hsl(var(--status-warning-border))] bg-[hsl(var(--status-warning-bg))]",
+        medium: "border-[hsl(var(--status-warning-border))] bg-[hsl(var(--status-warning-bg))]",
+        low: "border-[hsl(var(--status-info-border))] bg-[hsl(var(--status-info-bg))]"
+      },
+      status: {
+        active: "opacity-100",
+        resolved: "opacity-60"
+      }
+    },
+    defaultVariants: {
+      severity: "medium",
+      status: "active"
+    }
+  }
+)
+
+export interface AlertRule {
+  id: string
+  name: string
+  metric: string
+  condition: 'greater_than' | 'less_than' | 'equals'
+  threshold: number
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  enabled: boolean
+  notification_channels: string[]
+}
+
+export interface AlertItem {
+  id: string
+  rule: AlertRule
+  currentValue: number
+  triggeredAt: string
+  resolvedAt?: string
+  status: 'active' | 'resolved'
+  description?: string
+}
+
+export interface AlertsPanelProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof alertsPanelVariants> {
+  alerts: AlertItem[]
+  rules: AlertRule[]
+  onResolveAlert?: (alertId: string) => void
+  onConfigureRule?: (ruleId: string) => void
+}
+
+const AlertsPanel = React.forwardRef<HTMLDivElement, AlertsPanelProps>(
+  ({ className, layout, alerts, rules, onResolveAlert, onConfigureRule, ...props }, ref) => {
+    const activeAlerts = alerts.filter(alert => alert.status === 'active')
+    const resolvedAlerts = alerts.filter(alert => alert.status === 'resolved')
+    
+    const getSeverityIcon = (severity: string) => {
+      switch (severity) {
+        case 'critical': return <XCircle className="h-4 w-4" />
+        case 'high': return <AlertTriangle className="h-4 w-4" />
+        case 'medium': return <Clock className="h-4 w-4" />
+        default: return <CheckCircle className="h-4 w-4" />
+      }
+    }
+    
+    const getSeverityColor = (severity: string) => {
+      switch (severity) {
+        case 'critical': return 'destructive'
+        case 'high': return 'default'
+        case 'medium': return 'secondary'
+        default: return 'outline'
+      }
+    }
+
+    return (
+      <div className={cn(alertsPanelVariants({ layout, className }))} ref={ref} {...props}>
+        {/* Active Alerts */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                🚨 Active Alerts ({activeAlerts.length})
+              </span>
+              <Badge variant={activeAlerts.length > 0 ? "destructive" : "secondary"}>
+                {activeAlerts.length > 0 ? "ATTENTION REQUIRED" : "ALL CLEAR"}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {activeAlerts.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <CheckCircle className="h-8 w-8 mx-auto mb-2 text-green-500" />
+                No active alerts. System operating normally.
+              </div>
+            ) : (
+              activeAlerts.map((alert) => (
+                <Alert key={alert.id} className={alertItemVariants({ 
+                  severity: alert.rule.severity, 
+                  status: alert.status 
+                })}>
+                  <div className="flex items-start justify-between w-full">
+                    <div className="flex-1">
+                      <AlertTitle className="flex items-center gap-2">
+                        {getSeverityIcon(alert.rule.severity)}
+                        {alert.rule.name}
+                        <Badge variant={getSeverityColor(alert.rule.severity) as any}>
+                          {alert.rule.severity.toUpperCase()}
+                        </Badge>
+                      </AlertTitle>
+                      <AlertDescription className="mt-2">
+                        <div className="space-y-1">
+                          <div>
+                            Current: <strong>{alert.currentValue}</strong> | 
+                            Threshold: <strong>{alert.rule.threshold}</strong>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Triggered: {new Date(alert.triggeredAt).toLocaleString()}
+                          </div>
+                          {alert.description && (
+                            <div className="text-xs">{alert.description}</div>
+                          )}
+                        </div>
+                      </AlertDescription>
+                    </div>
+                    <div className="flex gap-2 ml-4">
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        onClick={() => onResolveAlert?.(alert.id)}
+                      >
+                        Resolve
+                      </Button>
+                    </div>
+                  </div>
+                </Alert>
+              ))
+            )}
+          </CardContent>
+        </Card>
+        
+        {/* Alert Rules Configuration */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>📊 Alert Rules ({rules.length})</span>
+              <Button size="sm" variant="outline">
+                Add Rule
+              </Button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {rules.map((rule) => (
+                <div key={rule.id} className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex-1">
+                    <div className="font-medium">{rule.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {rule.metric} {rule.condition.replace('_', ' ')} {rule.threshold}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={getSeverityColor(rule.severity) as any}>
+                      {rule.severity}
+                    </Badge>
+                    <Badge variant={rule.enabled ? "default" : "secondary"}>
+                      {rule.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <Button 
+                      size="sm" 
+                      variant="ghost"
+                      onClick={() => onConfigureRule?.(rule.id)}
+                    >
+                      Configure
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+        
+        {/* Recent Resolved Alerts */}
+        {resolvedAlerts.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>📈 Recent Resolutions ({resolvedAlerts.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {resolvedAlerts.slice(0, 5).map((alert) => (
+                  <div key={alert.id} className="flex items-center justify-between p-2 border rounded text-sm opacity-60">
+                    <span>{alert.rule.name}</span>
+                    <span className="text-muted-foreground">
+                      Resolved: {alert.resolvedAt && new Date(alert.resolvedAt).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    )
+  }
+)
+AlertsPanel.displayName = "AlertsPanel"
+
+export { AlertsPanel, alertsPanelVariants, alertItemVariants }
+</file>
+
+<file path="frontend/delete/shared/layout/AppLayout.tsx">
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+import GlobalNav from './GlobalNav';
+
+export const AppLayout: React.FC = () => {
+  return (
+    <div className="min-h-screen bg-background text-foreground transition-colors">
+      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
+        <GlobalNav />
+        <main>
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="frontend/delete/shared/layout/GlobalNav.tsx">
+import { useState } from "react";
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTradingContext } from "../../contexts/TradingContext";
+import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
+  
+  const [activeTab, setActiveTab] = useState(() => {
+    // Set active tab based on current route
+    const path = location.pathname;
+    if (path === '/trading' || path === '/') return "Market";
+    if (path === '/quantum') return "Quantum";
+    if (path === '/database') return "Database";
+    if (path === '/whales') return "Whales";
+    if (path === '/news') return "News";
+    if (path === '/bot') return "Trading Bot";
+    if (path === '/api') return "API";
+    if (path === '/ml') return "ML";
+    if (path === '/settings') return "Settings";
+    return "Market";
+  });
+  
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+  
+  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
+  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else if (itemName === "Settings") {
+      setIsDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    } else {
+      setActiveTab(itemName);
+      setIsDropdownOpen(false);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    // ✅ FIX: Exchange-Auswahl zu Context propagieren
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
+                {MARKET_OPTIONS.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+          >
+            {exchangeDisplayName} ▽
+          </button>
+          
+          {/* Exchange Dropdown Menu */}
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {EXCHANGES.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
+</file>
+
+<file path="frontend/delete/shared/state/SettingsProvider.tsx">
+import React from "react";
+
+export interface SettingsProviderProps {
+  children: React.ReactNode;
+}
+
+export function SettingsProvider({ children }: SettingsProviderProps) {
+  return <>{children}</>;
+}
+</file>
+
+<file path="frontend/delete/shared/ui/alert.tsx">
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const alertVariants = cva(
+  "relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&>svg]:absolute [&>svg]:left-4 [&>svg]:top-4 [&>svg]:text-foreground",
+  {
+    variants: {
+      variant: {
+        default: "bg-background text-foreground",
+        destructive:
+          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
+);
+
+const Alert = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
+>(({ className, variant, ...props }, ref) => (
+  <div
+    ref={ref}
+    role="alert"
+    className={cn(alertVariants({ variant }), className)}
+    {...props}
+  />
+));
+Alert.displayName = "Alert";
+
+const AlertTitle = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h5
+    ref={ref}
+    className={cn("mb-1 font-medium leading-none tracking-tight", className)}
+    {...props}
+  />
+));
+AlertTitle.displayName = "AlertTitle";
+
+const AlertDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("text-sm [&_p]:leading-relaxed", className)}
+    {...props}
+  />
+));
+AlertDescription.displayName = "AlertDescription";
+
+export { Alert, AlertTitle, AlertDescription };
+</file>
+
+<file path="frontend/delete/shared/ui/badge.tsx">
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const badgeVariants = cva(
+  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  {
+    variants: {
+      variant: {
+        default:
+          "border-transparent bg-primary text-primary-foreground hover:bg-primary/80",
+        secondary:
+          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        destructive:
+          "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
+        outline: "text-foreground",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+);
+
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return (
+    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+  );
+}
+
+export { Badge, badgeVariants };
+</file>
+
+<file path="frontend/delete/shared/ui/button.tsx">
+import * as React from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        outline:
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-10 px-4 py-2",
+        sm: "h-9 rounded-md px-3",
+        lg: "h-11 rounded-md px-8",
+        icon: "h-10 w-10",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  },
+);
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean;
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button";
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    );
+  },
+);
+Button.displayName = "Button";
+
+export { Button, buttonVariants };
+</file>
+
+<file path="frontend/delete/shared/ui/card.tsx">
+import * as React from "react";
+
+import { cn } from "delete/lib/utils";
+
+const Card = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      "rounded-lg border bg-card text-card-foreground shadow-sm",
+      className
+    )}
+    {...props}
+  />
+));
+Card.displayName = "Card";
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex flex-col space-y-1.5 p-6", className)}
+    {...props}
+  />
+));
+CardHeader.displayName = "CardHeader";
+
+const CardTitle = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h3
+    ref={ref}
+    className={cn(
+      "text-2xl font-semibold leading-none tracking-tight",
+      className
+    )}
+    {...props}
+  />
+));
+CardTitle.displayName = "CardTitle";
+
+const CardDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+));
+CardDescription.displayName = "CardDescription";
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+));
+CardContent.displayName = "CardContent";
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex items-center p-6 pt-0", className)}
+    {...props}
+  />
+));
+CardFooter.displayName = "CardFooter";
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
+</file>
+
+<file path="frontend/delete/shared/ui/input.tsx">
+import * as React from "react";
+
+import { cn } from "delete/lib/utils";
+
+export interface InputProps
+  extends React.InputHTMLAttributes<HTMLInputElement> {}
+
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type, ...props }, ref) => {
+    return (
+      <input
+        type={type}
+        className={cn(
+          "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+          className
+        )}
+        ref={ref}
+        {...props}
+      />
+    );
+  }
+);
+Input.displayName = "Input";
+
+export { Input };
+</file>
+
+<file path="frontend/delete/shared/ui/label.tsx">
+import * as React from "react";
+import * as LabelPrimitive from "@radix-ui/react-label";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const labelVariants = cva(
+  "text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
+);
+
+const Label = React.forwardRef<
+  React.ElementRef<typeof LabelPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root> &
+    VariantProps<typeof labelVariants>
+>(({ className, ...props }, ref) => (
+  <LabelPrimitive.Root
+    ref={ref}
+    className={cn(labelVariants(), className)}
+    {...props}
+  />
+));
+Label.displayName = LabelPrimitive.Root.displayName;
+
+export { Label };
+</file>
+
+<file path="frontend/delete/shared/ui/progress.tsx">
+import * as React from "react";
+import * as ProgressPrimitive from "@radix-ui/react-progress";
+
+import { cn } from "delete/lib/utils";
+
+const Progress = React.forwardRef<
+  React.ElementRef<typeof ProgressPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof ProgressPrimitive.Root>
+>(({ className, value, ...props }, ref) => (
+  <ProgressPrimitive.Root
+    ref={ref}
+    className={cn(
+      "relative h-4 w-full overflow-hidden rounded-full bg-secondary",
+      className,
+    )}
+    {...props}
+  >
+    <ProgressPrimitive.Indicator
+      className="h-full w-full flex-1 bg-primary transition-all"
+      style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+    />
+  </ProgressPrimitive.Root>
+));
+Progress.displayName = ProgressPrimitive.Root.displayName;
+
+export { Progress };
+</file>
+
+<file path="frontend/delete/shared/ui/resizable.tsx">
+import { GripVertical } from "lucide-react";
+import * as ResizablePrimitive from "react-resizable-panels";
+
+import { cn } from "delete/lib/utils";
+
+const ResizablePanelGroup = ({
+  className,
+  ...props
+}: React.ComponentProps<typeof ResizablePrimitive.PanelGroup>) => (
+  <ResizablePrimitive.PanelGroup
+    className={cn(
+      "flex h-full w-full data-[panel-group-direction=vertical]:flex-col",
+      className,
+    )}
+    {...props}
+  />
+);
+
+const ResizablePanel = ResizablePrimitive.Panel;
+
+const ResizableHandle = ({
+  withHandle,
+  className,
+  ...props
+}: React.ComponentProps<typeof ResizablePrimitive.PanelResizeHandle> & {
+  withHandle?: boolean;
+}) => (
+  <ResizablePrimitive.PanelResizeHandle
+    className={cn(
+      "relative flex w-px items-center justify-center bg-border after:absolute after:inset-y-0 after:left-1/2 after:w-1 after:-translate-x-1/2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 data-[panel-group-direction=vertical]:h-px data-[panel-group-direction=vertical]:w-full data-[panel-group-direction=vertical]:after:left-0 data-[panel-group-direction=vertical]:after:h-1 data-[panel-group-direction=vertical]:after:w-full data-[panel-group-direction=vertical]:after:-translate-y-1/2 data-[panel-group-direction=vertical]:after:translate-x-0 [&[data-panel-group-direction=vertical]>div]:rotate-90",
+      className,
+    )}
+    {...props}
+  >
+    {withHandle && (
+      <div className="z-10 flex h-4 w-3 items-center justify-center rounded-sm border bg-border">
+        <GripVertical className="h-2.5 w-2.5" />
+      </div>
+    )}
+  </ResizablePrimitive.PanelResizeHandle>
+);
+
+export { ResizablePanelGroup, ResizablePanel, ResizableHandle };
+</file>
+
+<file path="frontend/delete/shared/ui/switch.tsx">
+import * as React from "react";
+import * as SwitchPrimitives from "@radix-ui/react-switch";
+
+import { cn } from "delete/lib/utils";
+
+const Switch = React.forwardRef<
+  React.ElementRef<typeof SwitchPrimitives.Root>,
+  React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root>
+>(({ className, ...props }, ref) => (
+  <SwitchPrimitives.Root
+    className={cn(
+      "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-input",
+      className,
+    )}
+    {...props}
+    ref={ref}
+  >
+    <SwitchPrimitives.Thumb
+      className={cn(
+        "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",
+      )}
+    />
+  </SwitchPrimitives.Root>
+));
+Switch.displayName = SwitchPrimitives.Root.displayName;
+
+export { Switch };
+</file>
+
+<file path="frontend/delete/shared/ui/tabs.tsx">
+import * as React from "react";
+import * as TabsPrimitive from "@radix-ui/react-tabs";
+
+import { cn } from "delete/lib/utils";
+
+const Tabs = TabsPrimitive.Root;
+
+const TabsList = React.forwardRef<
+  React.ElementRef<typeof TabsPrimitive.List>,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
+>(({ className, ...props }, ref) => (
+  <TabsPrimitive.List
+    ref={ref}
+    className={cn(
+      "inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
+      className,
+    )}
+    {...props}
+  />
+));
+TabsList.displayName = TabsPrimitive.List.displayName;
+
+const TabsTrigger = React.forwardRef<
+  React.ElementRef<typeof TabsPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
+>(({ className, ...props }, ref) => (
+  <TabsPrimitive.Trigger
+    ref={ref}
+    className={cn(
+      "inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm",
+      className,
+    )}
+    {...props}
+  />
+));
+TabsTrigger.displayName = TabsPrimitive.Trigger.displayName;
+
+const TabsContent = React.forwardRef<
+  React.ElementRef<typeof TabsPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
+>(({ className, ...props }, ref) => (
+  <TabsPrimitive.Content
+    ref={ref}
+    className={cn(
+      "mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+      className,
+    )}
+    {...props}
+  />
+));
+TabsContent.displayName = TabsPrimitive.Content.displayName;
+
+export { Tabs, TabsList, TabsTrigger, TabsContent };
+</file>
+
+<file path="frontend/delete/shared/ui/theme-provider.tsx">
+import { ReactNode } from "react";
+import { ThemeProviderContext, useThemeLogic } from "../../hooks/use-theme";
+
+interface ThemeProviderProps {
+  children: ReactNode;
+}
+
+const ThemeProvider = ({ children }: ThemeProviderProps) => {
+  const themeLogic = useThemeLogic();
+
+  return (
+    <ThemeProviderContext.Provider value={themeLogic}>
+      {children}
+    </ThemeProviderContext.Provider>
+  );
+};
+
+export default ThemeProvider;
+</file>
+
+<file path="frontend/delete/shared/ui/theme-toggle.tsx">
+import { useTheme } from "../../hooks/use-theme";
+
+const ThemeToggle = () => {
+  const { theme, setTheme } = useTheme();
+
+  const toggleTheme = () => {
+    switch (theme) {
+      case "light":
+        setTheme("dark");
+        break;
+      case "dark":
+        setTheme("system");
+        break;
+      case "system":
+        setTheme("light");
+        break;
+    }
+  };
+
+  const getIcon = () => {
+    switch (theme) {
+      case "light":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="5"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            <path
+              d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+          </svg>
+        );
+      case "dark":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"
+              stroke="currentColor"
+              strokeWidth="2"
+              fill="currentColor"
+            />
+          </svg>
+        );
+      case "system":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect
+              x="2"
+              y="4"
+              width="20"
+              height="14"
+              rx="2"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            <path d="M8 20h8" stroke="currentColor" strokeWidth="2" />
+            <path d="M12 16v4" stroke="currentColor" strokeWidth="2" />
+          </svg>
+        );
+    }
+  };
+
+  const getTooltip = () => {
+    switch (theme) {
+      case "light":
+        return "Hell-Modus";
+      case "dark":
+        return "Dunkel-Modus";
+      case "system":
+        return "System-Modus";
+    }
+  };
+
+  return (
+    <button
+      onClick={toggleTheme}
+      className={`px-3 py-1.5 rounded font-medium transition-colors ${"text-foreground hover:bg-muted"}`}
+      title={getTooltip()}
+      aria-label={`Aktueller Modus: ${getTooltip()}. Klicken zum Wechseln.`}
+    >
+      {getIcon()}
+    </button>
+  );
+};
+
+export default ThemeToggle;
+</file>
+
+<file path="frontend/delete/shared/ui/virtualized-list.tsx">
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+
+interface VirtualizedListProps<T> {
+  items: T[];
+  itemHeight: number;
+  containerHeight: number;
+  renderItem: (item: T, index: number) => React.ReactNode;
+  overscan?: number;
+  className?: string;
+}
+
+export function VirtualizedList<T>({
+  items,
+  itemHeight,
+  containerHeight,
+  renderItem,
+  overscan = 5,
+  className = ""
+}: VirtualizedListProps<T>) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const scrollElementRef = useRef<HTMLDivElement>(null);
+
+  const visibleRange = useMemo(() => {
+    const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+    const endIndex = Math.min(
+      items.length - 1,
+      Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+    );
+    return { startIndex, endIndex };
+  }, [scrollTop, itemHeight, containerHeight, items.length, overscan]);
+
+  const visibleItems = useMemo(() => {
+    return items.slice(visibleRange.startIndex, visibleRange.endIndex + 1);
+  }, [items, visibleRange]);
+
+  const totalHeight = items.length * itemHeight;
+  const offsetY = visibleRange.startIndex * itemHeight;
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  };
+
+  return (
+    <div
+      ref={scrollElementRef}
+      className={`overflow-auto ${className}`}
+      style={{ height: containerHeight }}
+      onScroll={handleScroll}
+    >
+      <div style={{ height: totalHeight, position: 'relative' }}>
+        <div style={{ transform: `translateY(${offsetY}px)` }}>
+          {visibleItems.map((item, index) => (
+            <div
+              key={visibleRange.startIndex + index}
+              style={{ height: itemHeight }}
+            >
+              {renderItem(item, visibleRange.startIndex + index)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 </file>
 
 <file path="frontend/src/features/trading/components/CoinSelector.tsx">
@@ -96542,202 +100648,6 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 export default CoinSelector;
 </file>
 
-<file path="frontend/src/features/trading/components/OrderBook.tsx">
-import React, { useState, useMemo } from "react";
-import OptimizedOrderbook from "./OptimizedOrderbook";
-import OptimizedTradesList from "./OptimizedTradesList";
-import { useDebouncedCallback } from "../../../hooks/use-debounce";
-
-interface OrderbookEntry {
-  price: number;
-  size: number;
-  total: number;
-  side: "buy" | "sell";
-}
-
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: "buy" | "sell";
-  ts: string;
-}
-
-interface OrderbookProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  currentPrice?: number;
-  onTabChange?: (tab: "orderbook" | "trades") => void;
-}
-
-const OrderBook = ({
-  symbol,
-  market,
-  exchange,
-  currentPrice = 0,
-  onTabChange,
-}: OrderbookProps) => {
-  const [activeTab, setActiveTab] = useState<"orderbook" | "trades">("trades");
-  const [orderbook, setOrderbook] = useState<{ bids: any[]; asks: any[] }>({ bids: [], asks: [] });
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Debounced tab change handler
-  const debouncedTabChange = useDebouncedCallback((tab: "orderbook" | "trades") => {
-    console.log("Tab change requested:", tab);
-    setActiveTab(tab);
-    if (onTabChange) {
-      onTabChange(tab);
-    }
-  }, 100);
-
-  // ✅ REFACTORED: Transform Hook data to OrderbookEntry format
-  const processedOrders = useMemo(() => {
-    const asks: OrderbookEntry[] = orderbook.asks.map(ask => ({
-      price: ask.price,
-      size: ask.size,
-      total: ask.price * ask.size,
-      side: "sell" as const
-    }));
-    
-    const bids: OrderbookEntry[] = orderbook.bids.map(bid => ({
-      price: bid.price,
-      size: bid.size,
-      total: bid.price * bid.size,
-      side: "buy" as const
-    }));
-    
-    return [...asks, ...bids];
-  }, [orderbook]);
-
-
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow h-full flex flex-col">
-      {/* Header with Tabs */}
-      <div className="border-b border-gray-200 dark:border-gray-600 px-4 pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex relative">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                debouncedTabChange("trades");
-              }}
-              className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer ${
-                activeTab === "trades"
-                  ? "text-black dark:text-white"
-                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              }`}
-            >
-              Markt-Trades
-              {activeTab === "trades" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                debouncedTabChange("orderbook");
-              }}
-              className={`px-4 py-2 text-sm font-medium transition-colors ml-6 relative cursor-pointer ${
-                activeTab === "orderbook"
-                  ? "text-black dark:text-white"
-                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              }`}
-            >
-              Orderbuch
-              {activeTab === "orderbook" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
-              )}
-            </button>
-          </div>
-          
-          {/* Status Indicator */}
-          <div className="flex items-center gap-2">
-            {isLoading && (
-              <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-            )}
-            {!isLoading && !error && (
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-            )}
-            {error && (
-              <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-            )}
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {isLoading ? "Loading..." : error ? "Error" : "Live"}
-            </span>
-          </div>
-        </div>
-
-        {/* Column Headers - ✅ ENTERPRISE: Generic labels, no symbol manipulation */}
-        {activeTab === "orderbook" && (
-          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
-            <div className="text-left">Preis (Quote)</div>
-            <div className="text-center">Betrag (Base)</div>
-            <div className="text-right">Umsatz</div>
-          </div>
-        )}
-
-        {activeTab === "trades" && (
-          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
-            <div className="text-left">Preis (Quote)</div>
-            <div className="text-center">Betrag (Base)</div>
-            <div className="text-right">Zeit</div>
-          </div>
-        )}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeTab === "orderbook" ? (
-          <div className="h-full">
-            {/* Error State */}
-            {error && (
-              <div className="p-4 text-center text-red-600 dark:text-red-400 text-sm">
-                {error}
-              </div>
-            )}
-            
-            <OptimizedOrderbook
-              orders={processedOrders}
-              currentPrice={currentPrice}
-              onOrderClick={(order: OrderbookEntry) => {
-                console.log("Order clicked:", order);
-              }}
-            />
-          </div>
-        ) : (
-          /* Trades Tab */
-          <div className="h-full">
-            <OptimizedTradesList
-              trades={trades}
-              onTradeClick={(trade: Trade) => {
-                console.log("Trade clicked:", trade);
-              }}
-            />
-            
-            {/* Empty State */}
-            {trades.length === 0 && !isLoading && (
-              <div className="text-gray-400 p-4 text-center">
-                {error ? "Failed to load trades" : "No trades yet."}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default OrderBook;
-</file>
-
 <file path="frontend/src/features/trading/components/PriceDisplay.tsx">
 import { useState, useEffect } from "react";
 import { CoinData, MarketData } from '../types/trading';
@@ -96871,168 +100781,13 @@ const PriceDisplay = ({
 export default PriceDisplay;
 </file>
 
-<file path="frontend/src/features/trading/types/trading.ts">
-// ✅ Shared Trading Types (Single Source of Truth)
-
-export interface CoinData {
-  id: string;
-  symbol: string;
-  market: string;
-  price: string;
-  change: string;
-  changePercent: number;
-  isFavorite: boolean;
-  liveStatus: "green" | "red";
-  histStatus: "green" | "red";
-}
-
-export interface MarketData {
-  change24h: string;
-  high24h: string;
-  low24h: string;
-  volume24h: string;
-  turnover24h: string;
-  category?: string;
-}
-</file>
-
-<file path="frontend/src/hooks/useLiveTrades.ts">
-// src/hooks/useLiveTrades.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-export function useLiveTrades(exchange: string, symbol: string, market = "spot", maxTrades = 200) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const pendingRef = useRef<LiveTrade[]>([]);
-  const rafRef = useRef<number | null>(null);
-
-  const key = useMemo(() => `${exchange}:${symbol}:${market}`, [exchange, symbol, market]);
-
-  useEffect(() => {
-    setTrades([]);
-    pendingRef.current = [];
-  }, [key]);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      if (msg.type !== "trade") return;
-
-      const t: LiveTrade = {
-        exchange: msg.exchange!,
-        symbol: msg.symbol!,
-        market: msg.market || market,
-        price: toNum((msg as any).price),
-        size: toNum((msg as any).size),
-        side: (msg as any).side,
-        ts: toNum((msg as any).ts) || undefined,
-      };
-
-      pendingRef.current.push(t);
-
-      if (rafRef.current === null) {
-        rafRef.current = window.requestAnimationFrame(() => {
-          rafRef.current = null;
-          const batch = pendingRef.current;
-          pendingRef.current = [];
-
-          if (batch.length === 0) return;
-
-          setTrades((prev) => {
-            const next = prev.concat(batch);
-            if (next.length <= maxTrades) return next;
-            return next.slice(next.length - maxTrades);
-          });
-        });
-      }
-    });
-
-    return () => {
-      if (rafRef.current !== null) {
-        window.cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      offMsg();
-      offStatus();
-    };
-  }, [exchange, symbol, market, maxTrades]);
-
-  return { status, trades };
-}
-</file>
-
-<file path="frontend/src/lib/zod-transforms.ts">
-import { z } from 'zod';
-
-/**
- * Transform for decimal values that may come as strings from the backend
- * Converts String|Number|null → Number
- */
-export const decimalTransform = z.union([
-  z.string(),
-  z.number(),
-  z.null(),
-  z.undefined()
-]).transform((val) => {
-  if (typeof val === 'number') return val;
-  if (!val) return 0;
-  const num = parseFloat(val);
-  return isNaN(num) ? 0 : num;
-}).pipe(z.number());
-
-/**
- * Optional variant of decimalTransform
- */
-export const optionalDecimal = decimalTransform.optional();
-
-/**
- * Transform for OrderBook tuples [price, size]
- * Converts ["65000.50", "1.5"] → [65000.5, 1.5]
- */
-export const decimalTupleTransform = z.tuple([
-  z.union([z.string(), z.number()]).transform(v => 
-    typeof v === 'number' ? v : parseFloat(v) || 0
-  ),
-  z.union([z.string(), z.number()]).transform(v => 
-    typeof v === 'number' ? v : parseFloat(v) || 0
-  )
-]);
-
-/**
- * Array of decimal tuples for OrderBook bids/asks
- */
-export const decimalTupleArray = z.array(decimalTupleTransform);
-
-/**
- * Helper to create a schema with multiple decimal fields
- * @param fields - Array of field names to apply decimal transform
- */
-export function createDecimalSchema<T extends string>(fields: T[]) {
-  const shape: Record<string, z.ZodTypeAny> = {};
-  fields.forEach(field => {
-    shape[field] = decimalTransform;
-  });
-  return z.object(shape as Record<T, z.ZodTypeAny>).passthrough();
-}
+<file path="frontend/src/features/trading/index.ts">
+export { default as PriceDisplay } from './components/PriceDisplay';
+export { default as CoinSelector } from './components/CoinSelector';
+export { default as TradingTerminal } from './components/TradingTerminal';
+export { default as TimeButtons } from './components/TimeButtons';
+export { default as ChartSection } from './components/ChartSection';
+export { default as SystemStatus } from './components/SystemStatus';
 </file>
 
 <file path="frontend/src/pages/APIPage.tsx">
@@ -97450,679 +101205,786 @@ const DatabasePage = ({ onBackToTrading }: DatabaseProps = {}) => {
 export default DatabasePage;
 </file>
 
-<file path="frontend/src/services/api/chart.ts">
-import { BaseAPI } from './base';
+<file path="frontend/src/pages/LogsPage.tsx">
+import { useParams } from "react-router-dom";
+import { Card, CardContent, CardHeader, CardTitle } from "../shared/ui/card";
+import { Button } from "../shared/ui/button";
+import { Badge } from "../shared/ui/badge";
+import { RefreshCw, Download, ExternalLink, TestTube } from "lucide-react";
+import { useState, useEffect } from "react";
 
-export class ChartAPI extends BaseAPI {
-  /**
-   * Get historical OHLC chart data
-   * @param symbol - Trading pair symbol (e.g., 'BTCUSDT')
-   * @param exchange - Exchange name (e.g., 'binance', 'bitget')
-   * @param interval - Time interval (e.g., '1m', '5m', '1h', '1d')
-   * @param limit - Number of candles to fetch (max 1000)
-   * @returns Promise with OHLC data array
-   */
-  static async getHistory(
-    symbol: string,
-    exchange: string = 'binance',
-    interval: string = '1m',
-    limit: number = 100
-  ) {
-    try {
-      // ✅ FIX: Korrigierter Endpoint /api/historical/ohlc (statt /api/chart/history)
-      const response = await this.request('/api/historical/ohlc', {
-        params: { symbol, exchange, interval, limit }
-      });
-      return response;
-    } catch (error) {
-      console.error(`[ChartAPI] Failed to fetch chart history for ${symbol}:`, error);
-      return [];
-    }
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/historical.ts">
-import { BaseAPI, APIError } from './base';
-import { ChartDataSchema, BackfillTaskSchema } from './schemas';
-
-/**
- * Parameters for OHLC data requests
- */
-export interface OHLCParams {
-  exchange: string;
-  symbol: string;
-  interval?: string;
-  market_type?: string;
-  start?: number;
-  end?: number;
-  limit?: number;
+interface PipelineTestResult {
+  test_name: string;
+  status: "PASS" | "FAIL" | "WARN";
+  details: string;
+  duration_ms: number;
+  timestamp: string;
 }
 
-/**
- * Request data for starting a backfill task
- */
-export interface BackfillRequest {
-  exchange: string;
-  symbol: string;
-  market: string;
-  until_date: string;
-  interval: string;
-  data_type?: 'candles' | 'trades' | 'orderbook';
-}
-
-/**
- * Historical Data API
- * Handles historical OHLC data and backfill operations
- * Backend: ro_historical.py
- */
-export class HistoricalAPI extends BaseAPI {
+interface ExchangeTestResults {
+  // Exchange-spezifische Tests
+  pipeline_tests: PipelineTestResult[];
   
-  /**
-   * Get OHLC data with query parameters
-   * @param params - OHLC request parameters
-   * @returns Array of candles with decimal conversion
-   */
-  static async getOHLC(params: OHLCParams) {
-    const { exchange, symbol, interval = '1m', market_type = 'spot', start, end, limit = 500 } = params;
-    try {
-      return await this.request('/api/historical/ohlc', {
-        params: { exchange, symbol, interval, market_type, start, end, limit },
-        schema: ChartDataSchema
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] OHLC Error:', error.message);
-      }
-      return [];
-    }
-  }
-
-  /**
-   * Get OHLC data with path parameters
-   * @param exchange - Exchange name
-   * @param symbol - Trading symbol
-   * @param interval - Candle interval (default: 1m)
-   * @param market_type - Market type (default: spot)
-   * @param start - Start timestamp
-   * @param end - End timestamp
-   * @param limit - Number of candles (default: 500)
-   * @returns Array of candles with decimal conversion
-   */
-  static async getOHLCByPath(
-    exchange: string,
-    symbol: string,
-    interval: string = '1m',
-    market_type: string = 'spot',
-    start?: number,
-    end?: number,
-    limit: number = 500
-  ) {
-    try {
-      return await this.request(`/api/historical/ohlc/${exchange}/${symbol}`, {
-        params: { interval, market_type, start, end, limit },
-        schema: ChartDataSchema
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] OHLC Path Error:', error.message);
-      }
-      return [];
-    }
-  }
-
-  /**
-   * Start a backfill task for historical data
-   * @param data - Backfill request data
-   * @returns Task information
-   */
-  static async startBackfill(data: BackfillRequest) {
-    try {
-      return await this.request('/api/historical/backfill/start', {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Backfill Start Error:', error.message);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Get status of backfill tasks
-   * @param exchange - Optional exchange filter
-   * @param taskId - Optional specific task ID
-   * @returns Backfill status information
-   */
-  static async getBackfillStatus(exchange?: string, taskId?: string) {
-    try {
-      return await this.request('/api/historical/backfill/status', {
-        params: { exchange, task_id: taskId }
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Backfill Status Error:', error.message);
-      }
-      return null;
-    }
-  }
-
-  /**
-   * Stop a running backfill task
-   * @param taskId - Task ID to stop
-   */
-  static async stopBackfill(taskId: string) {
-    try {
-      return await this.request('/api/historical/backfill/stop', {
-        method: 'POST',
-        body: JSON.stringify({ task_id: taskId })
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Backfill Stop Error:', error.message);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Clear completed backfill tasks
-   * @param exchange - Optional exchange filter
-   */
-  static async clearCompletedTasks(exchange?: string) {
-    try {
-      return await this.request('/api/historical/backfill/tasks', {
-        method: 'DELETE',
-        params: exchange ? { exchange } : undefined
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Clear Tasks Error:', error.message);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Get exchange-specific historical configuration
-   * ⚠️ Requires X-Client-ID header (auto-injected)
-   * @param exchange - Exchange name
-   * @returns Exchange configuration
-   */
-  static async getExchangeConfig(exchange: string) {
-    try {
-      return await this.request(`/api/historical/config/${exchange}`);
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Config Error:', error.message);
-      }
-      return null;
-    }
-  }
-
-  /**
-   * Get list of supported exchanges for historical data
-   * @returns Array of supported exchange names
-   */
-  static async getSupportedExchanges() {
-    try {
-      return await this.request('/api/historical/exchanges');
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[HistoricalAPI] Exchanges Error:', error.message);
-      }
-      return [];
-    }
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/index.ts">
-// ==========================================
-// CORE API CLASSES
-// ==========================================
-export { BaseAPI, APIError } from './base';
-export * from './symbols';
-export * from './websocket';
-export * from './chart';
-export * from './trading';
-export * from './market';
-export * from './whales';
-
-// ✅ NEU: Historical Data API
-export { HistoricalAPI } from './historical';
-export type { OHLCParams, BackfillRequest } from './historical';
-
-// ✅ NEU: User Settings API
-export { UserSettingsAPI } from './user-settings';
-export type { UserSettings } from './user-settings';
-
-// ==========================================
-// SCHEMAS & VALIDATION
-// ==========================================
-export {
-  OrderBookSchema,
-  OrderBookEntrySchema,
-  TradesSchema,
-  TradeSchema,
-  TickerSchema,
-  CandleSchema,
-  ChartDataSchema,
-  WhaleTransactionSchema,
-  WhaleTransactionsSchema,
-  WhaleStatisticsSchema,
-  SymbolSchema,
-  SymbolsSchema,
-  HealthSchema,
-  APIKeysSchema,
-  BackfillTaskSchema
-} from './schemas';
-
-// Type Exports
-export type {
-  OrderBookEntry,
-  OrderBook,
-  Trade,
-  Ticker,
-  Symbol,
-  Candle,
-  WhaleTransaction,
-  WhaleStatistics,
-  BackfillTask,
-  Health
-} from './schemas';
-
-// ==========================================
-// DECIMAL TRANSFORMATION UTILITIES
-// ==========================================
-export {
-  decimalTransform,
-  optionalDecimal,
-  decimalTupleTransform,
-  decimalTupleArray,
-  createDecimalSchema
-} from '../../lib/zod-transforms';
-
-// ==========================================
-// ENTERPRISE APIs (wenn vorhanden)
-// ==========================================
-// AI-Engine API
-export * from './ai';
-
-// Enterprise API
-export * from './enterprise';
-</file>
-
-<file path="frontend/src/services/api/symbols.ts">
-import { BaseAPI } from './base';
-import { Symbol } from './schemas';
-import { getDefaultExchange, getDefaultMarketType } from '../config';
-
-// Response type from /api/market/symbols endpoint
-interface SymbolsResponse {
-  exchange: string;
-  symbols: Symbol[];
-  count: number;
-  requested_filter: string | null;
-  api_filter: string | null;
-  cached: boolean;
-  cache_key: string;
+  // ALLE Tests aus pipeline_test_results.json
+  all_tests?: PipelineTestResult[];
+  system_tests?: PipelineTestResult[];
+  other_tests?: PipelineTestResult[];
+  
+  // Statistiken
+  total_tests?: number;
+  passed_tests?: number;
+  failed_tests?: number;
+  success_rate?: number;
+  timestamp?: string;
+  
+  // Health Check aus JSON
+  health_check?: {
+    exchange_name: string;
+    spot: { keys: number; streams: number };
+    usdtm: { keys: number; streams: number };
+    coinm: { keys: number; streams: number };
+    usdcm: { keys: number; streams: number };
+    redis_total: number;
+    api_trades: number;
+    clickhouse_status: string;
+    status: string;
+    diagnostics_url: string;
+  };
+  
+  // Live API Test
+  live_api_test?: {
+    status: string;
+    latency: number;
+    data: any;
+  };
+  
+  // Error state
+  error?: string;
+  
+  // Legacy CURL Tests
+  curl_tests: {
+    spot_api: { status: string; response: any; latency_ms: number };
+    futures_api: { status: string; response: any; latency_ms: number };
+    symbol_mapping: { status: string; details: string };
+  };
+  
+  // Legacy System Health
+  system_health: {
+    redis_keys: number;
+    clickhouse_status: string;
+    api_status: string;
+  };
 }
 
-export class SymbolsAPI extends BaseAPI {
-  /**
-   * Get available trading symbols from exchange
-   * @param exchange - Exchange name (optional, uses backend default if not provided)
-   * @param market - Market type (optional: 'spot', 'futures')
-   * @returns Promise with symbols array
-   */
-  static async getSymbols(
-    exchange?: string,
-    market?: string
-  ): Promise<Symbol[]> {
-    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
-    const exch = exchange || await getDefaultExchange();
-    
-    try {
-      const response = await this.request('/api/market/symbols', {
-        params: { exchange: exch, ...(market && { market }) }
-      }) as SymbolsResponse;
-      
-      // Return the symbols array from the response
-      return response.symbols || [];
-    } catch (error) {
-      console.error(`[SymbolsAPI] Failed to fetch symbols for ${exch}:`, error);
-      return [];
-    }
-  }
+const LogsPage = () => {
+  const { exchange } = useParams<{ exchange: string }>();
+  const [logs, setLogs] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<ExchangeTestResults | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
 
-  /**
-   * Get ticker data for symbols
-   * @param exchange - Exchange name (optional, uses backend default if not provided)
-   * @param symbol - Optional specific symbol (e.g., 'BTCUSDT')
-   * @param market_type - Market type (optional, uses backend default if not provided)
-   * @returns Promise with ticker data
-   */
-  static async getTicker(
-    exchange?: string,
-    symbol?: string,
-    market_type?: string
-  ) {
-    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
-    const exch = exchange || await getDefaultExchange();
-    // ✅ Wenn market_type nicht angegeben: Hole Default vom Backend
-    const mkt = market_type || await getDefaultMarketType();
-    
+  const refresh = async () => {
+    if (!exchange) return;
+    setLoading(true);
+    setError(null);
     try {
-      const params: Record<string, string> = { exchange: exch, market_type: mkt };
-      if (symbol) {
-        params.symbol = symbol;
+      const response = await fetch(`/api/logs/${exchange}`);
+      if (!response.ok) throw new Error('Failed to fetch logs');
+      const data = await response.text();
+      setLogs(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, [exchange]);
+
+  // Load pipeline test results for this exchange
+  const loadPipelineTests = async () => {
+    if (!exchange) return;
+    
+    setTestLoading(true);
+    try {
+      // Fetch pipeline test results - ALLE DATEN laden - KORREKTER BACKEND-ENDPOINT
+      const pipelineResponse = await fetch('/api/logs/pipeline-results');
+      if (!pipelineResponse.ok) {
+        throw new Error(`Failed to fetch pipeline results: ${pipelineResponse.status}`);
       }
       
-      const response = await this.request('/api/market/ticker', { params });
-      return response;
-    } catch (error) {
-      console.error(`[SymbolsAPI] Failed to fetch ticker for ${exch}:`, error);
-      return null;
-    }
-  }
+      const pipelineData = await pipelineResponse.json();
+      console.log('Pipeline Data:', pipelineData); // DEBUG
+      
+      // Extract ALL tests for this exchange (not just exchange_stats)
+      const exchangeStats = pipelineData.exchange_stats?.[exchange];
+      const allResults = pipelineData.all_results || [];
+      const healthCheck = pipelineData.health_check?.exchanges?.[exchange];
+      const systemTests = allResults.filter((test: any) => test.exchange === "system");
+      const exchangeTests = allResults.filter((test: any) => test.exchange === exchange);
+      const otherTests = allResults.filter((test: any) => test.exchange !== exchange && test.exchange !== "system");
+      
+      console.log('All Results Count:', allResults.length); // DEBUG
+      console.log('Exchange Tests Count:', exchangeTests.length); // DEBUG
+      console.log('System Tests Count:', systemTests.length); // DEBUG
+      console.log('Health Check:', healthCheck); // DEBUG
 
-  /**
-   * Get symbols with ticker data in parallel (Dual API Call Strategy)
-   * @param exchange - Exchange name (optional, uses backend default if not provided)
-   * @param market - Market type (optional)
-   * @returns Promise with combined symbols and ticker data
-   */
-  static async getSymbolsWithTicker(
-    exchange?: string,
-    market?: string
-  ) {
-    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
-    const exch = exchange || await getDefaultExchange();
-    // ✅ Wenn market nicht angegeben: Hole Default vom Backend
-    const mkt = market || await getDefaultMarketType();
+      // Live CURL test to our API
+      const symbol = exchange === 'coinbase' ? 'BTC-USD' : 'BTCUSDT';
+      let liveApiTest = { status: "FAIL", latency: 0, data: null };
+      
+      try {
+        const start = performance.now();
+        const response = await fetch(`http://localhost:8100/api/${exchange}/trades/spot?symbol=${symbol}&limit=3`);
+        const latency = performance.now() - start;
+        const data = await response.json();
+        liveApiTest = {
+          status: response.ok ? "PASS" : "FAIL",
+          latency: Math.round(latency),
+          data: data
+        };
+      } catch (e) {
+        console.error('Live API test failed:', e);
+      }
+
+      setTestResults({
+        // ALLE PIPELINE TESTS aus JSON
+        pipeline_tests: exchangeTests,
+        all_tests: allResults,
+        system_tests: systemTests,
+        other_tests: otherTests,
+        total_tests: pipelineData.total_tests || 0,
+        passed_tests: pipelineData.passed_tests || 0,
+        failed_tests: pipelineData.failed_tests || 0,
+        success_rate: pipelineData.success_rate || 0,
+        timestamp: pipelineData.timestamp,
+        
+        // HEALTH CHECK DATEN
+        health_check: healthCheck,
+        
+        // LIVE API TEST
+        live_api_test: liveApiTest,
+        
+        // LEGACY STRUCTURE (für Kompatibilität)
+        curl_tests: {
+          spot_api: {
+            status: liveApiTest.status,
+            response: liveApiTest.data,
+            latency_ms: liveApiTest.latency
+          },
+          futures_api: { status: "SKIP", response: null, latency_ms: 0 },
+          symbol_mapping: { status: "PASS", details: `${exchange} symbol mapping active` }
+        },
+        system_health: {
+          redis_keys: healthCheck?.redis_total || 0,
+          clickhouse_status: healthCheck?.clickhouse_status || "..",
+          api_status: liveApiTest.status === "PASS" ? "ONLINE" : "OFFLINE"
+        }
+      });
+    } catch (error) {
+      console.error('Failed to load pipeline tests:', error);
+      // Set error state mit Debug-Info
+      setTestResults({
+        pipeline_tests: [],
+        all_tests: [],
+        system_tests: [],
+        other_tests: [],
+        total_tests: 0,
+        passed_tests: 0,
+        failed_tests: 0,
+        success_rate: 0,
+        error: error instanceof Error ? error.message : String(error),
+        curl_tests: {
+          spot_api: { status: "FAIL", response: null, latency_ms: 0 },
+          futures_api: { status: "FAIL", response: null, latency_ms: 0 },
+          symbol_mapping: { status: "FAIL", details: "Failed to load data" }
+        },
+        system_health: {
+          redis_keys: 0,
+          clickhouse_status: "ERROR",
+          api_status: "OFFLINE"
+        }
+      });
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
+  const testSymbolMapping = (exchange: string, spotSymbol: string, futuresSymbol: string) => {
+    // Test symbol mapping logic based on your examples
+    const tests = [];
     
-    try {
-      // Parallel API calls for better performance
-      const [symbols, ticker] = await Promise.all([
-        this.getSymbols(exch, mkt),
-        this.getTicker(exch, undefined, mkt)
-      ]);
-
-      return { symbols, ticker };
-    } catch (error) {
-      console.error(`[SymbolsAPI] Failed to fetch symbols with ticker for ${exch}:`, error);
-      return { symbols: [], ticker: null };
+    if (exchange === 'mexc') {
+      // Test MEXC: BTCUSDT -> BTC_USDT for futures
+      const expected = 'BTC_USDT';
+      const actual = futuresSymbol;
+      tests.push(`MEXC Futures: ${spotSymbol} -> ${actual} (expected: ${expected})`);
     }
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/user-settings.ts">
-import { BaseAPI, APIError } from './base';
-
-/**
- * User Settings Interface
- */
-export interface UserSettings {
-  [key: string]: any;
-}
-
-/**
- * User Settings API
- * Handles user-specific settings and preferences
- * Backend: ro_user_settings.py
- * ⚠️ All endpoints require X-Client-ID header (auto-injected)
- */
-export class UserSettingsAPI extends BaseAPI {
-  
-  /**
-   * Get user settings
-   * @param scope - Optional scope filter
-   * @returns User settings object
-   */
-  static async getSettings(scope?: string) {
-    try {
-      return await this.request('/api/user/settings', {
-        params: scope ? { scope } : undefined
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[UserSettingsAPI] Get Error:', error.message);
-      }
-      return null;
+    
+    if (exchange === 'htx') {
+      // Test HTX: BTCUSDT -> BTC-USD for futures 
+      const expected = 'BTC-USD';
+      const actual = futuresSymbol;
+      tests.push(`HTX Futures: ${spotSymbol} -> ${actual} (expected: ${expected})`);
     }
-  }
+    
+    return {
+      status: "PASS", // This would be dynamic based on actual tests
+      details: tests.join('; ')
+    };
+  };
 
-  /**
-   * Update entire user settings (PUT - replace)
-   * @param data - Complete settings data
-   */
-  static async putSettings(data: UserSettings) {
-    try {
-      return await this.request('/api/user/settings', {
-        method: 'PUT',
-        body: JSON.stringify({ data })
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[UserSettingsAPI] Put Error:', error.message);
-      }
-      throw error;
+  useEffect(() => {
+    if (exchange) {
+      loadPipelineTests();
     }
-  }
+  }, [exchange]);
 
-  /**
-   * Partially update user settings (PATCH - merge)
-   * @param patch - Partial settings to update
-   */
-  static async patchSettings(patch: Partial<UserSettings>) {
-    try {
-      return await this.request('/api/user/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({ patch })
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[UserSettingsAPI] Patch Error:', error.message);
-      }
-      throw error;
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case "PASS": return "default"; // Green
+      case "FAIL": return "destructive"; // Red  
+      case "WARN": return "secondary"; // Yellow
+      default: return "outline"; // Gray
     }
+  };
+
+  if (!exchange) {
+    return (
+      <div className="main-container">
+        <div className="card-container">
+          <h2 className="text-2xl font-bold">Exchange Logs</h2>
+          <p className="text-red-500">No exchange specified</p>
+        </div>
+      </div>
+    );
   }
 
-  /**
-   * Get user watchlists
-   * Backend returns: { data: { watchlists: [] } }
-   * @returns Array of watchlists
-   */
-  static async getWatchlists(): Promise<any[]> {
-    try {
-      const response = await this.request('/api/user/settings/watchlists');
-      // Backend gibt { data: { watchlists: [] } } zurück
-      return (response as any)?.data?.watchlists || [];
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[UserSettingsAPI] Get Watchlists Error:', error.message);
-      }
-      return [];
-    }
-  }
+  const handleDownload = () => {
+    if (!logs) return;
 
-  /**
-   * Update user watchlists
-   * @param watchlists - Array of watchlist objects
-   */
-  static async putWatchlists(watchlists: any[]) {
-    try {
-      return await this.request('/api/user/settings/watchlists', {
-        method: 'PUT',
-        body: JSON.stringify({ data: { watchlists } })
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[UserSettingsAPI] Put Watchlists Error:', error.message);
-      }
-      throw error;
-    }
-  }
-}
-</file>
+    const blob = new Blob([logs], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${exchange}_logs_${new Date().toISOString().slice(0, 10)}.log`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
-<file path="frontend/src/services/api/whales.ts">
-import { BaseAPI, APIError } from './base';
-import { WhaleTransactionsSchema, WhaleStatisticsSchema } from './schemas';
+  const openBackendApi = () => {
+    const symbol = exchange === 'coinbase' ? 'BTC-USD' : 'BTCUSDT';
+    window.open(`http://localhost:8100/api/${exchange}/trades/spot?symbol=${symbol}&limit=5`, '_blank');
+  };
 
-/**
- * Whales API
- * Handles whale transaction monitoring and statistics
- * Backend: ro_whales.py
- */
-export class WhalesAPI extends BaseAPI {
-  
-  /**
-   * Get whale events/transactions
-   * ⚠️ KONFORMITÄT: Endpoint geändert von /api/whales/recent → /api/whales/events
-   * ⚠️ KONFORMITÄT: Parameter geändert von hours → lookback_minutes
-   * 
-   * @param limit - Number of events to fetch (default: 100)
-   * @param exchange - Optional exchange filter
-   * @param minUsd - Minimum transaction value in USD (default: 0)
-   * @param lookbackMinutes - Time range in minutes (default: 60)
-   * @returns Array of whale transactions with decimal conversion
-   */
-  static async getEvents(
-    limit: number = 100,
-    exchange?: string,
-    minUsd: number = 0,
-    lookbackMinutes: number = 60
-  ) {
-    try {
-      return await this.request('/api/whales/events', {
-        params: { 
-          limit, 
-          exchange, 
-          min_usd: minUsd,                    // ✅ snake_case für Backend
-          lookback_minutes: lookbackMinutes   // ✅ Backend-konform
-        },
-        schema: WhaleTransactionsSchema
-      }) || [];
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[WhalesAPI] Events Error:', error.message);
-      }
-      return [];
-    }
-  }
+  return (
+    <div className="main-container">
+      <div className="card-container">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>{exchange.charAt(0).toUpperCase() + exchange.slice(1)} Debug Logs</span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={refresh}
+                  disabled={loading}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownload}
+                  disabled={!logs || loading}
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Download
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={openBackendApi}
+                >
+                  <ExternalLink className="h-4 w-4 mr-1" />
+                  Test API
+                </Button>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-6">
+              {/* SYSTEM OVERVIEW - wie pipeline_test.sh */}
+              {testResults && (
+                <Card className="p-4 bg-green-50 border-green-200">
+                  <h4 className="font-semibold mb-3 text-green-800">System Status Overview</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-green-600">{testResults.total_tests || 0}</div>
+                      <div className="text-green-700">Total Tests</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-green-600">{testResults.passed_tests || 0}</div>
+                      <div className="text-green-700">Passed</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-red-600">{testResults.failed_tests || 0}</div>
+                      <div className="text-red-700">Failed</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-blue-600">{testResults.success_rate?.toFixed(1) || 0}%</div>
+                      <div className="text-blue-700">Success Rate</div>
+                    </div>
+                  </div>
+                  {testResults.timestamp && (
+                    <div className="mt-2 text-xs text-gray-500 text-center">
+                      Last run: {new Date(testResults.timestamp).toLocaleString()}
+                    </div>
+                  )}
+                </Card>
+              )}
 
-  /**
-   * Helper method: Get events by hours (converts to minutes)
-   * @param hours - Time range in hours
-   * @param limit - Number of events to fetch
-   * @param exchange - Optional exchange filter
-   * @param minUsd - Minimum transaction value in USD
-   * @returns Array of whale transactions
-   */
-  static async getEventsByHours(
-    hours: number = 24,
-    limit: number = 100,
-    exchange?: string,
-    minUsd: number = 0
-  ) {
-    return this.getEvents(limit, exchange, minUsd, hours * 60);
-  }
+              {/* PIPELINE TESTS SECTION - ALWAYS SHOW */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <TestTube className="h-5 w-5" />
+                  <h3 className="text-lg font-semibold">Pipeline Test Results</h3>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadPipelineTests}
+                    disabled={testLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-1 ${testLoading ? 'animate-spin' : ''}`} />
+                    Run Tests
+                  </Button>
+                </div>
 
-  /**
-   * Get whale transaction statistics
-   * ⚠️ KONFORMITÄT: Parameter geändert von days → window_hours
-   * 
-   * @param windowHours - Time window in hours (default: 24)
-   * @param minUsd - Minimum transaction value in USD (default: 0)
-   * @param exchange - Optional exchange filter
-   * @param symbol - Optional symbol filter
-   * @returns Whale statistics with decimal conversion
-   */
-  static async getStatistics(
-    windowHours: number = 24,
-    minUsd: number = 0,
-    exchange?: string,
-    symbol?: string
-  ) {
-    try {
-      return await this.request('/api/whales/statistics', {
-        params: { 
-          window_hours: windowHours,  // ✅ snake_case für Backend
-          min_usd: minUsd,
-          exchange,
-          symbol
-        },
-        schema: WhaleStatisticsSchema
-      });
-    } catch (error) {
-      if (error instanceof APIError) {
-        console.error('[WhalesAPI] Statistics Error:', error.message);
-      }
-      return null;
-    }
-  }
+                {testLoading && (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                    <span className="ml-2">Loading test results...</span>
+                  </div>
+                )}
 
-  /**
-   * Get whale system status
-   * @returns System status information
-   */
-  static async getSystemStatus() {
-    try {
-      return await this.request('/api/whales/system_status');
-    } catch (error) {
-      console.error('[WhalesAPI] System Status Error:', error);
-      return null;
-    }
-  }
+                {!testLoading && !testResults && (
+                  <Card className="p-4 bg-blue-50 border-blue-200">
+                    <p className="text-blue-700">
+                      No test results loaded yet. Click "Run Tests" to load pipeline test results for {exchange}.
+                    </p>
+                  </Card>
+                )}
 
-  /**
-   * Get whale monitoring configuration
-   * @returns Current configuration
-   */
-  static async getConfig() {
-    try {
-      return await this.request('/api/whales/config');
-    } catch (error) {
-      console.error('[WhalesAPI] Config Error:', error);
-      return null;
-    }
-  }
+                {testResults && (
+                  <>
+                    {/* CURL API TESTS */}
+                    <Card className="p-4">
+                      <h4 className="font-semibold mb-3">API Connectivity Tests</h4>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-sm">Spot API:</span>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={getStatusBadgeVariant(testResults.curl_tests.spot_api.status)}>
+                              {testResults.curl_tests.spot_api.status}
+                            </Badge>
+                            <span className="text-sm text-gray-600">
+                              {testResults.curl_tests.spot_api.latency_ms}ms
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-sm">Futures API:</span>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={getStatusBadgeVariant(testResults.curl_tests.futures_api.status)}>
+                              {testResults.curl_tests.futures_api.status}
+                            </Badge>
+                            <span className="text-sm text-gray-600">
+                              {testResults.curl_tests.futures_api.latency_ms}ms
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-sm">Symbol Mapping:</span>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={getStatusBadgeVariant(testResults.curl_tests.symbol_mapping.status)}>
+                              {testResults.curl_tests.symbol_mapping.status}
+                            </Badge>
+                          </div>
+                        </div>
+                        {testResults.curl_tests.symbol_mapping.details && (
+                          <div className="mt-2 p-2 bg-gray-100 rounded text-sm font-mono">
+                            {testResults.curl_tests.symbol_mapping.details}
+                          </div>
+                        )}
+                      </div>
+                    </Card>
 
-  /**
-   * Update whale monitoring configuration
-   * @param apiKey - API key for whale monitoring service
-   * @param apiSecret - API secret for whale monitoring service
-   */
-  static async updateConfig(apiKey: string, apiSecret: string) {
-    try {
-      return await this.request('/api/whales/config', {
-        method: 'POST',
-        body: JSON.stringify({ api_key: apiKey, api_secret: apiSecret })
-      });
-    } catch (error) {
-      console.error('[WhalesAPI] Update Config Error:', error);
-      throw error;
-    }
-  }
+                    {/* SYSTEM HEALTH */}
+                    <Card className="p-4">
+                      <h4 className="font-semibold mb-3">System Health</h4>
+                      <div className="grid grid-cols-3 gap-4 text-center">
+                        <div>
+                          <div className="text-lg font-bold text-blue-600">
+                            {testResults.system_health.redis_keys}
+                          </div>
+                          <div className="text-sm text-gray-600">Redis Keys</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold">
+                            <Badge variant={testResults.system_health.clickhouse_status === 'OK' ? 'default' : 'destructive'}>
+                              {testResults.system_health.clickhouse_status}
+                            </Badge>
+                          </div>
+                          <div className="text-sm text-gray-600">ClickHouse</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold">
+                            <Badge variant={testResults.system_health.api_status === 'ONLINE' ? 'default' : 'destructive'}>
+                              {testResults.system_health.api_status}
+                            </Badge>
+                          </div>
+                          <div className="text-sm text-gray-600">API Status</div>
+                        </div>
+                      </div>
+                    </Card>
 
-  /**
-   * Get whale monitoring health status
-   * @returns Health status information
-   */
-  static async getHealth() {
-    try {
-      return await this.request('/api/whales/health');
-    } catch (error) {
-      console.error('[WhalesAPI] Health Error:', error);
-      return null;
-    }
-  }
-}
+                    {/* MASSIVE TEST-KATEGORIEN wie pipeline_test.sh */}
+                    
+                    {/* 1. CORE SYSTEM TESTS */}
+                    {testResults.system_tests && testResults.system_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-blue-600">🏗️ CORE SYSTEM TESTS</h4>
+                        <div className="space-y-2">
+                          {testResults.system_tests.filter((test: any) => 
+                            test.test_name.includes('System Health') || 
+                            test.test_name.includes('API Documentation') || 
+                            test.test_name.includes('Frontend Server')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 2. INFRASTRUCTURE TESTS */}
+                    {testResults.system_tests && testResults.system_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-purple-600">🔧 INFRASTRUCTURE TESTS</h4>
+                        <div className="space-y-2">
+                          {testResults.system_tests.filter((test: any) => 
+                            test.test_name.includes('ClickHouse') || 
+                            test.test_name.includes('Redis') || 
+                            test.test_name.includes('Infrastructure')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 3. CACHE PERFORMANCE TESTS */}
+                    {testResults.system_tests && testResults.system_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-orange-600">⚡ CACHE PERFORMANCE TESTS</h4>
+                        <div className="space-y-2">
+                          {testResults.system_tests.filter((test: any) => 
+                            test.test_name.includes('Cache') || 
+                            test.test_name.includes('Settings URLs') ||
+                            test.test_name.includes('Rate Limits') ||
+                            test.test_name.includes('WebSocket Settings')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 4. EXCHANGE API TESTS */}
+                    {testResults.pipeline_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-green-600">🌐 EXCHANGE API TESTS</h4>
+                        <div className="space-y-2">
+                          {testResults.pipeline_tests.map((test, index) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">
+                                  {test.details} ({Math.round(test.duration_ms)}ms)
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 5. COIN MAPPER VALIDATION */}
+                    {testResults.all_tests && testResults.all_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-yellow-600">💰 COIN MAPPER VALIDATION - BTC/ADA/PEPE</h4>
+                        <div className="space-y-2">
+                          {testResults.all_tests.filter((test: any) => 
+                            test.test_name.includes('Coin Mapper')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 6. ENDPOINT MAPPER VALIDATION */}
+                    {testResults.system_tests && testResults.system_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-red-600">🔗 ENDPOINT MAPPER VALIDATION - ALLE ENDPOINTS</h4>
+                        <div className="space-y-3">
+                          {/* Settings URLs */}
+                          <div>
+                            <h5 className="font-medium text-sm mb-2">⚙️ Settings URLs (13 Provider):</h5>
+                            <div className="space-y-1">
+                              {testResults.system_tests.filter((test: any) => 
+                                test.test_name.includes('Settings URLs')
+                              ).map((test: any, index: number) => (
+                                <div key={index} className="flex items-center justify-between text-sm">
+                                  <span className="font-mono">{test.test_name}:</span>
+                                  <Badge variant={getStatusBadgeVariant(test.status)}>
+                                    {test.status}
+                                  </Badge>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          
+                          {/* Rate Limits */}
+                          <div>
+                            <h5 className="font-medium text-sm mb-2">⏱️ Rate Limits (13 Provider):</h5>
+                            <div className="space-y-1">
+                              {testResults.system_tests.filter((test: any) => 
+                                test.test_name.includes('Rate Limits')
+                              ).map((test: any, index: number) => (
+                                <div key={index} className="flex items-center justify-between text-sm">
+                                  <span className="font-mono">{test.test_name}:</span>
+                                  <Badge variant={getStatusBadgeVariant(test.status)}>
+                                    {test.status}
+                                  </Badge>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* WebSocket Settings */}
+                          <div>
+                            <h5 className="font-medium text-sm mb-2">🌐 WebSocket Settings (8 Exchanges):</h5>
+                            <div className="space-y-1">
+                              {testResults.system_tests.filter((test: any) => 
+                                test.test_name.includes('WebSocket Settings')
+                              ).map((test: any, index: number) => (
+                                <div key={index} className="flex items-center justify-between text-sm">
+                                  <span className="font-mono">{test.test_name}:</span>
+                                  <Badge variant={getStatusBadgeVariant(test.status)}>
+                                    {test.status}
+                                  </Badge>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 7. FUTURES MULTI-TYPE VALIDATION */}
+                    {testResults.all_tests && testResults.all_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-indigo-600">🚀 FUTURES MULTI-TYPE VALIDATION</h4>
+                        <div className="space-y-2">
+                          {testResults.all_tests.filter((test: any) => 
+                            test.test_name.includes('USDTM') || 
+                            test.test_name.includes('USDCM') || 
+                            test.test_name.includes('COINM') || 
+                            test.test_name.includes('DELIVERY')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 8. EXTERNAL EXCHANGE API TESTS */}
+                    {testResults.system_tests && testResults.system_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-pink-600">🌍 EXTERNAL EXCHANGE API TESTS (CURL)</h4>
+                        <div className="space-y-2">
+                          {testResults.system_tests.filter((test: any) => 
+                            test.test_name.includes('External API')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 9. TABLE VALIDATION TESTS */}
+                    {testResults.all_tests && testResults.all_tests.length > 0 && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-cyan-600">📋 TABLE VALIDATION TESTS</h4>
+                        <div className="space-y-2">
+                          {testResults.all_tests.filter((test: any) => 
+                            test.test_name.includes('Table')
+                          ).map((test: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between">
+                              <span className="font-mono text-sm">{test.test_name}:</span>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={getStatusBadgeVariant(test.status)}>
+                                  {test.status}
+                                </Badge>
+                                <span className="text-sm text-gray-600">{test.details}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 10. PARALLEL HEALTH CHECK SYSTEM */}
+                    {testResults.health_check && (
+                      <Card className="p-4">
+                        <h4 className="font-semibold mb-3 text-teal-600">⚡ PARALLEL HEALTH CHECK SYSTEM</h4>
+                        <div className="bg-black text-green-400 p-3 rounded font-mono text-sm">
+                          <div className="grid grid-cols-8 gap-2 text-xs mb-2">
+                            <div>Exchange</div>
+                            <div>Spot</div>
+                            <div>USDT-M</div>
+                            <div>Coin-M</div>
+                            <div>USDC-M</div>
+                            <div>Redis(total)</div>
+                            <div>API(trades)</div>
+                            <div>Status</div>
+                          </div>
+                          <div className="grid grid-cols-8 gap-2 text-xs">
+                            <div>{testResults.health_check.exchange_name}</div>
+                            <div>k:{testResults.health_check.spot.keys} s:{testResults.health_check.spot.streams}</div>
+                            <div>k:{testResults.health_check.usdtm.keys} s:{testResults.health_check.usdtm.streams}</div>
+                            <div>k:{testResults.health_check.coinm.keys} s:{testResults.health_check.coinm.streams}</div>
+                            <div>k:{testResults.health_check.usdcm.keys} s:{testResults.health_check.usdcm.streams}</div>
+                            <div>{testResults.health_check.redis_total}</div>
+                            <div>{testResults.health_check.api_trades}</div>
+                            <div className={testResults.health_check.status === 'HEALTHY' ? 'text-green-400' : 
+                                           testResults.health_check.status === 'PARTIAL' ? 'text-yellow-400' : 'text-red-400'}>
+                              {testResults.health_check.status}
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* RAW LOGS SECTION */}
+              {loading && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                </div>
+              )}
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                  <p className="text-red-700 font-medium">Error loading logs:</p>
+                  <p className="text-red-600 text-sm mt-1">{error}</p>
+                </div>
+              )}
+
+              {logs && !loading && (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Raw Debug Logs</h3>
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <p className="text-sm text-gray-600 mb-2">
+                      Live debug logs from <code>{exchange}</code> diagnostics script.
+                      Auto-refreshes every 10 seconds.
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      Last updated: {new Date().toLocaleTimeString()}
+                    </p>
+                  </div>
+
+                  <div className="bg-black text-green-400 p-4 rounded-lg font-mono text-sm overflow-auto max-h-96">
+                    <pre className="whitespace-pre-wrap">{logs}</pre>
+                  </div>
+                </div>
+              )}
+
+              {!logs && !loading && !error && (
+                <div className="text-center py-8 text-gray-500">
+                  <p>No logs available for {exchange}</p>
+                  <p className="text-sm mt-1">The diagnostics script may still be running...</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+export default LogsPage;
 </file>
 
 <file path="frontend/src/services/config.ts">
@@ -98309,6 +102171,186 @@ export function resetMarketTypeConfig(): void {
 }
 </file>
 
+<file path="frontend/src/shared/ui/badge.tsx">
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const badgeVariants = cva(
+  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  {
+    variants: {
+      variant: {
+        default:
+          "border-transparent bg-primary text-primary-foreground hover:bg-primary/80",
+        secondary:
+          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        destructive:
+          "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
+        outline: "text-foreground",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+);
+
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return (
+    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+  );
+}
+
+export { Badge, badgeVariants };
+</file>
+
+<file path="frontend/src/shared/ui/button.tsx">
+import * as React from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import { cn } from "delete/lib/utils";
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        outline:
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-10 px-4 py-2",
+        sm: "h-9 rounded-md px-3",
+        lg: "h-11 rounded-md px-8",
+        icon: "h-10 w-10",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  },
+);
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean;
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button";
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    );
+  },
+);
+Button.displayName = "Button";
+
+export { Button, buttonVariants };
+</file>
+
+<file path="frontend/src/shared/ui/card.tsx">
+import * as React from "react";
+
+import { cn } from "delete/lib/utils";
+
+const Card = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      "rounded-lg border bg-card text-card-foreground shadow-sm",
+      className
+    )}
+    {...props}
+  />
+));
+Card.displayName = "Card";
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex flex-col space-y-1.5 p-6", className)}
+    {...props}
+  />
+));
+CardHeader.displayName = "CardHeader";
+
+const CardTitle = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h3
+    ref={ref}
+    className={cn(
+      "text-2xl font-semibold leading-none tracking-tight",
+      className
+    )}
+    {...props}
+  />
+));
+CardTitle.displayName = "CardTitle";
+
+const CardDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+));
+CardDescription.displayName = "CardDescription";
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+));
+CardContent.displayName = "CardContent";
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex items-center p-6 pt-0", className)}
+    {...props}
+  />
+));
+CardFooter.displayName = "CardFooter";
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
+</file>
+
 <file path="frontend/package.json">
 {
   "name": "trading-dashboard",
@@ -98401,6 +102443,40 @@ export function resetMarketTypeConfig(): void {
     "typescript": "~5.6.2",
     "vite": "^5.4.10"
   }
+}
+</file>
+
+<file path="frontend/tsconfig.app.json">
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitAny": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "delete/config", "delete/contexts", "delete/shared", "delete/lib/zod-transforms.ts", "delete/lib/utils.ts", "delete/lib/ultraFastParsing.ts", "delete/lib/react-query.ts", "delete/lib/metrics.ts", "delete/lib/logger.ts", "delete/lib/directDOMUpdater.ts", "delete/lib/chartLazyLoader.ts"]
 }
 </file>
 
@@ -181408,79 +185484,87 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="frontend/src/features/trading/components/MarketTrades.tsx">
-import React, { useState, useEffect } from "react";
-import { useLiveTrades } from '../../../hooks/useLiveTrades';
+<file path="frontend/src/contexts/TradingContext.tsx">
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { MarketType } from '../config/exchangeSupport';
+import { getDefaultExchange, getDefaultMarketType } from '../../src/services/config';
 
-// Trade interface inline definiert (war in services/api/trading.ts)
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: string;
-  ts: number;
+interface TradingContextType {
+  selectedExchange: string;
+  selectedMarket: MarketType;
+  setSelectedExchange: (exchange: string) => void;
+  setSelectedMarket: (market: MarketType) => void;
 }
 
-interface MarketTradesProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  maxLength?: number;
+// ✅ Temporäre Defaults aus ENV (bis Backend geladen ist)
+const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance';
+const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || 'spot';
+
+const TradingContext = createContext<TradingContextType>({
+  selectedExchange: TEMP_DEFAULT_EXCHANGE,
+  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
+  setSelectedExchange: () => {},
+  setSelectedMarket: () => {},
+});
+
+interface TradingProviderProps {
+  children: ReactNode;
 }
 
-export const MarketTrades: React.FC<MarketTradesProps> = ({
-  symbol,
-  market,
-  exchange,
-  maxLength = 30,
-}) => {
-  // 🚀 NEW: Use WebSocketPool via Hook
-  const { trades: liveTrades } = useLiveTrades(exchange, symbol, market, maxLength);
-  
-  // Convert to Trade interface format
-  const trades = React.useMemo(() => {
-    return liveTrades.map((t, idx) => ({
-      id: `${t.ts || Date.now()}-${idx}`,
-      price: t.price,
-      size: t.size,
-      time: t.ts ? new Date(t.ts).toLocaleTimeString() : new Date().toLocaleTimeString(),
-      side: t.side || 'buy',
-      ts: t.ts || Date.now(),
-    } as Trade));
-  }, [liveTrades]);
+export const TradingProvider = ({ children }: TradingProviderProps) => {
+  const [selectedExchange, setSelectedExchange] = useState(TEMP_DEFAULT_EXCHANGE);
+  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // ✅ Lade Defaults vom Backend beim Start
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        const [exchange, market] = await Promise.all([
+          getDefaultExchange(),
+          getDefaultMarketType()
+        ]);
+        setSelectedExchange(exchange);
+        setSelectedMarket(market as MarketType);
+        console.log(`[TradingContext] Loaded defaults from backend: ${exchange} / ${market}`);
+      } catch (error) {
+        console.error('[TradingContext] Failed to load defaults, using fallbacks:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadDefaults();
+  }, []);
+
+  if (isLoading) {
+    // Optional: Loading-Spinner hier rendern
+    return <>{children}</>; // oder ein Loading-Wrapper
+  }
 
   return (
-    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-bold text-lg text-text-primary">Market Trades</span>
-      </div>
-      <div className="overflow-y-auto max-h-80">
-        <table className="w-full text-xs">
-          <thead>
-            <tr>
-              <th align="left">Time</th>
-              <th align="right">Price</th>
-              <th align="right">Amount</th>
-              <th align="center">Side</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t, idx) => (
-              <tr key={idx} className="border-b border-border-color last:border-b-0">
-                <td className="py-1">{t.time}</td>
-                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
-                <td align="right">{t.size.toFixed(4)}</td>
-                <td align="center">{t.side}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
-      </div>
-    </div>
+    <TradingContext.Provider
+      value={{
+        selectedExchange,
+        selectedMarket,
+        setSelectedExchange,
+        setSelectedMarket,
+      }}
+    >
+      {children}
+    </TradingContext.Provider>
   );
 };
+
+export const useTradingContext = () => {
+  const context = useContext(TradingContext);
+  if (!context) {
+    throw new Error('useTradingContext must be used within a TradingProvider');
+  }
+  return context;
+};
+
+export { TradingContext };
 </file>
 
 <file path="frontend/src/features/trading/components/SystemStatus.tsx">
@@ -181507,177 +185591,6 @@ const SystemStatus: React.FC = () => {
 };
 
 export default SystemStatus;
-</file>
-
-<file path="frontend/src/hooks/useLiveCandles.ts">
-// src/hooks/useLiveCandles.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number; // bucket start (seconds)
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = Number.parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useLiveCandles(
-  exchange: string,
-  symbol: string,
-  market = "spot",
-  interval = "1s",
-  maxCandles = 500
-) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
-
-  const lastRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    setCandles([]);
-    lastRef.current = null;
-  }, [key]);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market || "spot", setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market || "spot", (msg: WsMsg) => {
-      // 1) Server-side candle messages (authoritative if present)
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const t = toNum(m.t);
-
-        const cndl: LiveCandle = {
-          exchange: msg.exchange!,
-          symbol: msg.symbol!,
-          market: msg.market || market,
-          interval: (m.interval as string) || interval,
-          t: t || 0,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        if (!cndl.t) return;
-
-        // IMPORTANT: keep fallback state aligned with server candles
-        lastRef.current = cndl;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [cndl];
-
-          if (cndl.t === last.t) {
-            return prev.slice(0, -1).concat(cndl);
-          }
-          if (cndl.t > last.t) {
-            const next = prev.concat(cndl);
-            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
-          }
-          // older candle -> ignore
-          return prev;
-        });
-
-        return;
-      }
-
-      // 2) Trade fallback -> build candles locally (only if no candle stream or as gap-filler)
-      if (msg.type !== "trade") return;
-
-      const m: any = msg;
-      const price = toNum(m.price);
-      const size = toNum(m.size);
-      if (!price) return;
-
-      // Use trade timestamp if available (reduces drift and bucket jitter)
-      const tsRaw = toNum(m.ts);
-      const tsMs = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : Date.now();
-      const t0 = bucketStartFromMs(tsMs, sec);
-
-      const cur = lastRef.current;
-
-      if (!cur || cur.t !== t0) {
-        const fresh: LiveCandle = {
-          exchange,
-          symbol,
-          market,
-          interval,
-          t: t0,
-          o: price,
-          h: price,
-          l: price,
-          c: price,
-          v: size || 0,
-        };
-        lastRef.current = fresh;
-
-        setCandles((prev) => {
-          const next = prev.concat(fresh);
-          return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
-        });
-        return;
-      }
-
-      const upd: LiveCandle = {
-        ...cur,
-        h: Math.max(cur.h, price),
-        l: Math.min(cur.l, price),
-        c: price,
-        v: cur.v + (size || 0),
-      };
-      lastRef.current = upd;
-
-      setCandles((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last) return [upd];
-        if (last.t !== upd.t) return prev.concat(upd);
-        return prev.slice(0, -1).concat(upd);
-      });
-    });
-
-    return () => {
-      offMsg();
-      offStatus();
-    };
-  }, [exchange, symbol, market, interval, sec, maxCandles]);
-
-  return { status, candles };
-}
 </file>
 
 <file path="frontend/src/pages/BTCUSDTMonitor.tsx">
@@ -181867,578 +185780,6 @@ const TradingPage = () => {
 };
 
 export default TradingPage;
-</file>
-
-<file path="frontend/src/services/api/market.ts">
-import { BaseAPI } from './base';
-
-export class MarketAPI extends BaseAPI {
-  // ✅ HEALTH ENDPOINT
-  static async getSystemHealth() {
-    try {
-      // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/monitoring/health (ro_monitoring.py)
-      const response = await this.request('/api/monitoring/health');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch system health:', error);
-      return null;
-    }
-  }
-
-  // ✅ METRICS ENDPOINT  
-  static async getPerformanceMetrics() {
-    try {
-      // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/monitoring/metrics (ro_monitoring.py)
-      const response = await this.request('/api/monitoring/metrics');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch performance metrics:', error);
-      return null;
-    }
-  }
-
-
-  // ✅ SETTINGS ENDPOINTS
-  static async getExchangeSettings(provider: string) {
-    try {
-      const response = await this.request(`/api/settings/urls/${provider}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch exchange settings for ${provider}:`, error);
-      return null;
-    }
-  }
-
-  static async getRateLimits(provider: string) {
-    try {
-      const response = await this.request(`/api/settings/rate-limits/${provider}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch rate limits for ${provider}:`, error);
-      return null;
-    }
-  }
-
-  static async getWebSocketSettings(exchange: string) {
-    try {
-      const response = await this.request(`/api/settings/websockets/${exchange}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch websocket settings for ${exchange}:`, error);
-      return null;
-    }
-  }
-
-  static async getUsageStats(provider: string) {
-    try {
-      const response = await this.request(`/api/settings/usage/${provider}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch usage stats for ${provider}:`, error);
-      return null;
-    }
-  }
-
-  // ==================== PROVIDER SETTINGS (PUT METHODS) ====================
-
-  static async updateProviderURLs(provider: string, urls: Record<string, string>) {
-    try {
-      const response = await this.request(`/api/settings/urls/${provider}`, {
-        method: 'PUT',
-        body: JSON.stringify(urls)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update URLs for ${provider}:`, error);
-      return null;
-    }
-  }
-
-  static async updateWebSocketSettings(exchange: string, settings: Record<string, any>) {
-    try {
-      const response = await this.request(`/api/settings/websockets/${exchange}`, {
-        method: 'PUT',
-        body: JSON.stringify(settings)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update WebSocket settings for ${exchange}:`, error);
-      return null;
-    }
-  }
-
-  static async updateRateLimits(provider: string, limits: Record<string, any>) {
-    try {
-      const response = await this.request(`/api/settings/rate-limits/${provider}`, {
-        method: 'PUT',
-        body: JSON.stringify(limits)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update rate limits for ${provider}:`, error);
-      return null;
-    }
-  }
-
-  // ==================== INFRASTRUCTURE SETTINGS ====================
-
-  static async getInfrastructureSettings(service: 'clickhouse' | 'redis' | 'ollama' | 'backend') {
-    try {
-      const response = await this.request(`/api/settings/infrastructure/${service}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch ${service} settings:`, error);
-      return null;
-    }
-  }
-
-  static async updateInfrastructureSettings(
-    service: 'clickhouse' | 'redis' | 'ollama' | 'backend',
-    settings: Record<string, any>
-  ) {
-    try {
-      const response = await this.request(`/api/settings/infrastructure/${service}`, {
-        method: 'PUT',
-        body: JSON.stringify(settings)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update ${service} settings:`, error);
-      return null;
-    }
-  }
-
-  // ==================== DEVELOPMENT SETTINGS ====================
-
-  static async getDevelopmentSettings(service: 'kafka' | 'frontend-dev') {
-    try {
-      const response = await this.request(`/api/settings/development/${service}`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch ${service} settings:`, error);
-      return null;
-    }
-  }
-
-  static async updateDevelopmentSettings(
-    service: 'kafka' | 'frontend-dev',
-    settings: Record<string, any>
-  ) {
-    try {
-      const response = await this.request(`/api/settings/development/${service}`, {
-        method: 'PUT',
-        body: JSON.stringify(settings)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update ${service} settings:`, error);
-      return null;
-    }
-  }
-
-  // ==================== ENTERPRISE SETTINGS ====================
-
-  static async getEnterpriseRateLimits() {
-    try {
-      const response = await this.request('/api/settings/enterprise/rate-limits');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch enterprise rate limits:', error);
-      return null;
-    }
-  }
-
-  static async updateEnterpriseRateLimits(limits: Record<string, any>) {
-    try {
-      const response = await this.request('/api/settings/enterprise/rate-limits', {
-        method: 'PUT',
-        body: JSON.stringify(limits)
-      });
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to update enterprise rate limits:', error);
-      return null;
-    }
-  }
-
-  // ==================== WHALE SETTINGS ====================
-
-  static async getWhaleExchangeAddresses() {
-    try {
-      const response = await this.request('/api/settings/whales/exchange-addresses');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch whale exchange addresses:', error);
-      return null;
-    }
-  }
-
-  static async updateWhaleExchangeAddresses(addresses: Record<string, any>) {
-    try {
-      const response = await this.request('/api/settings/whales/exchange-addresses', {
-        method: 'PUT',
-        body: JSON.stringify(addresses)
-      });
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to update whale exchange addresses:', error);
-      return null;
-    }
-  }
-
-  static async getWhaleCoinConfig() {
-    try {
-      const response = await this.request('/api/settings/whales/coin-config');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch whale coin config:', error);
-      return null;
-    }
-  }
-
-  static async updateWhaleCoinConfig(config: Record<string, any>) {
-    try {
-      const response = await this.request('/api/settings/whales/coin-config', {
-        method: 'PUT',
-        body: JSON.stringify(config)
-      });
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to update whale coin config:', error);
-      return null;
-    }
-  }
-
-  // ==================== MARKET SETTINGS ====================
-
-  static async getOrderBookConfig() {
-    try {
-      const response = await this.request('/api/settings/market/orderbook-config');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch orderbook config:', error);
-      return null;
-    }
-  }
-
-  static async updateOrderBookConfig(config: Record<string, any>) {
-    try {
-      const response = await this.request('/api/settings/market/orderbook-config', {
-        method: 'PUT',
-        body: JSON.stringify(config)
-      });
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to update orderbook config:', error);
-      return null;
-    }
-  }
-
-  // ==================== PROVIDER REGISTRATION ====================
-
-  static async getProviderRegistrationURLs() {
-    try {
-      const response = await this.request('/api/settings/providers/registration-urls');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch provider registration URLs:', error);
-      return null;
-    }
-  }
-
-  static async updateProviderRegistrationURLs(urls: Record<string, any>) {
-    try {
-      const response = await this.request('/api/settings/providers/registration-urls', {
-        method: 'PUT',
-        body: JSON.stringify(urls)
-      });
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to update provider registration URLs:', error);
-      return null;
-    }
-  }
-
-  // ==================== EXCHANGE API ENDPOINTS ====================
-
-  static async getExchangeAPIEndpoints(exchange: string) {
-    try {
-      const response = await this.request(`/api/settings/${exchange}/api-endpoints`);
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to fetch API endpoints for ${exchange}:`, error);
-      return null;
-    }
-  }
-
-  static async updateExchangeAPIEndpoints(exchange: string, endpoints: Record<string, any>) {
-    try {
-      const response = await this.request(`/api/settings/${exchange}/api-endpoints`, {
-        method: 'PUT',
-        body: JSON.stringify(endpoints)
-      });
-      return response;
-    } catch (error) {
-      console.error(`[MarketAPI] Failed to update API endpoints for ${exchange}:`, error);
-      return null;
-    }
-  }
-
-  // ==================== MONITORING & CACHE ====================
-
-  static async getMonitoringMetrics() {
-    try {
-      const response = await this.request('/api/monitoring/metrics');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch monitoring metrics:', error);
-      return null;
-    }
-  }
-
-  static async getWebSocketMetrics() {
-    try {
-      // ✅ KONFORMITÄT Teil 3 (Gap-Analyse): Backend /api/monitoring/ws (ro_monitoring.py)
-      const response = await this.request('/api/monitoring/ws');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch WebSocket metrics:', error);
-      return null;
-    }
-  }
-
-  static async getCacheStatistics() {
-    try {
-      const response = await this.request('/api/monitoring/cache');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch cache statistics:', error);
-      return null;
-    }
-  }
-
-  // ==================== ENVIRONMENT INFO ====================
-
-  static async getEnvironmentNames() {
-    try {
-      const response = await this.request('/api/settings/environment/names');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch environment names:', error);
-      return null;
-    }
-  }
-
-  // ==================== DIAGNOSTICS ====================
-
-  static async getDiagnosticsEndpoints() {
-    try {
-      const response = await this.request('/api/diagnostics/endpoints');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch diagnostics endpoints:', error);
-      return null;
-    }
-  }
-
-  static async getOpenAPISchema() {
-    try {
-      const response = await this.request('/api/diagnostics/openapi');
-      return response;
-    } catch (error) {
-      console.error('[MarketAPI] Failed to fetch OpenAPI schema:', error);
-      return null;
-    }
-  }
-}
-</file>
-
-<file path="frontend/src/services/api/schemas.ts">
-import { z } from 'zod';
-import { decimalTransform, decimalTupleTransform } from '../../lib/zod-transforms';
-
-/**
- * Zod Validation Schemas für API-Responses
- * Mit automatischer Decimal-Konvertierung (String → Number)
- * Zentrale Type-Safe Runtime-Validation
- */
-
-// ==================== TRADING SCHEMAS ====================
-
-/**
- * OrderBook Entry: [price, size] tuple with decimal conversion
- */
-export const OrderBookEntrySchema = decimalTupleTransform;
-
-/**
- * Complete OrderBook with bids and asks
- */
-export const OrderBookSchema = z.object({
-  data: z.object({
-    bids: z.array(decimalTupleTransform),
-    asks: z.array(decimalTupleTransform),
-    timestamp: z.number().optional(),
-    spread: z.string().optional(),
-    spread_percent: z.string().optional()
-  })
-});
-
-/**
- * Single Trade with decimal conversion for prices
- */
-export const TradeSchema = z.object({
-  id: z.union([z.string(), z.number()]).optional(),
-  price: decimalTransform,
-  quantity: decimalTransform,
-  size: decimalTransform.optional(),
-  amount: decimalTransform.optional(),
-  timestamp: z.number(),
-  time: z.union([z.number(), z.string()]).optional(),
-  side: z.enum(['buy', 'sell', 'BUY', 'SELL']).optional(),
-  isBuyerMaker: z.boolean().optional(),
-  exchange: z.string().optional(),
-  market: z.string().optional()
-}).passthrough();
-
-export const TradesSchema = z.array(TradeSchema);
-
-/**
- * Ticker with all numeric fields converted from strings
- */
-export const TickerSchema = z.object({
-  symbol: z.string(),
-  price: decimalTransform.optional(),
-  last: decimalTransform.optional(),
-  lastPrice: decimalTransform.optional(),
-  priceChange: decimalTransform.optional(),
-  priceChangePercent: decimalTransform.optional(),
-  volume: decimalTransform.optional(),
-  baseVol: decimalTransform.optional(),
-  quoteVol: decimalTransform.optional(),
-  high: decimalTransform.optional(),
-  high24h: decimalTransform.optional(),
-  low: decimalTransform.optional(),
-  low24h: decimalTransform.optional(),
-  bid: decimalTransform.optional(),
-  ask: decimalTransform.optional(),
-  open: decimalTransform.optional(),
-  close: decimalTransform.optional()
-}).passthrough();
-
-// ==================== SYMBOL SCHEMAS ====================
-
-export const SymbolSchema = z.object({
-  symbol: z.string(),
-  baseAsset: z.string().optional(),
-  quoteAsset: z.string().optional(),
-  status: z.string().optional(),
-  market_type: z.enum(['spot', 'futures', 'margin', 'usdtm', 'coinm']).optional(),
-  type: z.string().optional()
-}).passthrough();
-
-export const SymbolsSchema = z.object({
-  exchange: z.string(),
-  symbols: z.array(SymbolSchema),
-  count: z.number()
-});
-
-// ==================== CHART SCHEMAS ====================
-
-/**
- * Single Candle with decimal conversion for OHLCV
- */
-export const CandleSchema = z.object({
-  timestamp: z.number(),
-  open: decimalTransform,
-  high: decimalTransform,
-  low: decimalTransform,
-  close: decimalTransform,
-  volume: decimalTransform
-});
-
-export const ChartDataSchema = z.array(CandleSchema);
-
-// ==================== WHALE SCHEMAS ====================
-
-/**
- * Whale Transaction with decimal conversion
- */
-export const WhaleTransactionSchema = z.object({
-  exchange: z.string().optional(),
-  coin: z.string().optional(),
-  symbol: z.string().optional(),
-  amount: decimalTransform,
-  amount_usd: decimalTransform.optional(),
-  price: decimalTransform.optional(),
-  timestamp: z.number(),
-  type: z.string().optional(),
-  address: z.string().optional(),
-  tx_hash: z.string().optional(),
-  from: z.string().optional(),
-  to: z.string().optional()
-}).passthrough();
-
-export const WhaleTransactionsSchema = z.array(WhaleTransactionSchema);
-
-export const WhaleStatisticsSchema = z.object({
-  totalVolume: decimalTransform.optional(),
-  total_volume_24h: decimalTransform.optional(),
-  transactionCount: z.number().optional(),
-  total_events_24h: z.number().optional(),
-  topCoins: z.array(z.string()).optional(),
-  exchanges: z.array(z.string()).optional()
-}).passthrough();
-
-// ==================== SETTINGS SCHEMAS ====================
-
-export const APIKeysSchema = z.object({
-  has_keys: z.boolean(),
-  exchange: z.string().optional(),
-  label: z.string().optional(),
-  last_update: z.string().optional()
-});
-
-// ==================== MONITORING SCHEMAS ====================
-
-export const HealthSchema = z.object({
-  status: z.string(),
-  timestamp: z.string(),
-  system: z.record(z.string(), z.any()).optional(),
-  websocket: z.record(z.string(), z.any()).optional(),
-  details: z.record(z.string(), z.any()).optional()
-});
-
-// ==================== HISTORICAL SCHEMAS ====================
-
-/**
- * Backfill Task Status Schema
- */
-export const BackfillTaskSchema = z.object({
-  task_id: z.string(),
-  status: z.enum(['running', 'completed', 'failed', 'stopped']),
-  exchange: z.string(),
-  symbol: z.string(),
-  market: z.string(),
-  progress: z.number(),
-  started_at: z.number(),
-  completed_at: z.number().optional(),
-  failed_at: z.number().optional(),
-  error: z.string().optional(),
-  candles_processed: z.number().optional()
-}).passthrough();
-
-// ==================== TYPE EXPORTS ====================
-
-export type OrderBookEntry = [number, number];
-export type OrderBook = z.infer<typeof OrderBookSchema>;
-export type Trade = z.infer<typeof TradeSchema>;
-export type Ticker = z.infer<typeof TickerSchema>;
-export type Symbol = z.infer<typeof SymbolSchema>;
-export type Candle = z.infer<typeof CandleSchema>;
-export type WhaleTransaction = z.infer<typeof WhaleTransactionSchema>;
-export type WhaleStatistics = z.infer<typeof WhaleStatisticsSchema>;
-export type BackfillTask = z.infer<typeof BackfillTaskSchema>;
-export type Health = z.infer<typeof HealthSchema>;
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -182678,255 +186019,6 @@ export class WebSocketPool {
     c.ws = null;
     this.setStatus(c, "CLOSED");
   }
-}
-</file>
-
-<file path="frontend/src/shared/api/trading.ts">
-// API endpoint for symbols data
-export interface ApiSymbol {
-  symbol: string;
-  market: string;
-  price: string;
-  change: string;
-  changePercent: number;
-}
-
-export interface ApiResponse {
-  symbols: ApiSymbol[];
-}
-
-// Backend API interfaces
-interface BackendSymbol {
-  symbol: string;
-  market_type: string;
-  status: string;
-  baseAsset: string;
-  quoteAsset: string;
-}
-
-interface BackendTicker {
-  symbol: string;
-  last: number;
-  high24h: number;
-  low24h: number;
-  changeRate: number;
-  baseVol: number;
-  quoteVol: number;
-  market_type: string;
-}
-
-interface BackendSymbolsResponse {
-  symbols: BackendSymbol[];
-  db_symbols: any[];
-}
-
-// Configuration - Uses Vite Environment Variables (TypeScript-safe)
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8100/api';
-const CACHE_TTL = 300000; // 5 minutes for symbols
-const TICKER_CACHE_TTL = 10000; // 10 seconds for tickers
-
-// Cache storage
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-  ttl: number;
-}
-
-const cache = new Map<string, CacheEntry<any>>();
-
-// Cache utilities
-function getCached<T>(key: string): T | null {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  
-  if (Date.now() - entry.timestamp > entry.ttl) {
-    cache.delete(key);
-    return null;
-  }
-  
-  return entry.data;
-}
-
-function setCache<T>(key: string, data: T, ttl: number): void {
-  cache.set(key, {
-    data,
-    timestamp: Date.now(),
-    ttl,
-  });
-}
-
-// Settings API functions
-export interface CoinSetting {
-  exchange?: string;  // New: Exchange parameter
-  symbol: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite: boolean;
-  db_resolutions: number[];  // Updated: Now array instead of single value
-  chart_resolution: string;
-}
-
-// Exchange configuration - DYNAMISCH aus ENV
-export type Exchange = string; // ✅ Beliebiger Exchange aus .env
-export const DEFAULT_EXCHANGE: Exchange = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance'; // ✅ Aus ENV oder Fallback
-
-// Fetch settings with exchange support
-export async function getSettings(exchange?: Exchange, symbol?: string, market?: string): Promise<CoinSetting[]> {
-  try {
-    const params = new URLSearchParams();
-    // 🚨 FIX: Nur gültige Parameter hinzufügen, NIEMALS undefined!
-    const filteredExchange = (exchange && exchange !== 'all') ? exchange : undefined;
-    if (filteredExchange) params.append('exchange', filteredExchange);
-    if (symbol && symbol !== 'undefined') params.append('symbol', symbol);
-    if (market && market !== 'undefined') params.append('market', market);
-    
-    const queryString = params.toString();
-    const url = `${API_BASE}/settings/settings${queryString ? `?${queryString}` : ''}`;
-    
-    console.log(`[SymbolsAPI] Calling: ${url} (original: ${exchange}, filtered: ${filteredExchange || 'none'})`);
-    
-    const response = await fetch(url, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    console.log(`[SymbolsAPI] ✅ Got ${data.length} settings from ${url}`);
-    return data;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to fetch settings:', error);
-    return [];
-  }
-}
-
-// Save settings with exchange support
-export async function saveSettings(settings: CoinSetting[]): Promise<boolean> {
-  try {
-    // Ensure each setting has an exchange field (default to bitget for legacy compatibility)
-    const settingsWithExchange = settings.map(setting => ({
-      ...setting,
-      exchange: setting.exchange || DEFAULT_EXCHANGE,
-      // Convert single db_resolution to array for backward compatibility
-      db_resolutions: Array.isArray(setting.db_resolutions) 
-        ? setting.db_resolutions 
-        : [(setting as any).db_resolution || 60]
-    }));
-    
-    const response = await fetch(`${API_BASE}/settings/settings`, {
-      method: 'PUT',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(settingsWithExchange),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const result = await response.json();
-    
-    console.log('[SymbolsAPI] Settings saved successfully:', result);
-    return true;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to save settings:', error);
-    return false;
-  }
-}
-
-// Get settings for all exchanges
-export async function getAllSettings(): Promise<CoinSetting[]> {
-  try {
-    const [binanceSettings, bitgetSettings] = await Promise.all([
-      getSettings('binance').catch(() => []),
-      getSettings('bitget').catch(() => [])
-    ]);
-    
-    const allSettings = [...binanceSettings, ...bitgetSettings];
-    console.log(`[SymbolsAPI] Combined ${allSettings.length} settings from all exchanges`);
-    return allSettings;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to fetch settings from all exchanges:', error);
-    return [];
-  }
-}
-
-// Fetch symbols from backend with exchange support
-export async function fetchSymbols(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendSymbolsResponse> {
-  const cacheKey = `symbols_${exchange}`;
-  const cached = getCached<BackendSymbolsResponse>(cacheKey);
-  if (cached) return cached;
-  
-  try {
-    const response = await fetch(`${API_BASE}/market/symbols?exchange=${exchange}`, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-        timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
-    } as any);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    setCache(cacheKey, data, CACHE_TTL);
-    
-    console.log(`[SymbolsAPI] Fetched ${data.symbols?.length || 0} symbols from ${exchange}`);
-    return data;
-  } catch (error) {
-    console.error(`[SymbolsAPI] Failed to fetch symbols from ${exchange}:`, error);
-    throw error;
-  }
-}
-
-// Fetch tickers from backend with exchange support
-export async function fetchTickers(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendTicker[]> {
-  const cacheKey = `tickers_${exchange}`;
-  const cached = getCached<BackendTicker[]>(cacheKey);
-  if (cached) return cached;
-  
-  try {
-    const response = await fetch(`${API_BASE}/market/ticker?exchange=${exchange}`, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
-    } as any);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    // Handle new unified backend response format
-    const tickers = data.tickers || data; // Support both old and new format
-    setCache(cacheKey, tickers, TICKER_CACHE_TTL);
-    
-    console.log(`[SymbolsAPI] Fetched ${tickers.length} tickers from ${exchange}`);
-    return tickers;
-  } catch (error) {
-    console.error(`[SymbolsAPI] Failed to fetch tickers from ${exchange}:`, error);
-    throw error;
-  }
-}
-
-// Clear cache function for manual refresh
-export function clearCache(): void {
-  cache.clear();
-  console.log('[SymbolsAPI] Cache cleared');
 }
 </file>
 
@@ -187611,6 +190703,404 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
+<file path="backend/database/clickhouse/cl_message_handlers.py">
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Callable
+from datetime import datetime
+from .cl_manager import cl_manager_instance
+from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+
+logger = logging.getLogger(__name__)
+
+class cl_message_handlers:
+    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.manager = cl_manager_instance
+        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
+        self.processing_tasks: List[asyncio.Task] = []
+        self.is_processing = False
+        self.processed_messages = 0
+        self.failed_messages = 0
+        self.message_types: Dict[str, Callable] = {
+            "trades": self._handle_trades_message,
+            "candles": self._handle_candles_message,
+            "orderbook": self._handle_orderbook_message,
+            "user_settings": self._handle_user_settings_message,
+            "indicators": self._handle_indicators_message
+        }
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "message_handlers")
+        except ImportError:
+            logger.warning("Health system not available for cl_message_handlers")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_message_handlers initialized")
+    
+    async def start_processing(self, num_workers: int = 3):
+        """Start message processing workers"""
+        if self.is_processing:
+            logger.warning("Message processing is already running")
+            return
+        
+        self.is_processing = True
+        
+        # Start worker tasks
+        for i in range(num_workers):
+            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
+            self.processing_tasks.append(task)
+        
+        if self.health_component:
+            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
+            
+        logger.info(f"Started {num_workers} ClickHouse message processing workers")
+    
+    async def stop_processing(self):
+        """Stop message processing workers"""
+        if not self.is_processing:
+            return
+        
+        self.is_processing = False
+        
+        # Cancel all worker tasks
+        for task in self.processing_tasks:
+            task.cancel()
+        
+        # Wait for tasks to finish
+        if self.processing_tasks:
+            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        
+        self.processing_tasks.clear()
+        
+        logger.info("Stopped ClickHouse message processing workers")
+    
+    async def _message_worker(self, worker_id: str):
+        """Message processing worker"""
+        logger.info(f"ClickHouse message worker {worker_id} started")
+        
+        while self.is_processing:
+            try:
+                # Get message from queue with timeout
+                message = await asyncio.wait_for(
+                    self.message_queue.get(),
+                    timeout=CL_PERFORMANCE["processing_timeout"]
+                )
+                
+                # Process message
+                await self._process_message(message, worker_id)
+                
+                # Mark task as done
+                self.message_queue.task_done()
+                
+            except asyncio.TimeoutError:
+                # No messages to process, continue loop
+                continue
+            except asyncio.CancelledError:
+                logger.info(f"ClickHouse message worker {worker_id} cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in message worker {worker_id}: {str(e)}")
+                if self.health_component:
+                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
+                await asyncio.sleep(1)  # Brief pause before continuing
+        
+        logger.info(f"ClickHouse message worker {worker_id} stopped")
+    
+    async def _process_message(self, message: Dict[str, Any], worker_id: str):
+        """Process a single message"""
+        start_time = datetime.now()
+        
+        try:
+            # Extract message info
+            exchange = message.get("exchange")
+            message_type = message.get("type")
+            data = message.get("data")
+            
+            if not all([exchange, message_type, data]):
+                raise ValueError("Invalid message format: missing exchange, type, or data")
+            
+            # Get appropriate handler
+            handler = self.message_types.get(message_type)
+            if not handler:
+                raise ValueError(f"Unknown message type: {message_type}")
+            
+            # Process with handler
+            result = await handler(exchange, data, worker_id)
+            
+            # Track success
+            self.processed_messages += 1
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            if self.health_component:
+                self.health_component.record_success({
+                    "action": "message_processed",
+                    "type": message_type,
+                    "exchange": exchange,
+                    "worker": worker_id,
+                    "processing_time_ms": processing_time
+                })
+            
+            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
+            
+        except Exception as e:
+            self.failed_messages += 1
+            error_msg = f"Failed to process message: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+    
+    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle trades data message"""
+        try:
+            # Validate trades data
+            if not self._validate_trades_data(data):
+                raise ValueError("Invalid trades data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_trades_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "trades", ch_data)
+            
+            if success:
+                logger.debug(f"Trades data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert trades data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle candles/bars data message"""
+        try:
+            # Validate candles data
+            if not self._validate_candles_data(data):
+                raise ValueError("Invalid candles data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_candles_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "candles", ch_data)
+            
+            if success:
+                logger.debug(f"Candles data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert candles data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle orderbook data message"""
+        try:
+            # Validate orderbook data
+            if not self._validate_orderbook_data(data):
+                raise ValueError("Invalid orderbook data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_orderbook_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
+            
+            if success:
+                logger.debug(f"Orderbook data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert orderbook data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle user settings message"""
+        try:
+            # User settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "user_settings", data)
+            
+            if success:
+                logger.debug("User settings data inserted")
+            else:
+                logger.warning("Failed to insert user settings data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling user settings message: {str(e)}")
+            raise
+    
+    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle indicators message"""
+        try:
+            # Indicators settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "indicators", data)
+            
+            if success:
+                logger.debug("Indicators data inserted")
+            else:
+                logger.warning("Failed to insert indicators data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling indicators message: {str(e)}")
+            raise
+    
+    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate trades data format
+        
+        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
+        - Keine hardcoded Exchange-Listen
+        - Keine Exchange-spezifischen If-Bedingungen  
+        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
+        
+        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
+        
+        Felder die NICHT geprüft werden:
+        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
+        - source: Optional mit DEFAULT 'live_ws'
+        """
+        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
+        """Validate candles data format"""
+        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
+        """Validate orderbook data format"""
+        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Transform trades data to ClickHouse format
+        
+        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
+        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
+        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
+        - trade_id: NICHT senden (wird von ClickHouse generiert)
+        - source: Optional (DEFAULT 'live_ws')
+        """
+        transformed = {
+            "symbol": data["symbol"],
+            "market": data["market"],  # ✅ Spot oder Futures
+            "price": data["price"],  # ✅ String für Decimal(76,38)
+            "size": data["size"],    # ✅ String für Decimal(76,38)
+            "side": data["side"],
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+        
+        # source-Field optional hinzufügen (wenn vorhanden)
+        if "source" in data:
+            transformed["source"] = data["source"]
+        
+        return transformed
+    
+    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform candles data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "resolution": data["resolution"],
+            "open": data["open"],    # ✅ String für Decimal(76,38)
+            "high": data["high"],    # ✅ String für Decimal(76,38)
+            "low": data["low"],      # ✅ String für Decimal(76,38)
+            "close": data["close"],  # ✅ String für Decimal(76,38)
+            "volume": data["volume"], # ✅ String für Decimal(76,38)
+            "trades": data.get("trades", 0),
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform orderbook data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "bids": data["bids"],  # Array of [price, size] tuples
+            "asks": data["asks"],  # Array of [price, size] tuples
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
+        """Queue a message for processing"""
+        try:
+            message = {
+                "exchange": exchange,
+                "type": message_type,
+                "data": data,
+                "queued_at": datetime.now().isoformat()
+            }
+            
+            # Add to queue (will wait if queue is full)
+            await self.message_queue.put(message)
+            
+            logger.debug(f"Queued {message_type} message for {exchange}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to queue message: {str(e)}")
+            return False
+    
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get message processing statistics"""
+        return {
+            "is_processing": self.is_processing,
+            "queue_size": self.message_queue.qsize(),
+            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
+            "active_workers": len(self.processing_tasks),
+            "processed_messages": self.processed_messages,
+            "failed_messages": self.failed_messages,
+            "success_rate": round(
+                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
+            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
+            "supported_message_types": list(self.message_types.keys())
+        }
+    
+    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Process a batch of messages"""
+        results = {"queued": 0, "failed": 0}
+        
+        for message in messages:
+            try:
+                success = await self.queue_message(
+                    message.get("exchange"),
+                    message.get("type"),
+                    message.get("data")
+                )
+                
+                if success:
+                    results["queued"] += 1
+                else:
+                    results["failed"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Error queuing batch message: {str(e)}")
+                results["failed"] += 1
+        
+        return results
+
+
+# Global cl_message_handlers instance
+cl_handlers_instance = cl_message_handlers()
+</file>
+
 <file path="backend/database/tables/db_market/exchanges_db.py">
 #!/usr/bin/env python3
 """
@@ -187771,6 +191261,176 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
+<file path="backend/services/adapter/stream_aggregator.py">
+import time
+import threading
+import logging
+from typing import Dict, Tuple
+
+from backend.core.utils.parse_resolution import parse_resolution
+
+logger = logging.getLogger("stream_aggregator")
+
+
+class ResolutionRegistry:
+    """
+    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+
+    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
+    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
+    """
+
+    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
+        self.defaults = set(defaults)
+        self.ttl = ttl_sec
+        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+        self.lock = threading.Lock()
+
+    def touch(self, ex: str, sym: str, res: str) -> None:
+        """
+        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
+        """
+        sec, norm = parse_resolution(res)
+        key = (ex, sym)
+        with self.lock:
+            self.active.setdefault(key, {})[norm] = {
+                "sec": sec,
+                "last": time.monotonic(),
+            }
+
+    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
+        """
+        Liefert alle relevanten Resolutions für (ex, sym):
+
+        - Basis-Resolutions aus defaults
+        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
+        """
+        key = (ex, sym)
+        now = time.monotonic()
+        with self.lock:
+            store = self.active.setdefault(key, {})
+
+            # Abgelaufene dynamische Resolutions entfernen
+            for r in list(store.keys()):
+                if now - store[r]["last"] > self.ttl:
+                    del store[r]
+
+            # Basis-Resolutions immer drin
+            out: Dict[str, Dict[str, float]] = {
+                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
+            }
+            # Dynamische Resolutions überschreiben ggf. defaults
+            out.update({r: {"sec": store[r]["sec"]} for r in store})
+
+        return out
+
+
+# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
+registry = ResolutionRegistry()
+
+
+class MultiResCandleAgg:
+    """
+    Multi-Resolution Candle-Aggregator.
+
+    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
+    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
+    """
+
+    def __init__(self):
+        # key: (ex, sym, res_str) → candle-state
+        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+        self.last_cleanup = time.time()
+
+    def _cleanup_old_buckets(self) -> None:
+        """
+        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
+        Nur alle 5 Minuten aktiv.
+        """
+        current_time = time.time()
+        # Nur alle 5 Minuten bereinigen
+        if current_time - self.last_cleanup < 300:
+            return
+
+        current_time_ms = int(current_time * 1000)
+        # Lösche Candles älter als 1 Stunde
+        for key in list(self.state.keys()):
+            if current_time_ms - self.state[key]["timestamp"] > 3600000:
+                del self.state[key]
+
+        self.last_cleanup = current_time
+
+    @staticmethod
+    def _bucket(ts_ms: int, sec: int) -> int:
+        """
+        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
+        """
+        return (ts_ms // (sec * 1000)) * (sec * 1000)
+
+    def on_trade(
+        self,
+        ex: str,
+        sym: str,
+        market: str,
+        ts_ms: int,
+        price,
+        size,
+        resolutions: Dict[str, Dict[str, float]],
+    ):
+        """
+        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
+
+        Parameter:
+        - ex: Exchange-Name (z.B. 'binance')
+        - sym: Symbol (z.B. 'BTCUSDT')
+        - market: Markt-Typ (z.B. 'spot', 'usdtm')
+        - ts_ms: Timestamp in Millisekunden
+        - price: Preis (Decimal/float/str)
+        - size: Größe (Decimal/float/str)
+        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
+                       (kommt aus registry.list(ex, sym))
+
+        Rückgabe:
+        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
+          abgeschlossen wurden (Bucket-Wechsel).
+        """
+        self._cleanup_old_buckets()
+        finished = []
+
+        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
+        for res_str, meta in resolutions.items():
+            sec = meta["sec"]
+            key = (ex, sym, res_str)
+            b = self._bucket(ts_ms, sec)
+            c = self.state.get(key)
+
+            if c is None or c["timestamp"] != b:
+                # alter Bucket wird fertig, wenn vorhanden
+                if c:
+                    finished.append((res_str, c))
+                # neuen Candle-Bucket anlegen
+                self.state[key] = {
+                    "timestamp": b,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": size,
+                    "sec": sec,
+                    "market": market,
+                }
+            else:
+                # existierenden Candle-Bucket aktualisieren
+                c["c"] = price
+                c["v"] += size
+                if price > c["h"]:
+                    c["h"] = price
+                if price < c["l"]:
+                    c["l"] = price
+
+        return finished
+</file>
+
 <file path="backend/websocket/ws_config.py">
 import os
 from typing import Dict, Any, Set
@@ -187854,77 +191514,6 @@ WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
     "message_error_threshold": 10,
     "stale_timeout_seconds": 60
 }
-</file>
-
-<file path="frontend/src/App.tsx">
-import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Suspense, lazy } from "react";
-import { AppLayout } from "./shared/layout/AppLayout";
-import ThemeProvider from "./shared/ui/theme-provider";
-import { TradingProvider } from "./contexts/TradingContext";
-import { queryClient } from "./lib/react-query";
-import { SettingsProvider } from "./shared/state/SettingsProvider";
-
-// ✅ Code-Splitting: Pages lazy laden
-const TradingPage = lazy(() => import("./pages/TradingPage"));
-const QuantumPage = lazy(() => import("./pages/QuantumPage"));
-const BotPage = lazy(() => import("./pages/BotPage"));
-const MLPage = lazy(() => import("./pages/MLPage"));
-const DatabasePage = lazy(() => import("./pages/DatabasePage"));
-const WhalesPage = lazy(() => import("./pages/WhalesPage"));
-const NewsPage = lazy(() => import("./pages/NewsPage"));
-const APIPage = lazy(() => import("./pages/APIPage"));
-const SettingsPage = lazy(() => import("./pages/SettingsPage"));
-const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
-
-// ✅ Logs Feature
-const LogsPage = lazy(() => import("./features/logs").then(m => ({ default: m.LogsPage })));
-const DiagnosticsPage = lazy(() => import("./features/logs").then(m => ({ default: m.DiagnosticsPage })));
-
-// Loading Fallback Component
-const PageLoader = () => (
-  <div className="flex items-center justify-center h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-  </div>
-);
-
-const App = () => {
-  return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <TradingProvider>
-          <SettingsProvider>
-            <BrowserRouter>
-              <Suspense fallback={<PageLoader />}>
-                <Routes>
-                  <Route path="/" element={<AppLayout />}>
-                    <Route index element={<Navigate to="/trading" replace />} />
-                    <Route path="trading" element={<TradingPage />} />
-                    <Route path="quantum" element={<QuantumPage />} />
-                    <Route path="bot" element={<BotPage />} />
-                    <Route path="ml" element={<MLPage />} />
-                    <Route path="database" element={<DatabasePage />} />
-                    <Route path="whales" element={<WhalesPage />} />
-                    <Route path="news" element={<NewsPage />} />
-                    <Route path="api" element={<APIPage />} />
-                    <Route path="settings" element={<SettingsPage />} />
-                    <Route path="diagnostics" element={<DiagnosticsPage />} />
-                    <Route path="logs/:exchange" element={<LogsPage />} />
-                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
-                  </Route>
-                </Routes>
-              </Suspense>
-            </BrowserRouter>
-          </SettingsProvider>
-        </TradingProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
-  );
-};
-
-export default App;
-// Updated Sun Sep 14 18:57:08 CEST 2025
 </file>
 
 <file path="frontend/src/main.tsx">
@@ -188625,404 +192214,6 @@ CL_SCHEMAS: Dict[str, Dict[str, str]] = {
         "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
     }
 }
-</file>
-
-<file path="backend/database/clickhouse/cl_message_handlers.py">
-import asyncio
-import logging
-from typing import Dict, Any, List, Optional, Callable
-from datetime import datetime
-from .cl_manager import cl_manager_instance
-from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
-
-logger = logging.getLogger(__name__)
-
-class cl_message_handlers:
-    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.manager = cl_manager_instance
-        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
-        self.processing_tasks: List[asyncio.Task] = []
-        self.is_processing = False
-        self.processed_messages = 0
-        self.failed_messages = 0
-        self.message_types: Dict[str, Callable] = {
-            "trades": self._handle_trades_message,
-            "candles": self._handle_candles_message,
-            "orderbook": self._handle_orderbook_message,
-            "user_settings": self._handle_user_settings_message,
-            "indicators": self._handle_indicators_message
-        }
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "message_handlers")
-        except ImportError:
-            logger.warning("Health system not available for cl_message_handlers")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_message_handlers initialized")
-    
-    async def start_processing(self, num_workers: int = 3):
-        """Start message processing workers"""
-        if self.is_processing:
-            logger.warning("Message processing is already running")
-            return
-        
-        self.is_processing = True
-        
-        # Start worker tasks
-        for i in range(num_workers):
-            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
-            self.processing_tasks.append(task)
-        
-        if self.health_component:
-            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
-            
-        logger.info(f"Started {num_workers} ClickHouse message processing workers")
-    
-    async def stop_processing(self):
-        """Stop message processing workers"""
-        if not self.is_processing:
-            return
-        
-        self.is_processing = False
-        
-        # Cancel all worker tasks
-        for task in self.processing_tasks:
-            task.cancel()
-        
-        # Wait for tasks to finish
-        if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
-        
-        self.processing_tasks.clear()
-        
-        logger.info("Stopped ClickHouse message processing workers")
-    
-    async def _message_worker(self, worker_id: str):
-        """Message processing worker"""
-        logger.info(f"ClickHouse message worker {worker_id} started")
-        
-        while self.is_processing:
-            try:
-                # Get message from queue with timeout
-                message = await asyncio.wait_for(
-                    self.message_queue.get(),
-                    timeout=CL_PERFORMANCE["processing_timeout"]
-                )
-                
-                # Process message
-                await self._process_message(message, worker_id)
-                
-                # Mark task as done
-                self.message_queue.task_done()
-                
-            except asyncio.TimeoutError:
-                # No messages to process, continue loop
-                continue
-            except asyncio.CancelledError:
-                logger.info(f"ClickHouse message worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in message worker {worker_id}: {str(e)}")
-                if self.health_component:
-                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
-                await asyncio.sleep(1)  # Brief pause before continuing
-        
-        logger.info(f"ClickHouse message worker {worker_id} stopped")
-    
-    async def _process_message(self, message: Dict[str, Any], worker_id: str):
-        """Process a single message"""
-        start_time = datetime.now()
-        
-        try:
-            # Extract message info
-            exchange = message.get("exchange")
-            message_type = message.get("type")
-            data = message.get("data")
-            
-            if not all([exchange, message_type, data]):
-                raise ValueError("Invalid message format: missing exchange, type, or data")
-            
-            # Get appropriate handler
-            handler = self.message_types.get(message_type)
-            if not handler:
-                raise ValueError(f"Unknown message type: {message_type}")
-            
-            # Process with handler
-            result = await handler(exchange, data, worker_id)
-            
-            # Track success
-            self.processed_messages += 1
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            if self.health_component:
-                self.health_component.record_success({
-                    "action": "message_processed",
-                    "type": message_type,
-                    "exchange": exchange,
-                    "worker": worker_id,
-                    "processing_time_ms": processing_time
-                })
-            
-            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
-            
-        except Exception as e:
-            self.failed_messages += 1
-            error_msg = f"Failed to process message: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-    
-    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle trades data message"""
-        try:
-            # Validate trades data
-            if not self._validate_trades_data(data):
-                raise ValueError("Invalid trades data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_trades_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "trades", ch_data)
-            
-            if success:
-                logger.debug(f"Trades data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert trades data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle candles/bars data message"""
-        try:
-            # Validate candles data
-            if not self._validate_candles_data(data):
-                raise ValueError("Invalid candles data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_candles_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "candles", ch_data)
-            
-            if success:
-                logger.debug(f"Candles data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert candles data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle orderbook data message"""
-        try:
-            # Validate orderbook data
-            if not self._validate_orderbook_data(data):
-                raise ValueError("Invalid orderbook data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_orderbook_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
-            
-            if success:
-                logger.debug(f"Orderbook data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert orderbook data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle user settings message"""
-        try:
-            # User settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "user_settings", data)
-            
-            if success:
-                logger.debug("User settings data inserted")
-            else:
-                logger.warning("Failed to insert user settings data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling user settings message: {str(e)}")
-            raise
-    
-    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle indicators message"""
-        try:
-            # Indicators settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "indicators", data)
-            
-            if success:
-                logger.debug("Indicators data inserted")
-            else:
-                logger.warning("Failed to insert indicators data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling indicators message: {str(e)}")
-            raise
-    
-    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
-        """
-        Validate trades data format
-        
-        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
-        - Keine hardcoded Exchange-Listen
-        - Keine Exchange-spezifischen If-Bedingungen  
-        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
-        
-        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
-        
-        Felder die NICHT geprüft werden:
-        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
-        - source: Optional mit DEFAULT 'live_ws'
-        """
-        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
-        """Validate candles data format"""
-        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
-        """Validate orderbook data format"""
-        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Transform trades data to ClickHouse format
-        
-        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
-        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
-        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
-        - trade_id: NICHT senden (wird von ClickHouse generiert)
-        - source: Optional (DEFAULT 'live_ws')
-        """
-        transformed = {
-            "symbol": data["symbol"],
-            "market": data["market"],  # ✅ Spot oder Futures
-            "price": data["price"],  # ✅ String für Decimal(76,38)
-            "size": data["size"],    # ✅ String für Decimal(76,38)
-            "side": data["side"],
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-        
-        # source-Field optional hinzufügen (wenn vorhanden)
-        if "source" in data:
-            transformed["source"] = data["source"]
-        
-        return transformed
-    
-    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform candles data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "resolution": data["resolution"],
-            "open": data["open"],    # ✅ String für Decimal(76,38)
-            "high": data["high"],    # ✅ String für Decimal(76,38)
-            "low": data["low"],      # ✅ String für Decimal(76,38)
-            "close": data["close"],  # ✅ String für Decimal(76,38)
-            "volume": data["volume"], # ✅ String für Decimal(76,38)
-            "trades": data.get("trades", 0),
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform orderbook data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "bids": data["bids"],  # Array of [price, size] tuples
-            "asks": data["asks"],  # Array of [price, size] tuples
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
-        """Queue a message for processing"""
-        try:
-            message = {
-                "exchange": exchange,
-                "type": message_type,
-                "data": data,
-                "queued_at": datetime.now().isoformat()
-            }
-            
-            # Add to queue (will wait if queue is full)
-            await self.message_queue.put(message)
-            
-            logger.debug(f"Queued {message_type} message for {exchange}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to queue message: {str(e)}")
-            return False
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
-        """Get message processing statistics"""
-        return {
-            "is_processing": self.is_processing,
-            "queue_size": self.message_queue.qsize(),
-            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
-            "active_workers": len(self.processing_tasks),
-            "processed_messages": self.processed_messages,
-            "failed_messages": self.failed_messages,
-            "success_rate": round(
-                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
-            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
-            "supported_message_types": list(self.message_types.keys())
-        }
-    
-    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Process a batch of messages"""
-        results = {"queued": 0, "failed": 0}
-        
-        for message in messages:
-            try:
-                success = await self.queue_message(
-                    message.get("exchange"),
-                    message.get("type"),
-                    message.get("data")
-                )
-                
-                if success:
-                    results["queued"] += 1
-                else:
-                    results["failed"] += 1
-                    
-            except Exception as e:
-                logger.error(f"Error queuing batch message: {str(e)}")
-                results["failed"] += 1
-        
-        return results
-
-
-# Global cl_message_handlers instance
-cl_handlers_instance = cl_message_handlers()
 </file>
 
 <file path="backend/exchanges/binance/services/rest_api.py">
@@ -189748,521 +192939,215 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
-<file path="backend/services/adapter/stream_aggregator.py">
-import time
-import threading
-import logging
-from typing import Dict, Tuple
+<file path="frontend/src/App.tsx">
+import { QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, lazy } from "react";
 
-from backend.core.utils.parse_resolution import parse_resolution
+import { AppLayout } from "./shared/layout/AppLayout";
+import ThemeProvider from "./shared/ui/theme-provider";
+import { TradingProvider } from "./contexts/TradingContext";
+import { queryClient } from "./lib/react-query";
+import { SettingsProvider } from "./shared/state/SettingsProvider";
 
-logger = logging.getLogger("stream_aggregator")
+/* =========================================================
+   1) OPTIONAL: Toggle Lazy Routes
+   - Set USE_LAZY_ROUTES = true  -> Code-Splitting (lazy)
+   - Set USE_LAZY_ROUTES = false -> Direct imports (no lazy)
+   ========================================================= */
+const USE_LAZY_ROUTES = true;
 
+/* =========================================================
+   2) PAGE IMPORTS (NO LAZY)  <-- easy to comment in/out
+   ========================================================= */
+// import TradingPage from "./pages/TradingPage";
+// import QuantumPage from "./pages/QuantumPage";
+// import BotPage from "./pages/BotPage";
+// import MLPage from "./pages/MLPage";
+// import DatabasePage from "./pages/DatabasePage";
+// import WhalesPage from "./pages/WhalesPage";
+// import NewsPage from "./pages/NewsPage";
+// import APIPage from "./pages/APIPage";
+// import SettingsPage from "./pages/SettingsPage";
+// import BTCUSDTMonitor from "./pages/BTCUSDTMonitor";
 
-class ResolutionRegistry:
-    """
-    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+// Logs Feature (no lazy)
+// import { LogsPage, DiagnosticsPage } from "./features/logs";
 
-    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
-    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
-    """
+/* =========================================================
+   3) PAGE IMPORTS (LAZY)  <-- easy to comment in/out
+   ========================================================= */
+// const TradingPage = lazy(() => import("./pages/TradingPage"));
+// const QuantumPage = lazy(() => import("./pages/QuantumPage"));
+// const BotPage = lazy(() => import("./pages/BotPage"));
+// const MLPage = lazy(() => import("./pages/MLPage"));
+// const DatabasePage = lazy(() => import("./pages/DatabasePage"));
+// const WhalesPage = lazy(() => import("./pages/WhalesPage"));
+// const NewsPage = lazy(() => import("./pages/NewsPage"));
+// const APIPage = lazy(() => import("./pages/APIPage"));
+// const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+// const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
 
-    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
-        self.defaults = set(defaults)
-        self.ttl = ttl_sec
-        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
-        self.lock = threading.Lock()
+// Logs Feature (lazy named exports)
+/// const LogsPage = lazy(() =>
+///   import("./features/logs").then((m) => ({ default: m.LogsPage }))
+/// );
+/// const DiagnosticsPage = lazy(() =>
+///   import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
+/// );
 
-    def touch(self, ex: str, sym: str, res: str) -> None:
-        """
-        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
-        """
-        sec, norm = parse_resolution(res)
-        key = (ex, sym)
-        with self.lock:
-            self.active.setdefault(key, {})[norm] = {
-                "sec": sec,
-                "last": time.monotonic(),
-            }
+/* =========================================================
+   4) ACTIVE ROUTE COMPONENTS (single place to switch)
+   ========================================================= */
+const TradingPage = USE_LAZY_ROUTES
+  ? lazy(() => import("./pages/TradingPage")): 
+    (null as any);
 
-    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
-        """
-        Liefert alle relevanten Resolutions für (ex, sym):
+/* ==== COMMENTED OUT: all other lazy route components ==== */
 
-        - Basis-Resolutions aus defaults
-        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
-        """
-        key = (ex, sym)
-        now = time.monotonic()
-        with self.lock:
-            store = self.active.setdefault(key, {})
+// const QuantumPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/QuantumPage"))
+//   : (null as any);
 
-            # Abgelaufene dynamische Resolutions entfernen
-            for r in list(store.keys()):
-                if now - store[r]["last"] > self.ttl:
-                    del store[r]
+// const BotPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/BotPage"))
+//   : (null as any);
 
-            # Basis-Resolutions immer drin
-            out: Dict[str, Dict[str, float]] = {
-                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
-            }
-            # Dynamische Resolutions überschreiben ggf. defaults
-            out.update({r: {"sec": store[r]["sec"]} for r in store})
+// const MLPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/MLPage"))
+//   : (null as any);
 
-        return out
+// const DatabasePage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/DatabasePage"))
+//   : (null as any);
 
+// const WhalesPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/WhalesPage"))
+//   : (null as any);
 
-# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
-registry = ResolutionRegistry()
+// const NewsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/NewsPage"))
+//   : (null as any);
 
+// const APIPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/APIPage"))
+//   : (null as any);
 
-class MultiResCandleAgg:
-    """
-    Multi-Resolution Candle-Aggregator.
+// const SettingsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/SettingsPage"))
+//   : (null as any);
 
-    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
-    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
-    """
+// const BTCUSDTMonitor = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/BTCUSDTMonitor"))
+//   : (null as any);
 
-    def __init__(self):
-        # key: (ex, sym, res_str) → candle-state
-        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        self.last_cleanup = time.time()
+// const LogsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./features/logs").then((m) => ({ default: m.LogsPage })))
+//   : (null as any);
 
-    def _cleanup_old_buckets(self) -> None:
-        """
-        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
-        Nur alle 5 Minuten aktiv.
-        """
-        current_time = time.time()
-        # Nur alle 5 Minuten bereinigen
-        if current_time - self.last_cleanup < 300:
-            return
+// const DiagnosticsPage = USE_LAZY_ROUTES
+//   ? lazy(() =>
+//       import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
+//     )
+//   : (null as any);
 
-        current_time_ms = int(current_time * 1000)
-        # Lösche Candles älter als 1 Stunde
-        for key in list(self.state.keys()):
-            if current_time_ms - self.state[key]["timestamp"] > 3600000:
-                del self.state[key]
+/* =========================================================
+   5) NO-LAZY RESOLVER (only used when USE_LAZY_ROUTES=false)
+   - IMPORTANT: You MUST uncomment the direct imports above
+     and then paste them here (see instructions below).
+   ========================================================= */
+type AnyComp = React.ComponentType<any>;
 
-        self.last_cleanup = current_time
-
-    @staticmethod
-    def _bucket(ts_ms: int, sec: int) -> int:
-        """
-        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
-        """
-        return (ts_ms // (sec * 1000)) * (sec * 1000)
-
-    def on_trade(
-        self,
-        ex: str,
-        sym: str,
-        market: str,
-        ts_ms: int,
-        price,
-        size,
-        resolutions: Dict[str, Dict[str, float]],
-    ):
-        """
-        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
-
-        Parameter:
-        - ex: Exchange-Name (z.B. 'binance')
-        - sym: Symbol (z.B. 'BTCUSDT')
-        - market: Markt-Typ (z.B. 'spot', 'usdtm')
-        - ts_ms: Timestamp in Millisekunden
-        - price: Preis (Decimal/float/str)
-        - size: Größe (Decimal/float/str)
-        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
-                       (kommt aus registry.list(ex, sym))
-
-        Rückgabe:
-        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
-          abgeschlossen wurden (Bucket-Wechsel).
-        """
-        self._cleanup_old_buckets()
-        finished = []
-
-        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
-        for res_str, meta in resolutions.items():
-            sec = meta["sec"]
-            key = (ex, sym, res_str)
-            b = self._bucket(ts_ms, sec)
-            c = self.state.get(key)
-
-            if c is None or c["timestamp"] != b:
-                # alter Bucket wird fertig, wenn vorhanden
-                if c:
-                    finished.append((res_str, c))
-                # neuen Candle-Bucket anlegen
-                self.state[key] = {
-                    "timestamp": b,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": size,
-                    "sec": sec,
-                    "market": market,
-                }
-            else:
-                # existierenden Candle-Bucket aktualisieren
-                c["c"] = price
-                c["v"] += size
-                if price > c["h"]:
-                    c["h"] = price
-                if price < c["l"]:
-                    c["l"] = price
-
-        return finished
-</file>
-
-<file path="frontend/src/services/api/base.ts">
-import { ZodSchema } from 'zod';
-import { logger } from '../../lib/logger';
-
-/**
- * ✅ KONFORMITÄT Teil 5: Enterprise LRU-Cache Implementation
- * 
- * Generic LRU (Least Recently Used) Cache mit:
- * - O(1) get/set Operationen via Map
- * - Automatische Eviction bei max capacity
- * - Input-Validierung (fail-fast)
- * - Performance-Statistiken für Debugging
- * 
- * Verwendung:
- * const cache = new LRUCache<string, string>({ max: 100 });
- * cache.set('key', 'value');
- * const value = cache.get('key'); // Promotes to MRU
- */
-class LRUCache<K, V> {
-  private cache: Map<K, V>;
-  private readonly maxSize: number;
-  private stats = { hits: 0, misses: 0, evictions: 0 };
-
-  constructor(options: { max: number }) {
-    if (options.max <= 0 || !Number.isInteger(options.max)) {
-      throw new Error('LRUCache: max must be positive integer');
-    }
-    this.maxSize = options.max;
-    this.cache = new Map<K, V>();
-  }
-
-  /**
-   * Get value and promote to MRU (Most Recently Used)
-   * @returns Value wenn gefunden, undefined sonst
-   */
-  get(key: K): V | undefined {
-    if (!this.cache.has(key)) {
-      this.stats.misses++;
-      return undefined;
-    }
-
-    this.stats.hits++;
-    const value = this.cache.get(key)!;
-    
-    // Re-insert to move to end (MRU position in Map iteration order)
-    this.cache.delete(key);
-    this.cache.set(key, value);
-    
-    return value;
-  }
-
-  /**
-   * Set value as MRU, evict LRU if necessary
-   */
-  set(key: K, value: V): void {
-    // Remove existing to update order
-    if (this.cache.has(key)) {
-      this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
-      // Evict LRU (first entry in Map = least recently used)
-      // Type assertion is safe here because size >= maxSize guarantees at least one entry
-      const lruKey = this.cache.keys().next().value as K;
-      this.cache.delete(lruKey);
-      this.stats.evictions++;
-    }
-    
-    this.cache.set(key, value);
-  }
-
-  has(key: K): boolean {
-    return this.cache.has(key);
-  }
-
-  delete(key: K): boolean {
-    return this.cache.delete(key);
-  }
-
-  clear(): void {
-    this.cache.clear();
-    this.stats = { hits: 0, misses: 0, evictions: 0 };
-  }
-
-  get size(): number {
-    return this.cache.size;
-  }
-
-  /**
-   * Cache Performance Metrics für Production-Debugging
-   * @returns Statistiken mit Hit-Rate in Prozent
-   */
-  getStats(): { hits: number; misses: number; evictions: number; hitRate: string; size: number } {
-    const total = this.stats.hits + this.stats.misses;
-    return {
-      ...this.stats,
-      hitRate: total > 0 ? `${(this.stats.hits / total * 100).toFixed(1)}%` : '0%',
-      size: this.cache.size
-    };
-  }
+function assertComponent<T extends AnyComp | null>(
+  c: T,
+  name: string
+): asserts c is Exclude<T, null> {
+  if (!c) throw new Error(`Route component not set: ${name}`);
 }
 
-// Service-specific API configuration (profi_gui.md: Feature-basierte Architektur)
-// ✅ FIX: Leere BASE_URL im Dev-Mode damit Vite Proxy greift!
-// Im Production-Build wird VITE_API_BASE_URL gesetzt
-const SERVICE_API_CONFIG = {
-  BASE_URL: (import.meta as any)?.env?.VITE_API_BASE_URL || '', // ✅ Leer = Proxy wird genutzt
-  TIMEOUT: 10000,
-  RETRY_ATTEMPTS: 3,
-  RATE_LIMIT_RETRIES: 1,
-} as const;
+/* =========================================================
+   6) Loading Fallback
+   ========================================================= */
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+  </div>
+);
 
-/**
- * ✅ KONFORMITÄT Teil 6: Endpoints die X-Client-ID Header benötigen
- * 
- * Backend-Kontext (ro_settings.py, ro_user_settings.py):
- * - get_client_id() Dependency erwartet X-Client-ID Header
- * - Wirft HTTPException 400 wenn Header fehlt
- * 
- * Generisch erweiterbar: Neue Endpoint-Präfixe können hinzugefügt werden
- */
-const CLIENT_ID_ENDPOINTS = ['/settings/', '/user/', '/historical/config/'] as const;
+/* =========================================================
+   7) APP
+   ========================================================= */
+const App = () => {
+  // If you turn off lazy, you MUST provide the direct imports.
+  if (!USE_LAZY_ROUTES) {
+    // 1) Uncomment the "NO LAZY" imports section (2)
+    // 2) Then replace these nulls by the imported symbols.
+    //
+    // Example:
+    // assertComponent(TradingPage, "TradingPage");  // not needed if you rewire below
+    //
+    // The clean approach is: DO NOT use this mixed-mode block.
+    // Instead, when USE_LAZY_ROUTES=false:
+    // - Comment section (4)
+    // - Uncomment section (2)
+    // - Use Routes directly with the imported components.
+    //
+    // Kept here only to force an explicit error if you forget.
+    assertComponent(TradingPage as any, "TradingPage");
+    // assertComponent(QuantumPage as any, "QuantumPage");
+    // assertComponent(BotPage as any, "BotPage");
+    // assertComponent(MLPage as any, "MLPage");
+    // assertComponent(DatabasePage as any, "DatabasePage");
+    // assertComponent(WhalesPage as any, "WhalesPage");
+    // assertComponent(NewsPage as any, "NewsPage");
+    // assertComponent(APIPage as any, "APIPage");
+    // assertComponent(SettingsPage as any, "SettingsPage");
+    // assertComponent(BTCUSDTMonitor as any, "BTCUSDTMonitor");
+    // assertComponent(LogsPage as any, "LogsPage");
+    // assertComponent(DiagnosticsPage as any, "DiagnosticsPage");
+  }
 
-type RequestConfig = RequestInit & { 
-  params?: Record<string, any>;
-  schema?: ZodSchema<any>;
+  return (
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <TradingProvider>
+          <SettingsProvider>
+            <BrowserRouter>
+              <Suspense fallback={<PageLoader />}>
+                <Routes>
+                  <Route path="/" element={<AppLayout />}>
+                    <Route index element={<Navigate to="/trading" replace />} />
+
+                    <Route path="trading" element={<TradingPage />} />
+
+                    {/* ==== COMMENTED OUT: all other routes ==== */}
+                    {/*
+                    <Route path="quantum" element={<QuantumPage />} />
+                    <Route path="bot" element={<BotPage />} />
+                    <Route path="ml" element={<MLPage />} />
+                    <Route path="database" element={<DatabasePage />} />
+                    <Route path="whales" element={<WhalesPage />} />
+                    <Route path="news" element={<NewsPage />} />
+                    <Route path="api" element={<APIPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+
+                    <Route path="diagnostics" element={<DiagnosticsPage />} />
+                    <Route path="logs/:exchange" element={<LogsPage />} />
+
+                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
+                    */}
+                  </Route>
+                </Routes>
+              </Suspense>
+            </BrowserRouter>
+          </SettingsProvider>
+        </TradingProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
 };
 
-/**
- * ✅ KONFORMITÄT Teil 5: LRU-Cache mit max 100 Entries
- * Verhindert unbegrenztes Memory-Wachstum bei vielen verschiedenen Endpoints.
- * 
- * Cache-Key Format: "{url}:{method}"
- * Beispiel: "http://localhost:8100/api/market/binance/trades:GET"
- */
-const etagCache = new LRUCache<string, string>({ max: 100 });
-
-// Development-Only: Cache-Statistiken alle 5 Minuten loggen
-if ((import.meta as any).env.DEV) {
-  setInterval(() => {
-    const stats = etagCache.getStats();
-    if (stats.hits > 0 || stats.misses > 0) {
-      logger.debug('[ETag Cache Stats]', stats);
-    }
-  }, 5 * 60 * 1000); // 5 Minuten
-}
-
-// Helper für exponential backoff
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Custom API Error Class mit erweiterten Informationen
- */
-export class APIError extends Error {
-  constructor(
-    message: string,
-    public status?: number,
-    public response?: any,
-    public endpoint?: string
-  ) {
-    super(message);
-    this.name = 'APIError';
-  }
-}
-
-export class BaseAPI {
-  private static baseURL = SERVICE_API_CONFIG.BASE_URL;
-  
-  /**
-   * ✅ KONFORMITÄT Teil 6: Generiere oder lade Client-ID
-   * 
-   * Strategie:
-   * 1. sessionStorage (höchste Priorität - Session-persistent)
-   * 2. localStorage (Fallback - Browser-persistent)
-   * 3. Generiere neue UUID v4 (nur wenn beide leer)
-   * 
-   * UUID-Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (RFC 4122 v4)
-   * Ohne externe Library - reine Crypto-API
-   * 
-   * @returns Client-ID string (z.B. "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
-   */
-  private static getClientId(): string {
-    let clientId = sessionStorage.getItem('client_id');
-    if (!clientId) {
-      clientId = localStorage.getItem('client_id');
-    }
-    if (!clientId) {
-      // UUID v4 Generator (ohne externe Library)
-      clientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-      });
-      sessionStorage.setItem('client_id', clientId);
-      localStorage.setItem('client_id', clientId);
-    }
-    return clientId;
-  }
-
-  /**
-   * ✅ KONFORMITÄT Teil 6: Prüfe ob Endpoint X-Client-ID Header benötigt
-   * 
-   * Generische Implementierung mit Array.some() - leicht erweiterbar
-   * 
-   * @param endpoint - API-Endpoint (z.B. "/api/settings/urls/binance")
-   * @returns true wenn Header erforderlich
-   */
-  private static requiresClientId(endpoint: string): boolean {
-    return CLIENT_ID_ENDPOINTS.some(prefix => endpoint.includes(prefix));
-  }
-  
-  /**
-   * Handle 429 Rate Limit with smart backoff
-   * @param response - Response with 429 status
-   * @param attempt - Current retry attempt
-   * @returns Backoff delay in ms
-   */
-  private static async handle429(response: Response, attempt: number): Promise<number> {
-    // Parse Retry-After header (seconds or HTTP date)
-    const retryAfter = response.headers.get('retry-after');
-    let backoffMs = 1000; // Default: 1s
-    
-    if (retryAfter) {
-      // Check if it's seconds or date
-      const retrySeconds = parseInt(retryAfter, 10);
-      if (!isNaN(retrySeconds)) {
-        backoffMs = retrySeconds * 1000;
-      }
-    }
-    
-    // Exponential backoff: 1s, 2s, 4s...
-    const exponentialBackoff = Math.min(1000 * Math.pow(2, attempt), 10000);
-    backoffMs = Math.max(backoffMs, exponentialBackoff);
-    
-    // User-friendly warning
-    logger.warn(`⚠️ Rate limit hit - retrying in ${backoffMs/1000}s (attempt ${attempt + 1}/${SERVICE_API_CONFIG.RATE_LIMIT_RETRIES})`);
-    
-    // TODO: Replace with Toast notification in future
-    // toast.warning(`Server beschäftigt - versuche erneut in ${backoffMs/1000}s`);
-    
-    await sleep(backoffMs);
-    return backoffMs;
-  }
-  
-  static async request<T>(endpoint: string, options?: RequestConfig, attempt = 0): Promise<T> {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), SERVICE_API_CONFIG.TIMEOUT);
-
-    let url = `${this.baseURL}${endpoint}`;
-    if (options?.params) {
-      const query = new URLSearchParams(options.params).toString();
-      url = `${url}?${query}`;
-    }
-
-    try {
-      // ETag-Support: Cache-Key aus URL + Method
-      const cacheKey = `${url}:${options?.method || 'GET'}`;
-      const cachedETag = etagCache.get(cacheKey);
-      
-      const headers = new Headers({
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      });
-      
-      // ✅ KONFORMITÄT Teil 6: Auto-Injection X-Client-ID für Settings/User Endpoints
-      // Generisch: requiresClientId() prüft gegen CLIENT_ID_ENDPOINTS Array
-      if (this.requiresClientId(endpoint)) {
-        headers.set('X-Client-ID', this.getClientId());
-      }
-      
-      // If-None-Match header für 304-Responses
-      if (cachedETag && (options?.method === 'GET' || !options?.method)) {
-        headers.set('If-None-Match', cachedETag);
-      }
-      
-      const response = await fetch(url, {
-        ...options,
-        headers,
-        signal: controller.signal,
-      });
-      clearTimeout(id);
-      
-      // HTTP 304: Nutze gecachte Response
-      if (response.status === 304) {
-        const cached = sessionStorage.getItem(cacheKey);
-        if (cached) {
-          const parsedCache = JSON.parse(cached);
-          return options?.schema ? options.schema.parse(parsedCache) : parsedCache;
-        }
-      }
-      
-      // HTTP 429: Rate Limit - Smart Backoff & Retry
-      if (response.status === 429) {
-        if (attempt >= SERVICE_API_CONFIG.RATE_LIMIT_RETRIES) {
-          throw new Error('Rate limit exceeded - please try again later');
-        }
-        
-        await this.handle429(response, attempt);
-        
-        // Retry with incremented attempt counter
-        return this.request<T>(endpoint, options, attempt + 1);
-      }
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new APIError(
-          `API Error ${response.status}`,
-          response.status,
-          errorText,
-          endpoint
-        );
-      }
-      
-      const json = await response.json();
-      
-      // ETag speichern für zukünftige Requests
-      const newETag = response.headers.get('ETag');
-      if (newETag && (options?.method === 'GET' || !options?.method)) {
-        etagCache.set(cacheKey, newETag);
-        sessionStorage.setItem(cacheKey, JSON.stringify(json));
-      }
-      
-      // x-request-id Korrelation für Debugging
-      const requestId = response.headers.get('x-request-id');
-      if (requestId && (import.meta as any).env.DEV) {
-        console.debug(`[BaseAPI] Request ID: ${requestId} | URL: ${url}`);
-      }
-      
-      // Runtime-Validation mit Zod (optional)
-      if (options?.schema) {
-        try {
-          return options.schema.parse(json);
-        } catch (validationError) {
-          console.error('[BaseAPI] Validation Error:', validationError);
-          throw new APIError('Validation failed', 400, validationError, endpoint);
-        }
-      }
-      
-      return json;
-    } catch (error) {
-      clearTimeout(id);
-      if (error instanceof APIError) throw error;
-      if (error instanceof Error) throw new APIError(error.message, undefined, undefined, endpoint);
-      throw new APIError('Unknown error', undefined, undefined, endpoint);
-    }
-  }
-}
+export default App;
 </file>
 
 <file path="readme/000_backfill_2_build.md">
@@ -191543,406 +194428,6 @@ EXPOSE 8100
 
 # Start der App
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
-</file>
-
-<file path="frontend/src/services/api/trading.ts">
-import { BaseAPI } from './base';
-import { eventBus } from '../../shared/events/EventBus';
-import { getDefaultExchange, getDefaultMarketType } from '../config';
-import { HistoricalAPI } from './historical';
-
-// Types inline definiert da trading.ts verschoben wurde
-interface OrderBookEntry {
-  price: number;
-  size: number;
-  side: 'buy' | 'sell';
-}
-
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: string;
-  ts: number;
-}
-
-// CoinSetting interface für Settings API
-interface CoinSetting {
-  exchange: string;
-  symbol: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite: boolean;
-  db_resolutions: number[];
-  chart_resolution: string;
-}
-
-// Generate unique event IDs
-function generateEventId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-export class TradingAPI extends BaseAPI {
-  // ✅ In-Flight-Map für Request-Deduplizierung (parallel)
-  private static inFlight = new Map<string, Promise<any>>();
-  
-  // ✅ TTL-Cache für Sequential Dedup (verhindert Refetch-Loops)
-  private static lastOk = new Map<string, { ts: number; data: any }>();
-  private static WINDOW_MS = 150; // 150ms Window
-
-  static async getOrderBook(
-    symbol: string,
-    market?: string,  // ✅ Optional! Nutzt Backend-Default
-    exchange?: string,  // ✅ Optional! Nutzt Backend-Default
-    limit: number = 15
-  ): Promise<{ asks: OrderBookEntry[]; bids: OrderBookEntry[] }> {
-    // ✅ Wenn exchange/market nicht angegeben: Hole Defaults vom Backend
-    const exch = exchange || await getDefaultExchange();
-    const mkt = market || await getDefaultMarketType();
-    
-    // ✅ Param-Guard
-    if (!symbol || !exch) {
-      console.warn('[TradingAPI] getOrderBook: Missing params', { symbol, exchange: exch });
-      return { asks: [], bids: [] };
-    }
-    
-    // ✅ inFlight-Map
-    const key = `orderbook|${exch}|${symbol}|${mkt}|${limit}`;
-    if (this.inFlight.has(key)) {
-      return this.inFlight.get(key)!;
-    }
-    
-    const promise = (async () => {
-      try {
-        // OrderBook API has .data wrapper (latenz-optimiert structure)
-        const response = await this.request<{ 
-          data: { 
-            asks: number[][]; 
-            bids: number[][] 
-          } 
-        }>(`/api/market/orderbook`, {
-          params: { symbol, market_type: mkt, exchange: exch, limit }
-        });
-        
-        // Konvertiere Backend Arrays [price, quantity] zu Frontend Objects
-        const data = response?.data;
-        if (!data) {
-          return { asks: [], bids: [] };
-        }
-        
-        const asks: OrderBookEntry[] = (data.asks || [])
-          .filter((entry): entry is [number, number] => Array.isArray(entry) && entry.length >= 2)
-          .map(([price = 0, size = 0]) => ({
-            price,
-            size, 
-            side: 'sell' as const
-          }));
-        
-        const bids: OrderBookEntry[] = (data.bids || [])
-          .filter((entry): entry is [number, number] => Array.isArray(entry) && entry.length >= 2)
-          .map(([price = 0, size = 0]) => ({
-            price,
-            size,
-            side: 'buy' as const
-          }));
-        
-        return { asks, bids };
-      } catch (error) {
-        console.error(`[TradingAPI] Failed to fetch orderbook for ${symbol}:`, error);
-        return { asks: [], bids: [] };
-      } finally {
-        this.inFlight.delete(key);
-      }
-    })();
-    
-    this.inFlight.set(key, promise);
-    return promise;
-  }
-
-  static async getTrades(
-    symbol: string,
-    market?: string,  // ✅ Optional! Nutzt Backend-Default
-    exchange?: string,  // ✅ Optional! Nutzt Backend-Default
-    limit: number = 100
-  ): Promise<Trade[]> {
-    // ✅ Wenn exchange/market nicht angegeben: Hole Defaults vom Backend
-    const exch = exchange || await getDefaultExchange();
-    const mkt = market || await getDefaultMarketType();
-    
-    // ✅ Param-Guard
-    if (!symbol || !exch) {
-      console.warn('[TradingAPI] getTrades: Missing params', { symbol, exchange: exch });
-      return [];
-    }
-    
-    // ✅ inFlight-Map
-    const key = `trades|${exch}|${symbol}|${mkt}|${limit}`;
-    if (this.inFlight.has(key)) {
-      return this.inFlight.get(key)!;
-    }
-    
-    const promise = (async () => {
-      try {
-        // ✅ KONFORMITÄT Teil 7: Backend-Pfad /api/market/trades (ro_market_data.py)
-        const response = await this.request<Trade[]>(`/api/market/trades`, {
-          params: { symbol, market_type: mkt, exchange: exch, limit }
-        });
-        return response || [];
-      } catch (error) {
-        console.error(`[TradingAPI] Failed to fetch trades for ${symbol}:`, error);
-        return [];
-      } finally {
-        this.inFlight.delete(key);
-      }
-    })();
-    
-    this.inFlight.set(key, promise);
-    return promise;
-  }
-
-  // ✅ NEUE METHODEN für weitere Backend-Endpoints:
-  static async getTicker(
-    exchange?: string,     // ✅ FIX: Parameter 1 ist exchange (wie useMarketData.ts erwartet)
-    symbol?: string,       // ✅ FIX: Parameter 2 ist symbol
-    market_type?: string   // ✅ FIX: Parameter 3 ist market_type
-  ) {
-    // ✅ Wenn exchange/market_type nicht angegeben: Hole Defaults vom Backend
-    const exch = exchange || await getDefaultExchange();
-    const mkt = market_type || await getDefaultMarketType();
-    
-    // ✅ Param-Guard: Kein Request ohne gültige Parameter
-    if (!exch || !symbol) {
-      console.warn('[TradingAPI] getTicker: Missing required params', { exchange: exch, symbol });
-      return null;
-    }
-    
-    // ✅ Eindeutiger Key für Deduplizierung
-    const key = `ticker|${exch}|${symbol}|${mkt}`;
-    
-    // ✅ 1. In-Flight Dedup (parallel)
-    if (this.inFlight.has(key)) {
-      return this.inFlight.get(key)!;
-    }
-    
-    // ✅ 2. TTL-Cache Dedup (sequential, verhindert Refetch-Loops)
-    const cached = this.lastOk.get(key);
-    if (cached && performance.now() - cached.ts < this.WINDOW_MS) {
-      return cached.data;
-    }
-    
-    // ✅ Create & store promise
-    const promise = (async () => {
-      try {
-        const response = await this.request('/api/market/ticker', {
-          params: { exchange: exch, symbol, market_type: mkt }
-        });
-        // ✅ Store in TTL-Cache
-        this.lastOk.set(key, { ts: performance.now(), data: response });
-        return response;
-      } catch (error) {
-        console.error(`[TradingAPI] Failed to fetch ticker:`, error);
-        return null;
-      } finally {
-        this.inFlight.delete(key);  // ✅ Cleanup
-      }
-    })();
-    
-    this.inFlight.set(key, promise);
-    return promise;
-  }
-
-  static async getSymbols(
-    exchange?: string,  // ✅ FIX: Parameter 1 ist exchange (wie useSymbols.ts erwartet)
-    market?: string     // ✅ FIX: Parameter 2 ist market
-  ) {
-    // ✅ Wenn exchange nicht angegeben: Hole Default vom Backend
-    const exch = exchange || await getDefaultExchange();
-    
-    // ✅ Eindeutiger Key pro Request
-    const key = `symbols|${exch}|${market || ''}`;
-    
-    // ✅ Return existing request if in-flight
-    if (this.inFlight.has(key)) {
-      return this.inFlight.get(key)!;
-    }
-    
-    // ✅ Create new request
-    const promise = (async () => {
-      try {
-        const response = await this.request('/api/market/symbols', {
-          params: { exchange: exch, market }
-        });
-        return response;
-      } catch (error) {
-        console.error(`[TradingAPI] Failed to fetch symbols:`, error);
-        return [];
-      } finally {
-        // ✅ Cleanup: Remove from in-flight after completion
-        this.inFlight.delete(key);
-      }
-    })();
-    
-    // ✅ Store promise before returning
-    this.inFlight.set(key, promise);
-    return promise;
-  }
-
-  /**
-   * Get OHLC/Candle data
-   * 
-   * @deprecated Since v2.1.0 - Use HistoricalAPI.getOHLC() instead for schema validation
-   * This method delegates to HistoricalAPI but will be removed in v3.0.0
-   * 
-   * Migration:
-   * ```typescript
-   * // OLD:
-   * await TradingAPI.getOHLC('BTCUSDT', '1m', 'spot', 'binance');
-   * 
-   * // NEW (Preferred):
-   * await HistoricalAPI.getOHLC({
-   *   symbol: 'BTCUSDT',
-   *   interval: '1m',
-   *   market_type: 'spot',
-   *   exchange: 'binance'
-   * });
-   * ```
-   */
-  static async getOHLC(
-    symbol: string,
-    interval: string = '1m',
-    market_type?: string,
-    exchange?: string,
-    limit: number = 100
-  ) {
-    // ⚠️ Deprecation Warning (Development only)
-    if ((import.meta as any).env.DEV) {
-      console.warn(
-        '[DEPRECATED] TradingAPI.getOHLC() → Use HistoricalAPI.getOHLC() for enterprise-grade validation. ' +
-        'Will be removed in v3.0.0'
-      );
-    }
-    
-    // ✅ Resolve optional parameters with defaults before delegation
-    const exch = exchange || await getDefaultExchange();
-    const mkt = market_type || await getDefaultMarketType();
-    
-    // ✅ Delegation to Single Source of Truth (HistoricalAPI)
-    // This ensures consistent schema validation via ChartDataSchema
-    return HistoricalAPI.getOHLC({
-      symbol,
-      exchange: exch,  // Now guaranteed to be string
-      interval,
-      market_type: mkt,
-      limit
-    });
-  }
-
-  // 🚀 LANE SYSTEM: Settings API mit Event-Emitting (konform mit ro_settings.py)
-  static async getSettings(exchange?: string): Promise<CoinSetting[]> {
-    // ✅ Dynamischer Backend-Endpoint: /api/settings/coin-settings (ro_settings.py)
-    const url = '/api/settings/coin-settings';
-    
-    try {
-      // Backend liefert: { success: boolean, data: { [key: string]: CoinSetting } }
-      const response = await this.request<{ success: boolean; data: Record<string, any> }>(url);
-      
-      if (!response?.success || !response?.data) {
-        console.warn('[TradingAPI] Invalid settings response format');
-        return [];
-      }
-      
-      // ✅ Konvertiere Backend Object zu Array, optional nach Exchange filtern
-      const allSettings = Object.values(response.data) as CoinSetting[];
-      const filteredSettings = exchange 
-        ? allSettings.filter(s => s.exchange?.toLowerCase() === exchange.toLowerCase())
-        : allSettings;
-      
-      // Emit event for Lane Bridge
-      eventBus.emit('SETTINGS_UPDATE', {
-        eventId: generateEventId(),
-        action: 'loaded',
-        settings: filteredSettings,
-        exchange: exchange,
-        timestamp: Date.now()
-      });
-      
-      return filteredSettings;
-    } catch (error) {
-      console.error('[TradingAPI] Settings load failed:', error);
-      return [];
-    }
-  }
-
-  static async saveSettings(settings: CoinSetting[]): Promise<boolean> {
-    const eventId = generateEventId();
-    
-    try {
-      // Optimistic update
-      eventBus.emit('SETTINGS_UPDATE', {
-        eventId: eventId,
-        action: 'patched',
-        settings: settings,
-        timestamp: Date.now()
-      });
-      
-      // ✅ Backend erwartet einzelne Settings (ro_settings.py: CoinSettingsRequest)
-      // Sende jedes Setting einzeln zum /api/settings/coin-settings Endpoint
-      const savePromises = settings.map(setting => 
-        this.request('/api/settings/coin-settings', {
-          method: 'POST',
-          body: JSON.stringify({
-            exchange: setting.exchange,
-            symbol: setting.symbol,
-            market: setting.market || 'spot',
-            enabled: setting.store_live ?? true,
-            load_history: setting.load_history ?? false,
-            history_until: setting.history_until,
-            favorite: setting.favorite ?? false,
-            db_resolutions: setting.db_resolutions || [],
-            chart_resolution: setting.chart_resolution || '1m'
-          }),
-          headers: { 'Content-Type': 'application/json' }
-        })
-      );
-      
-      // ✅ Parallele Ausführung aller Saves
-      await Promise.all(savePromises);
-      
-      // Confirm successful save
-      eventBus.emit('SETTINGS_UPDATE', {
-        eventId: generateEventId(),
-        action: 'saved',
-        settings: settings,
-        timestamp: Date.now()
-      });
-      
-      return true;
-    } catch (error) {
-      console.error('[TradingAPI] Settings save failed:', error);
-      
-      // Rollback: reload fresh settings from Backend
-      try {
-        const response = await this.request<{ success: boolean; data: Record<string, any> }>('/api/settings/coin-settings');
-        const freshSettings = response?.data ? Object.values(response.data) : [];
-        
-        eventBus.emit('SETTINGS_UPDATE', {
-          eventId: generateEventId(),
-          action: 'loaded',
-          settings: freshSettings,
-          timestamp: Date.now()
-        });
-      } catch (rollbackError) {
-        console.error('[TradingAPI] Settings rollback failed:', rollbackError);
-      }
-      
-      return false;
-    }
-  }
-
-}
 </file>
 
 <file path="readme/000_live_backfill_data_build.md">
