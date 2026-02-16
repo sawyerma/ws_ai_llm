@@ -70101,767 +70101,6 @@ export * from './hooks/useAIEngine';
 export { default as AIPage } from '../../pages/MLPage';
 </file>
 
-<file path="frontend/src/features/api/components/APIMain.tsx">
-import React from 'react';
-import { useAPIKeys, useAPISettings } from '../hooks';
-import { Button } from '@/shared/ui/button';
-import { Input } from '@/shared/ui/input';
-import { Card } from '@/shared/ui/card';
-import { Badge } from '@/shared/ui/badge';
-import { Progress } from '@/shared/ui/progress';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs';
-import { Label } from '@/shared/ui/label';
-
-type Provider = 'binance' | 'bitget' | 'etherscan' | 'bscscan' | 'polygonscan' | 'coingecko' | 'telegram' |
-                // 🆕 Neue Provider für 365 Findings:
-                'redis' | 'clickhouse' | 'backend' | 'ollama' |
-                'localhost' | 'frontend-dev' | 'test-env' |
-                'timeouts' | 'retries' | 'performance';
-
-export const APIMain: React.FC = () => {
-  const apiState = useAPIKeys();
-  const apiSettings = useAPISettings();
-  const [activeCategory, setActiveCategory] = React.useState<string>('market');
-  const [selectedProvider, setSelectedProvider] = React.useState<Provider>('binance');
-  
-  // Local state for editing individual values before saving
-  const [editingUrl, setEditingUrl] = React.useState<Record<string, string>>({});
-  const [editingWebSocket, setEditingWebSocket] = React.useState<Record<string, string>>({});
-  const [editingRateLimit, setEditingRateLimit] = React.useState<Record<string, number | string>>({});
-
-  React.useEffect(() => {
-    apiState.loadAPIKeys();
-    apiSettings.loadSettings();
-  }, []);
-
-  const categories = [
-    {
-      id: 'market',
-      name: 'Market APIs',
-      icon: '📈',
-      providers: ['binance', 'bitget'] as Provider[]
-    },
-    {
-      id: 'whales', 
-      name: 'Whale APIs',
-      icon: '🐋',
-      providers: ['etherscan', 'bscscan', 'polygonscan'] as Provider[]
-    },
-    {
-      id: 'data',
-      name: 'Data APIs', 
-      icon: '📊',
-      providers: ['coingecko'] as Provider[]
-    },
-    {
-      id: 'notifications',
-      name: 'Notifications', 
-      icon: '📱',
-      providers: ['telegram'] as Provider[]
-    },
-    // 🆕 NEUE Kategorien für 365 Findings:
-    {
-      id: 'infrastructure',
-      name: 'Infrastructure',
-      icon: '🏗️',
-      providers: ['redis', 'clickhouse', 'backend', 'ollama'] as Provider[]
-    },
-    {
-      id: 'development',
-      name: 'Development',
-      icon: '🔧', 
-      providers: ['localhost', 'frontend-dev', 'test-env'] as Provider[]
-    },
-    {
-      id: 'system',
-      name: 'System Config',
-      icon: '⚙️',
-      providers: ['timeouts', 'retries', 'performance'] as Provider[]
-    }
-  ];
-
-  const activeProviders = categories.find(c => c.id === activeCategory)?.providers || [];
-  const activeCategory_obj = categories.find(c => c.id === activeCategory);
-
-  // Default URLs from gui_api.md specification
-  const getDefaultUrl = (provider: Provider, urlType: string): string => {
-    const defaults: Record<Provider, Record<string, string>> = {
-      binance: {
-        spot: 'https://api.binance.com',
-        usdtm: 'https://fapi.binance.com',
-        coinm: 'https://dapi.binance.com',
-        options: 'https://eapi.binance.com',
-        portfolio: 'https://papi.binance.com'
-      },
-      bitget: {
-        spot: 'https://api.bitget.com',
-        usdtm: 'https://api.bitget.com',
-        coinm: 'https://api.bitget.com',
-        usdcm: 'https://api.bitget.com',
-        susdt: 'https://api.bitget.com',
-        scoin: 'https://api.bitget.com',
-        public: 'https://api.bitget.com/api/v2/public/time'
-      },
-      etherscan: {
-        api: 'https://api.etherscan.io/api'
-      },
-      bscscan: {
-        api: 'https://api.bscscan.com/api'
-      },
-      polygonscan: {
-        api: 'https://api.polygonscan.com/api'
-      },
-      coingecko: {
-        free: 'https://api.coingecko.com/api/v3',
-        pro: 'https://pro-api.coingecko.com/api/v3',
-        ping: 'https://api.coingecko.com/api/v3/ping',
-        price: 'https://api.coingecko.com/api/v3/simple/price'
-      },
-      telegram: {
-        bot: 'https://api.telegram.org/bot{TOKEN}',
-        sendMessage: 'https://api.telegram.org/bot{TOKEN}/sendMessage',
-        sendPhoto: 'https://api.telegram.org/bot{TOKEN}/sendPhoto',
-        sendDocument: 'https://api.telegram.org/bot{TOKEN}/sendDocument'
-      },
-      // 🆕 NEUE Infrastructure Provider:
-      redis: {
-        connection: 'redis://localhost:6379'
-      },
-      clickhouse: {
-        http: 'http://localhost:8123',
-        tcp: 'tcp://localhost:9000'
-      },
-      backend: {
-        rest: 'http://localhost:8100',
-        websocket: 'ws://localhost:8100'
-      },
-      ollama: {
-        api: 'http://localhost:11434'
-      },
-      // 🆕 NEUE Development Provider:
-      localhost: {
-        frontend: 'http://localhost:8080',
-        backend: 'http://localhost:8100',
-        api: 'http://localhost:8100/api'
-      },
-      'frontend-dev': {
-        devServer: 'http://localhost:8080',
-        hotReload: 'ws://localhost:8080'
-      },
-      'test-env': {
-        testAPI: 'http://localhost:9999',
-        mockAPI: 'http://localhost:9998'
-      },
-      // 🆕 NEUE System Configuration Provider:
-      timeouts: {},
-      retries: {},
-      performance: {}
-    };
-    return defaults[provider]?.[urlType] || '';
-  };
-
-  // Default WebSocket URLs from gui_api.md specification
-  const getDefaultWebSocket = (provider: Provider, wsType: string): string => {
-    const defaults: Partial<Record<Provider, Record<string, string>>> = {
-      binance: {
-        spot: 'wss://stream.binance.com:9443/ws',
-        usdtm: 'wss://fstream.binance.com/ws',
-        coinm: 'wss://dstream.binance.com/ws',
-        options: 'wss://nbstream.binance.com/eoptions/ws',
-        portfolio: 'wss://fstream-auth.binance.com/ws'
-      },
-      bitget: {
-        spot: 'wss://ws.bitget.com/spot/v1/stream',
-        usdtm: 'wss://ws.bitget.com/mix/v1/stream',
-        coinm: 'wss://ws.bitget.com/mix/v1/stream',
-        usdcm: 'wss://ws.bitget.com/mix/v1/stream',
-        susdt: 'wss://ws.bitget.com/mix/v1/stream',
-        scoin: 'wss://ws.bitget.com/mix/v1/stream'
-      }
-    };
-    return defaults[provider]?.[wsType] || '';
-  };
-
-  // Default Rate Limits from gui_api.md specification
-  const getDefaultRateLimit = (provider: Provider, limitType: string): number => {
-    const defaults: Record<Provider, Record<string, number>> = {
-      binance: {
-        maxRps: 10,
-        historicalRps: 5.0
-      },
-      bitget: {
-        maxRps: 8,
-        historicalRps: 3.0
-      },
-      etherscan: {
-        dailyLimit: 100000
-      },
-      bscscan: {
-        dailyLimit: 100000
-      },
-      polygonscan: {
-        dailyLimit: 100000
-      },
-      coingecko: {
-        monthlyLimit: 10000
-      },
-      telegram: {
-        messagesPerMin: 30
-      },
-      // 🆕 NEUE Infrastructure Provider:
-      redis: {
-        connectionPool: 10,
-        commandTimeout: 5000
-      },
-      clickhouse: {
-        queryTimeout: 30000,
-        connectionTimeout: 10000
-      },
-      backend: {
-        requestsPerSecond: 100,
-        connectionTimeout: 30000
-      },
-      ollama: {
-        requestTimeout: 60000,
-        maxConcurrent: 5
-      },
-      // 🆕 NEUE Development Provider:
-      localhost: {
-        devTimeout: 5000
-      },
-      'frontend-dev': {
-        buildTimeout: 30000,
-        reloadDelay: 1000
-      },
-      'test-env': {
-        testTimeout: 10000,
-        assertionTimeout: 5000
-      },
-      // 🆕 NEUE System Configuration Provider:
-      timeouts: {
-        maxTimeout: 60000,
-        minTimeout: 1000
-      },
-      retries: {
-        totalRetryTime: 30000,
-        retryLimit: 5
-      },
-      performance: {
-        maxMemoryUsage: 80,
-        maxCPUUsage: 70
-      }
-    };
-    return defaults[provider]?.[limitType] || 0;
-  };
-
-  // Get current URL value (backend override or default fallback)
-  const getCurrentUrl = (provider: Provider, urlType: string): string => {
-    const editKey = `${provider}_${urlType}`;
-    if (editingUrl[editKey] !== undefined) {
-      return editingUrl[editKey];
-    }
-    // Try backend first, fallback to default
-    return apiSettings.urls[provider]?.urls?.[urlType] || getDefaultUrl(provider, urlType);
-  };
-
-  // Get current WebSocket value (backend override or default fallback)
-  const getCurrentWebSocket = (provider: Provider, wsType: string): string => {
-    const editKey = `${provider}_${wsType}`;
-    if (editingWebSocket[editKey] !== undefined) {
-      return editingWebSocket[editKey];
-    }
-    // Try backend first, fallback to default
-    return apiSettings.websockets[provider]?.websockets?.[wsType] || getDefaultWebSocket(provider, wsType);
-  };
-
-  // Get current rate limit value (backend override or default fallback)
-  const getCurrentRateLimit = (provider: Provider, limitType: string): number | string => {
-    const editKey = `${provider}_${limitType}`;
-    if (editingRateLimit[editKey] !== undefined) {
-      return editingRateLimit[editKey];
-    }
-    // Try backend first, fallback to default
-    return apiSettings.rateLimits[provider]?.rateLimits?.[limitType] || getDefaultRateLimit(provider, limitType);
-  };
-
-  // Save URL function using the new hook
-  const saveUrl = async (provider: Provider, urlType: string, url: string) => {
-    const success = await apiSettings.saveUrl(provider, urlType, url);
-    if (success) {
-      // Clear editing state
-      const editKey = `${provider}_${urlType}`;
-      setEditingUrl(prev => {
-        const newState = { ...prev };
-        delete newState[editKey];
-        return newState;
-      });
-      alert(`✅ URL updated successfully for ${provider} ${urlType}`);
-    } else {
-      alert(`❌ Failed to update URL for ${provider} ${urlType}`);
-    }
-  };
-
-  // Save WebSocket URL function
-  const saveWebSocket = async (provider: Provider, wsType: string, wsUrl: string) => {
-    const success = await apiSettings.saveWebSocket(provider, wsType, wsUrl);
-    if (success) {
-      const editKey = `${provider}_${wsType}`;
-      setEditingWebSocket(prev => {
-        const newState = { ...prev };
-        delete newState[editKey];
-        return newState;
-      });
-      alert(`✅ WebSocket URL updated successfully for ${provider} ${wsType}`);
-    } else {
-      alert(`❌ Failed to update WebSocket URL for ${provider} ${wsType}`);
-    }
-  };
-
-  // Save Rate Limit function
-  const saveRateLimit = async (provider: Provider, limitType: string, value: number | string) => {
-    const success = await apiSettings.saveRateLimit(provider, limitType, value);
-    if (success) {
-      const editKey = `${provider}_${limitType}`;
-      setEditingRateLimit(prev => {
-        const newState = { ...prev };
-        delete newState[editKey];
-        return newState;
-      });
-      alert(`✅ Rate limit updated successfully for ${provider} ${limitType}`);
-    } else {
-      alert(`❌ Failed to update rate limit for ${provider} ${limitType}`);
-    }
-  };
-
-  // Get usage color based on percentage
-  const getUsageColor = (percentage: number) => {
-    if (percentage < 50) return 'text-green-500';
-    if (percentage < 80) return 'text-yellow-500';
-    return 'text-red-500';
-  };
-
-  // Provider configurations based on gui_api.md
-  const providerConfigs: Record<Provider, any> = {
-    binance: {
-      name: 'Binance',
-      icon: '🔶',
-      urls: ['spot', 'usdtm', 'coinm', 'options', 'portfolio'],
-      websockets: ['spot', 'usdtm', 'coinm', 'options', 'portfolio'],
-      rateLimits: ['maxRps', 'historicalRps']
-    },
-    bitget: {
-      name: 'Bitget',
-      icon: '🔷',
-      urls: ['spot', 'usdtm', 'coinm', 'usdcm', 'susdt', 'scoin', 'public'],
-      websockets: ['spot', 'usdtm', 'coinm', 'usdcm', 'susdt', 'scoin'],
-      rateLimits: ['maxRps', 'historicalRps']
-    },
-    etherscan: {
-      name: 'Etherscan',
-      icon: '⚡',
-      urls: ['api'],
-      rateLimits: ['dailyLimit']
-    },
-    bscscan: {
-      name: 'BSCScan', 
-      icon: '🟡',
-      urls: ['api'],
-      rateLimits: ['dailyLimit']
-    },
-    polygonscan: {
-      name: 'PolygonScan',
-      icon: '🟣',
-      urls: ['api'],
-      rateLimits: ['dailyLimit']
-    },
-    coingecko: {
-      name: 'CoinGecko',
-      icon: '🦎',
-      urls: ['free', 'pro', 'ping', 'price'],
-      rateLimits: ['monthlyLimit']
-    },
-    telegram: {
-      name: 'Telegram',
-      icon: '📱',
-      urls: ['bot', 'sendMessage', 'sendPhoto', 'sendDocument'],
-      rateLimits: ['messagesPerMin']
-    },
-    // 🆕 NEUE Infrastructure Provider:
-    redis: {
-      name: 'Redis Cache',
-      icon: '🔴',
-      urls: ['connection'],
-      rateLimits: ['connectionPool', 'commandTimeout']
-    },
-    clickhouse: {
-      name: 'ClickHouse DB',
-      icon: '🟡',
-      urls: ['http', 'tcp'],
-      rateLimits: ['queryTimeout', 'connectionTimeout']
-    },
-    backend: {
-      name: 'Backend API',
-      icon: '🔵',
-      urls: ['rest', 'websocket'],
-      rateLimits: ['requestsPerSecond', 'connectionTimeout']
-    },
-    ollama: {
-      name: 'Ollama AI',
-      icon: '🤖',
-      urls: ['api'],
-      rateLimits: ['requestTimeout', 'maxConcurrent']
-    },
-    // 🆕 NEUE Development Provider:
-    localhost: {
-      name: 'Localhost URLs',
-      icon: '🏠',
-      urls: ['frontend', 'backend', 'api'],
-      rateLimits: ['devTimeout']
-    },
-    'frontend-dev': {
-      name: 'Frontend Dev',
-      icon: '⚡',
-      urls: ['devServer', 'hotReload'],
-      rateLimits: ['buildTimeout', 'reloadDelay']
-    },
-    'test-env': {
-      name: 'Test Environment',
-      icon: '🧪',
-      urls: ['testAPI', 'mockAPI'],
-      rateLimits: ['testTimeout', 'assertionTimeout']
-    },
-    // 🆕 NEUE System Configuration Provider:
-    timeouts: {
-      name: 'Timeouts',
-      icon: '⏱️',
-      urls: [],
-      rateLimits: ['maxTimeout', 'minTimeout']
-    },
-    retries: {
-      name: 'Retry Logic',
-      icon: '🔄',
-      urls: [],
-      rateLimits: ['totalRetryTime', 'retryLimit']
-    },
-    performance: {
-      name: 'Performance',
-      icon: '🚀',
-      urls: [],
-      rateLimits: ['maxMemoryUsage', 'maxCPUUsage']
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="border-b">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold">API Configuration</h1>
-              <p className="text-muted-foreground">Configure all API endpoints, WebSockets, and rate limits per provider</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <Badge variant="outline">
-                Providers: {apiSettings.providers?.length || 0}
-              </Badge>
-              <Badge variant="secondary" className="bg-green-100 text-green-800">
-                ✅ New Backend Integration
-              </Badge>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => apiSettings.loadSettings()}
-                disabled={apiSettings.isLoading}
-              >
-                🔄 Reload
-              </Button>
-              <div className={`w-2 h-2 rounded-full ${
-                apiSettings.isLoading ? 'bg-yellow-500 animate-pulse' : 
-                apiSettings.error ? 'bg-red-500' : 'bg-green-500'
-              }`} />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex">
-        {/* Sidebar */}
-        <div className="w-80 border-r bg-muted/30">
-          <div className="p-6">
-            <h2 className="text-lg font-semibold mb-4">Categories</h2>
-            <div className="space-y-2">
-              {categories.map((category) => {
-                return (
-                  <Button
-                    key={category.id}
-                    variant={activeCategory === category.id ? 'default' : 'ghost'}
-                    className="w-full justify-between"
-                    onClick={() => {
-                      setActiveCategory(category.id);
-                      const firstProvider = category.providers[0];
-                      if (firstProvider) {
-                        setSelectedProvider(firstProvider);
-                      }
-                    }}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-xl">{category.icon}</span>
-                      <span>{category.name}</span>
-                    </div>
-                    <Badge variant="secondary" className="text-xs">
-                      {category.providers.length}
-                    </Badge>
-                  </Button>
-                );
-              })}
-            </div>
-
-            {/* Provider List */}
-            {activeProviders.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  {activeCategory_obj?.name}
-                </h3>
-                <div className="space-y-1">
-                  {activeProviders.map((providerId) => {
-                    const config = providerConfigs[providerId];
-                    if (!config) return null;
-
-                    return (
-                      <Button
-                        key={providerId}
-                        variant={selectedProvider === providerId ? 'secondary' : 'ghost'}
-                        className="w-full justify-start"
-                        onClick={() => setSelectedProvider(providerId)}
-                      >
-                        <span className="text-lg mr-3">{config.icon}</span>
-                        <span>{config.name}</span>
-                        <div className="ml-auto w-2 h-2 rounded-full bg-green-500" />
-                      </Button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <div className="flex-1 p-8">
-          <div className="max-w-4xl mx-auto">
-            {selectedProvider && providerConfigs[selectedProvider] && (
-              <div className="space-y-6">
-                {/* Provider Header */}
-                <Card className="p-6">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
-                      <span className="text-2xl">{providerConfigs[selectedProvider].icon}</span>
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-bold">{providerConfigs[selectedProvider].name} Configuration</h2>
-                      <p className="text-muted-foreground">Configure REST URLs, WebSockets, and rate limits</p>
-                    </div>
-                  </div>
-                </Card>
-
-                <Tabs defaultValue="urls" className="space-y-6">
-                  <TabsList className="grid w-full grid-cols-4">
-                    <TabsTrigger value="urls">REST URLs</TabsTrigger>
-                    {providerConfigs[selectedProvider].websockets && (
-                      <TabsTrigger value="websockets">WebSockets</TabsTrigger>
-                    )}
-                    <TabsTrigger value="ratelimits">Rate Limits</TabsTrigger>
-                    <TabsTrigger value="usage">Usage</TabsTrigger>
-                  </TabsList>
-
-                  {/* REST URLs Tab */}
-                  <TabsContent value="urls" className="space-y-4">
-                    <Card className="p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-semibold">REST URLs (Editable)</h3>
-                        <Badge className="bg-blue-100 text-blue-800">Per Provider</Badge>
-                      </div>
-                      <div className="space-y-4">
-                        {providerConfigs[selectedProvider].urls?.map((urlType: string) => {
-                          const currentValue = getCurrentUrl(selectedProvider, urlType);
-                          const editKey = `${selectedProvider}_${urlType}`;
-                          const isEditing = editingUrl[editKey] !== undefined;
-                          
-                          return (
-                            <div key={urlType} className="grid grid-cols-4 gap-4 items-center">
-                              <Label className="text-sm font-medium uppercase">
-                                {urlType}:
-                              </Label>
-                              <Input
-                                type="url"
-                                className="col-span-2"
-                                value={currentValue}
-                                onChange={(e) => setEditingUrl(prev => ({
-                                  ...prev,
-                                  [editKey]: e.target.value
-                                }))}
-                                placeholder={`Enter ${urlType} URL`}
-                              />
-                              <Button
-                                size="sm"
-                                onClick={() => saveUrl(selectedProvider, urlType, currentValue)}
-                                disabled={!currentValue || apiSettings.isLoading}
-                                className={isEditing ? 'bg-orange-600 hover:bg-orange-700' : ''}
-                              >
-                                {isEditing ? '💾 Save' : '✅ Save'}
-                              </Button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </Card>
-                  </TabsContent>
-
-                  {/* WebSocket URLs Tab */}
-                  {providerConfigs[selectedProvider].websockets && (
-                    <TabsContent value="websockets" className="space-y-4">
-                      <Card className="p-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold text-green-600">WebSocket URLs (Editable)</h3>
-                          <Badge className="bg-green-100 text-green-800">Real-time Streams</Badge>
-                        </div>
-                        <div className="space-y-4">
-                          {providerConfigs[selectedProvider].websockets?.map((wsType: string) => {
-                            const currentValue = getCurrentWebSocket(selectedProvider, wsType);
-                            const editKey = `${selectedProvider}_${wsType}`;
-                            const isEditing = editingWebSocket[editKey] !== undefined;
-                            
-                            return (
-                              <div key={wsType} className="grid grid-cols-4 gap-4 items-center">
-                                <Label className="text-sm font-medium uppercase text-green-600">
-                                  {wsType} WS:
-                                </Label>
-                                <Input
-                                  type="url"
-                                  className="col-span-2"
-                                  value={currentValue}
-                                  onChange={(e) => setEditingWebSocket(prev => ({
-                                    ...prev,
-                                    [editKey]: e.target.value
-                                  }))}
-                                  placeholder={`Enter ${wsType} WebSocket URL`}
-                                />
-                                <Button
-                                  size="sm"
-                                  onClick={() => saveWebSocket(selectedProvider, wsType, currentValue)}
-                                  disabled={!currentValue || apiSettings.isLoading}
-                                  className={`${isEditing ? 'bg-orange-600 hover:bg-orange-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
-                                >
-                                  {isEditing ? '💾 Save' : '✅ Save'}
-                                </Button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </Card>
-                    </TabsContent>
-                  )}
-
-                  {/* Rate Limits Tab */}
-                  <TabsContent value="ratelimits" className="space-y-4">
-                    <Card className="p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-semibold text-blue-600">Rate Limits (Editable)</h3>
-                        <Badge className="bg-blue-100 text-blue-800">Per Provider</Badge>
-                      </div>
-                      <div className="space-y-4">
-                        {providerConfigs[selectedProvider].rateLimits?.map((limitType: string) => {
-                          const currentValue = getCurrentRateLimit(selectedProvider, limitType);
-                          const editKey = `${selectedProvider}_${limitType}`;
-                          const isEditing = editingRateLimit[editKey] !== undefined;
-                          
-                          return (
-                            <div key={limitType} className="grid grid-cols-4 gap-4 items-center">
-                              <Label className="text-blue-600 text-sm font-medium">
-                                {limitType.replace(/([A-Z])/g, ' $1').trim()}:
-                              </Label>
-                              <Input
-                                type="number"
-                                step={limitType.includes('Rps') ? '0.1' : '1'}
-                                className="col-span-1"
-                                value={currentValue}
-                                onChange={(e) => setEditingRateLimit(prev => ({
-                                  ...prev,
-                                  [editKey]: limitType.includes('Rps') ? parseFloat(e.target.value) : parseInt(e.target.value)
-                                }))}
-                                placeholder="Enter limit"
-                              />
-                              <div></div>
-                              <Button
-                                size="sm"
-                                onClick={() => saveRateLimit(selectedProvider, limitType, currentValue)}
-                                disabled={!currentValue || apiSettings.isLoading}
-                                className={`${isEditing ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'} text-white`}
-                              >
-                                {isEditing ? '💾 Save' : '✅ Save'}
-                              </Button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </Card>
-                  </TabsContent>
-
-                  {/* Usage Tab */}
-                  <TabsContent value="usage" className="space-y-4">
-                    <Card className="p-6">
-                      <h3 className="text-lg font-semibold mb-4">Daily Usage Display</h3>
-                      {apiSettings.usage?.[selectedProvider] && (
-                        <div className="space-y-4">
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium">Today:</span>
-                            <span className={`font-medium ${getUsageColor(apiSettings.usage[selectedProvider]?.percentage || 0)}`}>
-                              {Object.entries(apiSettings.usage[selectedProvider]?.usage || {}).map(([key, value]) => 
-                                `${value}`
-                              ).join(', ')} / {Object.entries(apiSettings.usage[selectedProvider]?.limits || {}).map(([key, value]) => 
-                                `${value}`
-                              ).join(', ')} requests ({apiSettings.usage[selectedProvider]?.percentage || 0}%)
-                            </span>
-                          </div>
-                          <Progress 
-                            value={Math.min(apiSettings.usage[selectedProvider]?.percentage || 0, 100)}
-                            className="h-3"
-                          />
-                        </div>
-                      )}
-                      {!apiSettings.usage?.[selectedProvider] && (
-                        <div className="text-center text-muted-foreground py-8">
-                          <div className="text-2xl mb-2">📊</div>
-                          <p>Usage data will be available once the provider is actively used.</p>
-                        </div>
-                      )}
-                    </Card>
-                  </TabsContent>
-                </Tabs>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Loading/Error States */}
-      {apiSettings.error && (
-        <div className="fixed bottom-4 right-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-600 text-sm max-w-md">
-          ❌ Error: {apiSettings.error}
-        </div>
-      )}
-      
-      {apiSettings.isLoading && (
-        <div className="fixed bottom-4 left-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-600 text-sm">
-          🔄 Loading settings...
-        </div>
-      )}
-    </div>
-  );
-};
-</file>
-
 <file path="frontend/src/features/api/types/api.ts">
 export interface APIProvider {
   id: string;
@@ -71383,505 +70622,6 @@ export interface ExchangeStatus {
 export * from './hooks/useEnterprise';
 </file>
 
-<file path="frontend/src/features/quantum/components/QuantumScreener.tsx">
-import { useState, useRef } from "react";
-import { useQuantumData } from '../hooks/useQuantumData';
-import { useQuantumClock } from '../hooks/useQuantumClock';
-import { useQuantumNL } from '../hooks/useQuantumNL';
-import type { QuantumTier, TimeframeType, TierFilterType } from '../types/quantum';
-
-const QuantumScreener = () => {
-  const [currentTier, setCurrentTier] = useState<QuantumTier>(1);
-  const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
-  const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeType>('1m');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [tierFilter, setTierFilter] = useState<TierFilterType>('all');
-  const [showIndicatorModal, setShowIndicatorModal] = useState(false);
-  const [smaOn, setSmaOn] = useState(true);
-  const [smaLen, setSmaLen] = useState(20);
-  const [maOn, setMaOn] = useState(false);
-  const [maLen, setMaLen] = useState(50);
-
-  const chartRef = useRef<HTMLDivElement>(null);
-
-  // Custom hooks for business logic
-  const { universe, kpis, tierAnalysis, updateAllData } = useQuantumData(currentTier);
-  const { clock, refreshCountdown } = useQuantumClock(updateAllData);
-  const { 
-    nlText, 
-    nlPrompt, 
-    nlModel, 
-    setNlPrompt, 
-    setNlModel, 
-    handleNLSend 
-  } = useQuantumNL(selectedSymbol, currentTier, universe, tierAnalysis, kpis);
-
-  const filteredUniverse = universe.filter(coin => {
-    const matchesSearch = !searchTerm || coin.symbol.toUpperCase().includes(searchTerm.toUpperCase());
-    const matchesTier = tierFilter === 'all' || coin.tier.toString() === tierFilter;
-    return matchesSearch && matchesTier;
-  });
-
-  const getScoreClass = (score: number) => {
-    if (score >= 85) return 'text-[hsl(var(--status-success))]';
-    if (score >= 70) return 'text-[hsl(var(--status-warning))]';
-    return 'text-muted-foreground';
-  };
-
-  const formatPrice = (price: number) => {
-    return '$' + price.toLocaleString('en-US', { maximumFractionDigits: 2 });
-  };
-
-  const selectedCoin = universe.find(u => u.symbol === selectedSymbol);
-
-  return (
-    <div className="min-h-screen bg-background text-foreground" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto', fontSize: '14px', lineHeight: '1.45' }}>
-      {/* Topbar */}
-      <header className="flex items-center justify-between px-4 py-3 bg-card border-b border-border h-14">
-        <div className="flex items-center gap-2 font-semibold">
-          <span className="text-lg">⚡</span>
-          <span>Quantum Screener</span>
-          <span className="text-xs text-muted-foreground">Tier 1/2/3 Architecture</span>
-        </div>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span>
-            <span className="inline-block w-2 h-2 bg-[hsl(var(--status-success))] rounded-full mr-1"></span>
-            Tier 1 aktiv
-          </span>
-          <span>
-            <span className="inline-block w-2 h-2 bg-[hsl(var(--status-warning))] rounded-full mr-1"></span>
-            Coins: <b>{universe.length}</b>
-          </span>
-          <span>{clock}</span>
-          <span>Auto-Refresh: <b>{refreshCountdown}</b>s</span>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div className="grid grid-cols-[280px_1fr_360px] gap-px bg-border min-h-[calc(100vh-56px-52px)]">
-        {/* Left Panel - Coins */}
-        <aside className="bg-card flex flex-col p-3 overflow-auto">
-          <div className="font-semibold my-2">Coins</div>
-          
-          {/* Search */}
-          <div className="flex gap-2 mb-2">
-            <input
-              type="text"
-              placeholder="Symbol suchen… (z. B. BTCUSDT)"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="flex-1 bg-background border border-border text-foreground rounded-md px-2 py-2 text-sm"
-            />
-            <button
-              onClick={() => {
-                setSearchTerm('');
-                setTierFilter('all');
-              }}
-              className="border border-border bg-muted text-foreground px-3 py-2 rounded-md cursor-pointer text-sm hover:bg-muted/80"
-            >
-              Reset
-            </button>
-          </div>
-
-          {/* Tier Badges */}
-          <div className="flex gap-1.5 my-2">
-            {['all', '1', '2', '3'].map(tier => (
-              <span
-                key={tier}
-                onClick={() => setTierFilter(tier as TierFilterType)}
-                className={`text-xs rounded-full px-2 py-1 bg-muted border cursor-pointer ${
-                  tierFilter === tier 
-                    ? 'text-foreground border-primary' 
-                    : 'text-muted-foreground border-border hover:text-foreground'
-                }`}
-              >
-                {tier === 'all' ? 'Alle' : `Tier ${tier}`}
-              </span>
-            ))}
-          </div>
-
-          {/* Coin List */}
-          <div className="flex flex-col gap-1.5 mt-2">
-            {filteredUniverse.map(coin => (
-              <div
-                key={coin.symbol}
-                onClick={() => setSelectedSymbol(coin.symbol)}
-                className={`flex justify-between items-center p-2 rounded-md cursor-pointer ${
-                  selectedSymbol === coin.symbol 
-                    ? 'bg-muted outline outline-1 outline-primary' 
-                    : 'hover:bg-muted'
-                }`}
-              >
-                <span className="font-mono text-xs">{coin.symbol}</span>
-                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${coin.score >= 85 ? 'text-[hsl(var(--status-success))] bg-[hsl(var(--status-success-bg))]' : coin.score >= 70 ? 'text-[hsl(var(--status-warning))] bg-[hsl(var(--status-warning-bg))]' : 'text-muted-foreground bg-muted/50'}`}>
-                  {coin.score}
-                </span>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        {/* Center Panel */}
-        <div className="bg-card flex flex-col">
-          {/* Tier Tabs */}
-          <div className="flex border-b border-border">
-            {([1, 2, 3] as const).map(tier => (
-              <button
-                key={tier}
-                onClick={() => setCurrentTier(tier as QuantumTier)}
-                className={`px-4 py-2 text-sm font-semibold transition-colors ${
-                  currentTier === tier 
-                    ? 'text-primary border-b-2 border-primary' 
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                TIER {tier} · {tier === 1 ? 'Quantum Screener' : tier === 2 ? 'Strategy Engine' : 'Deep Forecast'}
-              </button>
-            ))}
-          </div>
-
-          {/* Symbol Info Bar */}
-          <div className="flex gap-3 items-center p-3 border-b border-border">
-            <span className="px-3 py-1 bg-primary text-primary-foreground rounded-md text-sm font-semibold">
-              {selectedSymbol}
-            </span>
-            <span className="px-3 py-1 bg-muted rounded-md text-sm">
-              {selectedCoin ? formatPrice(selectedCoin.price) : '—'}
-            </span>
-            <span className="px-3 py-1 bg-muted rounded-md text-sm">
-              Score: {selectedCoin?.score || '—'}
-            </span>
-            <div className="flex-1"></div>
-            
-            {(['1m', '5m', '15m', '1h', '4h', '1d'] as const).map(tf => (
-              <span
-                key={tf}
-                onClick={() => setSelectedTimeframe(tf as TimeframeType)}
-                className={`px-2 py-1 text-xs rounded-md cursor-pointer transition-colors ${
-                  selectedTimeframe === tf 
-                    ? 'bg-primary text-primary-foreground' 
-                    : 'bg-muted hover:bg-muted/80'
-                }`}
-              >
-                {tf}
-              </span>
-            ))}
-            
-            <button
-              onClick={() => setShowIndicatorModal(true)}
-              className="px-3 py-1 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors"
-            >
-              Indikatoren
-            </button>
-          </div>
-
-          {/* Chart Area */}
-          <div className="relative flex-1 p-3">
-            <div ref={chartRef} className="w-full h-full bg-muted rounded-md flex items-center justify-center">
-              <div className="text-center text-muted-foreground">
-                <div className="text-4xl mb-2">📈</div>
-                <div>Chart wird geladen...</div>
-                <div className="text-sm mt-1">{selectedSymbol} - {selectedTimeframe}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Natural Language Section */}
-          <div className="border-t border-border p-3">
-            <h4 className="font-semibold mb-2">Natural Language Engine</h4>
-            <div className="bg-muted rounded-lg p-3 min-h-[100px] text-sm whitespace-pre-wrap mb-3">
-              {nlText}
-            </div>
-            <div className="flex gap-2">
-              <textarea
-                value={nlPrompt}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNlPrompt(e.target.value)}
-                placeholder="Nachricht oder Analyse schreiben…"
-                className="flex-1 min-h-[60px] resize-y bg-background border border-border rounded-md p-2 text-sm text-foreground"
-              />
-              <div className="flex flex-col gap-2">
-                <select
-                  value={nlModel}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setNlModel(e.target.value as import('../types/quantum').NLModelType)}
-                  className="bg-background border border-border rounded-md p-2 text-sm text-foreground"
-                >
-                  <option value="local">local:default</option>
-                  <option value="anthropic:claude-sonnet-4-20250514">anthropic:claude-sonnet-4-20250514</option>
-                  <option value="anthropic:sonnet-4.1-1m">anthropic:sonnet-4.1-1m</option>
-                  <option value="openai:gpt-5-thinking">openai:gpt-5-thinking</option>
-                </select>
-                <button
-                  onClick={handleNLSend}
-                  className="px-3 py-1 bg-primary text-primary-foreground hover:bg-primary/80 rounded-md text-sm transition-colors"
-                >
-                  Senden
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Panel - KPIs */}
-        <div className="bg-card flex flex-col gap-4 p-3 overflow-auto">
-          {/* Tier KPIs */}
-          <div>
-            <h4 className="font-semibold mb-3 text-sm">Tier-KPIs</h4>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Signals (24h)</div>
-                <div className="font-bold">{kpis.signals}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Win-Rate</div>
-                <div className="font-bold">{kpis.winRate}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Avg PnL</div>
-                <div className="font-bold">{kpis.avgPnL}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Latency</div>
-                <div className="font-bold">{kpis.latency}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Strategy Scores */}
-          <div>
-            <h4 className="font-semibold mb-3 text-sm">Strategy-Scores</h4>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Grid</div>
-                <div className="font-bold">{kpis.grid}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Daytrading</div>
-                <div className="font-bold">{kpis.day}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Pattern</div>
-                <div className="font-bold">{kpis.pattern}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2">
-                <div className="text-xs text-muted-foreground">Regime</div>
-                <div className="font-bold">{kpis.regime}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tier-specific Analysis */}
-          {currentTier === 1 && (
-            <div>
-              <h4 className="font-semibold mb-3 text-sm">Tier 1 Analysis</h4>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Whale Impact</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier1.whaleImpact}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Toxicity</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier1.toxicity}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Flow Direction</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier1.flowDir}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Volume Ratio</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier1.volumeRatio}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {currentTier === 2 && (
-            <div>
-              <h4 className="font-semibold mb-3 text-sm">Tier 2 Analysis</h4>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Pattern Confidence</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier2.patternConf}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Regime</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier2.regime}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Strategy Fit</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier2.strategyFit}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Market Phase</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier2.marketPhase}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {currentTier === 3 && (
-            <div>
-              <h4 className="font-semibold mb-3 text-sm">Tier 3 Analysis</h4>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">TFT Confidence</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier3.tftConf}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">N-BEATS Accuracy</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier3.nbeatsAcc}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Risk Score</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier3.riskScore}</div>
-                </div>
-                <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                  <div className="text-muted-foreground mb-1">Position Size</div>
-                  <div className="font-semibold font-mono">{tierAnalysis.tier3.posSize}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Advanced KPIs */}
-          <div>
-            <h4 className="font-semibold mb-3 text-sm">Advanced KPIs</h4>
-            <div className="grid grid-cols-1 gap-2">
-              <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                <div className="text-muted-foreground mb-1">F1 (1d/1w)</div>
-                <div className="font-semibold font-mono">{kpis.f1}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                <div className="text-muted-foreground mb-1">F2 (1w/1m)</div>
-                <div className="font-semibold font-mono">{kpis.f2}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                <div className="text-muted-foreground mb-1">VaR (95/99%)</div>
-                <div className="font-semibold font-mono">{kpis.var}</div>
-              </div>
-              <div className="bg-muted border border-border rounded-md p-2 text-xs">
-                <div className="text-muted-foreground mb-1">Sharpe Ratio</div>
-                <div className="font-semibold font-mono">{kpis.sharpe}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Indicator Modal */}
-      {showIndicatorModal && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/50 z-50">
-          <div className="bg-card border border-border rounded-lg p-6 min-w-[320px] max-w-[90vw] text-foreground">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-semibold">Indikatoren</h3>
-              <button
-                onClick={() => setShowIndicatorModal(false)}
-                className="px-3 py-2 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors text-foreground"
-              >
-                ✕
-              </button>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">SMA</label>
-                <input
-                  type="checkbox"
-                  checked={smaOn}
-                  onChange={(e) => setSmaOn(e.target.checked)}
-                  className="w-4 h-4"
-                />
-              </div>
-              
-              {smaOn && (
-                <div className="flex items-center gap-2">
-                  <label className="text-sm">Länge:</label>
-                  <input
-                    type="number"
-                    value={smaLen}
-                    onChange={(e) => setSmaLen(parseInt(e.target.value) || 20)}
-                    className="w-16 px-2 py-1 bg-background border border-border rounded-md text-sm text-foreground"
-                    min="1"
-                    max="200"
-                  />
-                </div>
-              )}
-              
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Moving Average</label>
-                <input
-                  type="checkbox"
-                  checked={maOn}
-                  onChange={(e) => setMaOn(e.target.checked)}
-                  className="w-4 h-4"
-                />
-              </div>
-              
-              {maOn && (
-                <div className="flex items-center gap-2">
-                  <label className="text-sm">Länge:</label>
-                  <input
-                    type="number"
-                    value={maLen}
-                    onChange={(e) => setMaLen(parseInt(e.target.value) || 50)}
-                    className="w-16 px-2 py-1 bg-background border border-border rounded-md text-sm text-foreground"
-                    min="1"
-                    max="200"
-                  />
-                </div>
-              )}
-            </div>
-            
-            <div className="flex gap-2 mt-6">
-              <button
-                onClick={() => setShowIndicatorModal(false)}
-                className="flex-1 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/80 rounded-md text-sm transition-colors"
-              >
-                Anwenden
-              </button>
-              <button
-                onClick={() => {
-                  setSmaOn(true);
-                  setSmaLen(20);
-                  setMaOn(false);
-                  setMaLen(50);
-                }}
-                className="px-4 py-2 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors text-foreground"
-              >
-                Reset
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bottom Ticker */}
-      <div className="fixed bottom-0 left-0 right-0 bg-card border-t border-border h-[52px] overflow-hidden">
-        <div className="flex items-center h-full">
-          <div className="animate-ticker flex whitespace-nowrap text-sm text-muted-foreground">
-            <span className="mx-8">⚡ Tier 1 aktiv: {universe.length} Coins</span>
-            <span className="mx-8">🔥 Top Performer: {universe.find(c => c.score >= 85)?.symbol || 'N/A'}</span>
-            <span className="mx-8">📊 Win-Rate: {kpis.winRate}</span>
-            <span className="mx-8">⏱️ Avg Latency: {kpis.latency}</span>
-            <span className="mx-8">💰 Best Grid Score: {kpis.grid}</span>
-            <span className="mx-8">📈 Pattern Recognition: {kpis.pattern}</span>
-            <span className="mx-8">🎯 Active Strategies: Grid • Day • Pattern • Regime</span>
-            <span className="mx-8">⚡ Tier 1 aktiv: {universe.length} Coins</span>
-            <span className="mx-8">🔥 Top Performer: {universe.find(c => c.score >= 85)?.symbol || 'N/A'}</span>
-            <span className="mx-8">📊 Win-Rate: {kpis.winRate}</span>
-            <span className="mx-8">⏱️ Avg Latency: {kpis.latency}</span>
-            <span className="mx-8">💰 Best Grid Score: {kpis.grid}</span>
-            <span className="mx-8">📈 Pattern Recognition: {kpis.pattern}</span>
-            <span className="mx-8">🎯 Active Strategies: Grid • Day • Pattern • Regime</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default QuantumScreener;
-</file>
-
 <file path="frontend/src/features/quantum/types/quantum.ts">
 export interface UniverseItem {
   symbol: string;
@@ -72008,559 +70748,6 @@ const ChartSection = ({
 };
 
 export default ChartSection;
-</file>
-
-<file path="frontend/src/features/trading/components/ChartView.tsx">
-/**
- * ChartView Component
- * ====================
- * 
- * LAZY-LOADING INTEGRATION:
- * Diese Component nutzt lib/chartLazyLoader.ts für On-Demand-Loading
- * der TradingView Lightweight Charts Library (~200KB).
- * 
- * Chart wird erst geladen wenn Component mounted → spart Initial-Bundle-Size!
- * 
- * HOOK INTEGRATION:
- * - useChartView: Lädt OHLC-Daten vom Backend
- * - Auto-refresh: Alle 10 Sekunden
- * - WebSocket: Live-Candle Updates
- * 
- * ENDPOINT:
- * GET /api/chart/history?symbol={symbol}&exchange={exchange}&interval={interval}&limit={limit}
- */
-
-import React, { useEffect, useRef, useState } from "react";
-import { createLazyChart } from '../../../lib/chartLazyLoader';
-import { useChartView } from '../hooks/useChartView';
-
-interface ChartViewProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  interval: string;
-}
-
-const ChartView: React.FC<ChartViewProps> = ({
-  symbol,
-  market,
-  exchange,
-  interval,
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartInstance = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-
-  // Hook lädt Historical Data
-  const { chartData, loading, error } = useChartView(symbol, market, exchange, interval, 100);
-
-  // Initialize Chart with Lazy-Loading
-  useEffect(() => {
-    const container = chartContainerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        // ✅ Lazy-Load LightweightCharts Library
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          layout: {
-            background: { color: 'transparent' },
-            textColor: '#d1d4dc',
-          },
-          grid: {
-            vertLines: { color: '#2B2B43' },
-            horzLines: { color: '#363c4e' },
-          },
-          timeScale: {
-            borderColor: '#485c7b',
-            timeVisible: true,
-            secondsVisible: interval.includes('s'),
-          },
-          rightPriceScale: {
-            borderColor: '#485c7b',
-          },
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesRef.current = chart.addCandlestickSeries({
-          upColor: '#26a69a',
-          downColor: '#ef5350',
-          borderVisible: false,
-          wickUpColor: '#26a69a',
-          wickDownColor: '#ef5350',
-        });
-
-        setIsChartReady(true);
-
-        // Resize Observer
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        // Cleanup
-        return () => {
-          resizeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error('[ChartView] Failed to initialize chart:', err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval]);
-
-  // Load Historical Data
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0 && seriesRef.current) {
-      const formattedData = chartData.map((d) => ({
-        time: Math.floor(d.time / 1000), // ✅ FIX: Millisekunden → Sekunden für TradingView
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-      }));
-      seriesRef.current.setData(formattedData);
-    }
-  }, [isChartReady, chartData]);
-
-  return (
-    <div className="chart-container bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-600 h-full w-full overflow-hidden">
-      {/* Chart Container */}
-      <div className="relative w-full h-full">
-        <div ref={chartContainerRef} className="chart-container w-full h-full" />
-        
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="bg-red-500 bg-opacity-90 text-white px-4 py-2 rounded">
-              {error.message || String(error)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default ChartView;
-</file>
-
-<file path="frontend/src/features/trading/components/CoinSelector.tsx">
-import React, { useState, useEffect, useMemo } from 'react';
-import { Search, RefreshCw, Settings } from 'lucide-react';
-import { Symbol } from '../../../services/api/schemas';
-import { useExchangeSupport } from '../hooks/useExchangeSupport';
-import { useSymbols } from '../hooks/useSymbols';
-import { useFastSnapshot } from '../../../shared/state/laneStores';
-import { CoinSetting, saveSettings } from '../../../shared/api/trading';
-
-// Extended Symbol type with display fields
-interface DisplaySymbol extends Symbol {
-  price?: string;
-  change?: string;
-  changePercent?: number;
-}
-
-interface AdvancedCoinSelectorProps {
-  selectedSymbol: string;
-  onSymbolSelect: (symbol: string) => void;
-  onSettingsClick?: () => void;
-  exchange?: string;
-  selectedMarket?: string;
-}
-
-const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
-  selectedSymbol,
-  onSymbolSelect,
-  onSettingsClick,
-  exchange = "bitget",
-  selectedMarket,
-}) => {
-  // ✅ REFACTORED: UI State only
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  // ✅ Hook for Config
-  const { isMarketSupported } = useExchangeSupport();
-
-  // 🆕 LANE SYSTEM: Direct from FAST lane für ECHTZEIT-TRADING!
-  const settings = useFastSnapshot<CoinSetting[]>('settings');
-  const safeSettings = Array.isArray(settings) ? settings : [];
-  const filteredSettings = safeSettings.filter((s: CoinSetting) => s.exchange === exchange);
-
-  // ✅ REFACTORED: Use Hook for Data Fetching
-  const { 
-    symbols, 
-    loading, 
-    error: hookError, 
-    favorites, 
-    toggleFavorite,
-    loadSymbols
-  } = useSymbols(exchange as any, selectedMarket);
-
-  // Market Support Check (UI-Logic)
-  useEffect(() => {
-    if (!isMarketSupported(exchange, selectedMarket)) {
-      setLocalError(`${selectedMarket} wird von ${exchange.toUpperCase()} nicht unterstützt`);
-      console.warn(`[CoinSelector] Market ${selectedMarket} not supported by ${exchange}`);
-    } else {
-      setLocalError(null);
-    }
-  }, [exchange, selectedMarket]);
-
-  // Combined error from hook and local check
-  const error = localError || hookError;
-
-  // Filter and sort symbols
-  const filteredSymbols = useMemo(() => {
-    // ✅ SAFE: Ensure symbols is always an array
-    let filtered = symbols || [];
-
-    // ✅ FIX 1: DEDUPLIZIERUNG - Filtert Duplikate nach symbol + market_type + exchange
-    // Verhindert dass z.B. ZRXUSDT mehrfach erscheint (spot + futures + coinm + ...)
-    filtered = filtered.filter((symbol, index, self) => 
-      index === self.findIndex(s => 
-        s.symbol === symbol.symbol && 
-        s.market_type === symbol.market_type &&
-        s.exchange === symbol.exchange
-      )
-    );
-
-    // Filter by search term
-    if (searchTerm) {
-      filtered = filtered.filter(symbol =>
-        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-
-    // Sort symbols
-    return filtered.sort((a, b) => {
-      // Favorites first
-      const aFav = favorites.has(a.symbol);
-      const bFav = favorites.has(b.symbol);
-      if (aFav && !bFav) return -1;
-      if (!aFav && bFav) return 1;
-
-      // Then by symbol name
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }, [symbols, searchTerm, favorites]);
-
-  // Handle favorite toggle with event stop
-  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    toggleFavorite(symbol);
-  };
-
-  // 🚀 LANE SYSTEM: L Button Handler (ORIGINAL DESIGN)
-  const handleLiveClick = async (coin: any, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    const coinExchange = coin.exchange || exchange;
-    const existingSetting = safeSettings.find(s => 
-      s.symbol === coin.symbol && 
-      s.exchange === coinExchange &&
-      s.market === coin.market_type
-    );
-    
-    let updated;
-    if (existingSetting) {
-      updated = safeSettings.map(s => 
-        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
-          ? { ...s, store_live: !s.store_live } : s
-      );
-    } else {
-      const newSetting: CoinSetting = {
-        symbol: coin.symbol,
-        exchange: coinExchange,
-        market: coin.market_type,
-        store_live: true,
-        load_history: false,
-        history_until: '',
-        favorite: false,
-        chart_resolution: '1m',
-        db_resolutions: []
-      };
-      updated = [...safeSettings, newSetting];
-    }
-    
-    await saveSettings(updated);
-    console.info(`⚡ L Button toggled for ${coin.symbol} via Lane System`);
-  };
-
-  // 🚀 LANE SYSTEM: H Button Handler (ORIGINAL DESIGN)
-  const handleHistoricalClick = async (coin: any, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    const coinExchange = coin.exchange || exchange;
-    const existingSetting = safeSettings.find(s => 
-      s.symbol === coin.symbol && 
-      s.exchange === coinExchange &&
-      s.market === coin.market_type
-    );
-    
-    let updated;
-    if (existingSetting) {
-      updated = safeSettings.map(s => 
-        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
-          ? { ...s, load_history: !s.load_history } : s
-      );
-    } else {
-      const newSetting: CoinSetting = {
-        symbol: coin.symbol,
-        exchange: coinExchange,
-        market: coin.market_type,
-        store_live: false,
-        load_history: true,  // Historical enabled
-        history_until: '2020-01-01',
-        favorite: false,
-        chart_resolution: '1m',
-        db_resolutions: []
-      };
-      updated = [...safeSettings, newSetting];
-    }
-    
-    await saveSettings(updated);
-    console.info(`⚡ H Button toggled for ${coin.symbol} via Lane System`);
-  };
-
-  // 🚀 LANE SYSTEM: L/H Status Check (ORIGINAL DESIGN)
-  const isLiveEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
-    const setting = safeSettings.find(s => 
-      s.symbol === symbol && 
-      s.exchange === coinExchange && 
-      s.market === market
-    );
-    return setting?.store_live || false;
-  };
-
-  const isHistoricalEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
-    const setting = safeSettings.find(s => 
-      s.symbol === symbol && 
-      s.exchange === coinExchange && 
-      s.market === market
-    );
-    return setting?.load_history || false;
-  };
-
-  // Handle symbol selection
-  const handleSymbolSelect = (coin: any) => {
-    onSymbolSelect(coin.symbol);
-    setIsOpen(false);
-  };
-
-  // Get display symbol for current selection
-  const displaySymbol = selectedSymbol;
-
-  return (
-    <div className="relative">
-      {/* Selected Symbol Display */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
-      >
-        <span className="font-bold text-white dark:text-white text-sm">
-          {displaySymbol}
-        </span>
-        <svg
-          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-        </svg>
-      </button>
-
-      {/* Dropdown */}
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
-          {/* Search */}
-          <div className="p-2 border-b border-border">
-            <div className="relative">
-              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search symbols"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {/* Header Row */}
-          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
-            <div className="flex items-center w-[130px]">
-              <span className="text-yellow-500 mr-2 text-xs">★</span>
-              <span className="text-xs">COIN</span>
-              <span className="ml-1">↑</span>
-            </div>
-            <div className="w-[110px] text-right text-xs">PRICE</div>
-            <div className="w-[90px] text-right text-xs">24H</div>
-            <div className="w-[35px] text-center text-xs">L</div>
-            <div className="w-[12px] text-center text-xs">H</div>
-          </div>
-
-          {/* Coins list */}
-          <div className="max-h-[300px] overflow-y-auto">
-            {loading ? (
-              <div className="p-4 text-center text-gray-400">
-                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
-                <span className="text-xs">Loading...</span>
-              </div>
-            ) : error ? (
-              <div className="p-4 text-center">
-                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Nicht unterstützt</div>
-                <div className="text-gray-400 text-xs">{error instanceof Error ? error.message : String(error)}</div>
-              </div>
-            ) : filteredSymbols.length > 0 ? (
-              filteredSymbols.map((coin) => {
-                // ✅ FIX: Verwende instrument_uid als eindeutigen Key (11_coin_mapper_v1.md)
-                // Fallback zu robustem Composite-Key falls instrument_uid nicht vorhanden
-                const uniqueKey = (coin as any).instrument_uid 
-                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
-                
-                return (
-                  <div
-                    key={uniqueKey}
-                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
-                      coin.symbol === displaySymbol
-                        ? "bg-muted"
-                        : "hover:bg-muted"
-                    }`}
-                    onClick={() => handleSymbolSelect(coin)}
-                  >
-                    <div className="flex items-center w-[130px]">
-                      <span
-                        className={`text-sm mr-2 ${
-                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
-                        }`}
-                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
-                      >
-                        ★
-                      </span>
-                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
-                    </div>
-                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
-                      {coin.price}
-                    </div>
-                    <div
-                      className={`w-[90px] text-right font-bold text-sm ${
-                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
-                      }`}
-                    >
-                      {coin.change}
-                    </div>
-                    <div className="w-[35px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                            ? "rgb(34, 197, 94)"  // Grün = Live aktiv
-                            : "rgb(239, 68, 68)"  // Rot = Live inaktiv
-                        }}
-                        onClick={(e) => handleLiveClick(coin, e)}
-                        title={isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                          ? `Live data ACTIVE for ${coin.symbol}` 
-                          : `Enable Live data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                    <div className="w-[12px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                            ? "rgb(34, 197, 94)"  // Grün = Historical aktiv
-                            : "rgb(239, 68, 68)"  // Rot = Historical inaktiv
-                        }}
-                        onClick={(e) => handleHistoricalClick(coin, e)}
-                        title={isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                          ? `Historical data ACTIVE for ${coin.symbol}` 
-                          : `Enable Historical data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="p-4 text-center text-gray-400">
-                <span className="text-xs">No symbols found</span>
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
-            <div>
-              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => loadSymbols()}
-                disabled={loading}
-                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
-                title="Refresh symbols"
-              >
-                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
-              </button>
-              {onSettingsClick && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSettingsClick();
-                    setIsOpen(false);
-                  }}
-                  className="p-0.5 text-gray-400 hover:text-white"
-                  title="Settings"
-                >
-                  <Settings size={10} />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Overlay to close dropdown when clicking outside */}
-      {isOpen && (
-        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-      )}
-    </div>
-  );
-};
-
-export default CoinSelector;
 </file>
 
 <file path="frontend/src/features/trading/components/IndicatorSettingsModal.tsx">
@@ -73478,220 +71665,6 @@ const OptimizedTradesList: React.FC<OptimizedTradesListProps> = ({
 };
 
 export default OptimizedTradesList;
-</file>
-
-<file path="frontend/src/features/trading/components/OrderBook.tsx">
-import React, { useState, useMemo } from "react";
-import OptimizedOrderbook from "./OptimizedOrderbook";
-import OptimizedTradesList from "./OptimizedTradesList";
-import { useDebouncedCallback } from "../../../hooks/use-debounce";
-import { useOrderBook } from "../hooks/useOrderBook";
-import { useMarketTrades } from "../hooks/useMarketTrades";
-
-interface OrderbookEntry {
-  price: number;
-  size: number;
-  total: number;
-  side: "buy" | "sell";
-}
-
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: "buy" | "sell";
-  ts: string;
-}
-
-interface OrderbookProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  currentPrice?: number;
-  onTabChange?: (tab: "orderbook" | "trades") => void;
-}
-
-const OrderBook = ({
-  symbol,
-  market,
-  exchange,
-  currentPrice = 0,
-  onTabChange,
-}: OrderbookProps) => {
-  // ✅ UI State
-  const [activeTab, setActiveTab] = useState<"orderbook" | "trades">("trades");
-  
-  // ✅ GENERISCH: Hooks für Daten
-  const { orderbook, loading: orderbookLoading, error: orderbookError } = useOrderBook(symbol, market, exchange, 15);
-  const { trades: hookTrades, loading: tradesLoading, error: tradesError } = useMarketTrades(symbol, market, exchange, 50);
-  
-  const isLoading = orderbookLoading || tradesLoading;
-  const error = orderbookError || tradesError;
-  
-  // Transform Hook trades → Component trades
-  const trades = useMemo(() => {
-    return hookTrades.map((trade, idx) => ({
-      id: `${trade.timestamp}-${idx}`,
-      price: trade.price,
-      size: trade.size,
-      side: trade.side,
-      time: new Date(trade.timestamp).toISOString(),
-      ts: new Date(trade.timestamp).toISOString()
-    }));
-  }, [hookTrades]);
-
-  // Debounced tab change handler
-  const debouncedTabChange = useDebouncedCallback((tab: "orderbook" | "trades") => {
-    console.log("Tab change requested:", tab);
-    setActiveTab(tab);
-    if (onTabChange) {
-      onTabChange(tab);
-    }
-  }, 100);
-
-  // ✅ REFACTORED: Transform Hook data to OrderbookEntry format
-  const processedOrders = useMemo(() => {
-    const asks: OrderbookEntry[] = orderbook.asks.map(ask => ({
-      price: ask.price,
-      size: ask.size,
-      total: ask.price * ask.size,
-      side: "sell" as const
-    }));
-    
-    const bids: OrderbookEntry[] = orderbook.bids.map(bid => ({
-      price: bid.price,
-      size: bid.size,
-      total: bid.price * bid.size,
-      side: "buy" as const
-    }));
-    
-    return [...asks, ...bids];
-  }, [orderbook]);
-
-
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow h-full flex flex-col">
-      {/* Header with Tabs */}
-      <div className="border-b border-gray-200 dark:border-gray-600 px-4 pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex relative">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                debouncedTabChange("trades");
-              }}
-              className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer ${
-                activeTab === "trades"
-                  ? "text-black dark:text-white"
-                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              }`}
-            >
-              Markt-Trades
-              {activeTab === "trades" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                debouncedTabChange("orderbook");
-              }}
-              className={`px-4 py-2 text-sm font-medium transition-colors ml-6 relative cursor-pointer ${
-                activeTab === "orderbook"
-                  ? "text-black dark:text-white"
-                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              }`}
-            >
-              Orderbuch
-              {activeTab === "orderbook" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
-              )}
-            </button>
-          </div>
-          
-          {/* Status Indicator */}
-          <div className="flex items-center gap-2">
-            {isLoading && (
-              <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-            )}
-            {!isLoading && !error && (
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-            )}
-            {error && (
-              <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-            )}
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {isLoading ? "Loading..." : error ? "Error" : "Live"}
-            </span>
-          </div>
-        </div>
-
-        {/* Column Headers - ✅ ENTERPRISE: Generic labels, no symbol manipulation */}
-        {activeTab === "orderbook" && (
-          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
-            <div className="text-left">Preis (Quote)</div>
-            <div className="text-center">Betrag (Base)</div>
-            <div className="text-right">Umsatz</div>
-          </div>
-        )}
-
-        {activeTab === "trades" && (
-          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
-            <div className="text-left">Preis (Quote)</div>
-            <div className="text-center">Betrag (Base)</div>
-            <div className="text-right">Zeit</div>
-          </div>
-        )}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeTab === "orderbook" ? (
-          <div className="h-full">
-            {/* Error State */}
-            {error && (
-              <div className="p-4 text-center text-red-600 dark:text-red-400 text-sm">
-                {error}
-              </div>
-            )}
-            
-            <OptimizedOrderbook
-              orders={processedOrders}
-              currentPrice={currentPrice}
-              onOrderClick={(order: OrderbookEntry) => {
-                console.log("Order clicked:", order);
-              }}
-            />
-          </div>
-        ) : (
-          /* Trades Tab */
-          <div className="h-full">
-            <OptimizedTradesList
-              trades={trades}
-              onTradeClick={(trade: Trade) => {
-                console.log("Trade clicked:", trade);
-              }}
-            />
-            
-            {/* Empty State */}
-            {trades.length === 0 && !isLoading && (
-              <div className="text-gray-400 p-4 text-center">
-                {error ? "Failed to load trades" : "No trades yet."}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default OrderBook;
 </file>
 
 <file path="frontend/src/features/trading/components/PriceDisplay.tsx">
@@ -75369,17 +73342,6 @@ import { twMerge } from "tailwind-merge";
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-</file>
-
-<file path="frontend/src/pages/APIPage.tsx">
-import React from 'react';
-import { APIMain } from '../features/api/components/APIMain';
-
-export const APIPage: React.FC = () => {
-  return <APIMain />;
-};
-
-export default APIPage;
 </file>
 
 <file path="frontend/src/pages/BotPage.tsx">
@@ -97738,9 +95700,1265 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
+<file path="frontend/src/features/api/components/APIMain.tsx">
+import React from "react";
+
+export default function APIMain() {
+  return (
+    <div style={{ padding: 16 }}>
+      <h2 style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>API</h2>
+      <div style={{ opacity: 0.8 }}>
+        Clean-Slate: alte Feature-Hooks wurden entfernt. Dieses Modul ist aktuell deaktiviert.
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/features/quantum/components/QuantumScreener.tsx">
+import { useState, useRef } from "react";
+import type { QuantumTier, TimeframeType, TierFilterType } from '../types/quantum';
+
+const QuantumScreener = () => {
+  const [currentTier, setCurrentTier] = useState<QuantumTier>(1);
+  const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
+  const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeType>('1m');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [tierFilter, setTierFilter] = useState<TierFilterType>('all');
+  const [showIndicatorModal, setShowIndicatorModal] = useState(false);
+  const [smaOn, setSmaOn] = useState(true);
+  const [smaLen, setSmaLen] = useState(20);
+  const [maOn, setMaOn] = useState(false);
+  const [maLen, setMaLen] = useState(50);
+
+  const chartRef = useRef<HTMLDivElement>(null);
+
+  const [universe] = useState<any[]>([]);
+  const [kpis] = useState({ signals: 0, winRate: '0%', avgPnL: '0%', latency: '0ms', grid: 0, day: 0, pattern: 0, regime: 0, f1: '0/0', f2: '0/0', var: '0/0', sharpe: '0' });
+  const [tierAnalysis] = useState({ tier1: { whaleImpact: '0', toxicity: '0', flowDir: '—', volumeRatio: '0' }, tier2: { patternConf: '0', regime: '—', strategyFit: '0', marketPhase: '—' }, tier3: { tftConf: '0', nbeatsAcc: '0', riskScore: '0', posSize: '0' } });
+  const [clock] = useState('00:00:00');
+  const [refreshCountdown] = useState(0);
+  const [nlText] = useState('Natural Language Engine deaktiviert (Clean-Slate)');
+  const [nlPrompt, setNlPrompt] = useState('');
+  const [nlModel, setNlModel] = useState<import('../types/quantum').NLModelType>('local');
+  const handleNLSend = () => console.log('NL Send disabled');
+
+  const filteredUniverse = universe.filter(coin => {
+    const matchesSearch = !searchTerm || coin.symbol.toUpperCase().includes(searchTerm.toUpperCase());
+    const matchesTier = tierFilter === 'all' || coin.tier.toString() === tierFilter;
+    return matchesSearch && matchesTier;
+  });
+
+  const getScoreClass = (score: number) => {
+    if (score >= 85) return 'text-[hsl(var(--status-success))]';
+    if (score >= 70) return 'text-[hsl(var(--status-warning))]';
+    return 'text-muted-foreground';
+  };
+
+  const formatPrice = (price: number) => {
+    return '$' + price.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  };
+
+  const selectedCoin = universe.find(u => u.symbol === selectedSymbol);
+
+  return (
+    <div className="min-h-screen bg-background text-foreground" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto', fontSize: '14px', lineHeight: '1.45' }}>
+      {/* Topbar */}
+      <header className="flex items-center justify-between px-4 py-3 bg-card border-b border-border h-14">
+        <div className="flex items-center gap-2 font-semibold">
+          <span className="text-lg">⚡</span>
+          <span>Quantum Screener</span>
+          <span className="text-xs text-muted-foreground">Tier 1/2/3 Architecture</span>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <span>
+            <span className="inline-block w-2 h-2 bg-[hsl(var(--status-success))] rounded-full mr-1"></span>
+            Tier 1 aktiv
+          </span>
+          <span>
+            <span className="inline-block w-2 h-2 bg-[hsl(var(--status-warning))] rounded-full mr-1"></span>
+            Coins: <b>{universe.length}</b>
+          </span>
+          <span>{clock}</span>
+          <span>Auto-Refresh: <b>{refreshCountdown}</b>s</span>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <div className="grid grid-cols-[280px_1fr_360px] gap-px bg-border min-h-[calc(100vh-56px-52px)]">
+        {/* Left Panel - Coins */}
+        <aside className="bg-card flex flex-col p-3 overflow-auto">
+          <div className="font-semibold my-2">Coins</div>
+          
+          {/* Search */}
+          <div className="flex gap-2 mb-2">
+            <input
+              type="text"
+              placeholder="Symbol suchen… (z. B. BTCUSDT)"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="flex-1 bg-background border border-border text-foreground rounded-md px-2 py-2 text-sm"
+            />
+            <button
+              onClick={() => {
+                setSearchTerm('');
+                setTierFilter('all');
+              }}
+              className="border border-border bg-muted text-foreground px-3 py-2 rounded-md cursor-pointer text-sm hover:bg-muted/80"
+            >
+              Reset
+            </button>
+          </div>
+
+          {/* Tier Badges */}
+          <div className="flex gap-1.5 my-2">
+            {['all', '1', '2', '3'].map(tier => (
+              <span
+                key={tier}
+                onClick={() => setTierFilter(tier as TierFilterType)}
+                className={`text-xs rounded-full px-2 py-1 bg-muted border cursor-pointer ${
+                  tierFilter === tier 
+                    ? 'text-foreground border-primary' 
+                    : 'text-muted-foreground border-border hover:text-foreground'
+                }`}
+              >
+                {tier === 'all' ? 'Alle' : `Tier ${tier}`}
+              </span>
+            ))}
+          </div>
+
+          {/* Coin List */}
+          <div className="flex flex-col gap-1.5 mt-2">
+            {filteredUniverse.map(coin => (
+              <div
+                key={coin.symbol}
+                onClick={() => setSelectedSymbol(coin.symbol)}
+                className={`flex justify-between items-center p-2 rounded-md cursor-pointer ${
+                  selectedSymbol === coin.symbol 
+                    ? 'bg-muted outline outline-1 outline-primary' 
+                    : 'hover:bg-muted'
+                }`}
+              >
+                <span className="font-mono text-xs">{coin.symbol}</span>
+                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${coin.score >= 85 ? 'text-[hsl(var(--status-success))] bg-[hsl(var(--status-success-bg))]' : coin.score >= 70 ? 'text-[hsl(var(--status-warning))] bg-[hsl(var(--status-warning-bg))]' : 'text-muted-foreground bg-muted/50'}`}>
+                  {coin.score}
+                </span>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        {/* Center Panel */}
+        <div className="bg-card flex flex-col">
+          {/* Tier Tabs */}
+          <div className="flex border-b border-border">
+            {([1, 2, 3] as const).map(tier => (
+              <button
+                key={tier}
+                onClick={() => setCurrentTier(tier as QuantumTier)}
+                className={`px-4 py-2 text-sm font-semibold transition-colors ${
+                  currentTier === tier 
+                    ? 'text-primary border-b-2 border-primary' 
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                TIER {tier} · {tier === 1 ? 'Quantum Screener' : tier === 2 ? 'Strategy Engine' : 'Deep Forecast'}
+              </button>
+            ))}
+          </div>
+
+          {/* Symbol Info Bar */}
+          <div className="flex gap-3 items-center p-3 border-b border-border">
+            <span className="px-3 py-1 bg-primary text-primary-foreground rounded-md text-sm font-semibold">
+              {selectedSymbol}
+            </span>
+            <span className="px-3 py-1 bg-muted rounded-md text-sm">
+              {selectedCoin ? formatPrice(selectedCoin.price) : '—'}
+            </span>
+            <span className="px-3 py-1 bg-muted rounded-md text-sm">
+              Score: {selectedCoin?.score || '—'}
+            </span>
+            <div className="flex-1"></div>
+            
+            {(['1m', '5m', '15m', '1h', '4h', '1d'] as const).map(tf => (
+              <span
+                key={tf}
+                onClick={() => setSelectedTimeframe(tf as TimeframeType)}
+                className={`px-2 py-1 text-xs rounded-md cursor-pointer transition-colors ${
+                  selectedTimeframe === tf 
+                    ? 'bg-primary text-primary-foreground' 
+                    : 'bg-muted hover:bg-muted/80'
+                }`}
+              >
+                {tf}
+              </span>
+            ))}
+            
+            <button
+              onClick={() => setShowIndicatorModal(true)}
+              className="px-3 py-1 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors"
+            >
+              Indikatoren
+            </button>
+          </div>
+
+          {/* Chart Area */}
+          <div className="relative flex-1 p-3">
+            <div ref={chartRef} className="w-full h-full bg-muted rounded-md flex items-center justify-center">
+              <div className="text-center text-muted-foreground">
+                <div className="text-4xl mb-2">📈</div>
+                <div>Chart wird geladen...</div>
+                <div className="text-sm mt-1">{selectedSymbol} - {selectedTimeframe}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Natural Language Section */}
+          <div className="border-t border-border p-3">
+            <h4 className="font-semibold mb-2">Natural Language Engine</h4>
+            <div className="bg-muted rounded-lg p-3 min-h-[100px] text-sm whitespace-pre-wrap mb-3">
+              {nlText}
+            </div>
+            <div className="flex gap-2">
+              <textarea
+                value={nlPrompt}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNlPrompt(e.target.value)}
+                placeholder="Nachricht oder Analyse schreiben…"
+                className="flex-1 min-h-[60px] resize-y bg-background border border-border rounded-md p-2 text-sm text-foreground"
+              />
+              <div className="flex flex-col gap-2">
+                <select
+                  value={nlModel}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setNlModel(e.target.value as import('../types/quantum').NLModelType)}
+                  className="bg-background border border-border rounded-md p-2 text-sm text-foreground"
+                >
+                  <option value="local">local:default</option>
+                  <option value="anthropic:claude-sonnet-4-20250514">anthropic:claude-sonnet-4-20250514</option>
+                  <option value="anthropic:sonnet-4.1-1m">anthropic:sonnet-4.1-1m</option>
+                  <option value="openai:gpt-5-thinking">openai:gpt-5-thinking</option>
+                </select>
+                <button
+                  onClick={handleNLSend}
+                  className="px-3 py-1 bg-primary text-primary-foreground hover:bg-primary/80 rounded-md text-sm transition-colors"
+                >
+                  Senden
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Panel - KPIs */}
+        <div className="bg-card flex flex-col gap-4 p-3 overflow-auto">
+          {/* Tier KPIs */}
+          <div>
+            <h4 className="font-semibold mb-3 text-sm">Tier-KPIs</h4>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Signals (24h)</div>
+                <div className="font-bold">{kpis.signals}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Win-Rate</div>
+                <div className="font-bold">{kpis.winRate}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Avg PnL</div>
+                <div className="font-bold">{kpis.avgPnL}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Latency</div>
+                <div className="font-bold">{kpis.latency}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Strategy Scores */}
+          <div>
+            <h4 className="font-semibold mb-3 text-sm">Strategy-Scores</h4>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Grid</div>
+                <div className="font-bold">{kpis.grid}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Daytrading</div>
+                <div className="font-bold">{kpis.day}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Pattern</div>
+                <div className="font-bold">{kpis.pattern}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2">
+                <div className="text-xs text-muted-foreground">Regime</div>
+                <div className="font-bold">{kpis.regime}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Tier-specific Analysis */}
+          {currentTier === 1 && (
+            <div>
+              <h4 className="font-semibold mb-3 text-sm">Tier 1 Analysis</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Whale Impact</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier1.whaleImpact}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Toxicity</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier1.toxicity}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Flow Direction</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier1.flowDir}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Volume Ratio</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier1.volumeRatio}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentTier === 2 && (
+            <div>
+              <h4 className="font-semibold mb-3 text-sm">Tier 2 Analysis</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Pattern Confidence</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier2.patternConf}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Regime</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier2.regime}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Strategy Fit</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier2.strategyFit}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Market Phase</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier2.marketPhase}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentTier === 3 && (
+            <div>
+              <h4 className="font-semibold mb-3 text-sm">Tier 3 Analysis</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">TFT Confidence</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier3.tftConf}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">N-BEATS Accuracy</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier3.nbeatsAcc}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Risk Score</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier3.riskScore}</div>
+                </div>
+                <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                  <div className="text-muted-foreground mb-1">Position Size</div>
+                  <div className="font-semibold font-mono">{tierAnalysis.tier3.posSize}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Advanced KPIs */}
+          <div>
+            <h4 className="font-semibold mb-3 text-sm">Advanced KPIs</h4>
+            <div className="grid grid-cols-1 gap-2">
+              <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                <div className="text-muted-foreground mb-1">F1 (1d/1w)</div>
+                <div className="font-semibold font-mono">{kpis.f1}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                <div className="text-muted-foreground mb-1">F2 (1w/1m)</div>
+                <div className="font-semibold font-mono">{kpis.f2}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                <div className="text-muted-foreground mb-1">VaR (95/99%)</div>
+                <div className="font-semibold font-mono">{kpis.var}</div>
+              </div>
+              <div className="bg-muted border border-border rounded-md p-2 text-xs">
+                <div className="text-muted-foreground mb-1">Sharpe Ratio</div>
+                <div className="font-semibold font-mono">{kpis.sharpe}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Indicator Modal */}
+      {showIndicatorModal && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/50 z-50">
+          <div className="bg-card border border-border rounded-lg p-6 min-w-[320px] max-w-[90vw] text-foreground">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold">Indikatoren</h3>
+              <button
+                onClick={() => setShowIndicatorModal(false)}
+                className="px-3 py-2 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">SMA</label>
+                <input
+                  type="checkbox"
+                  checked={smaOn}
+                  onChange={(e) => setSmaOn(e.target.checked)}
+                  className="w-4 h-4"
+                />
+              </div>
+              
+              {smaOn && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm">Länge:</label>
+                  <input
+                    type="number"
+                    value={smaLen}
+                    onChange={(e) => setSmaLen(parseInt(e.target.value) || 20)}
+                    className="w-16 px-2 py-1 bg-background border border-border rounded-md text-sm text-foreground"
+                    min="1"
+                    max="200"
+                  />
+                </div>
+              )}
+              
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Moving Average</label>
+                <input
+                  type="checkbox"
+                  checked={maOn}
+                  onChange={(e) => setMaOn(e.target.checked)}
+                  className="w-4 h-4"
+                />
+              </div>
+              
+              {maOn && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm">Länge:</label>
+                  <input
+                    type="number"
+                    value={maLen}
+                    onChange={(e) => setMaLen(parseInt(e.target.value) || 50)}
+                    className="w-16 px-2 py-1 bg-background border border-border rounded-md text-sm text-foreground"
+                    min="1"
+                    max="200"
+                  />
+                </div>
+              )}
+            </div>
+            
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => setShowIndicatorModal(false)}
+                className="flex-1 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/80 rounded-md text-sm transition-colors"
+              >
+                Anwenden
+              </button>
+              <button
+                onClick={() => {
+                  setSmaOn(true);
+                  setSmaLen(20);
+                  setMaOn(false);
+                  setMaLen(50);
+                }}
+                className="px-4 py-2 bg-muted hover:bg-muted/80 rounded-md text-sm transition-colors text-foreground"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Ticker */}
+      <div className="fixed bottom-0 left-0 right-0 bg-card border-t border-border h-[52px] overflow-hidden">
+        <div className="flex items-center h-full">
+          <div className="animate-ticker flex whitespace-nowrap text-sm text-muted-foreground">
+            <span className="mx-8">⚡ Tier 1 aktiv: {universe.length} Coins</span>
+            <span className="mx-8">🔥 Top Performer: {universe.find(c => c.score >= 85)?.symbol || 'N/A'}</span>
+            <span className="mx-8">📊 Win-Rate: {kpis.winRate}</span>
+            <span className="mx-8">⏱️ Avg Latency: {kpis.latency}</span>
+            <span className="mx-8">💰 Best Grid Score: {kpis.grid}</span>
+            <span className="mx-8">📈 Pattern Recognition: {kpis.pattern}</span>
+            <span className="mx-8">🎯 Active Strategies: Grid • Day • Pattern • Regime</span>
+            <span className="mx-8">⚡ Tier 1 aktiv: {universe.length} Coins</span>
+            <span className="mx-8">🔥 Top Performer: {universe.find(c => c.score >= 85)?.symbol || 'N/A'}</span>
+            <span className="mx-8">📊 Win-Rate: {kpis.winRate}</span>
+            <span className="mx-8">⏱️ Avg Latency: {kpis.latency}</span>
+            <span className="mx-8">💰 Best Grid Score: {kpis.grid}</span>
+            <span className="mx-8">📈 Pattern Recognition: {kpis.pattern}</span>
+            <span className="mx-8">🎯 Active Strategies: Grid • Day • Pattern • Regime</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default QuantumScreener;
+</file>
+
 <file path="frontend/src/features/quantum/index.ts">
 export { default as QuantumScreener } from './components/QuantumScreener';
 export * from './types/quantum';
+</file>
+
+<file path="frontend/src/features/trading/components/ChartView.tsx">
+/**
+ * ChartView Component
+ * ====================
+ * 
+ * LAZY-LOADING INTEGRATION:
+ * Diese Component nutzt lib/chartLazyLoader.ts für On-Demand-Loading
+ * der TradingView Lightweight Charts Library (~200KB).
+ * 
+ * Chart wird erst geladen wenn Component mounted → spart Initial-Bundle-Size!
+ * 
+ * HOOK INTEGRATION:
+ * - useChartView: Lädt OHLC-Daten vom Backend
+ * - Auto-refresh: Alle 10 Sekunden
+ * - WebSocket: Live-Candle Updates
+ * 
+ * ENDPOINT:
+ * GET /api/chart/history?symbol={symbol}&exchange={exchange}&interval={interval}&limit={limit}
+ */
+
+import React, { useEffect, useRef, useState } from "react";
+import { createLazyChart } from '../../../lib/chartLazyLoader';
+
+interface ChartViewProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  interval: string;
+}
+
+const ChartView: React.FC<ChartViewProps> = ({
+  symbol,
+  market,
+  exchange,
+  interval,
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartInstance = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const [chartData, setChartData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const fetchChartData = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch(
+          `/api/chart/history?symbol=${symbol}&exchange=${exchange}&interval=${interval}&limit=100`
+        );
+        if (!response.ok) throw new Error('Failed to fetch chart data');
+        const data = await response.json();
+        setChartData(data);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchChartData();
+  }, [symbol, exchange, interval]);
+
+  // Initialize Chart with Lazy-Loading
+  useEffect(() => {
+    const container = chartContainerRef.current;
+    if (!container) return;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        // ✅ Lazy-Load LightweightCharts Library
+        const chart = await createLazyChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          layout: {
+            background: { color: 'transparent' },
+            textColor: '#d1d4dc',
+          },
+          grid: {
+            vertLines: { color: '#2B2B43' },
+            horzLines: { color: '#363c4e' },
+          },
+          timeScale: {
+            borderColor: '#485c7b',
+            timeVisible: true,
+            secondsVisible: interval.includes('s'),
+          },
+          rightPriceScale: {
+            borderColor: '#485c7b',
+          },
+        });
+
+        if (!isMounted) {
+          chart.remove();
+          return;
+        }
+
+        chartInstance.current = chart;
+        seriesRef.current = chart.addCandlestickSeries({
+          upColor: '#26a69a',
+          downColor: '#ef5350',
+          borderVisible: false,
+          wickUpColor: '#26a69a',
+          wickDownColor: '#ef5350',
+        });
+
+        setIsChartReady(true);
+
+        // Resize Observer
+        const resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && chartInstance.current) {
+            const { width, height } = entries[0].contentRect;
+            chartInstance.current.applyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+
+        // Cleanup
+        return () => {
+          resizeObserver.disconnect();
+        };
+      } catch (err) {
+        console.error('[ChartView] Failed to initialize chart:', err);
+      }
+    };
+
+    initChart();
+
+    return () => {
+      isMounted = false;
+      if (chartInstance.current) {
+        chartInstance.current.remove();
+        chartInstance.current = null;
+      }
+    };
+  }, [interval]);
+
+  // Load Historical Data
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0 && seriesRef.current) {
+      const formattedData = chartData.map((d: any) => ({
+        time: Math.floor(d.time / 1000), // ✅ FIX: Millisekunden → Sekunden für TradingView
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+      }));
+      seriesRef.current.setData(formattedData);
+    }
+  }, [isChartReady, chartData]);
+
+  return (
+    <div className="chart-container bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-600 h-full w-full overflow-hidden">
+      {/* Chart Container */}
+      <div className="relative w-full h-full">
+        <div ref={chartContainerRef} className="chart-container w-full h-full" />
+        
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="bg-red-500 bg-opacity-90 text-white px-4 py-2 rounded">
+              {error.message || String(error)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ChartView;
+</file>
+
+<file path="frontend/src/features/trading/components/CoinSelector.tsx">
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, RefreshCw, Settings } from 'lucide-react';
+import { CoinSetting, saveSettings, getSettings } from '../../../shared/api/trading';
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange?: string;
+  selectedMarket?: string;
+}
+
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange = "bitget",
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<CoinSetting[]>([]);
+  const [symbols, setSymbols] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const safeSettings = Array.isArray(settings) ? settings : [];
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      const data = await getSettings(exchange);
+      setSettings(data);
+    };
+    loadSettings();
+  }, [exchange]);
+
+  const loadSymbols = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/market/symbols?exchange=${exchange}`);
+      const data = await response.json();
+      setSymbols(data.symbols || []);
+    } catch (err) {
+      console.error('Failed to load symbols:', err);
+      setLocalError('Failed to load symbols');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+  }, [exchange, selectedMarket]);
+
+  const toggleFavorite = (symbol: string) => {
+    setFavorites(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(symbol)) {
+        newSet.delete(symbol);
+      } else {
+        newSet.add(symbol);
+      }
+      return newSet;
+    });
+  };
+
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    filtered = filtered.filter((symbol: any, index: number, self: any[]) => 
+      index === self.findIndex((s: any) => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    if (searchTerm) {
+      filtered = filtered.filter((symbol: any) =>
+        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+
+    return filtered.sort((a: any, b: any) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
+
+  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleFavorite(symbol);
+  };
+
+  const handleLiveClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, store_live: !s.store_live } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: true,
+        load_history: false,
+        history_until: '',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const handleHistoricalClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, load_history: !s.load_history } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: false,
+        load_history: true,
+        history_until: '2020-01-01',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const isLiveEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.store_live || false;
+  };
+
+  const isHistoricalEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.load_history || false;
+  };
+
+  const handleSymbolSelect = (coin: any) => {
+    onSymbolSelect(coin.symbol);
+    setIsOpen(false);
+  };
+
+  const displaySymbol = selectedSymbol;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {displaySymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          <div className="max-h-[300px] overflow-y-auto">
+            {loading ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin: any) => {
+                const uniqueKey = (coin as any).instrument_uid 
+                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === displaySymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => handleSymbolSelect(coin)}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleLiveClick(coin, e)}
+                        title={isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Live data ACTIVE for ${coin.symbol}` 
+                          : `Enable Live data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                    <div className="w-[12px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleHistoricalClick(coin, e)}
+                        title={isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Historical data ACTIVE for ${coin.symbol}` 
+                          : `Enable Historical data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loading}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
+</file>
+
+<file path="frontend/src/features/trading/components/OrderBook.tsx">
+import React, { useState, useMemo } from "react";
+import OptimizedOrderbook from "./OptimizedOrderbook";
+import OptimizedTradesList from "./OptimizedTradesList";
+import { useDebouncedCallback } from "../../../hooks/use-debounce";
+
+interface OrderbookEntry {
+  price: number;
+  size: number;
+  total: number;
+  side: "buy" | "sell";
+}
+
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: "buy" | "sell";
+  ts: string;
+}
+
+interface OrderbookProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  currentPrice?: number;
+  onTabChange?: (tab: "orderbook" | "trades") => void;
+}
+
+const OrderBook = ({
+  symbol,
+  market,
+  exchange,
+  currentPrice = 0,
+  onTabChange,
+}: OrderbookProps) => {
+  const [activeTab, setActiveTab] = useState<"orderbook" | "trades">("trades");
+  const [orderbook, setOrderbook] = useState<{ bids: any[]; asks: any[] }>({ bids: [], asks: [] });
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Debounced tab change handler
+  const debouncedTabChange = useDebouncedCallback((tab: "orderbook" | "trades") => {
+    console.log("Tab change requested:", tab);
+    setActiveTab(tab);
+    if (onTabChange) {
+      onTabChange(tab);
+    }
+  }, 100);
+
+  // ✅ REFACTORED: Transform Hook data to OrderbookEntry format
+  const processedOrders = useMemo(() => {
+    const asks: OrderbookEntry[] = orderbook.asks.map(ask => ({
+      price: ask.price,
+      size: ask.size,
+      total: ask.price * ask.size,
+      side: "sell" as const
+    }));
+    
+    const bids: OrderbookEntry[] = orderbook.bids.map(bid => ({
+      price: bid.price,
+      size: bid.size,
+      total: bid.price * bid.size,
+      side: "buy" as const
+    }));
+    
+    return [...asks, ...bids];
+  }, [orderbook]);
+
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow h-full flex flex-col">
+      {/* Header with Tabs */}
+      <div className="border-b border-gray-200 dark:border-gray-600 px-4 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex relative">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                debouncedTabChange("trades");
+              }}
+              className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer ${
+                activeTab === "trades"
+                  ? "text-black dark:text-white"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              Markt-Trades
+              {activeTab === "trades" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                debouncedTabChange("orderbook");
+              }}
+              className={`px-4 py-2 text-sm font-medium transition-colors ml-6 relative cursor-pointer ${
+                activeTab === "orderbook"
+                  ? "text-black dark:text-white"
+                  : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              Orderbuch
+              {activeTab === "orderbook" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"></div>
+              )}
+            </button>
+          </div>
+          
+          {/* Status Indicator */}
+          <div className="flex items-center gap-2">
+            {isLoading && (
+              <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+            )}
+            {!isLoading && !error && (
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+            )}
+            {error && (
+              <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+            )}
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {isLoading ? "Loading..." : error ? "Error" : "Live"}
+            </span>
+          </div>
+        </div>
+
+        {/* Column Headers - ✅ ENTERPRISE: Generic labels, no symbol manipulation */}
+        {activeTab === "orderbook" && (
+          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
+            <div className="text-left">Preis (Quote)</div>
+            <div className="text-center">Betrag (Base)</div>
+            <div className="text-right">Umsatz</div>
+          </div>
+        )}
+
+        {activeTab === "trades" && (
+          <div className="grid grid-cols-3 text-xs text-gray-500 dark:text-gray-400 pb-2">
+            <div className="text-left">Preis (Quote)</div>
+            <div className="text-center">Betrag (Base)</div>
+            <div className="text-right">Zeit</div>
+          </div>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === "orderbook" ? (
+          <div className="h-full">
+            {/* Error State */}
+            {error && (
+              <div className="p-4 text-center text-red-600 dark:text-red-400 text-sm">
+                {error}
+              </div>
+            )}
+            
+            <OptimizedOrderbook
+              orders={processedOrders}
+              currentPrice={currentPrice}
+              onOrderClick={(order: OrderbookEntry) => {
+                console.log("Order clicked:", order);
+              }}
+            />
+          </div>
+        ) : (
+          /* Trades Tab */
+          <div className="h-full">
+            <OptimizedTradesList
+              trades={trades}
+              onTradeClick={(trade: Trade) => {
+                console.log("Trade clicked:", trade);
+              }}
+            />
+            
+            {/* Empty State */}
+            {trades.length === 0 && !isLoading && (
+              <div className="text-gray-400 p-4 text-center">
+                {error ? "Failed to load trades" : "No trades yet."}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default OrderBook;
 </file>
 
 <file path="frontend/src/hooks/useLiveTrades.ts">
@@ -97880,6 +97098,17 @@ export function createDecimalSchema<T extends string>(fields: T[]) {
   });
   return z.object(shape as Record<T, z.ZodTypeAny>).passthrough();
 }
+</file>
+
+<file path="frontend/src/pages/APIPage.tsx">
+import React from 'react';
+import APIMain from '../features/api/components/APIMain';
+
+export const APIPage: React.FC = () => {
+  return <APIMain />;
+};
+
+export default APIPage;
 </file>
 
 <file path="frontend/src/pages/DatabasePage.tsx">
@@ -99236,44 +98465,6 @@ export function resetExchangeConfig(): void {
 export function resetMarketTypeConfig(): void {
   cachedMarketTypeConfig = null;
   console.log('🔄 Market-Type config cache reset');
-}
-</file>
-
-<file path="frontend/src/shared/state/SettingsProvider.tsx">
-import React, { useEffect } from 'react';
-import { getSettings } from '../../shared/api/trading';
-
-export interface SettingsProviderProps {
-  children: React.ReactNode;
-}
-
-export function SettingsProvider({ children }: SettingsProviderProps) {
-  useEffect(() => {
-    // Initial load
-    console.log('[SettingsProvider] Loading initial settings...');
-    getSettings();
-    
-    // Auto-refresh on window focus
-    const handleFocus = () => {
-      console.log('[SettingsProvider] Window focus - refreshing settings');
-      getSettings();
-    };
-    
-    // Periodic refresh every minute
-    const intervalId = setInterval(() => {
-      console.log('[SettingsProvider] Periodic refresh - reloading settings');
-      getSettings();
-    }, 60_000);
-    
-    window.addEventListener('focus', handleFocus);
-    
-    return () => {
-      clearInterval(intervalId);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, []);
-  
-  return <>{children}</>;
 }
 </file>
 
@@ -184293,47 +183484,16 @@ export const AppLayout: React.FC = () => {
 };
 </file>
 
-<file path="frontend/src/main.tsx">
-import { createRoot } from "react-dom/client";
-import App from "./App.tsx";
-import "./index.css";
+<file path="frontend/src/shared/state/SettingsProvider.tsx">
+import React from "react";
 
-// Error Handling
-import { ErrorBoundary } from "./shared/error/ErrorBoundary";
-
-// Settings Provider
-import { SettingsProvider } from "./shared/state/SettingsProvider";
-
-// ✅ Exchange & Market-Type Config laden (Single Source of Truth: backend/.env)
-import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
-
-// ✅ App-Initialization: Lade Exchange-Config bevor React rendert
-async function initializeApp() {
-  console.log('🚀 Initializing DarkMa Trading System...');
-  
-  try {
-    // Lade Exchange-Liste und Market-Types vom Backend (parallel, cached)
-    const [exchangeConfig, marketTypeConfig] = await Promise.all([
-      loadExchangeConfig(),
-      loadMarketTypeConfig()
-    ]);
-    console.log(`✅ System ready: ${exchangeConfig.count} exchanges, ${marketTypeConfig.count} market types available`);
-  } catch (error) {
-    console.error('⚠️ Config initialization failed (using fallback):', error);
-  }
-  
-  // Render React App
-  createRoot(document.getElementById("root")!).render(
-    <ErrorBoundary>
-      <SettingsProvider>
-        <App />
-      </SettingsProvider>
-    </ErrorBoundary>
-  );
+export interface SettingsProviderProps {
+  children: React.ReactNode;
 }
 
-// Start App
-initializeApp();
+export function SettingsProvider({ children }: SettingsProviderProps) {
+  return <>{children}</>;
+}
 </file>
 
 <file path="readme/000_backfill_loop.md">
@@ -188693,6 +187853,32 @@ const App = () => {
 
 export default App;
 // Updated Sun Sep 14 18:57:08 CEST 2025
+</file>
+
+<file path="frontend/src/main.tsx">
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./index.css";
+
+import { ErrorBoundary } from "./shared/error/ErrorBoundary";
+import { SettingsProvider } from "./shared/state/SettingsProvider";
+
+import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
+
+try {
+  loadExchangeConfig?.();
+  loadMarketTypeConfig?.();
+} catch {
+  // bewusst still: build/boot darf nicht wegen optionaler Config scheitern
+}
+
+createRoot(document.getElementById("root")!).render(
+  <ErrorBoundary>
+    <SettingsProvider>
+      <App />
+    </SettingsProvider>
+  </ErrorBoundary>
+);
 </file>
 
 <file path="start-health.sh">
@@ -196585,6 +195771,582 @@ def get_available_backfill_services():
     }
 </file>
 
+<file path="backend/websocket/ws_message_parsers.py">
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+
+class BaseMessageParser:
+    """Base Class für Exchange Message Parser"""
+    
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Trade Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
+        """
+        raise NotImplementedError
+
+class BinanceMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm) - default: "spot"
+        """
+        try:
+            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
+            
+            # Binance Trade Message Format
+            if "e" in data and data["e"] == "trade":
+                trade = {
+                    "exchange": "binance",
+                    "symbol": data["s"],
+                    "trade_id": data["t"],
+                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
+                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
+                    "side": "buy" if data["m"] == False else "sell",
+                    "timestamp": data["T"],
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
+                return trade
+            else:
+                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BitgetMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
+            
+            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
+                # instId ist in "arg", nicht in "data"!
+                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                for trade in data.get("data", []):
+                    trade_obj = {
+                        "exchange": "bitget",
+                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GateIOMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
+            
+            # Check for trade update event
+            if data.get("event") == "update" and data.get("channel") == "spot.trades":
+                result = data.get("result")
+                
+                if not result:
+                    logger.warning(f"⚠️ GATE.IO No result in trade update")
+                    return None
+                
+                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
+                if isinstance(result, dict):
+                    # Single trade as dict
+                    trade = result
+                elif isinstance(result, list) and len(result) > 0:
+                    # Array of trades
+                    trade = result[0]
+                else:
+                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
+                    return None
+                
+                trade_obj = {
+                    "exchange": "gateio",
+                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
+                    "trade_id": str(trade["id"]),
+                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                    "side": trade["side"],
+                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                return trade_obj
+            
+            # Subscription confirmation
+            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
+                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
+                return None
+            else:
+                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class HTXMessageParser(BaseMessageParser):
+    """
+    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
+    
+    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
+    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
+    """
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ DEBUG: Log message type und erste Bytes
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
+            else:
+                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
+            
+            # ✅ GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                # Check für GZIP Magic Bytes (0x1f 0x8b)
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    logger.info(f"✅ HTX GZIP detected, decompressing...")
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
+                else:
+                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
+                    raw_message = raw_message.decode('utf-8')
+            
+            # JSON Parse
+            data = json.loads(raw_message)
+            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
+            
+            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
+            if "ping" in data:
+                # Ping-Message erkannt, muss mit Pong beantwortet werden
+                # Wird vom WebSocket Handler verarbeitet
+                return {
+                    "type": "ping",
+                    "pong": data["ping"],
+                    "exchange": "htx"
+                }
+            
+            # ✅ Trade-Daten Parsing
+            if "tick" in data and "data" in data["tick"]:
+                trades = []
+                for trade in data["tick"]["data"]:
+                    trades.append({
+                        "exchange": "htx",
+                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
+                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                        "side": "buy" if trade["direction"] == "buy" else "sell",
+                        "timestamp": trade["ts"],
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    })
+                
+                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
+                return trades[0] if trades else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"HTX message parsing error: {e}")
+            return None
+
+class MEXCMessageParser(BaseMessageParser):
+    """
+    MEXC Message Parser mit Protocol Buffers Support
+    
+    MEXC sendet TWO Arten von Messages:
+    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
+    2. Binary: Protocol Buffers Trade-Daten
+    
+    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
+    Proto: https://github.com/mexcdevelop/websocket-proto
+    """
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
+                return await self._parse_protobuf_trade(raw_message, market)
+            else:
+                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
+                return await self._parse_json_message(raw_message, market)
+                
+        except Exception as e:
+            logger.error(f"MEXC message parsing error: {e}")
+            return None
+    
+    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON Messages (Subscription Responses)"""
+        try:
+            data = json.loads(raw_message)
+            
+            # Subscription Response
+            if "code" in data and "msg" in data:
+                if data["code"] == 0:
+                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
+                else:
+                    logger.error(f"❌ MEXC subscription error: {data}")
+                return None
+            
+            # Legacy JSON Trade Format (falls noch verwendet)
+            if "d" in data and "deals" in data.get("d", {}):
+                for trade in data["d"]["deals"]:
+                    return {
+                        "exchange": "mexc",
+                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
+                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
+                        "price": str(trade["p"]),
+                        "size": str(trade["v"]),
+                        "side": "buy" if trade.get("S") == 1 else "sell",
+                        "timestamp": int(trade["t"]),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"MEXC JSON parsing error: {e}")
+        return None
+    
+    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Protocol Buffers Trade-Daten
+        
+        Struktur (von MEXC Doku):
+        {
+          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
+          "publicdeals": {
+            "dealsList": [{
+              "price": "93220.00",
+              "quantity": "0.04438243",
+              "tradetype": 2,  // 1=Buy, 2=Sell
+              "time": 1736409765051
+            }]
+          },
+          "symbol": "BTCUSDT",
+          "sendtime": 1736409765052
+        }
+        """
+        try:
+            # ✅ Einfacher Protobuf Wire Format Parser
+            # Format: Tag-Length-Value (TLV)
+            
+            symbol = None
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            i = 0
+            while i < len(raw_message):
+                # Read Tag (field number + wire type)
+                if i >= len(raw_message):
+                    break
+                    
+                tag = raw_message[i]
+                i += 1
+                
+                wire_type = tag & 0x07
+                field_num = tag >> 3
+                
+                # Wire Type 2: Length-delimited (strings, embedded messages)
+                if wire_type == 2:
+                    # Read length
+                    length = raw_message[i]
+                    i += 1
+                    
+                    # Read value
+                    value = raw_message[i:i+length]
+                    i += length
+                    
+                    # Decode basierend auf Field Position
+                    try:
+                        decoded = value.decode('utf-8', errors='ignore')
+                        
+                        # Channel (field 1) - enthält Symbol
+                        if field_num == 1 and '@' in decoded:
+                            parts = decoded.split('@')
+                            if len(parts) >= 5:
+                                symbol = parts[-1]  # BTCUSDT am Ende
+                        
+                        # Symbol field (field 3)
+                        elif field_num == 3:
+                            symbol = decoded
+                        
+                        # Embedded message (dealsList)
+                        elif b'\n' in value or b'\x12' in value:
+                            # Parse nested trade data
+                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
+                            
+                    except:
+                        pass
+                
+                # Wire Type 0: Varint (int, enum)
+                elif wire_type == 0:
+                    # Skip varint
+                    while i < len(raw_message) and (raw_message[i] & 0x80):
+                        i += 1
+                    i += 1
+                
+                else:
+                    # Skip unknown wire types
+                    i += 1
+            
+            # ✅ Build Trade Object
+            if symbol and price and quantity:
+                return {
+                    "exchange": "mexc",
+                    "symbol": normalize_to_unified(symbol, "mexc"),
+                    "trade_id": str(timestamp or datetime.now().timestamp()),
+                    "price": str(price),
+                    "size": str(quantity),
+                    "side": "buy" if tradetype == 1 else "sell",
+                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
+                    "market": market
+                }
+            
+            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"MEXC protobuf parsing error: {e}")
+            return None
+    
+    def _parse_deal_data(self, data: bytes) -> tuple:
+        """Parse nested dealsList data"""
+        try:
+            # Suche nach String-Patterns für price und quantity
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            # Simple pattern matching für Decimal strings
+            text = data.decode('utf-8', errors='ignore')
+            
+            # Price ist meist die erste Decimal-Zahl
+            import re
+            decimals = re.findall(r'\d+\.\d+', text)
+            if len(decimals) >= 2:
+                price = decimals[0]
+                quantity = decimals[1]
+            
+            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
+            if b'\x18\x01' in data:
+                tradetype = 1  # Buy
+            elif b'\x18\x02' in data:
+                tradetype = 2  # Sell
+            
+            # Timestamp - varint nach trade type
+            # Simplified: extract any large number
+            for i in range(len(data) - 8):
+                if data[i] == 0x20:  # Tag for timestamp
+                    # Try to read varint
+                    timestamp = 0
+                    shift = 0
+                    for j in range(i+1, min(i+10, len(data))):
+                        b = data[j]
+                        timestamp |= (b & 0x7F) << shift
+                        if not (b & 0x80):
+                            break
+                        shift += 7
+                    if timestamp > 1000000000000:  # Reasonable timestamp
+                        break
+            
+            return price, quantity, tradetype, timestamp
+            
+        except Exception as e:
+            logger.error(f"Deal data parsing error: {e}")
+            return None, None, None, None
+
+class OKXMessageParser(BaseMessageParser):
+    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
+            
+            # OKX Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "okx",
+                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BybitMessageParser(BaseMessageParser):
+    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
+            
+            # Bybit Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "bybit",
+                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
+                        "trade_id": trade["i"],
+                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["S"].lower(),  # Buy -> buy
+                        "timestamp": int(trade["T"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class CoinbaseMessageParser(BaseMessageParser):
+    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
+            
+            # Coinbase Trade Message Format
+            if "events" in data:
+                for event in data["events"]:
+                    if "trades" in event:
+                        for trade in event["trades"]:
+                            trade_obj = {
+                                "exchange": "coinbase",
+                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
+                                "trade_id": trade["trade_id"],
+                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                                "side": trade["side"],
+                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
+                                "market": market  # ✅ Von Parameter, nicht hardcoded!
+                            }
+                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                            return trade_obj
+            else:
+                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GenericMessageParser(BaseMessageParser):
+    """Fallback Parser für unbekannte Exchanges"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw_message)
+            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
+            return None  # Kein generisches Format möglich
+        except Exception as e:
+            logger.error(f"{self.exchange} message parsing error: {e}")
+        return None
+
+# Exchange-spezifische Parser Registry
+MESSAGE_PARSERS = {
+    "binance": BinanceMessageParser,
+    "bitget": BitgetMessageParser,
+    "gateio": GateIOMessageParser,
+    "bybit": BybitMessageParser,     # ✅ Bybit Parser
+    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
+    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
+    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
+    "okx": OKXMessageParser,          # ✅ OKX Parser
+}
+
+def get_ws_message_parser(exchange: str) -> BaseMessageParser:
+    """Hole Message Parser für Exchange"""
+    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
+    return parser_class(exchange)
+</file>
+
 <file path="monitor-system.sh">
 #!/usr/bin/env bash
 # =============================================================================
@@ -197563,582 +197325,6 @@ async def run_unified_aggregator():
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
-<file path="backend/websocket/ws_message_parsers.py">
-import json
-import gzip
-import logging
-from typing import Dict, Any, Optional, Union
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-
-class BaseMessageParser:
-    """Base Class für Exchange Message Parser"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Trade Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
-        """
-        raise NotImplementedError
-
-class BinanceMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm) - default: "spot"
-        """
-        try:
-            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
-            
-            # Binance Trade Message Format
-            if "e" in data and data["e"] == "trade":
-                trade = {
-                    "exchange": "binance",
-                    "symbol": data["s"],
-                    "trade_id": data["t"],
-                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
-                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
-                    "side": "buy" if data["m"] == False else "sell",
-                    "timestamp": data["T"],
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
-                return trade
-            else:
-                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BitgetMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
-            
-            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
-                # instId ist in "arg", nicht in "data"!
-                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
-                for trade in data.get("data", []):
-                    trade_obj = {
-                        "exchange": "bitget",
-                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GateIOMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
-            
-            # Check for trade update event
-            if data.get("event") == "update" and data.get("channel") == "spot.trades":
-                result = data.get("result")
-                
-                if not result:
-                    logger.warning(f"⚠️ GATE.IO No result in trade update")
-                    return None
-                
-                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
-                if isinstance(result, dict):
-                    # Single trade as dict
-                    trade = result
-                elif isinstance(result, list) and len(result) > 0:
-                    # Array of trades
-                    trade = result[0]
-                else:
-                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
-                    return None
-                
-                trade_obj = {
-                    "exchange": "gateio",
-                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
-                    "trade_id": str(trade["id"]),
-                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                    "side": trade["side"],
-                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                return trade_obj
-            
-            # Subscription confirmation
-            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
-                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
-                return None
-            else:
-                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class HTXMessageParser(BaseMessageParser):
-    """
-    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
-    
-    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
-    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
-    """
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ DEBUG: Log message type und erste Bytes
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
-            else:
-                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
-            
-            # ✅ GZIP Decompression wenn binäre Daten
-            if isinstance(raw_message, bytes):
-                # Check für GZIP Magic Bytes (0x1f 0x8b)
-                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
-                    logger.info(f"✅ HTX GZIP detected, decompressing...")
-                    decompressed = gzip.decompress(raw_message)
-                    raw_message = decompressed.decode('utf-8')
-                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
-                else:
-                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
-                    raw_message = raw_message.decode('utf-8')
-            
-            # JSON Parse
-            data = json.loads(raw_message)
-            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
-            
-            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
-            if "ping" in data:
-                # Ping-Message erkannt, muss mit Pong beantwortet werden
-                # Wird vom WebSocket Handler verarbeitet
-                return {
-                    "type": "ping",
-                    "pong": data["ping"],
-                    "exchange": "htx"
-                }
-            
-            # ✅ Trade-Daten Parsing
-            if "tick" in data and "data" in data["tick"]:
-                trades = []
-                for trade in data["tick"]["data"]:
-                    trades.append({
-                        "exchange": "htx",
-                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
-                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                        "side": "buy" if trade["direction"] == "buy" else "sell",
-                        "timestamp": trade["ts"],
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    })
-                
-                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
-                return trades[0] if trades else None
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"HTX message parsing error: {e}")
-            return None
-
-class MEXCMessageParser(BaseMessageParser):
-    """
-    MEXC Message Parser mit Protocol Buffers Support
-    
-    MEXC sendet TWO Arten von Messages:
-    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
-    2. Binary: Protocol Buffers Trade-Daten
-    
-    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
-    Proto: https://github.com/mexcdevelop/websocket-proto
-    """
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
-                return await self._parse_protobuf_trade(raw_message, market)
-            else:
-                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
-                return await self._parse_json_message(raw_message, market)
-                
-        except Exception as e:
-            logger.error(f"MEXC message parsing error: {e}")
-            return None
-    
-    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON Messages (Subscription Responses)"""
-        try:
-            data = json.loads(raw_message)
-            
-            # Subscription Response
-            if "code" in data and "msg" in data:
-                if data["code"] == 0:
-                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
-                else:
-                    logger.error(f"❌ MEXC subscription error: {data}")
-                return None
-            
-            # Legacy JSON Trade Format (falls noch verwendet)
-            if "d" in data and "deals" in data.get("d", {}):
-                for trade in data["d"]["deals"]:
-                    return {
-                        "exchange": "mexc",
-                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
-                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
-                        "price": str(trade["p"]),
-                        "size": str(trade["v"]),
-                        "side": "buy" if trade.get("S") == 1 else "sell",
-                        "timestamp": int(trade["t"]),
-                        "market": market
-                    }
-        except Exception as e:
-            logger.error(f"MEXC JSON parsing error: {e}")
-        return None
-    
-    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse Protocol Buffers Trade-Daten
-        
-        Struktur (von MEXC Doku):
-        {
-          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
-          "publicdeals": {
-            "dealsList": [{
-              "price": "93220.00",
-              "quantity": "0.04438243",
-              "tradetype": 2,  // 1=Buy, 2=Sell
-              "time": 1736409765051
-            }]
-          },
-          "symbol": "BTCUSDT",
-          "sendtime": 1736409765052
-        }
-        """
-        try:
-            # ✅ Einfacher Protobuf Wire Format Parser
-            # Format: Tag-Length-Value (TLV)
-            
-            symbol = None
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            i = 0
-            while i < len(raw_message):
-                # Read Tag (field number + wire type)
-                if i >= len(raw_message):
-                    break
-                    
-                tag = raw_message[i]
-                i += 1
-                
-                wire_type = tag & 0x07
-                field_num = tag >> 3
-                
-                # Wire Type 2: Length-delimited (strings, embedded messages)
-                if wire_type == 2:
-                    # Read length
-                    length = raw_message[i]
-                    i += 1
-                    
-                    # Read value
-                    value = raw_message[i:i+length]
-                    i += length
-                    
-                    # Decode basierend auf Field Position
-                    try:
-                        decoded = value.decode('utf-8', errors='ignore')
-                        
-                        # Channel (field 1) - enthält Symbol
-                        if field_num == 1 and '@' in decoded:
-                            parts = decoded.split('@')
-                            if len(parts) >= 5:
-                                symbol = parts[-1]  # BTCUSDT am Ende
-                        
-                        # Symbol field (field 3)
-                        elif field_num == 3:
-                            symbol = decoded
-                        
-                        # Embedded message (dealsList)
-                        elif b'\n' in value or b'\x12' in value:
-                            # Parse nested trade data
-                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
-                            
-                    except:
-                        pass
-                
-                # Wire Type 0: Varint (int, enum)
-                elif wire_type == 0:
-                    # Skip varint
-                    while i < len(raw_message) and (raw_message[i] & 0x80):
-                        i += 1
-                    i += 1
-                
-                else:
-                    # Skip unknown wire types
-                    i += 1
-            
-            # ✅ Build Trade Object
-            if symbol and price and quantity:
-                return {
-                    "exchange": "mexc",
-                    "symbol": normalize_to_unified(symbol, "mexc"),
-                    "trade_id": str(timestamp or datetime.now().timestamp()),
-                    "price": str(price),
-                    "size": str(quantity),
-                    "side": "buy" if tradetype == 1 else "sell",
-                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
-                    "market": market
-                }
-            
-            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"MEXC protobuf parsing error: {e}")
-            return None
-    
-    def _parse_deal_data(self, data: bytes) -> tuple:
-        """Parse nested dealsList data"""
-        try:
-            # Suche nach String-Patterns für price und quantity
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            # Simple pattern matching für Decimal strings
-            text = data.decode('utf-8', errors='ignore')
-            
-            # Price ist meist die erste Decimal-Zahl
-            import re
-            decimals = re.findall(r'\d+\.\d+', text)
-            if len(decimals) >= 2:
-                price = decimals[0]
-                quantity = decimals[1]
-            
-            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
-            if b'\x18\x01' in data:
-                tradetype = 1  # Buy
-            elif b'\x18\x02' in data:
-                tradetype = 2  # Sell
-            
-            # Timestamp - varint nach trade type
-            # Simplified: extract any large number
-            for i in range(len(data) - 8):
-                if data[i] == 0x20:  # Tag for timestamp
-                    # Try to read varint
-                    timestamp = 0
-                    shift = 0
-                    for j in range(i+1, min(i+10, len(data))):
-                        b = data[j]
-                        timestamp |= (b & 0x7F) << shift
-                        if not (b & 0x80):
-                            break
-                        shift += 7
-                    if timestamp > 1000000000000:  # Reasonable timestamp
-                        break
-            
-            return price, quantity, tradetype, timestamp
-            
-        except Exception as e:
-            logger.error(f"Deal data parsing error: {e}")
-            return None, None, None, None
-
-class OKXMessageParser(BaseMessageParser):
-    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
-            
-            # OKX Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "okx",
-                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BybitMessageParser(BaseMessageParser):
-    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
-            
-            # Bybit Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "bybit",
-                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
-                        "trade_id": trade["i"],
-                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["S"].lower(),  # Buy -> buy
-                        "timestamp": int(trade["T"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class CoinbaseMessageParser(BaseMessageParser):
-    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
-            
-            # Coinbase Trade Message Format
-            if "events" in data:
-                for event in data["events"]:
-                    if "trades" in event:
-                        for trade in event["trades"]:
-                            trade_obj = {
-                                "exchange": "coinbase",
-                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
-                                "trade_id": trade["trade_id"],
-                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                                "side": trade["side"],
-                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
-                                "market": market  # ✅ Von Parameter, nicht hardcoded!
-                            }
-                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                            return trade_obj
-            else:
-                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GenericMessageParser(BaseMessageParser):
-    """Fallback Parser für unbekannte Exchanges"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(raw_message)
-            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
-            return None  # Kein generisches Format möglich
-        except Exception as e:
-            logger.error(f"{self.exchange} message parsing error: {e}")
-        return None
-
-# Exchange-spezifische Parser Registry
-MESSAGE_PARSERS = {
-    "binance": BinanceMessageParser,
-    "bitget": BitgetMessageParser,
-    "gateio": GateIOMessageParser,
-    "bybit": BybitMessageParser,     # ✅ Bybit Parser
-    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
-    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
-    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
-    "okx": OKXMessageParser,          # ✅ OKX Parser
-}
-
-def get_ws_message_parser(exchange: str) -> BaseMessageParser:
-    """Hole Message Parser für Exchange"""
-    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
-    return parser_class(exchange)
 </file>
 
 <file path="backend/websocket/ws_manager.py">
