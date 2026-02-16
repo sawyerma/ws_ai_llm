@@ -73271,92 +73271,6 @@ const IndicatorsModal = ({ isOpen, onClose, onIndicatorSelect }: IndicatorsModal
 export default IndicatorsModal;
 </file>
 
-<file path="frontend/src/features/trading/components/MarketTrades.tsx">
-import React, { useState, useEffect } from "react";
-import { WebSocketService } from '../../../services/api/websocket';
-import { useFastSnapshot } from '../../../shared/state/laneStores';
-
-// Trade interface inline definiert (war in services/api/trading.ts)
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: string;
-  ts: number;
-}
-
-interface MarketTradesProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  maxLength?: number;
-}
-
-export const MarketTrades: React.FC<MarketTradesProps> = ({
-  symbol,
-  market,
-  exchange,
-  maxLength = 30,
-}) => {
-  // 🚀 LANE SYSTEM: Direct from FAST lane - no manual state needed
-  const tradesBatch = useFastSnapshot<any[]>(`trades:${symbol}:${exchange}`) || [];
-  
-  // Process batch into Trade objects
-  const trades = React.useMemo(() => {
-    return tradesBatch.flat().slice(0, maxLength).map(payload => ({
-      id: payload.data?.id || Date.now().toString(),
-      price: Number(payload.data?.price || 0),
-      size: Number(payload.data?.size || 0),
-      time: new Date(payload.data?.time || Date.now()).toLocaleTimeString(),
-      side: payload.data?.side || 'buy',
-      ts: payload.data?.time || Date.now(),
-    } as Trade));
-  }, [tradesBatch, maxLength]);
-
-  // WebSocket-Verbindung für spezifisches Symbol/Exchange aufbauen
-  useEffect(() => {
-    const wsService = WebSocketService.getInstance();
-    wsService.connect(symbol, market, exchange);
-
-    return () => {
-      wsService.disconnect();
-    };
-  }, [symbol, market, exchange]);
-
-  return (
-    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-bold text-lg text-text-primary">Market Trades</span>
-      </div>
-      <div className="overflow-y-auto max-h-80">
-        <table className="w-full text-xs">
-          <thead>
-            <tr>
-              <th align="left">Time</th>
-              <th align="right">Price</th>
-              <th align="right">Amount</th>
-              <th align="center">Side</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t, idx) => (
-              <tr key={idx} className="border-b border-border-color last:border-b-0">
-                <td className="py-1">{t.time}</td>
-                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
-                <td align="right">{t.size.toFixed(4)}</td>
-                <td align="center">{t.side}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
-      </div>
-    </div>
-  );
-};
-</file>
-
 <file path="frontend/src/features/trading/components/OptimizedOrderbook.tsx">
 import React, { useMemo, useCallback } from 'react';
 import { VirtualizedList } from '../../../shared/ui/virtualized-list';
@@ -73894,87 +73808,6 @@ const PriceDisplay = ({
 };
 
 export default PriceDisplay;
-</file>
-
-<file path="frontend/src/features/trading/components/SystemStatus.tsx">
-import React from 'react';
-import { useGlobalPerformance } from '../../../shared/hooks/useGlobalPerformance';
-import { useSystemStatus as useHealth } from '../hooks/useSystemStatus';
-
-const SystemStatus: React.FC = () => {
-  const { metrics, isBackendOnline, getAmpelStatus } = useGlobalPerformance();
-  const { health, loading } = useHealth();
-
-  // Get ampel status with proper thresholds
-  const ampelStatus = getAmpelStatus();
-  const backendStatus = isBackendOnline ? 'online' : 'offline';
-  
-  // Health status from new API
-  const healthStatus = health?.status || 'unknown';
-
-  // Helper function to get status class based on latency
-  const getStatusClass = (latency: number) => {
-    if (latency < 5) return 'text-[hsl(var(--status-success))]';
-    if (latency <= 39) return 'text-[hsl(var(--status-warning))]';
-    return 'text-[hsl(var(--status-error))]';
-  };
-
-  // Helper function to get ampel background class
-  const getAmpelClass = (status: string) => {
-    switch (status) {
-      case 'GRÜN': return 'bg-[hsl(var(--status-success))]';
-      case 'ORANGE': return 'bg-[hsl(var(--status-warning))]';
-      case 'ROT': return 'bg-[hsl(var(--status-error))]';
-      default: return 'bg-[hsl(var(--status-success))]';
-    }
-  };
-
-  return (
-    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
-      <div className="flex items-center gap-1">
-        {/* AMPEL-SYSTEM: Verwendet globale CSS-Variablen */}
-        <div className={`w-2 h-2 rounded-full ${getAmpelClass(ampelStatus.status)}`}></div>
-        <span className="text-[hsl(var(--status-success))] font-medium">System connection {backendStatus}</span>
-        
-        {/* ✅ NEU: Health Status */}
-        {!loading && health && (
-          <span className="text-muted-foreground ml-2">
-            | Health: <span className={healthStatus === 'healthy' ? 'text-[hsl(var(--status-success))]' : 'text-[hsl(var(--status-warning))]'}>
-              {healthStatus}
-            </span>
-          </span>
-        )}
-      </div>
-      
-      <div className="flex items-center gap-1">
-        <span className="text-muted-foreground">FastAPI =</span>
-        <span className={`font-medium w-12 text-right ${
-          backendStatus === 'online' ? getStatusClass(metrics.fastApiLatency) : 'text-muted-foreground'
-        }`}>
-          {backendStatus === 'online' ? `${metrics.fastApiLatency.toFixed(1)}ms` : 'N/A'}
-        </span>
-      </div>
-      
-      <div className="flex items-center gap-1">
-        <span className="text-muted-foreground">WS =</span>
-        <span className={`font-medium w-12 text-right ${
-          backendStatus === 'online' ? getStatusClass(metrics.websocketLatency) : 'text-muted-foreground'
-        }`}>
-          {backendStatus === 'online' ? `${metrics.websocketLatency.toFixed(1)}ms` : 'N/A'}
-        </span>
-      </div>
-      
-      <div className="flex items-center gap-1">
-        <span className="text-muted-foreground">GUI =</span>
-        <span className={`font-medium w-12 text-right ${getStatusClass(metrics.frontendLatency)}`}>
-          {metrics.frontendLatency.toFixed(1)}ms
-        </span>
-      </div>
-    </div>
-  );
-};
-
-export default SystemStatus;
 </file>
 
 <file path="frontend/src/features/trading/components/TimeButtons.tsx">
@@ -76870,29 +76703,6 @@ const AlertsPanel = React.forwardRef<HTMLDivElement, AlertsPanelProps>(
 AlertsPanel.displayName = "AlertsPanel"
 
 export { AlertsPanel, alertsPanelVariants, alertItemVariants }
-</file>
-
-<file path="frontend/src/shared/layout/AppLayout.tsx">
-import React from 'react';
-import { Outlet } from 'react-router-dom';
-import GlobalNav from './GlobalNav';
-import LatencyMonitorContainer from './LatencyMonitorContainer';
-
-export const AppLayout: React.FC = () => {
-  return (
-    <div className="min-h-screen bg-background text-foreground transition-colors">
-      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
-        <GlobalNav />
-        <main>
-          <Outlet />
-        </main>
-        
-        {/* 🚀 ENTERPRISE: Latency Monitor auf ALLEN Seiten - RECHTS UNTEN */}
-        <LatencyMonitorContainer />
-      </div>
-    </div>
-  );
-};
 </file>
 
 <file path="frontend/src/shared/layout/GlobalNav.tsx">
@@ -98468,162 +98278,109 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
-<file path="frontend/src/hooks/useLiveCandles.ts">
-// src/hooks/useLiveCandles.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+<file path="frontend/src/features/trading/components/MarketTrades.tsx">
+import React, { useState, useEffect } from "react";
+// import { WebSocketService } from '../../../services/api/websocket'; // REMOVED: Clean-Slate
+// import { useFastSnapshot } from '../../../shared/state/laneStores'; // REMOVED: Clean-Slate
+import { useLiveTrades } from '../../../hooks/useLiveTrades';
 
-export type LiveCandle = {
-  exchange: string;
+// Trade interface inline definiert (war in services/api/trading.ts)
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: string;
+  ts: number;
+}
+
+interface MarketTradesProps {
   symbol: string;
   market: string;
-  interval: string;
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
+  exchange: string;
+  maxLength?: number;
+}
+
+export const MarketTrades: React.FC<MarketTradesProps> = ({
+  symbol,
+  market,
+  exchange,
+  maxLength = 30,
+}) => {
+  // 🚀 NEW: Use WebSocketPool via Hook
+  const { trades: liveTrades } = useLiveTrades(exchange, symbol, market, maxLength);
+  
+  // Convert to Trade interface format
+  const trades = React.useMemo(() => {
+    return liveTrades.map((t, idx) => ({
+      id: `${t.ts || Date.now()}-${idx}`,
+      price: t.price,
+      size: t.size,
+      time: t.ts ? new Date(t.ts).toLocaleTimeString() : new Date().toLocaleTimeString(),
+      side: t.side || 'buy',
+      ts: t.ts || Date.now(),
+    } as Trade));
+  }, [liveTrades]);
+
+  return (
+    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-bold text-lg text-text-primary">Market Trades</span>
+      </div>
+      <div className="overflow-y-auto max-h-80">
+        <table className="w-full text-xs">
+          <thead>
+            <tr>
+              <th align="left">Time</th>
+              <th align="right">Price</th>
+              <th align="right">Amount</th>
+              <th align="center">Side</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((t, idx) => (
+              <tr key={idx} className="border-b border-border-color last:border-b-0">
+                <td className="py-1">{t.time}</td>
+                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
+                <td align="right">{t.size.toFixed(4)}</td>
+                <td align="center">{t.side}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="frontend/src/features/trading/components/SystemStatus.tsx">
+import React from 'react';
+// import { useGlobalPerformance } from '../../../shared/hooks/useGlobalPerformance'; // REMOVED: Clean-Slate
+// import { useSystemStatus as useHealth } from '../hooks/useSystemStatus'; // REMOVED: Hook doesn't exist
+
+const SystemStatus: React.FC = () => {
+  // Simplified: Just show a basic status indicator
+  const backendStatus = 'online'; // TODO: Add real health check later
+  const healthStatus = 'unknown';
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
+      <div className="flex items-center gap-1">
+        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
+        <span className="text-[hsl(var(--status-success))] font-medium">
+          System {backendStatus}
+        </span>
+        <span className="text-muted-foreground ml-2">
+          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
+        </span>
+      </div>
+    </div>
+  );
 };
 
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = Number.parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStart(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useLiveCandles(exchange: string, symbol: string, market = "spot", interval = "1s", maxCandles = 500) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
-
-  const lastRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    setCandles([]);
-    lastRef.current = null;
-  }, [key]);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market || "spot", setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market || "spot", (msg: WsMsg) => {
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const t = toNum(m.t);
-        const cndl: LiveCandle = {
-          exchange: msg.exchange!,
-          symbol: msg.symbol!,
-          market: msg.market || market,
-          interval: (m.interval as string) || interval,
-          t: t || 0,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        if (!cndl.t) return;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [cndl];
-
-          if (cndl.t === last.t) {
-            const next = prev.slice(0, -1).concat(cndl);
-            return next;
-          }
-          if (cndl.t > last.t) {
-            const next = prev.concat(cndl);
-            if (next.length <= maxCandles) return next;
-            return next.slice(next.length - maxCandles);
-          }
-          return prev;
-        });
-
-        return;
-      }
-
-      if (msg.type !== "trade") return;
-
-      const m: any = msg;
-      const price = toNum(m.price);
-      const size = toNum(m.size);
-      if (!price) return;
-
-      const nowMs = Date.now();
-      const t0 = bucketStart(nowMs, sec);
-
-      const cur = lastRef.current;
-      if (!cur || cur.t !== t0) {
-        const fresh: LiveCandle = {
-          exchange,
-          symbol,
-          market,
-          interval,
-          t: t0,
-          o: price,
-          h: price,
-          l: price,
-          c: price,
-          v: size || 0,
-        };
-        lastRef.current = fresh;
-
-        setCandles((prev) => {
-          const next = prev.concat(fresh);
-          if (next.length <= maxCandles) return next;
-          return next.slice(next.length - maxCandles);
-        });
-        return;
-      }
-
-      const upd: LiveCandle = {
-        ...cur,
-        h: Math.max(cur.h, price),
-        l: Math.min(cur.l, price),
-        c: price,
-        v: cur.v + (size || 0),
-      };
-      lastRef.current = upd;
-
-      setCandles((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last) return [upd];
-        if (last.t !== upd.t) return prev.concat(upd);
-        return prev.slice(0, -1).concat(upd);
-      });
-    });
-
-    return () => {
-      offMsg();
-      offStatus();
-    };
-  }, [exchange, symbol, market, interval, sec, maxCandles]);
-
-  return { status, candles };
-}
+export default SystemStatus;
 </file>
 
 <file path="frontend/src/hooks/useLiveTrades.ts">
@@ -99440,208 +99197,6 @@ export class WhalesAPI extends BaseAPI {
 }
 </file>
 
-<file path="frontend/src/services/ws/WebSocketPool.ts">
-// src/services/ws/WebSocketPool.ts
-export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
-
-export type WsMsg =
-  | { type: "trade"; exchange: string; symbol: string; market?: string; price?: number | string; size?: number | string; side?: string; ts?: number | string; [k: string]: any }
-  | { type: "candle"; exchange: string; symbol: string; market?: string; interval?: string; t?: number | string; o?: number | string; h?: number | string; l?: number | string; c?: number | string; v?: number | string; [k: string]: any }
-  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
-
-type Listener = (msg: WsMsg) => void;
-type StatusListener = (status: WsStatus) => void;
-
-type ConnKey = string; // `${exchange}:${symbol}:${market}`
-type Conn = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  url: string;
-  ws: WebSocket | null;
-  status: WsStatus;
-
-  listeners: Set<Listener>;
-  statusListeners: Set<StatusListener>;
-
-  refCount: number;
-  reconnectAttempt: number;
-  reconnectTimer: number | null;
-  manuallyClosed: boolean;
-};
-
-function mkKey(exchange: string, symbol: string, market: string): ConnKey {
-  return `${exchange}:${symbol}:${market}`;
-}
-
-function wsUrlFor(exchange: string, symbol: string, market: string) {
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
-}
-
-function safeJsonParse(s: string): any | null {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-export class WebSocketPool {
-  private static _instance: WebSocketPool | null = null;
-  static get instance(): WebSocketPool {
-    if (!this._instance) this._instance = new WebSocketPool();
-    return this._instance;
-  }
-
-  private conns = new Map<ConnKey, Conn>();
-
-  acquire(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    let c = this.conns.get(key);
-    if (!c) {
-      c = {
-        exchange,
-        symbol,
-        market,
-        url: wsUrlFor(exchange, symbol, market),
-        ws: null,
-        status: "INIT",
-        listeners: new Set(),
-        statusListeners: new Set(),
-        refCount: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        manuallyClosed: false,
-      };
-      this.conns.set(key, c);
-    }
-    c.refCount += 1;
-    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
-      this.open(c);
-    }
-    return key;
-  }
-
-  release(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    const c = this.conns.get(key);
-    if (!c) return;
-
-    c.refCount = Math.max(0, c.refCount - 1);
-    if (c.refCount === 0) {
-      this.close(c);
-      this.conns.delete(key);
-    }
-  }
-
-  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
-    const key = this.acquire(exchange, symbol, market);
-    const c = this.conns.get(key)!;
-    c.listeners.add(cb);
-    return () => {
-      c.listeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
-    const key = this.acquire(exchange, symbol, market);
-    const c = this.conns.get(key)!;
-    c.statusListeners.add(cb);
-    cb(c.status);
-    return () => {
-      c.statusListeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  getStatus(exchange: string, symbol: string, market: string) {
-    const key = mkKey(exchange, symbol, market);
-    return this.conns.get(key)?.status ?? "INIT";
-  }
-
-  private setStatus(c: Conn, st: WsStatus) {
-    c.status = st;
-    for (const fn of c.statusListeners) fn(st);
-  }
-
-  private open(c: Conn) {
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    c.manuallyClosed = false;
-    this.setStatus(c, "CONNECTING");
-
-    const ws = new WebSocket(c.url);
-    c.ws = ws;
-
-    ws.onopen = () => {
-      c.reconnectAttempt = 0;
-      this.setStatus(c, "OPEN");
-    };
-
-    ws.onclose = () => {
-      c.ws = null;
-      this.setStatus(c, "CLOSED");
-      if (!c.manuallyClosed && c.refCount > 0) {
-        this.scheduleReconnect(c);
-      }
-    };
-
-    ws.onerror = () => {
-      this.setStatus(c, "ERROR");
-    };
-
-    ws.onmessage = (ev) => {
-      const obj = safeJsonParse(ev.data);
-      if (!obj) return;
-      const msg: WsMsg = obj;
-
-      if (!msg.exchange) msg.exchange = c.exchange;
-      if (!msg.symbol) msg.symbol = c.symbol;
-      if (!msg.market) msg.market = c.market;
-
-      for (const fn of c.listeners) fn(msg);
-    };
-  }
-
-  private scheduleReconnect(c: Conn) {
-    const attempt = c.reconnectAttempt + 1;
-    c.reconnectAttempt = attempt;
-
-    const base = 500 * Math.pow(2, attempt - 1);
-    const delay = clamp(base, 500, 10_000);
-
-    c.reconnectTimer = window.setTimeout(() => {
-      c.reconnectTimer = null;
-      if (c.refCount > 0 && !c.manuallyClosed) {
-        this.open(c);
-      }
-    }, delay);
-  }
-
-  private close(c: Conn) {
-    c.manuallyClosed = true;
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-    try {
-      c.ws?.close();
-    } catch {}
-    c.ws = null;
-    this.setStatus(c, "CLOSED");
-  }
-}
-</file>
-
 <file path="frontend/src/services/config.ts">
 /**
  * Config Service - Dynamic Exchange & Market-Type Configuration
@@ -100121,6 +99676,29 @@ export function clearCache(): void {
   cache.clear();
   console.log('[SymbolsAPI] Cache cleared');
 }
+</file>
+
+<file path="frontend/src/shared/layout/AppLayout.tsx">
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+import GlobalNav from './GlobalNav';
+// import LatencyMonitorContainer from './LatencyMonitorContainer'; // REMOVED: Clean-Slate
+
+export const AppLayout: React.FC = () => {
+  return (
+    <div className="min-h-screen bg-background text-foreground transition-colors">
+      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
+        <GlobalNav />
+        <main>
+          <Outlet />
+        </main>
+        
+        {/* 🚀 ENTERPRISE: Latency Monitor auf ALLEN Seiten - RECHTS UNTEN */}
+        {/* <LatencyMonitorContainer /> */} {/* REMOVED: Clean-Slate */}
+      </div>
+    </div>
+  );
+};
 </file>
 
 <file path="frontend/src/main.tsx">
@@ -183744,6 +183322,177 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="frontend/src/hooks/useLiveCandles.ts">
+// src/hooks/useLiveCandles.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number; // bucket start (seconds)
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = Number.parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useLiveCandles(
+  exchange: string,
+  symbol: string,
+  market = "spot",
+  interval = "1s",
+  maxCandles = 500
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
+
+  const lastRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    setCandles([]);
+    lastRef.current = null;
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market || "spot", setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market || "spot", (msg: WsMsg) => {
+      // 1) Server-side candle messages (authoritative if present)
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const t = toNum(m.t);
+
+        const cndl: LiveCandle = {
+          exchange: msg.exchange!,
+          symbol: msg.symbol!,
+          market: msg.market || market,
+          interval: (m.interval as string) || interval,
+          t: t || 0,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        if (!cndl.t) return;
+
+        // IMPORTANT: keep fallback state aligned with server candles
+        lastRef.current = cndl;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [cndl];
+
+          if (cndl.t === last.t) {
+            return prev.slice(0, -1).concat(cndl);
+          }
+          if (cndl.t > last.t) {
+            const next = prev.concat(cndl);
+            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+          }
+          // older candle -> ignore
+          return prev;
+        });
+
+        return;
+      }
+
+      // 2) Trade fallback -> build candles locally (only if no candle stream or as gap-filler)
+      if (msg.type !== "trade") return;
+
+      const m: any = msg;
+      const price = toNum(m.price);
+      const size = toNum(m.size);
+      if (!price) return;
+
+      // Use trade timestamp if available (reduces drift and bucket jitter)
+      const tsRaw = toNum(m.ts);
+      const tsMs = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : Date.now();
+      const t0 = bucketStartFromMs(tsMs, sec);
+
+      const cur = lastRef.current;
+
+      if (!cur || cur.t !== t0) {
+        const fresh: LiveCandle = {
+          exchange,
+          symbol,
+          market,
+          interval,
+          t: t0,
+          o: price,
+          h: price,
+          l: price,
+          c: price,
+          v: size || 0,
+        };
+        lastRef.current = fresh;
+
+        setCandles((prev) => {
+          const next = prev.concat(fresh);
+          return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+        });
+        return;
+      }
+
+      const upd: LiveCandle = {
+        ...cur,
+        h: Math.max(cur.h, price),
+        l: Math.min(cur.l, price),
+        c: price,
+        v: cur.v + (size || 0),
+      };
+      lastRef.current = upd;
+
+      setCandles((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last) return [upd];
+        if (last.t !== upd.t) return prev.concat(upd);
+        return prev.slice(0, -1).concat(upd);
+      });
+    });
+
+    return () => {
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, interval, sec, maxCandles]);
+
+  return { status, candles };
+}
+</file>
+
 <file path="frontend/src/pages/BTCUSDTMonitor.tsx">
 import React, { useMemo } from "react";
 import { useLiveTrades } from "../hooks/useLiveTrades";
@@ -184403,6 +184152,246 @@ export type WhaleTransaction = z.infer<typeof WhaleTransactionSchema>;
 export type WhaleStatistics = z.infer<typeof WhaleStatisticsSchema>;
 export type BackfillTask = z.infer<typeof BackfillTaskSchema>;
 export type Health = z.infer<typeof HealthSchema>;
+</file>
+
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+// src/services/ws/WebSocketPool.ts
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+
+export type WsMsg =
+  | {
+      type: "trade";
+      exchange: string;
+      symbol: string;
+      market?: string;
+      price?: number | string;
+      size?: number | string;
+      side?: string;
+      ts?: number | string;
+      [k: string]: any;
+    }
+  | {
+      type: "candle";
+      exchange: string;
+      symbol: string;
+      market?: string;
+      interval?: string;
+      t?: number | string;
+      o?: number | string;
+      h?: number | string;
+      l?: number | string;
+      c?: number | string;
+      v?: number | string;
+      [k: string]: any;
+    }
+  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
+
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (status: WsStatus) => void;
+
+type ConnKey = string; // `${exchange}:${symbol}:${market}`
+type Conn = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+  ws: WebSocket | null;
+  status: WsStatus;
+
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
+
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
+
+function mkKey(exchange: string, symbol: string, market: string): ConnKey {
+  return `${exchange}:${symbol}:${market}`;
+}
+
+// SAME-ORIGIN WS: ws(s)://{current-host}/ws/...
+function wsUrlFor(exchange: string, symbol: string, market: string) {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(
+    symbol
+  )}/${encodeURIComponent(market)}`;
+}
+
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _instance: WebSocketPool | null = null;
+  static get instance(): WebSocketPool {
+    if (!this._instance) this._instance = new WebSocketPool();
+    return this._instance;
+  }
+
+  private conns = new Map<ConnKey, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+    if (!c) {
+      c = {
+        exchange,
+        symbol,
+        market,
+        url: wsUrlFor(exchange, symbol, market),
+        ws: null,
+        status: "INIT",
+        listeners: new Set(),
+        statusListeners: new Set(),
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+    }
+    c.refCount += 1;
+
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount === 0) {
+      this.close(c);
+      this.conns.delete(key);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  getStatus(exchange: string, symbol: string, market: string) {
+    const key = mkKey(exchange, symbol, market);
+    return this.conns.get(key)?.status ?? "INIT";
+  }
+
+  private setStatus(c: Conn, st: WsStatus) {
+    c.status = st;
+    for (const fn of c.statusListeners) fn(st);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    // Avoid duplicate open if already connecting/open
+    if (c.ws && (c.status === "CONNECTING" || c.status === "OPEN")) return;
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed && c.refCount > 0) {
+        this.scheduleReconnect(c);
+      }
+    };
+
+    // IMPORTANT: ensure reconnect even if browser does not emit close reliably after error
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+      try {
+        ws.close();
+      } catch {
+        // If close fails, still schedule reconnect
+        if (!c.manuallyClosed && c.refCount > 0) this.scheduleReconnect(c);
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      const obj = safeJsonParse(ev.data);
+      if (!obj) return;
+
+      const msg: WsMsg = obj;
+
+      if (!msg.exchange) msg.exchange = c.exchange;
+      if (!msg.symbol) msg.symbol = c.symbol;
+      if (!msg.market) msg.market = c.market;
+
+      for (const fn of c.listeners) fn(msg);
+    };
+  }
+
+  private scheduleReconnect(c: Conn) {
+    const attempt = c.reconnectAttempt + 1;
+    c.reconnectAttempt = attempt;
+
+    const base = 500 * Math.pow(2, attempt - 1);
+    const delay = clamp(base, 500, 10_000);
+
+    c.reconnectTimer = window.setTimeout(() => {
+      c.reconnectTimer = null;
+      if (c.refCount > 0 && !c.manuallyClosed) {
+        this.open(c);
+      }
+    }, delay);
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+    try {
+      c.ws?.close();
+    } catch {}
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+}
 </file>
 
 <file path="frontend/src/App.tsx">
@@ -197652,6 +197641,427 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                if not trade_data:
+                    return  # Keine Trade-Daten in Message
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
+                from backend.database.redis import unified_rs_service
+                
+                # Nutze rs_ Lane System für Redis Operations
+                success = await unified_rs_service.add_trade(
+                    exchange, symbol, trade_data, market
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                
+                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
+                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
+                await self.broadcast_to_frontend(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    message_type="trade_data",
+                    data=trade_data
+                )
+                
+                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
+</file>
+
 <file path="backend/websocket/ws_message_parsers.py">
 import json
 import gzip
@@ -198226,427 +198636,6 @@ def get_ws_message_parser(exchange: str) -> BaseMessageParser:
     """Hole Message Parser für Exchange"""
     parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
     return parser_class(exchange)
-</file>
-
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
-                await self.broadcast_to_frontend(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    message_type="trade_data",
-                    data=trade_data
-                )
-                
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
 </file>
 
 <file path="start-system.sh">
