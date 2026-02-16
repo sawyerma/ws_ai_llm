@@ -403,35 +403,21 @@ frontend/
       TradingContext.tsx
     features/
       ai/
-        hooks/
-          useAIEngine.ts
         index.ts
       api/
         components/
           APIMain.tsx
-        hooks/
-          index.ts
-          useAPIKeys.ts
-          useAPISettings.ts
         types/
           api.ts
           providers.ts
       database/
-        hooks/
-          useHistoricalData.ts
         types/
           database.ts
       enterprise/
-        hooks/
-          useEnterprise.ts
         index.ts
       quantum/
         components/
           QuantumScreener.tsx
-        hooks/
-          useQuantumClock.ts
-          useQuantumData.ts
-          useQuantumNL.ts
         types/
           quantum.ts
         index.ts
@@ -451,20 +437,6 @@ frontend/
           TimeButtons.tsx
           TradingTabs.tsx
           TradingTerminal.tsx
-        hooks/
-          .gitkeep
-          README.md
-          useApiData.ts
-          useChartData.ts
-          useChartView.ts
-          useExchangeStatus.ts
-          useExchangeSupport.ts
-          useHybridData.ts
-          useMarketData.ts
-          useMarketTrades.ts
-          useOrderBook.ts
-          useSymbols.ts
-          useSystemStatus.ts
         types/
           api-responses.ts
           api.ts
@@ -472,28 +444,26 @@ frontend/
           trading.ts
         index.ts
       whales/
-        hooks/
-          useWhaleWebSocket.ts
         index.ts
     hooks/
       use-debounce.ts
       use-theme.ts
       useEvent.ts
+      useLiveCandles.ts
+      useLiveTrades.ts
     lib/
       chartLazyLoader.ts
       directDOMUpdater.ts
       logger.ts
       metrics.ts
-      rafScheduler.ts
       react-query.ts
-      RingBuffer.ts
       ultraFastParsing.ts
-      ultraLowLatencyWebSocket.ts
       utils.ts
       zod-transforms.ts
     pages/
       APIPage.tsx
       BotPage.tsx
+      BTCUSDTMonitor.tsx
       DatabasePage.tsx
       index.ts
       LogsPage.tsx
@@ -517,48 +487,20 @@ frontend/
         symbols.ts
         trading.ts
         user-settings.ts
-        websocket.ts
         whales.ts
-      storage/
-        favorites.ts
-        localStorage.ts
-        settings.ts
-      websocket/
-        WebSocketCache.ts
-        WebSocketEventRouter.ts
+      ws/
+        WebSocketPool.ts
       config.ts
-      performanceMetrics.ts
-      UrlManager.ts
     shared/
       api/
         trading.ts
-      config/
-        domainLanes.ts
       error/
         ErrorBoundary.tsx
-      events/
-        bridges/
-          laneBridge.ts
-        bootstrap.ts
-        EventBus.ts
-        EventRouter.ts
-      hooks/
-        useGlobalPerformance.ts
       layout/
         AlertsPanel.tsx
         AppLayout.tsx
         GlobalNav.tsx
-        GlobalPerformanceMonitor.tsx
-        LatencyIndicatorMini.tsx
-        LatencyMonitorContainer.tsx
-        LatencyMonitorModal.tsx
-        MonitoringTabs.tsx
-        ProcessMonitorTab.tsx
-        ProcessRAMBar.tsx
-        TierLatencyCard.tsx
-        TierPerformanceTab.tsx
       state/
-        laneStores.ts
         SettingsProvider.tsx
       ui/
         alert.tsx
@@ -574,9 +516,6 @@ frontend/
         theme-provider.tsx
         theme-toggle.tsx
         virtualized-list.tsx
-    workers/
-      marketDataProcessor.worker.ts
-      websocket-shared-worker.ts
     App.tsx
     index.css
     main.tsx
@@ -603,6 +542,7 @@ readme/
   000_clickhouse_build.md
   000_coin_mapper_build.md
   000_exchange_heal.md
+  000_frontend_build_1.md
   000_graceful_start_system_build.md
   000_hardcoded_change.md
   000_healty_build.md
@@ -41800,6 +41740,216 @@ async def handle_symbols_websocket(websocket: WebSocket, exchange: str):
         logger.info(f"Symbols WebSocket closed: {client_id} -> {exchange}")
 </file>
 
+<file path="backend/websocket/ws_unified.py">
+"""
+✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT - Delegiert zu ws_manager für echte WebSockets
+Ersetzt die SIMULATION mit ECHTER WebSocket-Delegation an ws_manager.py
+"""
+
+import logging
+from datetime import datetime
+from typing import Dict, Optional
+
+from .ws_manager import ws_manager
+
+logger = logging.getLogger("universal-websocket-service")
+
+class UniversalWsService:
+    """
+    ✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT
+    
+    Service Layer für alle Exchange WebSocket-Verbindungen:
+    - Delegiert alle technischen WebSocket-Operationen an ws_manager
+    - ws_manager: Echte WebSocket-Verbindungen zu Exchanges
+    - ws_lanes: State Management & Health Tracking
+    - ws_registry: Lane Registry & System Health
+    
+    KEINE SIMULATION MEHR - NUR ECHTE EXCHANGE-VERBINDUNGEN!
+    """
+    
+    def __init__(self):
+        self.active_lanes: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
+        self.running = False
+        
+    async def start(self):
+        """Startet den Universal WebSocket Service"""
+        if self.running:
+            logger.info("Universal WebSocket Service already running")
+            return
+            
+        logger.info("🚀 Starting Universal WebSocket Service (REAL WebSockets)")
+        self.running = True
+        logger.info("✅ Universal WebSocket Service started")
+    
+    async def start_exchange_websocket(self, exchange: str, symbol: str, market_type: str) -> str:
+        """
+        Startet WebSocket für eine Exchange/Symbol Kombination
+        ✅ DELEGIERT AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
+        
+        Args:
+            exchange: Exchange Name (binance, gateio, etc.)
+            symbol: Trading Symbol (BTCUSDT, ETHUSDT, etc.)
+            market_type: Market Type (spot, usdtm)
+        
+        Returns:
+            lane_key: Eindeutiger Key für diese WebSocket Lane
+        """
+        lane_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if lane_key in self.active_lanes:
+            logger.info(f"WebSocket lane already active: {lane_key}")
+            return lane_key
+            
+        try:
+            # ✅ DELEGIERE AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
+            # ws_manager verbindet zu Exchange API und startet Message Loop
+            lane = await ws_manager.start_websocket_lane(
+                exchange=exchange,
+                symbol=symbol,
+                market=market_type
+            )
+            
+            # Speichere Referenz zur Lane
+            self.active_lanes[lane_key] = {
+                "exchange": exchange,
+                "symbol": symbol,  
+                "market_type": market_type,
+                "started_at": datetime.now(),
+                "lane": lane,  # ✅ ECHTE LANE REFERENZ!
+                "simulated": False  # ✅ KEINE SIMULATION MEHR!
+            }
+            
+            logger.info(f"✅ WebSocket lane started (REAL): {lane_key}")
+            return lane_key
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start WebSocket lane {lane_key}: {e}")
+            raise
+    
+    async def stop_exchange_websocket(self, exchange: str, symbol: str, market_type: str):
+        """Stoppt WebSocket für eine Exchange/Symbol Kombination"""
+        lane_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if lane_key not in self.active_lanes:
+            logger.warning(f"WebSocket lane not active: {lane_key}")
+            return
+            
+        try:
+            # ✅ DELEGIERE AN ws_manager ZUM STOPPEN
+            ws_manager.stop_websocket_lane(exchange, symbol, market_type)
+            
+            # Aus aktiven Lanes entfernen
+            del self.active_lanes[lane_key]
+            
+            logger.info(f"✅ WebSocket lane stopped: {lane_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to stop WebSocket lane {lane_key}: {e}")
+    
+    async def stop(self):
+        """Stoppt den Universal WebSocket Service und alle aktiven Lanes"""
+        if not self.running:
+            return
+            
+        logger.info("🛑 Stopping Universal WebSocket Service")
+        self.running = False
+        
+        # Alle aktiven Lanes stoppen
+        active_lanes_copy = list(self.active_lanes.keys())
+        for lane_key in active_lanes_copy:
+            exchange, symbol, market_type = lane_key.split(":")
+            await self.stop_exchange_websocket(exchange, symbol, market_type)
+                
+        logger.info("✅ Universal WebSocket Service stopped")
+    
+    def get_service_status(self) -> Dict:
+        """
+        Status des Universal WebSocket Service
+        ✅ ENTHÄLT ECHTEN ws_manager STATUS!
+        """
+        # ✅ HOLE ECHTEN ws_manager STATUS
+        ws_manager_status = ws_manager.get_all_status()
+        
+        return {
+            "service": "universal_ws_service",
+            "running": self.running,
+            "total_active_lanes": len(self.active_lanes),
+            "active_exchanges": list(set(info["exchange"] for info in self.active_lanes.values())),
+            "implementation": "delegated_to_ws_manager",  # ✅ ECHTE DELEGATION!
+            "ws_manager_status": ws_manager_status,  # ✅ ECHTER ws_manager STATUS!
+            "lanes": {
+                lane_key: {
+                    "exchange": info["exchange"],
+                    "symbol": info["symbol"],
+                    "market_type": info["market_type"],
+                    "started_at": info["started_at"].isoformat(),
+                    "simulated": False,  # ✅ KEINE SIMULATION MEHR!
+                    "lane_health": (
+                        info["lane"].get_health() 
+                        if "lane" in info and hasattr(info["lane"], "get_health") 
+                        else {}
+                    )
+                }
+                for lane_key, info in self.active_lanes.items()
+            }
+        }
+    
+    def get_exchange_lanes(self, exchange: str):
+        """Alle aktiven Lanes für eine Exchange"""
+        return [
+            {
+                "lane_key": lane_key,
+                "symbol": info["symbol"],
+                "market_type": info["market_type"],
+                "started_at": info["started_at"].isoformat()
+            }
+            for lane_key, info in self.active_lanes.items()
+            if info["exchange"] == exchange
+        ]
+    
+    def get_symbol_lanes(self, symbol: str):
+        """Alle aktiven Lanes für ein Symbol (über alle Exchanges)"""
+        return [
+            {
+                "lane_key": lane_key,
+                "exchange": info["exchange"],
+                "market_type": info["market_type"],
+                "started_at": info["started_at"].isoformat()
+            }
+            for lane_key, info in self.active_lanes.items()
+            if info["symbol"] == symbol
+        ]
+
+
+# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
+universal_ws_service = UniversalWsService()
+
+# ✅ SERVICE API - Einfache Funktionen für Collectors & main.py
+async def start_websocket_service():
+    """Startet den Universal WebSocket Service"""
+    await universal_ws_service.start()
+
+async def stop_websocket_service():
+    """Stoppt den Universal WebSocket Service"""
+    await universal_ws_service.stop()
+
+async def start_exchange_connection(exchange: str, symbol: str, market_type: str = "spot") -> str:
+    """Startet WebSocket Verbindung für Exchange - API für main.py & Collectors"""
+    return await universal_ws_service.start_exchange_websocket(exchange, symbol, market_type)
+
+async def stop_exchange_connection(exchange: str, symbol: str, market_type: str = "spot"):
+    """Stoppt WebSocket Verbindung für Exchange - API für main.py & Collectors"""
+    await universal_ws_service.stop_exchange_websocket(exchange, symbol, market_type)
+
+def get_service_status() -> Dict:
+    """Service Status - API für Health Checks"""
+    return universal_ws_service.get_service_status()
+
+def get_exchange_status(exchange: str):
+    """Exchange Status - API für Exchange Health"""
+    return universal_ws_service.get_exchange_lanes(exchange)
+</file>
+
 <file path="backend/whales/collectors/__init__.py">
 """
 Whale Collectors
@@ -69943,122 +70093,6 @@ export * from './constants';
 export * from './exchanges';
 </file>
 
-<file path="frontend/src/features/ai/hooks/useAIEngine.ts">
-import { useState, useEffect, useCallback } from 'react';
-import { AIEngineAPI } from '../../../services/api/ai';
-
-// 🤖 AI STRATEGY RECOMMENDATION HOOK
-export const useAIStrategyRecommendation = (symbol: string, exchange = 'binance') => {
-  const [recommendation, setRecommendation] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const getRecommendation = useCallback(async () => {
-    if (!symbol) return;
-    
-    try {
-      setLoading(true);
-      setError(null);
-      const response = await AIEngineAPI.getRecommendedStrategy(symbol, exchange);
-      setRecommendation(response as any);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, exchange]);
-
-  useEffect(() => {
-    getRecommendation();
-  }, [getRecommendation]);
-
-  return {
-    recommendation,
-    loading,
-    error,
-    refresh: getRecommendation
-  };
-};
-
-// 📊 CHART ANALYSIS HOOK
-export const useChartAnalysis = (symbol: string, exchange = 'binance', interval = '1h') => {
-  const [analysis, setAnalysis] = useState<any>(null);
-  const [patterns, setPatterns] = useState<any[]>([]);
-  const [indicators, setIndicators] = useState<any>({});
-  const [loading, setLoading] = useState(false);
-
-  const fetchAnalysis = useCallback(async () => {
-    if (!symbol) return;
-
-    try {
-      setLoading(true);
-      const [analysisRes, patternsRes, indicatorsRes] = await Promise.all([
-        AIEngineAPI.analyzeChart(symbol, exchange, interval),
-        AIEngineAPI.getPatternRecognition(symbol, exchange),
-        AIEngineAPI.getTechnicalIndicators(symbol, exchange)
-      ]);
-
-      setAnalysis(analysisRes as any);
-      setPatterns((patternsRes as any).patterns || []);
-      setIndicators((indicatorsRes as any).indicators || {});
-    } catch (err) {
-      console.error('Chart analysis failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, exchange, interval]);
-
-  useEffect(() => {
-    fetchAnalysis();
-    const interval_id = setInterval(fetchAnalysis, 60000); // 1 minute
-    return () => clearInterval(interval_id);
-  }, [fetchAnalysis]);
-
-  return {
-    analysis,
-    patterns,
-    indicators,
-    loading,
-    refresh: fetchAnalysis
-  };
-};
-
-// 📈 AI PERFORMANCE TRACKING HOOK
-export const useAIPerformance = (timeframe = '7d') => {
-  const [performance, setPerformance] = useState<any>(null);
-  const [accuracy, setAccuracy] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchPerformance = async () => {
-      try {
-        const [perfRes, accRes] = await Promise.all([
-          AIEngineAPI.getAIPerformance(timeframe),
-          AIEngineAPI.getModelAccuracy()
-        ]);
-        
-        setPerformance(perfRes as any);
-        setAccuracy(accRes as any);
-      } catch (err) {
-        console.error('AI performance fetch failed:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPerformance();
-    const interval = setInterval(fetchPerformance, 300000); // 5 minutes
-    return () => clearInterval(interval);
-  }, [timeframe]);
-
-  return {
-    performance,
-    accuracy,
-    loading
-  };
-};
-</file>
-
 <file path="frontend/src/features/ai/index.ts">
 // AI Feature exports
 export * from './hooks/useAIEngine';
@@ -70828,739 +70862,6 @@ export const APIMain: React.FC = () => {
 };
 </file>
 
-<file path="frontend/src/features/api/hooks/index.ts">
-export { useAPIKeys } from './useAPIKeys';
-export { useAPISettings } from './useAPISettings';
-</file>
-
-<file path="frontend/src/features/api/hooks/useAPIKeys.ts">
-import { useState, useEffect } from 'react';
-import { 
-  GlobalAPIState, 
-  APIProvider, 
-  APIConfig, 
-  RateLimit
-} from '../types/api';
-import { API_PROVIDERS } from '../types/providers';
-import { buildAPIPayload, buildValidationPayload, calculateResetTime } from '../types/api';
-
-// API Base URL
-const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || (import.meta as any)?.env?.VITE_BACKEND_URL || '/api';
-
-// Initialize rate limits with proper typing
-const initializeRateLimits = () => {
-  return {
-    binance: API_PROVIDERS.binance?.rateLimit || {
-      current: 0,
-      limit: 1200,
-      windowMs: 60000,
-      resetTime: null,
-      warningThreshold: 960,
-      criticalThreshold: 1140
-    },
-    bitget: API_PROVIDERS.bitget?.rateLimit || {
-      current: 0,
-      limit: 600,
-      windowMs: 60000,
-      resetTime: null,
-      warningThreshold: 480,
-      criticalThreshold: 570
-    },
-    etherscan: API_PROVIDERS.etherscan?.rateLimit || {
-      current: 0,
-      limit: 100000,
-      windowMs: 86400000,
-      resetTime: null,
-      warningThreshold: 80000,
-      criticalThreshold: 95000
-    },
-    bscscan: API_PROVIDERS.bscscan?.rateLimit || {
-      current: 0,
-      limit: 100000,
-      windowMs: 86400000,
-      resetTime: null,
-      warningThreshold: 80000,
-      criticalThreshold: 95000
-    },
-    polygonscan: API_PROVIDERS.polygonscan?.rateLimit || {
-      current: 0,
-      limit: 100000,
-      windowMs: 86400000,
-      resetTime: null,
-      warningThreshold: 80000,
-      criticalThreshold: 95000
-    },
-    coingecko: API_PROVIDERS.coingecko?.rateLimit || {
-      current: 0,
-      limit: 10000,
-      windowMs: 2628000000,
-      resetTime: null,
-      warningThreshold: 8000,
-      criticalThreshold: 9500
-    }
-  };
-};
-
-export const useAPIKeys = () => {
-  const [state, setState] = useState<GlobalAPIState>({
-    providers: {},
-    totalRequests: 0,
-    successRate: 0,
-    globalRateLimit: initializeRateLimits(),
-    isLoading: false,
-    lastSync: null,
-    error: null
-  });
-
-  // Initialize providers with default configs
-  useEffect(() => {
-    const initialProviders: Record<string, APIProvider> = {};
-    
-    Object.entries(API_PROVIDERS).forEach(([key, provider]) => {
-      initialProviders[key] = {
-        id: provider.id,
-        name: provider.name,
-        category: provider.category,
-        description: provider.description,
-        url: provider.url,
-        registerUrl: provider.registerUrl,
-        documentation: provider.documentation,
-        icon: provider.icon,
-        rateLimit: { ...provider.rateLimit },
-        status: {
-          connected: false,
-          lastChecked: null,
-          responseTime: null,
-          errorMessage: null,
-          uptime: 0
-        },
-        config: {
-          apiKey: '',
-          secret: '',
-          passphrase: '',
-          timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
-          retryAttempts: 3,
-          enableRateLimit: true,
-          priority: 'medium'
-        }
-      };
-    });
-
-    setState(prev => ({ ...prev, providers: initialProviders }));
-    loadAPIKeys();
-  }, []);
-
-  const updateProvidersWithSavedKeys = (data: any) => {
-    setState(prev => {
-      const updated: Record<string, APIProvider> = {};
-      
-      Object.keys(prev.providers).forEach(providerId => {
-        const provider = prev.providers[providerId];
-        if (!provider) return;
-
-        updated[providerId] = { ...provider };
-        
-        const savedKey = data.keys?.[providerId];
-        if (savedKey) {
-          if (typeof savedKey === 'object') {
-            // Exchange API (Binance/Bitget)
-            updated[providerId].config = {
-              ...provider.config,
-              apiKey: savedKey.key || '',
-              secret: savedKey.secret || '',
-              passphrase: savedKey.passphrase || ''
-            };
-          } else {
-            // Blockchain API (simple string key)
-            updated[providerId].config = {
-              ...provider.config,
-              apiKey: savedKey || ''
-            };
-          }
-          updated[providerId].status = {
-            ...provider.status,
-            connected: !!savedKey,
-            lastChecked: data.lastChecked?.[providerId] ? new Date(data.lastChecked[providerId]) : null
-          };
-        }
-      });
-
-      return { ...prev, providers: updated };
-    });
-  };
-
-  const loadAPIKeys = async () => {
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
-    try {
-      const response = await fetch(`${API_BASE}/api/settings/api-keys`, {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        updateProvidersWithSavedKeys(data);
-      }
-    } catch (error: any) {
-      setState(prev => ({ ...prev, error: error.message }));
-    } finally {
-      setState(prev => ({ ...prev, isLoading: false }));
-    }
-  };
-
-  const saveAPIKey = async (providerId: string, config: Partial<APIConfig>): Promise<boolean> => {
-    const provider = state.providers[providerId];
-    if (!provider) return false;
-
-    const updatedConfig = { ...provider.config, ...config };
-    const updatedProvider: APIProvider = {
-      ...provider,
-      config: updatedConfig,
-      status: { ...provider.status, connected: false }
-    };
-    
-    setState(prev => ({
-      ...prev,
-      providers: {
-        ...prev.providers,
-        [providerId]: updatedProvider
-      }
-    }));
-
-    try {
-      const payload = buildAPIPayload(providerId, updatedConfig);
-      const response = await fetch(`${API_BASE}/api/settings/api-keys`, {
-        method: 'POST',
-        headers: { 
-          'Accept': 'application/json',
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ keys: { [providerId]: payload } })
-      });
-
-      if (response.ok) {
-        // Validate the key after saving
-        await validateAPIKey(providerId);
-        return true;
-      }
-      return false;
-    } catch (error: any) {
-      const currentProvider = state.providers[providerId];
-      if (currentProvider) {
-        setState(prev => ({
-          ...prev,
-          providers: {
-            ...prev.providers,
-            [providerId]: {
-              ...currentProvider,
-              status: { 
-                ...currentProvider.status, 
-                errorMessage: error.message 
-              }
-            }
-          }
-        }));
-      }
-      return false;
-    }
-  };
-
-  const validateAPIKey = async (providerId: string): Promise<boolean> => {
-    const provider = state.providers[providerId];
-    if (!provider || !provider.config.apiKey) return false;
-
-    const startTime = Date.now();
-    
-    // Update status to show validation in progress
-    setState(prev => ({
-      ...prev,
-      providers: {
-        ...prev.providers,
-        [providerId]: {
-          ...provider,
-          status: { ...provider.status, errorMessage: null }
-        }
-      }
-    }));
-
-    try {
-      const payload = buildValidationPayload(providerId, provider.config);
-      const response = await fetch(`${API_BASE}/api/settings/validate-api-key`, {
-        method: 'POST',
-        headers: { 
-          'Accept': 'application/json',
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await response.json();
-      const responseTime = Date.now() - startTime;
-
-      const currentProvider = state.providers[providerId];
-      if (currentProvider) {
-        setState(prev => ({
-          ...prev,
-          providers: {
-            ...prev.providers,
-            [providerId]: {
-              ...currentProvider,
-              status: {
-                connected: data.valid,
-                lastChecked: new Date(),
-                responseTime,
-                errorMessage: data.valid ? null : data.error || 'Validation failed',
-                uptime: data.valid ? currentProvider.status.uptime + 1 : 0
-              }
-            }
-          },
-          lastSync: new Date()
-        }));
-      }
-
-      return data.valid;
-    } catch (error: any) {
-      const currentProvider = state.providers[providerId];
-      if (currentProvider) {
-        setState(prev => ({
-          ...prev,
-          providers: {
-            ...prev.providers,
-            [providerId]: {
-              ...currentProvider,
-              status: {
-                ...currentProvider.status,
-                connected: false,
-                errorMessage: error.message,
-                lastChecked: new Date()
-              }
-            }
-          }
-        }));
-      }
-      return false;
-    }
-  };
-
-  const updateRateLimit = (providerId: string, usage: number) => {
-    const validProviderIds = ['binance', 'bitget', 'etherscan', 'bscscan', 'polygonscan', 'coingecko'] as const;
-    type ValidProviderId = typeof validProviderIds[number];
-    
-    if (!validProviderIds.includes(providerId as ValidProviderId)) return;
-    
-    const typedProviderId = providerId as ValidProviderId;
-    const currentRateLimit = state.globalRateLimit[typedProviderId];
-    
-    setState(prev => ({
-      ...prev,
-      globalRateLimit: {
-        ...prev.globalRateLimit,
-        [typedProviderId]: {
-          ...currentRateLimit,
-          current: usage,
-          resetTime: calculateResetTime(currentRateLimit.windowMs)
-        }
-      }
-    }));
-  };
-
-  const getProvidersByCategory = (category: APIProvider['category']) => {
-    return Object.values(state.providers).filter(p => p.category === category);
-  };
-
-  const getConnectedProviders = () => {
-    return Object.values(state.providers).filter(p => p.status.connected);
-  };
-
-  const calculateSuccessRate = () => {
-    const providers = Object.values(state.providers);
-    const connected = providers.filter(p => p.status.connected).length;
-    return providers.length > 0 ? (connected / providers.length) * 100 : 0;
-  };
-
-  const refreshAllKeys = () => {
-    Object.keys(state.providers).forEach(providerId => {
-      const provider = state.providers[providerId];
-      if (provider?.config.apiKey) {
-        validateAPIKey(providerId);
-      }
-    });
-  };
-
-  return {
-    ...state,
-    successRate: calculateSuccessRate(),
-    loadAPIKeys,
-    saveAPIKey,
-    validateAPIKey,
-    updateRateLimit,
-    getProvidersByCategory,
-    getConnectedProviders,
-    refreshAllKeys
-  };
-};
-</file>
-
-<file path="frontend/src/features/api/hooks/useAPISettings.ts">
-import { useState, useEffect } from 'react';
-
-// Feature-specific API configuration (profi_gui.md: Feature-basierte Architektur)
-const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || `http://localhost:${(import.meta as any)?.env?.VITE_BACKEND_PORT || '8100'}`;
-
-// Provider types based on gui_api.md specification - DYNAMISCH aus Backend geladen
-const BASE_PROVIDERS = [
-  // ✅ Bestehende Provider
-  'binance', 'bitget', 'etherscan', 'bscscan', 'polygonscan', 'coingecko', 'telegram',
-  // 🆕 NEUE Infrastructure Provider
-  'redis', 'clickhouse', 'backend', 'ollama',
-  // 🆕 NEUE System Configuration Provider
-  'timeouts', 'retries', 'performance'
-] as const;
-
-type BaseProvider = typeof BASE_PROVIDERS[number];
-type DynamicProvider = string;
-type Provider = BaseProvider | DynamicProvider;
-
-// Dynamische Provider-Liste (wird vom Backend geladen)
-let PROVIDERS: readonly Provider[] = BASE_PROVIDERS;
-
-interface ProviderURLs {
-  urls: Record<string, string>;
-}
-
-interface ProviderWebSockets {
-  websockets: Record<string, string>;
-}
-
-interface ProviderRateLimits {
-  rateLimits: Record<string, number | string>;
-}
-
-interface ProviderUsage {
-  usage: Record<string, number | string>;
-  limits: Record<string, number | string>;
-  percentage: number;
-}
-
-interface ProviderOrderBookLimits {
-  spot: {
-    validLimits: number[];
-    maxLimit: number;
-    defaultLimit: number;
-  };
-  futures: {
-    validLimits: number[];
-    maxLimit: number;
-    defaultLimit: number;
-  };
-}
-
-interface APISettings {
-  urls: Record<Provider, ProviderURLs>;
-  websockets: Record<Provider, ProviderWebSockets>;
-  rateLimits: Record<Provider, ProviderRateLimits>;
-  usage: Record<Provider, ProviderUsage>;
-  orderBookLimits: Record<Provider, ProviderOrderBookLimits>;
-  isLoading: boolean;
-  error: string | null;
-}
-
-/**
- * Exchange-spezifische OrderBook Limit-Konfiguration
- * Frontend-zu-Backend intelligente Validierung nach Backend-Schema
- */
-export const EXCHANGE_ORDERBOOK_LIMITS: Record<string, ProviderOrderBookLimits> = {
-  binance: {
-    spot: {
-      validLimits: [5, 10, 20, 50, 100, 500, 1000, 5000],
-      maxLimit: 5000,
-      defaultLimit: 100
-    },
-    futures: {
-      validLimits: [5, 10, 20, 50, 100, 500, 1000],
-      maxLimit: 1000,
-      defaultLimit: 100
-    }
-  },
-  bitget: {
-    spot: {
-      validLimits: [1, 5, 15, 50, 100],
-      maxLimit: 100,
-      defaultLimit: 50
-    },
-    futures: {
-      validLimits: [1, 5, 15, 50, 100],
-      maxLimit: 100,
-      defaultLimit: 50
-    }
-  }
-} as const;
-
-/**
- * Validiert und mappt Limit-Wert auf erlaubte Exchange-Werte
- * Frontend kann beliebige Werte senden, werden intelligent gemappt
- */
-export function validateOrderBookLimit(
-  exchange: string,
-  market: 'spot' | 'futures',
-  requestedLimit: number
-): { validatedLimit: number; info: string } {
-  // Fallback für unbekannte Exchanges
-  if (!EXCHANGE_ORDERBOOK_LIMITS[exchange]) {
-    return {
-      validatedLimit: Math.min(requestedLimit, 100),
-      info: `Unknown exchange ${exchange}, using max 100`
-    };
-  }
-
-  const marketConfig = EXCHANGE_ORDERBOOK_LIMITS[exchange][market];
-
-  // Finde nächsthöheren erlaubten Wert
-  for (const validLimit of marketConfig.validLimits) {
-    if (requestedLimit <= validLimit) {
-      return {
-        validatedLimit: validLimit,
-        info: requestedLimit === validLimit
-          ? `✅ ${exchange} ${market} limit ${validLimit} (exact match)`
-          : `⬆️ ${exchange} ${market} limit ${requestedLimit}→${validLimit} (mapped up)`
-      };
-    }
-  }
-
-  // Falls größer als Maximum, verwende Maximum
-  return {
-    validatedLimit: marketConfig.maxLimit,
-    info: `📊 ${exchange} ${market} limit ${requestedLimit}→${marketConfig.maxLimit} (max limit)`
-  };
-}
-
-/**
- * Gibt verfügbare OrderBook Limit-Optionen für Exchange/Market zurück
- * Für Frontend Dropdown/Select-Komponenten
- */
-export function getAvailableOrderBookLimits(exchange: string, market: 'spot' | 'futures'): number[] {
-  if (!EXCHANGE_ORDERBOOK_LIMITS[exchange]) {
-    return [5, 10, 20, 50, 100]; // Fallback
-  }
-
-  return EXCHANGE_ORDERBOOK_LIMITS[exchange][market].validLimits;
-}
-
-/**
- * Gibt Standard-Limit für Exchange/Market zurück
- */
-export function getDefaultOrderBookLimit(exchange: string, market: 'spot' | 'futures'): number {
-  if (!EXCHANGE_ORDERBOOK_LIMITS[exchange]) {
-    return 20; // Fallback
-  }
-
-  return EXCHANGE_ORDERBOOK_LIMITS[exchange][market].defaultLimit;
-}
-
-export const useAPISettings = () => {
-  const [state, setState] = useState<APISettings>({
-    urls: {} as Record<Provider, ProviderURLs>,
-    websockets: {} as Record<Provider, ProviderWebSockets>,
-    rateLimits: {} as Record<Provider, ProviderRateLimits>,
-    usage: {} as Record<Provider, ProviderUsage>,
-    orderBookLimits: {} as Record<Provider, ProviderOrderBookLimits>,
-    isLoading: false,
-    error: null
-  });
-
-  // Load all settings for all providers
-  const loadSettings = async () => {
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
-    
-    try {
-      // 1. Lade dynamische Environment-Liste vom Backend
-      try {
-        const envResponse = await fetch(`${API_BASE}/api/settings/environment/names`);
-        if (envResponse.ok) {
-          const envData = await envResponse.json();
-          const dynamicEnvironments = envData.environments || [];
-          // Kombiniere BASE_PROVIDERS mit dynamischen Environments
-          PROVIDERS = [...BASE_PROVIDERS, ...dynamicEnvironments] as readonly Provider[];
-        }
-      } catch (error) {
-        console.warn('Failed to load dynamic environments, using base providers:', error);
-        PROVIDERS = BASE_PROVIDERS;
-      }
-
-      const urls: Record<Provider, ProviderURLs> = {} as Record<Provider, ProviderURLs>;
-      const websockets: Record<Provider, ProviderWebSockets> = {} as Record<Provider, ProviderWebSockets>;
-      const rateLimits: Record<Provider, ProviderRateLimits> = {} as Record<Provider, ProviderRateLimits>;
-      const usage: Record<Provider, ProviderUsage> = {} as Record<Provider, ProviderUsage>;
-
-      // 2. Load data for each provider (including dynamic ones)
-      await Promise.all(PROVIDERS.map(async (provider) => {
-        try {
-          // Load URLs
-          const urlsResponse = await fetch(`${API_BASE}/api/settings/urls/${provider}`);
-          if (urlsResponse.ok) {
-            urls[provider] = await urlsResponse.json();
-          }
-
-          // Load WebSockets (only for providers that have them)
-          if (provider === 'binance' || provider === 'bitget') {
-            const websocketsResponse = await fetch(`${API_BASE}/api/settings/websockets/${provider}`);
-            if (websocketsResponse.ok) {
-              websockets[provider] = await websocketsResponse.json();
-            }
-          }
-
-          // Load Rate Limits
-          const rateLimitsResponse = await fetch(`${API_BASE}/api/settings/rate-limits/${provider}`);
-          if (rateLimitsResponse.ok) {
-            rateLimits[provider] = await rateLimitsResponse.json();
-          }
-
-          // Load Usage
-          const usageResponse = await fetch(`${API_BASE}/api/settings/usage/${provider}`);
-          if (usageResponse.ok) {
-            usage[provider] = await usageResponse.json();
-          }
-        } catch (error) {
-          console.warn(`Failed to load settings for ${provider}:`, error);
-        }
-      }));
-
-      setState(prev => ({
-        ...prev,
-        urls,
-        websockets,
-        rateLimits,
-        usage,
-        orderBookLimits: EXCHANGE_ORDERBOOK_LIMITS as Record<Provider, ProviderOrderBookLimits>,
-        isLoading: false
-      }));
-    } catch (error: any) {
-      setState(prev => ({
-        ...prev,
-        error: error.message,
-        isLoading: false
-      }));
-    }
-  };
-
-  // Update URLs for a specific provider
-  const updateUrls = async (provider: Provider, urls: Record<string, string>): Promise<boolean> => {
-    try {
-      const response = await fetch(`${API_BASE}/api/settings/urls/${provider}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls })
-      });
-      
-      if (response.ok) {
-        // Update local state
-        setState(prev => ({
-          ...prev,
-          urls: {
-            ...prev.urls,
-            [provider]: { urls }
-          }
-        }));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error(`Failed to update URLs for ${provider}:`, error);
-      return false;
-    }
-  };
-
-  // Update WebSockets for a specific provider
-  const updateWebSockets = async (provider: Provider, websockets: Record<string, string>): Promise<boolean> => {
-    try {
-      const response = await fetch(`${API_BASE}/api/settings/websockets/${provider}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ websockets })
-      });
-      
-      if (response.ok) {
-        // Update local state
-        setState(prev => ({
-          ...prev,
-          websockets: {
-            ...prev.websockets,
-            [provider]: { websockets }
-          }
-        }));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error(`Failed to update WebSockets for ${provider}:`, error);
-      return false;
-    }
-  };
-
-  // Update Rate Limits for a specific provider
-  const updateRateLimits = async (provider: Provider, rateLimits: Record<string, number | string>): Promise<boolean> => {
-    try {
-      const response = await fetch(`${API_BASE}/api/settings/rate-limits/${provider}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rateLimits })
-      });
-      
-      if (response.ok) {
-        // Update local state
-        setState(prev => ({
-          ...prev,
-          rateLimits: {
-            ...prev.rateLimits,
-            [provider]: { rateLimits }
-          }
-        }));
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error(`Failed to update rate limits for ${provider}:`, error);
-      return false;
-    }
-  };
-
-  // Save a single URL for a provider
-  const saveUrl = async (provider: Provider, type: string, url: string): Promise<boolean> => {
-    const currentUrls = state.urls[provider]?.urls || {};
-    return updateUrls(provider, { ...currentUrls, [type]: url });
-  };
-
-  // Save a single WebSocket URL for a provider
-  const saveWebSocket = async (provider: Provider, type: string, url: string): Promise<boolean> => {
-    const currentWebSockets = state.websockets[provider]?.websockets || {};
-    return updateWebSockets(provider, { ...currentWebSockets, [type]: url });
-  };
-
-  // Save a single rate limit for a provider
-  const saveRateLimit = async (provider: Provider, type: string, value: number | string): Promise<boolean> => {
-    const currentRateLimits = state.rateLimits[provider]?.rateLimits || {};
-    return updateRateLimits(provider, { ...currentRateLimits, [type]: value });
-  };
-
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
-  return {
-    ...state,
-    providers: PROVIDERS,
-    loadSettings,
-    updateUrls,
-    updateWebSockets,
-    updateRateLimits,
-    saveUrl,
-    saveWebSocket,
-    saveRateLimit
-  };
-};
-</file>
-
 <file path="frontend/src/features/api/types/api.ts">
 export interface APIProvider {
   id: string;
@@ -72044,249 +71345,6 @@ export const API_PROVIDERS: Record<string, Omit<APIProvider, 'status' | 'config'
 preloadProviderConfigs();
 </file>
 
-<file path="frontend/src/features/database/hooks/useHistoricalData.ts">
-/**
- * Database Feature Hook
- * Handles Historical/Live Data Collection + Status Check für alle 8 Exchanges
- */
-import { useState, useEffect } from 'react';
-import { DatabaseAPI } from '../../../services/api/database';
-import { getSettings, saveSettings, type CoinSetting } from '../../../shared/api/trading';
-import type { HistoricalConfig, LiveConfig, DatabaseOperationResult } from '../types/database';
-
-export const useHistoricalData = (exchange?: string, selectedMarket?: string) => {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  // 🆕 DATABASE STATUS INTEGRATION
-  const [databaseSettings, setDatabaseSettings] = useState<CoinSetting[]>([]);
-  const [settingsLoading, setSettingsLoading] = useState(false);
-
-  // 🆕 DATABASE SETTINGS LADEN - FIXED: Lädt ALLE Settings ohne Filter
-  const loadDatabaseSettings = async () => {
-    setSettingsLoading(true);
-    try {
-      // 🆕 FIX: Nicht "all" als Parameter senden, das gibt leeres Array zurück
-      const exchangeParam = (exchange && exchange !== 'all') ? exchange as any : undefined;
-      const settings = await getSettings(exchangeParam);
-      setDatabaseSettings(settings);
-      console.log(`[useHistoricalData] Loaded ${settings.length} database settings:`, settings);
-    } catch (err: any) {
-      console.error('[useHistoricalData] Failed to load database settings:', err);
-      setDatabaseSettings([]);
-    } finally {
-      setSettingsLoading(false);
-    }
-  };
-
-  // AUTO-LOAD Settings on mount and when exchange/market changes
-  useEffect(() => {
-    // FIXED: Immer Settings laden, auch wenn keine Parameter übergeben werden
-    loadDatabaseSettings();
-  }, [exchange, selectedMarket]);
-
-  // 🆕 STATUS CHECK FUNCTIONS
-  const isLiveEnabled = (symbol: string, market?: string, exchangeName?: string): boolean => {
-    return databaseSettings.some(setting => 
-      setting.symbol === symbol && 
-      setting.market === (market || selectedMarket || 'spot') &&
-      setting.exchange === (exchangeName || exchange) &&
-      setting.store_live === true
-    );
-  };
-
-  const isHistoricalEnabled = (symbol: string, market?: string, exchangeName?: string): boolean => {
-    return databaseSettings.some(setting => 
-      setting.symbol === symbol && 
-      setting.market === (market || selectedMarket || 'spot') &&
-      setting.exchange === (exchangeName || exchange) &&
-      setting.load_history === true
-    );
-  };
-
-  /**
-   * 🆕 COINSEETTING AUTO-CREATION - Das fehlende Stück!
-   * Nach erfolgreichem L/H Click automatisch CoinSetting erstellen
-   */
-  const createOrUpdateCoinSetting = async (
-    symbol: string, 
-    market: string, 
-    exchange: string, 
-    updates: Partial<CoinSetting>
-  ) => {
-    try {
-      // Bestehende Settings laden
-      const existingSettings = await getSettings();
-      
-      // Prüfen ob Setting bereits existiert
-      const existingIndex = existingSettings.findIndex(s => 
-        s.symbol === symbol && 
-        s.market === market &&
-        s.exchange === exchange
-      );
-      
-      if (existingIndex >= 0) {
-        // Update bestehend
-        const existingSetting = existingSettings[existingIndex];
-        existingSettings[existingIndex] = {
-          ...existingSetting,
-          ...updates
-        } as CoinSetting;
-        console.log(`[useHistoricalData] Updated existing setting for ${symbol}`);
-      } else {
-        // Neu erstellen
-        const newSetting: CoinSetting = {
-          symbol,
-          market,
-          exchange,
-          store_live: false,
-          load_history: false,
-          history_until: '2020-01-01',
-          favorite: false,
-          chart_resolution: '1m',
-          db_resolutions: [],
-          ...updates
-        } as CoinSetting;
-        existingSettings.push(newSetting);
-        console.log(`[useHistoricalData] Created new setting for ${symbol}`);
-      }
-      
-      // Settings speichern
-      await saveSettings(existingSettings);
-      console.log(`[useHistoricalData] Saved settings for ${symbol}`);
-      
-    } catch (err) {
-      console.error(`[useHistoricalData] Failed to create/update coin setting for ${symbol}:`, err);
-      throw err; // Re-throw so calling function can handle
-    }
-  };
-
-  /**
-   * Handle Live Toggle - Start/Stop Live Collection + Auto-Create CoinSetting
-   */
-  const handleLiveToggle = async (
-    symbol: string,
-    market: string,
-    exchange: string,
-    enabled: boolean
-  ): Promise<DatabaseOperationResult> => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const config: LiveConfig = { symbol, market };
-      
-      if (enabled) {
-        // 1. Backend Collection starten
-        await DatabaseAPI.startLiveCollection(exchange, config);
-        
-        // 2. 🆕 CoinSetting automatisch erstellen/updaten
-        await createOrUpdateCoinSetting(symbol, market, exchange, { store_live: true });
-        
-        // 3. Settings neu laden
-        await loadDatabaseSettings();
-        
-        return { success: true, message: `✅ Live enabled for ${symbol}` };
-      } else {
-        await DatabaseAPI.stopLiveCollection(exchange, config);
-        
-        // CoinSetting updaten
-        await createOrUpdateCoinSetting(symbol, market, exchange, { store_live: false });
-        
-        // Settings neu laden
-        await loadDatabaseSettings();
-        
-        return { success: true, message: `${exchange} live collection stopped` };
-      }
-    } catch (err: any) {
-      const errorMessage = err.message || `Network error ${enabled ? 'starting' : 'stopping'} ${exchange} live collection`;
-      setError(errorMessage);
-      return { success: false, error: errorMessage };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  /**
-   * Handle Historical Toggle - Start Historical Backfill + Auto-Create CoinSetting
-   */
-  const handleHistoricalToggle = async (
-    symbol: string,
-    market: string,
-    exchange: string,
-    enabled: boolean,
-    untilDate: string
-  ): Promise<DatabaseOperationResult> => {
-    if (!enabled) {
-      // CoinSetting updaten
-      await createOrUpdateCoinSetting(symbol, market, exchange, { load_history: false });
-      await loadDatabaseSettings();
-      return { success: true, message: 'Historical collection disabled' };
-    }
-
-    if (!untilDate) {
-      const errorMessage = 'Until date is required for historical backfill';
-      setError(errorMessage);
-      return { success: false, error: errorMessage };
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const config: HistoricalConfig = {
-        symbol,
-        market,
-        until_date: untilDate,
-        interval: '1m',
-        data_type: 'trades'
-      };
-
-      // 1. Backend Backfill starten
-      await DatabaseAPI.startHistoricalBackfill(exchange, config);
-      
-      // 2. 🆕 CoinSetting automatisch erstellen/updaten
-      await createOrUpdateCoinSetting(symbol, market, exchange, { 
-        load_history: true, 
-        history_until: untilDate 
-      });
-      
-      // 3. Settings neu laden
-      await loadDatabaseSettings();
-      
-      return { success: true, message: `✅ Historical enabled for ${symbol}` };
-    } catch (err: any) {
-      const errorMessage = err.message || `Network error starting ${exchange} historical backfill`;
-      setError(errorMessage);
-      return { success: false, error: errorMessage };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  /**
-   * Clear Error
-   */
-  const clearError = () => setError(null);
-
-  return {
-    // Original Functions
-    handleLiveToggle,
-    handleHistoricalToggle,
-    loading,
-    error,
-    clearError,
-    
-    // 🆕 DATABASE STATUS FUNCTIONS
-    databaseSettings,
-    settingsLoading,
-    loadDatabaseSettings,
-    isLiveEnabled,
-    isHistoricalEnabled
-  };
-};
-</file>
-
 <file path="frontend/src/features/database/types/database.ts">
 /**
  * Database Feature Types
@@ -72318,149 +71376,6 @@ export interface ExchangeStatus {
   collecting_live: boolean;
   historical_progress?: number;
 }
-</file>
-
-<file path="frontend/src/features/enterprise/hooks/useEnterprise.ts">
-import { useState, useEffect, useCallback } from 'react';
-import { EnterpriseAPI } from '../../../services/api/enterprise';
-
-// 🏢 ENTERPRISE MARKET DATA HOOK
-export const useEnterpriseMarketData = (exchange = 'binance', symbols?: string[]) => {
-  const [marketData, setMarketData] = useState<any>(null);
-  const [analytics, setAnalytics] = useState<any>(null);
-  const [institutionalFlow, setInstitutionalFlow] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchEnterpriseData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [marketRes, analyticsRes, flowRes] = await Promise.all([
-        EnterpriseAPI.getEnterpriseMarketData(exchange, symbols),
-        EnterpriseAPI.getAdvancedAnalytics('24h'),
-        EnterpriseAPI.getInstitutionalFlow(exchange)
-      ]);
-
-      setMarketData(marketRes as any);
-      setAnalytics(analyticsRes as any);
-      setInstitutionalFlow(flowRes as any);
-    } catch (err) {
-      console.error('Enterprise data fetch failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [exchange, symbols]);
-
-  useEffect(() => {
-    fetchEnterpriseData();
-    const interval = setInterval(fetchEnterpriseData, 60000); // 1 minute
-    return () => clearInterval(interval);
-  }, [fetchEnterpriseData]);
-
-  return {
-    marketData,
-    analytics,
-    institutionalFlow,
-    loading,
-    refresh: fetchEnterpriseData
-  };
-};
-
-// 📊 ADVANCED CHART HOOK
-export const useAdvancedCharts = (symbol: string, interval = '1h') => {
-  const [chartData, setChartData] = useState<any>(null);
-  const [volumeProfile, setVolumeProfile] = useState<any>(null);
-  const [marketStructure, setMarketStructure] = useState<any>(null);
-  const [multiTimeframe, setMultiTimeframe] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  const fetchChartData = useCallback(async () => {
-    if (!symbol) return;
-
-    try {
-      setLoading(true);
-      const [chartRes, volumeRes, structureRes, multiRes] = await Promise.all([
-        EnterpriseAPI.getAdvancedChartData(symbol, interval),
-        EnterpriseAPI.getVolumeProfileData(symbol),
-        EnterpriseAPI.getMarketStructureAnalysis(symbol),
-        EnterpriseAPI.getMultiTimeframeAnalysis(symbol, ['1h', '4h', '1d'])
-      ]);
-
-      setChartData(chartRes as any);
-      setVolumeProfile(volumeRes as any);
-      setMarketStructure(structureRes as any);
-      setMultiTimeframe(multiRes as any);
-    } catch (err) {
-      console.error('Advanced chart data fetch failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, interval]);
-
-  useEffect(() => {
-    fetchChartData();
-    const interval_id = setInterval(fetchChartData, 30000); // 30 seconds
-    return () => clearInterval(interval_id);
-  }, [fetchChartData]);
-
-  return {
-    chartData,
-    volumeProfile,
-    marketStructure,
-    multiTimeframe,
-    loading,
-    refresh: fetchChartData
-  };
-};
-
-// 🔧 ENTERPRISE DIAGNOSTICS HOOK
-export const useEnterpriseDiagnostics = () => {
-  const [diagnostics, setDiagnostics] = useState<any>(null);
-  const [openApiSchema, setOpenApiSchema] = useState<any>(null);
-  const [enterpriseConfig, setEnterpriseConfig] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchDiagnostics = useCallback(async () => {
-    try {
-      const [diagRes, schemaRes, configRes] = await Promise.all([
-        EnterpriseAPI.getSystemDiagnostics(),
-        EnterpriseAPI.getOpenAPISchema(),
-        EnterpriseAPI.getEnterpriseConfig()
-      ]);
-      
-      setDiagnostics(diagRes as any);
-      setOpenApiSchema(schemaRes as any);
-      setEnterpriseConfig(configRes as any);
-    } catch (err) {
-      console.error('Enterprise diagnostics fetch failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchDiagnostics();
-    const interval = setInterval(fetchDiagnostics, 300000); // 5 minutes
-    return () => clearInterval(interval);
-  }, [fetchDiagnostics]);
-
-  const updateEnterpriseConfig = useCallback(async (newConfig: Record<string, any>) => {
-    try {
-      await EnterpriseAPI.updateEnterpriseSettings(newConfig);
-      await fetchDiagnostics(); // Refresh data
-    } catch (err) {
-      console.error('Failed to update enterprise config:', err);
-    }
-  }, [fetchDiagnostics]);
-
-  return {
-    diagnostics,
-    openApiSchema,
-    enterpriseConfig,
-    loading,
-    refresh: fetchDiagnostics,
-    updateConfig: updateEnterpriseConfig
-  };
-};
 </file>
 
 <file path="frontend/src/features/enterprise/index.ts">
@@ -72965,213 +71880,6 @@ const QuantumScreener = () => {
 };
 
 export default QuantumScreener;
-</file>
-
-<file path="frontend/src/features/quantum/hooks/useQuantumClock.ts">
-import { useState, useEffect, useCallback } from 'react';
-
-export const useQuantumClock = (onRefresh: () => void) => {
-  const [clock, setClock] = useState('--:--:--');
-  const [refreshCountdown, setRefreshCountdown] = useState(30);
-
-  const formatTime = useCallback((date: Date) => {
-    return date.toLocaleTimeString('de-DE', { 
-      hour: '2-digit', 
-      minute: '2-digit', 
-      second: '2-digit' 
-    });
-  }, []);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date();
-      setClock(formatTime(now));
-      
-      setRefreshCountdown(prev => {
-        if (prev <= 1) {
-          onRefresh();
-          return 30;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [formatTime, onRefresh]);
-
-  return {
-    clock,
-    refreshCountdown
-  };
-};
-</file>
-
-<file path="frontend/src/features/quantum/hooks/useQuantumData.ts">
-import { useState, useCallback, useEffect } from 'react';
-import type { UniverseItem, QuantumKPIs, TierAnalysis, QuantumTier } from '../types/quantum';
-
-export const useQuantumData = (currentTier: QuantumTier) => {
-  const [universe, setUniverse] = useState<UniverseItem[]>(() => {
-    const baseSymbols = [
-      'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','TONUSDT','TRXUSDT',
-      'DOTUSDT','MATICUSDT','LINKUSDT','LTCUSDT','ATOMUSDT','XLMUSDT','NEARUSDT','APTUSDT','ARBUSDT','OPUSDT',
-      'FILUSDT','SUIUSDT','INJUSDT','AAVEUSDT','RUNEUSDT','EGLDUSDT','ALGOUSDT','ICPUSDT','FTMUSDT','IMXUSDT'
-    ];
-    
-    return baseSymbols.map((sym, i) => ({
-      symbol: sym,
-      score: Math.floor(Math.random() * 43 + 55),
-      tier: i < 10 ? 3 : i < 20 ? 2 : 1,
-      price: Math.random() * 70000 + 0.01
-    })).sort((a, b) => b.score - a.score);
-  });
-
-  const [kpis, setKpis] = useState<QuantumKPIs>({
-    signals: '—', winRate: '—', avgPnL: '—', latency: '—',
-    grid: '—', day: '—', pattern: '—', regime: '—',
-    f1: '—', f2: '—', var: '—', sharpe: '—'
-  });
-
-  const [tierAnalysis, setTierAnalysis] = useState<TierAnalysis>({
-    tier1: { whaleImpact: '—', toxicity: '—', flowDir: '—', volumeRatio: '—' },
-    tier2: { patternConf: '—', regime: '—', strategyFit: '—', marketPhase: '—' },
-    tier3: { tftConf: '—', nbeatsAcc: '—', riskScore: '—', posSize: '—', var: '—', cvar: '—' }
-  });
-
-  const updateKPIs = useCallback(() => {
-    const tier = currentTier;
-    const rnd = (a: number, b: number) => Math.random() * (b - a) + a;
-
-    setKpis({
-      signals: (tier === 1 ? rnd(300, 800) : tier === 2 ? rnd(80, 200) : rnd(10, 40)).toFixed(0),
-      winRate: (tier === 1 ? rnd(48, 58) : tier === 2 ? rnd(52, 64) : rnd(55, 68)).toFixed(1) + '%',
-      avgPnL: (tier === 1 ? rnd(0.2, 0.9) : tier === 2 ? rnd(0.5, 1.6) : rnd(0.8, 2.2)).toFixed(2) + '%',
-      latency: (tier === 1 ? rnd(1, 5) : tier === 2 ? rnd(5, 30) : rnd(30, 120)).toFixed(0) + ' ms',
-      grid: Math.floor(rnd(60, 95)).toString(),
-      day: Math.floor(rnd(55, 90)).toString(),
-      pattern: Math.floor(rnd(65, 88)).toString(),
-      regime: ['Choppy', 'Trend', 'Range', 'Breakout'][Math.floor(rnd(0, 4))] as string,
-      f1: `${(rnd(-3.5, 3.5) > 0 ? '+' : '')}${rnd(-3.5, 3.5).toFixed(1)}% / ${(rnd(-8, 8) > 0 ? '+' : '')}${rnd(-8, 8).toFixed(1)}%`,
-      f2: `${(rnd(-10, 10) > 0 ? '+' : '')}${rnd(-10, 10).toFixed(1)}% / ${(rnd(-25, 25) > 0 ? '+' : '')}${rnd(-25, 25).toFixed(1)}%`,
-      var: `${rnd(1.0, 4.0).toFixed(2)}% / ${rnd(1.5, 6.0).toFixed(2)}%`,
-      sharpe: rnd(0.4, 2.2).toFixed(2)
-    });
-  }, [currentTier]);
-
-  const updateTierSpecificData = useCallback(() => {
-    const rnd = (a: number, b: number) => Math.random() * (b - a) + a;
-
-    setTierAnalysis({
-      tier1: {
-        whaleImpact: rnd(65, 95).toFixed(1) + '%',
-        toxicity: rnd(5, 35).toFixed(1) + '%',
-        flowDir: rnd(0, 100) > 50 ? 'BULLISH' : 'BEARISH',
-        volumeRatio: rnd(0.8, 3.2).toFixed(2)
-      },
-      tier2: {
-        patternConf: rnd(75, 95).toFixed(1) + '%',
-        regime: ['RANGE', 'TREND', 'BREAKOUT'][Math.floor(rnd(0, 3))] as string,
-        strategyFit: rnd(80, 98).toFixed(1) + '%',
-        marketPhase: ['ACCUMULATION', 'DISTRIBUTION', 'MARKUP', 'MARKDOWN'][Math.floor(rnd(0, 4))] as string
-      },
-      tier3: {
-        tftConf: rnd(88, 97).toFixed(1) + '%',
-        nbeatsAcc: rnd(85, 95).toFixed(1) + '%',
-        riskScore: rnd(0.1, 0.4).toFixed(2),
-        posSize: rnd(2, 15).toFixed(1) + '%',
-        var: rnd(1.0, 4.0).toFixed(2) + '%',
-        cvar: rnd(1.5, 6.0).toFixed(2) + '%'
-      }
-    });
-  }, []);
-
-  const updateAllData = useCallback(() => {
-    setUniverse(prev => prev.map(coin => ({
-      ...coin,
-      score: Math.max(55, Math.min(98, coin.score + Math.floor(Math.random() * 7 - 3)))
-    })));
-    updateKPIs();
-    updateTierSpecificData();
-  }, [updateKPIs, updateTierSpecificData]);
-
-  useEffect(() => {
-    updateTierSpecificData();
-    updateKPIs();
-  }, [currentTier, updateTierSpecificData, updateKPIs]);
-
-  return {
-    universe,
-    kpis,
-    tierAnalysis,
-    updateAllData,
-    updateKPIs,
-    updateTierSpecificData
-  };
-};
-</file>
-
-<file path="frontend/src/features/quantum/hooks/useQuantumNL.ts">
-import { useState, useCallback, useEffect } from 'react';
-import type { NLModelType, UniverseItem, QuantumTier, TierAnalysis, QuantumKPIs } from '../types/quantum';
-
-export const useQuantumNL = (
-  selectedSymbol: string,
-  currentTier: QuantumTier,
-  universe: UniverseItem[],
-  tierAnalysis: TierAnalysis,
-  kpis: QuantumKPIs
-) => {
-  const [nlText, setNlText] = useState('—');
-  const [nlPrompt, setNlPrompt] = useState('');
-  const [nlModel, setNlModel] = useState<NLModelType>('local');
-
-  const updateNLText = useCallback(() => {
-    const coin = universe.find(u => u.symbol === selectedSymbol) || { score: 0 };
-    
-    if (currentTier === 1) {
-      setNlText(`🚀 TIER 1 QUANTUM SCREENER - ${selectedSymbol}
-Score: ${coin.score}/100 | Confidence: ${Math.min(coin.score + Math.random() * 10 - 5, 100).toFixed(1)}%
-Whale Impact: ${tierAnalysis.tier1.whaleImpact} | Toxicity: ${tierAnalysis.tier1.toxicity}
-Flow Direction: ${tierAnalysis.tier1.flowDir} | Volume Ratio: ${tierAnalysis.tier1.volumeRatio}
-Recommendation: ${coin.score >= 70 ? 'Promote to Tier 2' : 'Continue monitoring'}`);
-    } else if (currentTier === 2) {
-      setNlText(`🎯 TIER 2 STRATEGY ENGINE - ${selectedSymbol}
-Pattern Confidence: ${tierAnalysis.tier2.patternConf} | Regime: ${tierAnalysis.tier2.regime as string}
-Strategy Fit: ${tierAnalysis.tier2.strategyFit} | Market Phase: ${tierAnalysis.tier2.marketPhase as string}
-Grid: ${kpis.grid}/100 | Day Trading: ${kpis.day}/100 | Pattern: ${kpis.pattern}/100
-Recommendation: ${coin.score >= 85 ? 'Promote to Tier 3' : 'Continue in Tier 2'}`);
-    } else {
-      setNlText(`🔮 TIER 3 DEEP FORECAST - ${selectedSymbol}
-TFT Confidence: ${tierAnalysis.tier3.tftConf} | N-BEATS Accuracy: ${tierAnalysis.tier3.nbeatsAcc}
-Risk Score: ${tierAnalysis.tier3.riskScore} | Position Size: ${tierAnalysis.tier3.posSize}
-VaR: ${tierAnalysis.tier3.var} | CVaR: ${tierAnalysis.tier3.cvar}
-Recommendation: ${Math.random() > 0.3 ? 'EXECUTE TRADE' : 'HOLD'}`);
-    }
-  }, [universe, selectedSymbol, currentTier, tierAnalysis, kpis]);
-
-  const handleNLSend = useCallback(() => {
-    if (!nlPrompt.trim()) return;
-    
-    const timestamp = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const prev = nlText === '—' ? '' : nlText + '\n';
-    setNlText(prev + `> ${timestamp} · User: ${nlPrompt}\n< ${nlModel}: Antwort erzeugt (Demo).`);
-    setNlPrompt('');
-  }, [nlPrompt, nlText, nlModel]);
-
-  useEffect(() => {
-    updateNLText();
-  }, [updateNLText]);
-
-  return {
-    nlText,
-    nlPrompt,
-    nlModel,
-    setNlPrompt,
-    setNlModel,
-    handleNLSend,
-    updateNLText
-  };
-};
 </file>
 
 <file path="frontend/src/features/quantum/types/quantum.ts">
@@ -75754,1670 +74462,6 @@ const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
 export default TradingTerminal;
 </file>
 
-<file path="frontend/src/features/trading/hooks/.gitkeep">
-# This file keeps the hooks directory in git
-
-This directory is reserved for future custom hooks.
-</file>
-
-<file path="frontend/src/features/trading/hooks/README.md">
-# Trading Hooks - HYBRID Architecture (REST + Events)
-
-**Version:** 3.0 - Event-Driven Hybrid Hooks  
-**Status:** ✅ Production Ready  
-**Datum:** 13.10.2025
-
----
-
-## 🎯 ARCHITEKTUR-ÜBERSICHT
-
-### Vorher (v2.x): Polling-basiert ❌
-
-```typescript
-// ALT: Nur REST-Polling (ineffizient!)
-const { data, loading, error } = useApiData(
-  () => TradingAPI.getOrderBook(...),
-  5000,  // ❌ Polling alle 5 Sekunden!
-  [symbol, market, exchange]
-);
-```
-
-**Probleme:**
-- ❌ Unnötige REST-Calls alle 5-60s
-- ❌ Veraltete Daten zwischen Polls
-- ❌ Keine Echtzeit-Updates trotz WebSocket
-- ❌ Ressourcenverschwendung (Backend + Network)
-
-### Jetzt (v3.0): Hybrid (REST Snapshot + Events) ✅
-
-```typescript
-// NEU: Hybrid Approach (effizient + Echtzeit!)
-const { data, loading, error, refresh } = useHybridData({
-  fetcher: () => TradingAPI.getOrderBook(...),  // ✅ Nur 1x initial
-  eventType: 'ORDERBOOK_UPDATE',                // ✅ Live Events
-  mergeFn: (current, event) => mergedData,      // ✅ Smart Merge
-  filterFn: (event) => event.symbol === symbol  // ✅ Filter
-});
-```
-
-**Vorteile:**
-- ✅ **Echtzeit:** Sofortige Updates via WebSocket
-- ✅ **Effizient:** Nur 1x REST initial, dann nur Events
-- ✅ **Aktuell:** Keine veralteten Daten
-- ✅ **Robust:** Auto-Refresh nach Reconnect
-- ✅ **Type-Safe:** Volle TypeScript-Integration
-
----
-
-## 📋 HYBRID-PRINZIP
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ HYBRID HOOK LIFECYCLE                                   │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│ 1. MOUNT: REST Snapshot laden (einmalig)               │
-│    └─> GET /api/market/orderbook                       │
-│    └─> State: loading=true → data=snapshot             │
-│                                                         │
-│ 2. SUBSCRIBE: WebSocket Events hören                   │
-│    └─> EventBus.subscribe('ORDERBOOK_UPDATE')          │
-│    └─> Filter: nur relevante Events                    │
-│                                                         │
-│ 3. MERGE: Events mit Snapshot kombinieren              │
-│    └─> Timestamp-Check: event.ts >= snapshot.ts        │
-│    └─> mergeFn: Smart Merge Logic                      │
-│    └─> State: data = merged                            │
-│                                                         │
-│ 4. RECONNECT: Bei WS-Reconnect → Refresh               │
-│    └─> WEBSOCKET_STATUS === 'connected'                │
-│    └─> refresh(): neuer REST Snapshot                  │
-│                                                         │
-│ 5. MANUAL REFRESH: On-Demand                           │
-│    └─> refresh(): neuer REST Snapshot                  │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🛠️ VERFÜGBARE HOOKS
-
-### 1. useHybridData (Generic)
-
-**Pfad:** `useHybridData.ts`  
-**Beschreibung:** Generic Hybrid Hook für alle Trading-Hooks
-
-```typescript
-const { data, loading, error, refresh } = useHybridData<T>({
-  fetcher: () => Promise<T>,        // REST Snapshot
-  eventType: EventType,             // WebSocket Event
-  mergeFn: (current, event) => T,   // Merge Logic
-  filterFn?: (event) => boolean,    // Event Filter
-  enableLiveUpdates?: boolean       // Toggle Events
-});
-```
-
-**Features:**
-- ✅ Type-Safe Generic
-- ✅ Timestamp-basierte Merge-Logic
-- ✅ Auto-Reconnect Handler
-- ✅ Optional Filter & Toggle
-
----
-
-### 2. useOrderBook (Hybrid)
-
-**Pfad:** `useOrderBook.ts`  
-**Endpoint:** `GET /api/market/orderbook`  
-**Event:** `ORDERBOOK_UPDATE`
-
-```typescript
-const { orderbook, loading, error, refresh } = useOrderBook(
-  'BTCUSDT',  // symbol
-  'spot',     // market
-  'binance',  // exchange
-  15          // limit
-);
-```
-
-**Merge-Logic:**
-```typescript
-mergeFn: (current, event) => {
-  return {
-    bids: event.bids || current.bids,  // Replace komplette Bids
-    asks: event.asks || current.asks   // Replace komplette Asks
-  };
-}
-```
-
-**Response Format:**
-```typescript
-{
-  orderbook: {
-    asks: [{ price: 50000, size: 0.5, side: 'sell' }],
-    bids: [{ price: 49999, size: 1.2, side: 'buy' }]
-  }
-}
-```
-
----
-
-### 3. useMarketData (Hybrid)
-
-**Pfad:** `useMarketData.ts`  
-**Endpoint:** `GET /api/market/ticker`  
-**Event:** `TICKER_UPDATE`
-
-```typescript
-const { marketData, loading, error, refresh } = useTicker(
-  'binance',  // exchange
-  'BTCUSDT',  // symbol
-  'spot'      // market
-);
-```
-
-**Merge-Logic:**
-```typescript
-mergeFn: (current, event) => {
-  // Finde Ticker im Array und update
-  const updatedTickers = current.tickers.map(ticker => {
-    if (ticker.symbol === symbol) {
-      return { ...ticker, ...event.data };  // Merge
-    }
-    return ticker;
-  });
-  return { tickers: updatedTickers };
-}
-```
-
-**Response Format:**
-```typescript
-{
-  marketData: {
-    price: '50000.00',
-    change24h: '1500.00',
-    changePercent: '3.09',
-    high24h: '51000.00',
-    low24h: '48500.00',
-    volume24h: '15000.50'
-  }
-}
-```
-
----
-
-### 4. useSymbols (Hybrid)
-
-**Pfad:** `useSymbols.ts`  
-**Endpoint:** `GET /api/market/symbols`  
-**Event:** `SYMBOLS_UPDATE`
-
-```typescript
-const { symbols, loading, error, favorites, toggleFavorite, loadSymbols } = useSymbols(
-  'binance',  // exchange
-  'spot'      // market
-);
-```
-
-**Merge-Logic:**
-```typescript
-mergeFn: (current, event) => {
-  // Full Refresh: komplette Symbol-Liste ersetzen
-  return { symbols: event.symbols };
-}
-```
-
-**Response Format:**
-```typescript
-{
-  symbols: [
-    {
-      symbol: 'BTCUSDT',
-      baseCoin: 'BTC',
-      quoteCoin: 'USDT',
-      status: 'active',
-      exchange: 'binance',
-      market_type: 'spot'
-    }
-  ]
-}
-```
-
----
-
-### 5. useMarketTrades (Hybrid)
-
-**Pfad:** `useMarketTrades.ts`  
-**Endpoint:** `GET /api/market/trades`  
-**Event:** `TRADE_UPDATE`
-
-```typescript
-const { trades, loading, error, refresh } = useMarketTrades(
-  'BTCUSDT',  // symbol
-  'binance',  // exchange
-  'spot',     // market
-  20          // limit
-);
-```
-
-**Merge-Logic:**
-```typescript
-mergeFn: (current, event) => {
-  const newTrade = event.data;
-  
-  // Deduplizierung: Trade-ID prüfen
-  if (newTrade.id && existingTrades.some(t => t.id === newTrade.id)) {
-    return current;
-  }
-  
-  // Prepend: neueste Trades zuerst
-  const updatedTrades = [newTrade, ...existingTrades].slice(0, limit);
-  return { data: updatedTrades };
-}
-```
-
-**Response Format:**
-```typescript
-{
-  trades: [
-    {
-      symbol: 'BTCUSDT',
-      price: 50000.00,
-      size: 0.5,
-      side: 'buy',
-      timestamp: 1697123456789,
-      exchange: 'binance',
-      market: 'spot',
-      id: 'trade-123'
-    }
-  ]
-}
-```
-
----
-
-### 6. useChartView (Hybrid)
-
-**Pfad:** `useChartView.ts`  
-**Endpoint:** `GET /api/chart/history`  
-**Event:** `KLINE_UPDATE`
-
-```typescript
-const { chartData, loading, error, refresh } = useChartView(
-  'BTCUSDT',  // symbol
-  'spot',     // market
-  'binance',  // exchange
-  '1m',       // interval
-  100         // limit
-);
-```
-
-**Merge-Logic:**
-```typescript
-mergeFn: (current, event) => {
-  const lastCandle = existingData[existingData.length - 1];
-  
-  // Update letzte Candle wenn time matched
-  if (lastCandle.time === event.candle.time) {
-    updatedData[updatedData.length - 1] = event.candle;
-    return { data: updatedData };
-  }
-  
-  // Neue Candle anhängen
-  if (event.candle.time > lastCandle.time) {
-    return { data: [...existingData, event.candle].slice(-limit) };
-  }
-  
-  return current; // Alte Event ignorieren
-}
-```
-
-**Response Format:**
-```typescript
-{
-  chartData: [
-    {
-      time: 1697123456789,
-      open: 49990.00,
-      high: 50100.00,
-      low: 49900.00,
-      close: 50050.00,
-      volume: 123.45
-    }
-  ]
-}
-```
-
----
-
-## 🔄 EVENT-SYSTEM INTEGRATION
-
-### Event-Bus Topics
-
-```typescript
-type EventType =
-  | 'WEBSOCKET_STATUS'   // Connection Status
-  | 'WEBSOCKET_MESSAGE'  // Raw Messages
-  | 'SYMBOLS_UPDATE'     // Symbol-Liste
-  | 'TICKER_UPDATE'      // 24h Ticker
-  | 'TRADE_UPDATE'       // Einzelne Trades
-  | 'ORDERBOOK_UPDATE'   // OrderBook Deltas
-  | 'KLINE_UPDATE';      // Candlesticks
-```
-
-### Event-Format (Contract)
-
-**ORDERBOOK_UPDATE:**
-```typescript
-{
-  exchange: 'binance',
-  symbol: 'BTCUSDT',
-  bids: [['49999', '1.2'], ...],
-  asks: [['50000', '0.5'], ...],
-  timestamp: 1697123456789
-}
-```
-
-**TRADE_UPDATE:**
-```typescript
-{
-  exchange: 'binance',
-  symbol: 'BTCUSDT',
-  data: {
-    price: 50000,
-    size: 0.5,
-    side: 'buy',
-    timestamp: 1697123456789,
-    id: 'trade-123'
-  },
-  timestamp: 1697123456789
-}
-```
-
-**TICKER_UPDATE:**
-```typescript
-{
-  exchange: 'binance',
-  symbol: 'BTCUSDT',
-  data: {
-    last: '50000.00',
-    change: '1500.00',
-    changeRate: '3.09',
-    high: '51000.00',
-    low: '48500.00',
-    volume: '15000.50'
-  },
-  timestamp: 1697123456789
-}
-```
-
-**KLINE_UPDATE:**
-```typescript
-{
-  exchange: 'binance',
-  symbol: 'BTCUSDT',
-  interval: '1m',
-  candle: {
-    time: 1697123456789,
-    open: '49990.00',
-    high: '50100.00',
-    low: '49900.00',
-    close: '50050.00',
-    volume: '123.45'
-  },
-  timestamp: 1697123456789
-}
-```
-
-**SYMBOLS_UPDATE:**
-```typescript
-{
-  exchange: 'binance',
-  symbols: [
-    { symbol: 'BTCUSDT', baseCoin: 'BTC', quoteCoin: 'USDT', ... }
-  ],
-  timestamp: 1697123456789
-}
-```
-
----
-
-## 🧪 TESTING
-
-### Unit Tests
-
-```typescript
-import { renderHook, waitFor } from '@testing-library/react';
-import { useOrderBook } from './useOrderBook';
-
-test('useOrderBook loads snapshot and merges events', async () => {
-  const { result } = renderHook(() => 
-    useOrderBook('BTCUSDT', 'spot', 'binance')
-  );
-  
-  // Initial: loading
-  expect(result.current.loading).toBe(true);
-  
-  // Nach Snapshot: data geladen
-  await waitFor(() => {
-    expect(result.current.orderbook.bids.length).toBeGreaterThan(0);
-  });
-  
-  // Event simulieren
-  eventBus.emit('ORDERBOOK_UPDATE', {
-    symbol: 'BTCUSDT',
-    bids: [['50000', '2.0']],
-    asks: [['50001', '1.0']],
-    timestamp: Date.now()
-  });
-  
-  // Merge: OrderBook updated
-  await waitFor(() => {
-    expect(result.current.orderbook.bids[0].price).toBe(50000);
-  });
-});
-```
-
----
-
-## 📊 PERFORMANCE-VERGLEICH
-
-### Vorher (Polling)
-
-```
-Requests/Minute: 12 (5s Intervall)
-Network Traffic: ~50 KB/min
-Latenz: 0-5000ms (zwischen Polls)
-Backend Load: Hoch (konstante Requests)
-```
-
-### Jetzt (Hybrid)
-
-```
-Requests/Minute: 1 (nur initial + reconnect)
-Network Traffic: ~5 KB/min (nur Events)
-Latenz: <100ms (Echtzeit Events)
-Backend Load: Niedrig (nur Snapshots)
-```
-
-**Gewinn:**
-- 📉 **92% weniger REST-Requests**
-- 📉 **90% weniger Network Traffic**
-- ⚡ **50x schnellere Updates** (Echtzeit statt Polling)
-- 🔋 **10x weniger Backend-Load**
-
----
-
-## 🔧 MIGRATION GUIDE
-
-### Von useApiData zu useHybridData
-
-**Vorher (v2.x):**
-```typescript
-const { data, loading, error, refresh } = useApiData(
-  () => TradingAPI.getOrderBook(symbol, market, exchange, limit),
-  5000,  // Polling
-  [symbol, market, exchange, limit]
-);
-```
-
-**Nachher (v3.0):**
-```typescript
-const { data, loading, error, refresh } = useHybridData({
-  fetcher: () => TradingAPI.getOrderBook(symbol, market, exchange, limit),
-  eventType: 'ORDERBOOK_UPDATE',
-  mergeFn: (current, event) => ({
-    bids: event.bids || current.bids,
-    asks: event.asks || current.asks
-  }),
-  filterFn: (event) => event.symbol === symbol
-});
-```
-
-**Änderungen:**
-1. ✅ `useApiData` → `useHybridData`
-2. ✅ Options-Object statt Positional-Args
-3. ✅ `eventType` hinzufügen
-4. ✅ `mergeFn` implementieren
-5. ✅ Optional: `filterFn` für Event-Filtering
-
----
-
-## ✅ CHECKLIST
-
-- [x] **useHybridData** Generic Hook erstellt
-- [x] **useOrderBook** auf Hybrid umgestellt
-- [x] **useMarketData** auf Hybrid umgestellt
-- [x] **useSymbols** auf Hybrid umgestellt
-- [x] **useMarketTrades** auf Hybrid umgestellt
-- [x] **useChartView** auf Hybrid umgestellt
-- [x] **Build-Test** erfolgreich
-- [x] **TypeScript** ohne Fehler
-- [x] **Dokumentation** aktualisiert
-
----
-
-## 📚 WEITERFÜHRENDE LINKS
-
-- **Event-System:** `/src/core/events/`
-- **WebSocket-Service:** `/src/services/api/websocket.ts`
-- **Event-Bus:** `/src/core/events/EventBus.ts`
-- **Event-Router:** `/src/core/events/EventRouter.ts`
-- **Frontend-Struktur:** `/100_frontend_structure.md`
-- **Event-Handler Spec:** `/13_eventhandler.md`
-
----
-
-**Version 3.0 | Hybrid-Hooks | Event-Driven | Production Ready**
-</file>
-
-<file path="frontend/src/features/trading/hooks/useApiData.ts">
-/**
- * useApiData - GENERISCHER Hook (DRY Principle)
- * ==============================================
- * 
- * EINMAL DEFINIERT - für alle API-Calls wiederverwendbar!
- * 
- * FEATURES:
- * - Auto-Refresh (konfigurierbar)
- * - Error-Handling (standardisiert)
- * - Loading-States (konsistent)
- * - TypeScript (Type-Safe)
- * 
- * VERWENDUNG:
- * const { data, loading, error, refresh } = useApiData(
- *   () => TradingAPI.getOrderBook(...),
- *   5000  // refresh interval
- * );
- */
-
-import { useState, useEffect, useCallback } from 'react';
-
-export function useApiData<T>(
-  fetcher: () => Promise<T>,
-  refreshInterval: number = 0,  // 0 = kein auto-refresh
-  dependencies: any[] = []
-) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetcher();
-      setData(result);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'API request failed';
-      console.error('[useApiData] Error:', errorMessage);
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  }, [fetcher, ...dependencies]);
-
-  useEffect(() => {
-    fetchData();
-
-    if (refreshInterval > 0) {
-      const interval = setInterval(() => {
-        fetchData();
-      }, refreshInterval);
-
-      return () => {
-        clearInterval(interval);
-      };
-    }
-  }, [fetchData, refreshInterval]);
-
-  return { 
-    data, 
-    loading, 
-    error, 
-    refresh: fetchData 
-  };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useChartData.ts">
-/**
- * useChartData Hook  
- * =================
- * ✅ PHASE 2: Progressive Data Loading für Charts (README Implementation)
- * 
- * FUNKTION:
- * - Progressive data loading als Exchanges online kommen
- * - Loading states statt crashes bei fehlenden Daten
- * - Graceful retry logic für failed exchanges
- * - Seamless recovery wenn Daten verfügbar werden
- * 
- * FEATURES:
- * - Fallback zu empty array statt crashes
- * - User-friendly messages ("exchange warming up...")
- * - Background retry alle 10 Sekunden
- * - Progressive enhancement as more data flows
- * 
- * VERWENDUNG:
- * const { data, loading, error } = useChartData('binance', 'BTCUSDT');
- * // data = [] (fallback) while exchange warming up
- * // data = [...trades] when exchange comes online
- * 
- * PROGRESSIVE LOADING EXAMPLE:
- * 1. Initial: loading=true, data=[], error=null
- * 2. Empty: loading=false, data=[], error="binance warming up..."  
- * 3. Success: loading=false, data=[...], error=null
- * 4. Recovery: Auto-retry brings data when exchange recovers
- */
-
-import { useState, useEffect, useCallback } from 'react';
-import { BaseAPI } from '@/services/api/base';
-
-export interface ChartDataPoint {
-  time: number;
-  price: number;
-  volume?: number;
-}
-
-export interface ChartDataResult {
-  data: ChartDataPoint[];
-  loading: boolean;
-  error: string | null;
-  isEmpty: boolean;
-  retryCount: number;
-}
-
-export function useChartData(exchange: string, symbol: string, limit: number = 100) {
-  const [result, setResult] = useState<ChartDataResult>({
-    data: [],
-    loading: true,
-    error: null,
-    isEmpty: false,
-    retryCount: 0
-  });
-
-  const fetchChartData = useCallback(async (isRetry = false) => {
-    try {
-      // Don't show loading on retries to avoid UI flicker
-      if (!isRetry) {
-        setResult(prev => ({ ...prev, loading: true, error: null }));
-      }
-
-      // ✅ PHASE 2: Try to fetch data, but don't crash if empty (README Implementation)
-      const response = await BaseAPI.request<any>(`/api/market/trades`, {
-        params: {
-          exchange,
-          symbol, 
-          limit
-        }
-      });
-
-      // ✅ Progressive data loading - handle various response formats
-      let chartData: ChartDataPoint[] = [];
-      
-      if (response && response.data && Array.isArray(response.data)) {
-        chartData = response.data.map((trade: any) => ({
-          time: trade.ts || trade.timestamp || Date.now(),
-          price: parseFloat(trade.price || trade.last || '0'),
-          volume: parseFloat(trade.size || trade.volume || '0')
-        })).filter((point: ChartDataPoint) => point.price > 0);
-      } else if (response && Array.isArray(response)) {
-        chartData = response.map((trade: any) => ({
-          time: trade.ts || trade.timestamp || Date.now(),
-          price: parseFloat(trade.price || '0'),
-          volume: parseFloat(trade.size || '0')
-        })).filter((point: ChartDataPoint) => point.price > 0);
-      }
-
-      // ✅ Success case
-      setResult(prev => ({
-        ...prev,
-        data: chartData,
-        loading: false,
-        error: null,
-        isEmpty: chartData.length === 0,
-        retryCount: isRetry ? prev.retryCount + 1 : prev.retryCount
-      }));
-
-    } catch (error: any) {
-      // ✅ PHASE 2: Don't crash - show user-friendly message (README Implementation)
-      const errorMessage = getExchangeErrorMessage(exchange, error);
-      
-      setResult(prev => ({
-        ...prev,
-        data: [], // ✅ Fallback to empty array instead of crash
-        loading: false,
-        error: errorMessage,
-        isEmpty: true,
-        retryCount: isRetry ? prev.retryCount + 1 : prev.retryCount
-      }));
-      
-      // ✅ Background retry logic - don't spam the user (README Implementation)
-      if (isRetry && result.retryCount < 5) {
-        setTimeout(() => {
-          fetchChartData(true);
-        }, 10000); // Retry in 10 seconds
-      }
-    }
-  }, [exchange, symbol, limit, result.retryCount]);
-
-  // ✅ Initial fetch + auto-retry setup
-  useEffect(() => {
-    if (!exchange || !symbol) {
-      setResult({
-        data: [],
-        loading: false,
-        error: 'No exchange or symbol specified',
-        isEmpty: true,
-        retryCount: 0
-      });
-      return;
-    }
-
-    // Initial fetch
-    fetchChartData(false);
-    
-    // ✅ Background retry for failed exchanges (README requirement)
-    const retryInterval = setInterval(() => {
-      if (result.error && result.retryCount < 5) {
-        fetchChartData(true);
-      }
-    }, 10000);
-
-    return () => clearInterval(retryInterval);
-  }, [exchange, symbol, fetchChartData]);
-
-  return {
-    ...result,
-    refresh: () => fetchChartData(false),
-    // Helper methods for UI
-    isWarmingUp: result.error?.includes('warming up') || false,
-    hasData: result.data.length > 0,
-    canRetry: result.error && result.retryCount < 5
-  };
-}
-
-/**
- * ✅ PHASE 2: User-friendly error messages instead of technical errors (README Implementation)
- */
-function getExchangeErrorMessage(exchange: string, error: any): string {
-  if (error?.response?.status === 404) {
-    return `${exchange} data not found - exchange may be warming up...`;
-  }
-  
-  if (error?.response?.status === 503) {
-    return `${exchange} temporarily unavailable - trying again...`;
-  }
-  
-  if (error?.code === 'NETWORK_ERROR' || error?.message?.includes('fetch')) {
-    return `Unable to connect to ${exchange} - retrying in background...`;
-  }
-  
-  if (error?.response?.status >= 500) {
-    return `${exchange} server error - will retry automatically...`;
-  }
-
-  // Generic user-friendly message
-  return `${exchange} warming up - data will appear when ready...`;
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useExchangeStatus.ts">
-/**
- * useExchangeStatus Hook
- * ======================
- * ✅ PHASE 2: Frontend graceful handling patterns (README Implementation)
- * 
- * FUNKTION:
- * - Lädt Exchange-spezifischen Status vom Health System  
- * - Loading states statt crashes
- * - Progressive enhancement als Exchanges online kommen
- * - Graceful degradation bei Exchange failures
- * 
- * ENDPOINTS:
- * - GET /health/detailed (Exchange Health Status)
- * - GET /health/ready (Resilient readiness check)
- * 
- * FEATURES:
- * - Auto-Refresh: Alle 5 Sekunden 
- * - Error-Handling: Graceful degradation statt crashes
- * - Loading-States: Progressive loading per exchange
- * - Retry Logic: Background retry für failed exchanges
- * 
- * VERWENDUNG:
- * const { status, loading, error } = useExchangeStatus();
- * // status.healthy = ["binance", "gateio"] 
- * // status.warming_up = ["mexc", "bybit"]
- * // status.failed = ["htx"]
- */
-
-import { useState, useEffect } from 'react';
-import { BaseAPI } from '@/services/api/base';
-
-export interface ExchangeStatus {
-  loading: boolean;
-  healthy: string[];
-  warming_up: string[];
-  failed: string[];
-  offline: string[];
-  system_status: 'healthy' | 'degraded' | 'warming_up';
-  message: string;
-}
-
-interface HealthResponse {
-  system_status: string;
-  ready: boolean;
-  components_by_type?: {
-    exchange?: Array<{
-      component_name: string;
-      status: string;
-      effective_status: string;
-    }>;
-  };
-  summary?: {
-    total_components: number;
-    status_breakdown: Record<string, number>;
-  };
-  readiness_message?: string;
-}
-
-export function useExchangeStatus() {
-  const [status, setStatus] = useState<ExchangeStatus>({
-    loading: true,
-    healthy: [],
-    warming_up: [],
-    failed: [],
-    offline: [],
-    system_status: 'warming_up',
-    message: 'Checking exchange status...'
-  });
-
-  const fetchExchangeStatus = async () => {
-    try {
-      // ✅ PHASE 2: Use resilient health endpoint (README Implementation)  
-      const response = await BaseAPI.request<HealthResponse>('/health/detailed');
-      
-      if (!response || !response.components_by_type) {
-        // ✅ Graceful degradation - show loading state instead of crash
-        setStatus(prev => ({
-          ...prev,
-          loading: false,
-          system_status: 'warming_up',
-          message: 'Health system initializing...'
-        }));
-        return;
-      }
-
-      const exchanges = response.components_by_type.exchange || [];
-      
-      // Categorize exchanges by health status
-      const healthy: string[] = [];
-      const warming_up: string[] = [];
-      const failed: string[] = [];
-      const offline: string[] = [];
-
-      exchanges.forEach(exchange => {
-        const name = exchange.component_name;
-        const status = exchange.effective_status?.toLowerCase() || 'unknown';
-        
-        switch (status) {
-          case 'healthy':
-            healthy.push(name);
-            break;
-          case 'degraded':
-          case 'stale':
-            warming_up.push(name);
-            break;
-          case 'failed':
-          case 'error':
-            failed.push(name);
-            break;
-          default:
-            offline.push(name);
-        }
-      });
-
-      // ✅ PHASE 2: Determine system status based on working exchanges (README Implementation)
-      let systemStatus: 'healthy' | 'degraded' | 'warming_up' = 'warming_up';
-      let message = '';
-
-      const totalExchanges = exchanges.length;
-      const workingExchanges = healthy.length;
-
-      if (workingExchanges >= totalExchanges * 0.8) {
-        systemStatus = 'healthy';
-        message = `${workingExchanges}/${totalExchanges} exchanges operational`;
-      } else if (workingExchanges > 0) {
-        systemStatus = 'degraded';
-        message = `${workingExchanges}/${totalExchanges} exchanges operational, ${failed.length} failed (isolated)`;
-      } else {
-        systemStatus = 'warming_up';
-        message = response.readiness_message || 'All exchanges warming up...';
-      }
-
-      setStatus({
-        loading: false,
-        healthy,
-        warming_up,
-        failed,
-        offline,
-        system_status: systemStatus,
-        message
-      });
-
-    } catch (error) {
-      // ✅ PHASE 2: Don't crash on empty data - show degraded state (README Implementation)
-      setStatus(prev => ({
-        ...prev,
-        loading: false,
-        healthy: [],
-        warming_up: [],
-        failed: ['connection_error'],
-        offline: [],
-        system_status: 'degraded',
-        message: 'Unable to check exchange status - system may be starting'
-      }));
-    }
-  };
-
-  useEffect(() => {
-    // Initial fetch
-    fetchExchangeStatus();
-    
-    // ✅ Auto-refresh every 5 seconds for real-time status
-    const interval = setInterval(fetchExchangeStatus, 5000);
-    
-    return () => clearInterval(interval);
-  }, []);
-
-  return { 
-    status, 
-    refresh: fetchExchangeStatus,
-    // Convenience getters
-    isHealthy: status.system_status === 'healthy',
-    isDegraded: status.system_status === 'degraded', 
-    isWarmingUp: status.system_status === 'warming_up',
-    workingCount: status.healthy.length,
-    totalCount: status.healthy.length + status.warming_up.length + status.failed.length + status.offline.length
-  };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useExchangeSupport.ts">
-/**
- * useExchangeSupport Hook
- * ========================
- * 
- * FUNKTION:
- * Prüft ob Exchange einen Market unterstützt (spot/futures/margin)
- * 
- * KATEGORIE: UI-Logic Hook (keine Backend-Anbindung nötig)
- * 
- * FEATURES:
- * - Statische Exchange-Market-Matrix
- * - Kein Backend-Call (UI-Logik)
- * - Konsistent mit README-Architektur
- * 
- * VERWENDUNG:
- * const { isMarketSupported } = useExchangeSupport();
- * if (isMarketSupported('binance', 'spot')) { ... }
- * 
- * INTEGRATION:
- * - Component: CoinSelector.tsx
- * 
- * HINWEIS: Dieser Hook nutzt NICHT useApiData, da es reine UI-Logik ist
- * (siehe README: "Komplexe UI-State-Logik" ist ein legitimer Use-Case)
- */
-
-export function useExchangeSupport() {
-  // Exchange Market Support Matrix (Alle 8 Exchanges)
-  // ✅ Granulare Market-Types basierend auf Pipeline-Test-Daten
-  // 🔄 Verifiziert durch automatische Tests alle 30min
-  const supportMatrix: Record<string, string[]> = {
-    // Binance: Spot + USDT-M + Delivery (556 + 2134 symbols)
-    binance: ['spot', 'usdtm', 'delivery'],
-    
-    // BitGet: Spot + USDT-M + Delivery (567 + 1383 symbols)
-    bitget: ['spot', 'usdtm', 'delivery'],
-    
-    // MEXC: Spot + USDT-M + USDC-M + Delivery (750 + 78 + 828 symbols)
-    mexc: ['spot', 'usdtm', 'usdcm', 'delivery'],
-    
-    // Gate.io: Spot + USDT-M + Coin-M + Delivery (597 + 1 + 38 symbols)
-    gateio: ['spot', 'usdtm', 'coinm', 'delivery'],
-    
-    // Bybit: Spot + USDT-M + Delivery (661 + 1372 symbols)
-    bybit: ['spot', 'usdtm', 'delivery'],
-    
-    // OKX: Spot + USDT-M + Coin-M + USDC-M (255 + 2 + 2 symbols)
-    okx: ['spot', 'usdtm', 'coinm', 'usdcm'],
-    
-    // HTX: Spot + USDT-M + Coin-M + Delivery (263 + 9 + 8 symbols)
-    htx: ['spot', 'usdtm', 'coinm', 'delivery'],
-    
-    // Coinbase: Spot + Futures (60 futures symbols)
-    coinbase: ['spot', 'futures'],
-  };
-
-  const isMarketSupported = (exchange: string, market?: string): boolean => {
-    if (!market) return true;
-    const supported = supportMatrix[exchange.toLowerCase()];
-    return supported ? supported.includes(market.toLowerCase()) : false;
-  };
-
-  return { isMarketSupported };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useHybridData.ts">
-/**
- * useHybridData - HYBRID Hook (REST + Events)
- * ============================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot (einmalig beim Mount)
- * 2. Live WebSocket Events (Echtzeit-Updates)
- * 3. Timestamp-basierte Merge-Logic (nur neuere Events)
- * 4. Reconnect-Handler (Snapshot Refresh nach WS-Reconnect)
- * 
- * VERWENDUNG:
- * const { data, loading, error, refresh } = useHybridData({
- *   fetcher: () => TradingAPI.getOrderBook(...),
- *   eventType: 'ORDERBOOK_UPDATE',
- *   mergeFn: (current, event) => mergedData,
- *   filterFn: (event) => event.symbol === symbol
- * });
- * 
- * VORTEILE:
- * - Effizienz: Nur 1x REST initial, dann nur Events
- * - Echtzeit: Live Updates ohne Polling
- * - Robust: Auto-Refresh nach Reconnect
- * - Type-Safe: Volle TypeScript-Integration
- */
-
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useFastSnapshot, useMiddleState, useSlow } from '@/shared/state/laneStores';
-import { EventType } from '@/shared/events/EventBus';
-
-interface HybridOptions<T> {
-  // REST Snapshot Fetcher (wird nur initial + bei refresh() aufgerufen)
-  fetcher: () => Promise<T>;
-  
-  // WebSocket Event-Type zum Subscriben
-  eventType: EventType;
-  
-  // Merge-Funktion: kombiniert aktuellen State mit Event-Daten
-  mergeFn: (current: T, event: any) => T;
-  
-  // Optional: Filter-Funktion (z.B. nur Events für bestimmtes Symbol)
-  filterFn?: (event: any) => boolean;
-  
-  // Optional: Live Updates aktivieren/deaktivieren (default: true)
-  enableLiveUpdates?: boolean;
-}
-
-/**
- * Generic Hybrid Hook: REST Snapshot + Live WebSocket Events
- */
-export function useHybridData<T>(options: HybridOptions<T>) {
-  const { fetcher, eventType, mergeFn, filterFn, enableLiveUpdates = true } = options;
-  
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Snapshot-Timestamp: Nur Events >= diesem Timestamp anwenden
-  const snapshotTimestamp = useRef<number>(0);
-
-  // Initial Snapshot laden (REST)
-  const fetchSnapshot = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const result = await fetcher();
-      setData(result);
-      snapshotTimestamp.current = Date.now();
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Fetch failed';
-      console.error('[useHybridData] Snapshot fetch error:', errorMessage);
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  }, [fetcher]);
-
-  // Initial Load beim Mount
-  useEffect(() => {
-    fetchSnapshot();
-  }, [fetchSnapshot]);
-
-  // 🚀 LANE SYSTEM: Dynamic Lane Access based on eventType
-  const liveData = eventType === 'KLINE_UPDATE' || eventType === 'ORDERBOOK_UPDATE' || eventType === 'TRADE_UPDATE' 
-    ? useFastSnapshot<any>('dynamic_event_data')  // FAST lane events
-    : useMiddleState<any>('dynamic_event_data');  // MIDDLE lane events
-  
-  const wsStatus = useSlow<any>('ws_status'); // WEBSOCKET_STATUS → SLOW lane
-  
-  // Event-Subscription: Live Updates via Lane System
-  useEffect(() => {
-    if (!liveData || !enableLiveUpdates) return;
-    
-    // Filter anwenden (z.B. nur Events für bestimmtes Symbol)
-    if (filterFn && !filterFn(liveData)) return;
-    
-    // Timestamp-Check: Nur Events anwenden die neuer als Snapshot sind
-    const eventTimestamp = liveData.timestamp || liveData.ts || 0;
-    if (eventTimestamp < snapshotTimestamp.current) {
-      // Event ist älter als Snapshot → verwerfen
-      return;
-    }
-    
-    // Merge Event mit aktuellem State
-    setData(prev => {
-      if (!prev) return prev;
-      try {
-        return mergeFn(prev, liveData);
-      } catch (err) {
-        console.error('[useHybridData] Merge error:', err);
-        return prev;
-      }
-    });
-  }, [liveData, enableLiveUpdates, filterFn, mergeFn]);
-
-  // Reconnect-Handler: Bei WS-Reconnect Snapshot neu laden  
-  useEffect(() => {
-    if (wsStatus?.status === 'connected') {
-      console.log('[useHybridData] WebSocket reconnected, refreshing snapshot...');
-      fetchSnapshot();
-    }
-  }, [wsStatus?.status, fetchSnapshot]);
-
-  return {
-    data,
-    loading,
-    error,
-    refresh: fetchSnapshot  // Manueller Snapshot Refresh
-  };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useMarketData.ts">
-/**
- * useMarketData Hook - HYBRID (REST Snapshot + Live Events)
- * ===========================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/market/ticker
- * 2. Live WebSocket Events: TICKER_UPDATE
- * 3. Merge Logic: Einfacher Replace (neuestes gewinnt)
- * 
- * VORTEILE vs. Polling:
- * - Echtzeit: Sofortige Ticker-Updates via WebSocket
- * - Effizient: Nur 1x REST initial, dann nur Events
- * - Aktuell: Keine veralteten Daten zwischen Polls
- * 
- * VERWENDUNG:
- * const { marketData, loading, error, refresh } = useTicker(
- *   'binance',  // exchange
- *   'BTCUSDT',  // symbol
- *   'spot'      // market
- * );
- */
-
-import { useCallback } from 'react';
-import { useHybridData } from './useHybridData';
-import { TradingAPI } from '@/services/api';
-
-export interface MarketData {
-  price: string;
-  change24h: string;
-  changePercent: string;
-  high24h?: string;
-  low24h?: string;
-  volume24h?: string;
-}
-
-interface TickerBackendResponse {
-  tickers: Array<{
-    symbol: string;
-    last: string;
-    change: string;
-    changeRate: string;
-    high?: string;
-    low?: string;
-    volume?: string;
-  }>;
-}
-
-/**
- * useTicker Hook mit Hybrid-Architektur
- */
-export function useTicker(
-  exchange: string,
-  symbol: string,
-  market: string = 'spot'
-) {
-  // ✅ enabled-Guard: Nur wenn Symbol gültig ist
-  const enabled = Boolean(exchange && symbol);
-  
-  // ✅ useCallback: fetcher nur bei Parameter-Änderung neu erstellen
-  const fetcher = useCallback(() => {
-    return TradingAPI.getTicker(exchange, symbol, market);
-  }, [exchange, symbol, market]);
-  
-  // ✅ HYBRID: REST Snapshot + Live TICKER_UPDATE Events
-  const { data, loading, error, refresh } = useHybridData<any>({
-    // REST Snapshot Fetcher (nur initial + bei refresh)
-    fetcher,
-    
-    // WebSocket Event-Type
-    eventType: 'TICKER_UPDATE',
-    
-    // Merge-Logic: Ticker Updates anwenden (einfacher Replace)
-    mergeFn: (current, event) => {
-      // Event-Validierung
-      if (!event || !event.data) return current;
-      
-      // Nur Events für aktuelles Symbol anwenden
-      if (event.symbol !== symbol) return current;
-      
-      // Ticker-Daten im Array finden und updaten
-      const updatedTickers = current.tickers.map((ticker: any) => {
-        if (ticker.symbol === symbol) {
-          // Merge: Event-Daten überschreiben Ticker
-          return {
-            symbol: ticker.symbol,
-            last: event.data.last || event.data.price || ticker.last,
-            change: event.data.change || ticker.change,
-            changeRate: event.data.changeRate || event.data.changePercent || ticker.changeRate,
-            high: event.data.high || ticker.high,
-            low: event.data.low || ticker.low,
-            volume: event.data.volume || ticker.volume,
-          };
-        }
-        return ticker;
-      });
-      
-      return {
-        tickers: updatedTickers
-      };
-    },
-    
-    // Filter: Nur Events für aktuelles Symbol + Exchange
-    filterFn: (event) => {
-      return event.symbol === symbol && 
-             (event.exchange === exchange || !event.exchange);
-    },
-    
-    // ✅ Live Updates nur wenn enabled
-    enableLiveUpdates: enabled
-  });
-
-  // Transform: Backend { tickers: [...] } → MarketData
-  const marketData: MarketData = (() => {
-    if (data && data.tickers && Array.isArray(data.tickers)) {
-      const tickerData = data.tickers.find((t: any) => t.symbol === symbol);
-      if (tickerData) {
-        return {
-          price: tickerData.last || '0',
-          change24h: tickerData.change || '0',
-          changePercent: tickerData.changeRate || '0',
-          high24h: tickerData.high,
-          low24h: tickerData.low,
-          volume24h: tickerData.volume,
-        };
-      }
-    }
-    return {
-      price: '0',
-      change24h: '0',
-      changePercent: '0',
-    };
-  })();
-
-  return { marketData, loading, error, refresh };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useOrderBook.ts">
-/**
- * useOrderBook Hook - HYBRID (REST Snapshot + Live Events) + 8ms Coalescing
- * ===========================================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/market/orderbook
- * 2. Live WebSocket Events: ORDERBOOK_UPDATE (mit 8ms Coalescing im Router)
- * 3. pendingRef Pattern: 1x setState pro requestAnimationFrame
- * 4. Cleanup: cancel() beim Unmount
- * 
- * VORTEILE:
- * - Echtzeit: Sofortige OrderBook-Updates via WebSocket
- * - Effizient: Nur 1x REST initial, dann nur Events
- * - Performance: 8ms Coalescing im Router + pendingRef in Hook
- * - Stabil: Cleanup verhindert Memory-Leaks
- * 
- * VERWENDUNG:
- * const { orderbook, loading, error, refresh } = useOrderBook(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   15          // limit
- * );
- */
-
-import { useState, useEffect, useRef } from 'react';
-import { TradingAPI } from '@/services/api/trading';
-import { useFastSnapshot } from '@/shared/state/laneStores';
-import { cancel } from '@/lib/rafScheduler';
-
-interface OrderBookEntry {
-  price: number;
-  size: number;
-  side: 'buy' | 'sell';
-}
-
-interface OrderBookData {
-  asks: OrderBookEntry[];
-  bids: OrderBookEntry[];
-}
-
-interface OrderBookBackendData {
-  bids: [string, string][];
-  asks: [string, string][];
-}
-
-/**
- * useOrderBook Hook mit 8ms Coalescing + pendingRef
- */
-export function useOrderBook(
-  symbol: string,
-  market: string,
-  exchange: string,
-  limit: number = 15
-) {
-  const [orderbook, setOrderbook] = useState<OrderBookData>({ asks: [], bids: [] });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // pendingRef: Events sammeln, 1x setState pro Frame
-  const pendingUpdate = useRef<OrderBookBackendData | null>(null);
-  const flushScheduled = useRef(false);
-  
-  // Flush per requestAnimationFrame
-  const flushUpdate = () => {
-    flushScheduled.current = false;
-    
-    if (pendingUpdate.current) {
-      // Transform: Backend Format → Component Format
-      const transformed: OrderBookData = {
-        asks: pendingUpdate.current.asks.slice(0, limit).map(([price, size]) => ({
-          price: parseFloat(price),
-          size: parseFloat(size),
-          side: 'sell' as const
-        })),
-        bids: pendingUpdate.current.bids.slice(0, limit).map(([price, size]) => ({
-          price: parseFloat(price),
-          size: parseFloat(size),
-          side: 'buy' as const
-        }))
-      };
-      
-      setOrderbook(transformed);
-      pendingUpdate.current = null;
-    }
-  };
-  
-  // Initial REST Snapshot
-  const fetchOrderBook = async () => {
-    try {
-      setLoading(true);
-      const data = await TradingAPI.getOrderBook(symbol, market, exchange, limit);
-      
-      // Initial-Daten in pendingRef setzen (Backend-Format beibehalten)
-      pendingUpdate.current = {
-        bids: (data.bids || []) as unknown as [string, string][],
-        asks: (data.asks || []) as unknown as [string, string][]
-      };
-      
-      // Sofort flushen für Initial-Render
-      flushUpdate();
-      setLoading(false);
-    } catch (err) {
-      setError(err as Error);
-      setLoading(false);
-    }
-  };
-  
-  // 🚀 LANE SYSTEM: FAST Lane für OrderBook Updates  
-  const obKey = `ob:${symbol}:${exchange}`;
-  const liveOrderbook = useFastSnapshot<any>(obKey);
-  
-  useEffect(() => {
-    if (!liveOrderbook) return;
-    
-    // Filter: Nur Events für aktuelles Symbol + Exchange
-    if (liveOrderbook.symbol !== symbol) return;
-    if (liveOrderbook.exchange && liveOrderbook.exchange !== exchange) return;
-    
-    // In pendingRef speichern (überschreibt ältere Updates)
-    pendingUpdate.current = {
-      bids: liveOrderbook.bids || [],
-      asks: liveOrderbook.asks || []
-    };
-    
-    // Schedule Flush (nur 1x pro Frame!)
-    if (!flushScheduled.current) {
-      flushScheduled.current = true;
-      requestAnimationFrame(flushUpdate);
-    }
-  }, [liveOrderbook, symbol, exchange, limit]);
-  
-  // Initial Load
-  useEffect(() => {
-    fetchOrderBook();
-  }, [symbol, market, exchange, limit]);
-  
-  // Cleanup bei Unmount
-  useEffect(() => {
-    return () => {
-      // Cancel pending Scheduler-Calls
-      const topicKey = `${exchange}|${market}|${symbol}|orderbook`;
-      cancel(topicKey);
-    };
-  }, [exchange, market, symbol]);
-  
-  // Refresh-Funktion
-  const refresh = () => {
-    fetchOrderBook();
-  };
-
-  return { 
-    orderbook, 
-    loading, 
-    error, 
-    refresh 
-  };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useSymbols.ts">
-/**
- * useSymbols Hook - React Query + Request Deduplication
- * ======================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/market/symbols
- * 2. React Query Caching: 5min staleTime
- * 3. Request Deduplizierung: Automatisch durch React Query + TradingAPI inFlight-Map
- * 
- * VORTEILE:
- * - Request-Deduplizierung: Mehrere Mounts → 1 HTTP-Request
- * - Caching: Instant Load bei wiederholten Mounts
- * - StrictMode-Safe: Doppeltes Mount → automatisch dedupliziert
- * - Kein ERR_INSUFFICIENT_RESOURCES
- * 
- * VERWENDUNG:
- * const { symbols, loading, error, favorites, toggleFavorite, loadSymbols } = useSymbols(
- *   'binance',  // exchange
- *   'spot'      // market
- * );
- */
-
-import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { TradingAPI } from '@/services/api/trading';
-
-export interface Symbol {
-  symbol: string;
-  baseCoin: string;
-  quoteCoin: string;
-  status: string;
-  exchange: string;
-  market_type: string;
-  price?: string;
-  change?: string;
-  changePercent?: number;
-}
-
-interface SymbolsBackendResponse {
-  symbols: Symbol[];
-}
-
-/**
- * useSymbols Hook mit React Query
- */
-export function useSymbols(
-  exchange: string, 
-  market: string = 'spot',
-  enabled: boolean = true
-) {
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-
-  // Load favorites from localStorage
-  useEffect(() => {
-    const stored = localStorage.getItem(`favorites_${exchange}_${market}`);
-    if (stored) {
-      try {
-        setFavorites(new Set(JSON.parse(stored)));
-      } catch (e) {
-        console.error('[useSymbols] Failed to parse favorites', e);
-      }
-    }
-  }, [exchange, market]);
-
-  // ✅ React Query statt useHybridData
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['symbols', exchange, market],
-    queryFn: () => TradingAPI.getSymbols(exchange, market),
-    enabled: Boolean(exchange && enabled),
-    staleTime: 5 * 60 * 1000,  // 5min - Daten gelten als fresh
-    gcTime: 15 * 60 * 1000,    // 15min - Garbage Collection
-    refetchOnMount: false,     // ✅ Kein Auto-Refetch beim Mount
-    refetchOnWindowFocus: false, // ✅ Kein Auto-Refetch bei Tab-Switch
-  });
-
-  // Transform: Backend { symbols: [...] } → Symbol[]
-  const symbols: Symbol[] = data?.symbols || [];
-
-  // Toggle favorite
-  const toggleFavorite = (symbol: string) => {
-    setFavorites(prev => {
-      const newFavorites = new Set(prev);
-      if (newFavorites.has(symbol)) {
-        newFavorites.delete(symbol);
-      } else {
-        newFavorites.add(symbol);
-      }
-      // Save to localStorage
-      localStorage.setItem(
-        `favorites_${exchange}_${market}`,
-        JSON.stringify(Array.from(newFavorites))
-      );
-      return newFavorites;
-    });
-  };
-
-  return {
-    symbols,
-    loading: isLoading,
-    error: error as Error | null,
-    favorites,
-    toggleFavorite,
-    loadSymbols: refetch
-  };
-}
-</file>
-
-<file path="frontend/src/features/trading/hooks/useSystemStatus.ts">
-/**
- * useSystemStatus Hook
- * =====================
- * 
- * FUNKTION:
- * Lädt System Health & Metrics vom Backend
- * 
- * ENDPOINTS:
- * - GET /health (System Services Status)
- * - GET /api/ws/metrics (WebSocket Metrics) [optional]
- * 
- * FEATURES:
- * - Auto-Refresh: Alle 10 Sekunden
- * - Error-Handling: Zeigt Fehlermeldungen an
- * - Loading-States: Spinner während Ladezeiten
- * - TypeScript: Health Interface für Type-Safety
- * - ✅ GENERISCH: Nutzt useApiData + zentrale Types
- * 
- * VERWENDUNG:
- * const { health, loading, error, refresh } = useSystemStatus();
- * 
- * INTEGRATION:
- * - Component: SystemStatus.tsx
- * - Service: MarketAPI (services/api/market.ts)
- * - Generic Hook: useApiData
- */
-
-import { useApiData } from './useApiData';
-import { BaseAPI } from '@/services/api/base';
-
-interface SystemHealth {
-  status: string;
-  timestamp: string;
-  services: {
-    redis: boolean;
-    clickhouse_tcp: boolean;
-    clickhouse_http: boolean;
-    ai_system: boolean;
-    whale_system: boolean;
-  };
-  summary: string;
-}
-
-export function useSystemStatus() {
-  const { data, loading, error, refresh } = useApiData<SystemHealth>(
-    () => BaseAPI.request<SystemHealth>('/health'),
-    10000  // 10s refresh
-  );
-
-  const health: SystemHealth = data || {
-    status: 'unknown',
-    timestamp: new Date().toISOString(),
-    services: {
-      redis: false,
-      clickhouse_tcp: false,
-      clickhouse_http: false,
-      ai_system: false,
-      whale_system: false
-    },
-    summary: 'Checking...'
-  };
-
-  return { health, loading, error, refresh };
-}
-</file>
-
 <file path="frontend/src/features/trading/types/api-responses.ts">
 /**
  * API Response Types (ZENTRAL)
@@ -77612,120 +74656,6 @@ export { default as IndicatorsModal } from './components/IndicatorsModal';
 
 // Types
 export * from './types';
-</file>
-
-<file path="frontend/src/features/whales/hooks/useWhaleWebSocket.ts">
-import { useState, useEffect, useCallback } from 'react';
-import { WhalesAPI, whaleWebSocketManager } from '../../../services/api/whales';
-
-// 🐋 WHALE WEBSOCKET HOOK
-export const useWhaleWebSocket = (symbol?: string, autoConnect = true) => {
-  const [isConnected, setIsConnected] = useState(false);
-  const [whaleEvents, setWhaleEvents] = useState<any[]>([]);
-  const [whaleAlerts, setWhaleAlerts] = useState<any[]>([]);
-  const [latestEvent, setLatestEvent] = useState<any>(null);
-
-  const addWhaleEvent = useCallback((event: any) => {
-    setLatestEvent(event);
-    setWhaleEvents(prev => [event, ...prev.slice(0, 99)]); // Keep last 100 events
-  }, []);
-
-  const addWhaleAlert = useCallback((alert: any) => {
-    setWhaleAlerts(prev => [alert, ...prev.slice(0, 49)]); // Keep last 50 alerts
-  }, []);
-
-  useEffect(() => {
-    if (!autoConnect) return;
-
-    // Connect to WebSocket
-    WhalesAPI.connectWebSocket();
-
-    // Subscribe to events
-    if (symbol) {
-      WhalesAPI.subscribeToWhaleEvents(symbol, addWhaleEvent);
-    }
-    
-    WhalesAPI.subscribeToWhaleAlerts(addWhaleAlert);
-
-    // Connection status monitoring
-    const checkConnection = () => {
-      setIsConnected((whaleWebSocketManager as any).ws?.readyState === WebSocket.OPEN);
-    };
-
-    const interval = setInterval(checkConnection, 1000);
-    checkConnection();
-
-    return () => {
-      clearInterval(interval);
-      if (symbol) {
-        WhalesAPI.unsubscribeFromSymbol(symbol);
-      }
-    };
-  }, [symbol, autoConnect, addWhaleEvent, addWhaleAlert]);
-
-  const subscribeToSymbol = useCallback((newSymbol: string) => {
-    WhalesAPI.subscribeToWhaleEvents(newSymbol, addWhaleEvent);
-  }, [addWhaleEvent]);
-
-  const unsubscribeFromSymbol = useCallback((symbolToRemove: string) => {
-    WhalesAPI.unsubscribeFromSymbol(symbolToRemove);
-  }, []);
-
-  return {
-    isConnected,
-    whaleEvents,
-    whaleAlerts,
-    latestEvent,
-    subscribeToSymbol,
-    unsubscribeFromSymbol,
-    connect: () => WhalesAPI.connectWebSocket(),
-    disconnect: () => WhalesAPI.disconnectWebSocket()
-  };
-};
-
-// 🚨 WHALE ALERTS HOOK
-export const useWhaleAlerts = (filters?: {
-  minAmount?: number;
-  symbols?: string[];
-  alertTypes?: string[];
-}) => {
-  const [alerts, setAlerts] = useState<any[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
-  const [isConnected, setIsConnected] = useState(false);
-
-  useEffect(() => {
-    WhalesAPI.connectWebSocket();
-
-    const handleAlert = (alert: any) => {
-      // Apply filters if provided
-      if (filters) {
-        if (filters.minAmount && alert.amount < filters.minAmount) return;
-        if (filters.symbols && !filters.symbols.includes(alert.symbol)) return;
-        if (filters.alertTypes && !filters.alertTypes.includes(alert.type)) return;
-      }
-      
-      setAlerts(prev => [alert, ...prev.slice(0, 99)]);
-      setUnreadCount(prev => prev + 1);
-    };
-
-    WhalesAPI.subscribeToWhaleAlerts(handleAlert);
-
-    return () => {
-      WhalesAPI.disconnectWebSocket();
-    };
-  }, [filters]);
-
-  const markAsRead = useCallback(() => {
-    setUnreadCount(0);
-  }, []);
-
-  return {
-    alerts,
-    unreadCount,
-    isConnected,
-    markAsRead
-  };
-};
 </file>
 
 <file path="frontend/src/features/whales/index.ts">
@@ -78383,133 +75313,6 @@ export function resetMetrics(): void {
 }
 </file>
 
-<file path="frontend/src/lib/rafScheduler.ts">
-/**
- * 8ms Timeboxed Scheduler mit Production Safeguards
- * Minimal-invasiv, idempotent, StrictMode-safe
- */
-
-type ScheduleFn = () => void;
-
-const pending = new Map<string, ScheduleFn>();
-let timer: number | null = null;
-let isFlushing = false;
-
-// Feature-Flags
-const getEnv = (key: string, defaultValue: string): string => {
-  return ((import.meta as any).env?.[key] as string) || defaultValue;
-};
-
-const COALESCE_ENABLED = getEnv('VITE_FE_COALESCE_ENABLED', 'true') !== 'false';
-const BUDGET_MS = parseInt(getEnv('VITE_FE_COALESCE_BUDGET_MS', '8'), 10);
-const MAX_BATCH_SIZE = 200; // Starvation-Schutz
-
-// Metriken
-let flushCount = 0;
-let coalescedCount = 0;
-let flushDurationSum = 0;
-
-/**
- * Schedule flush mit 8ms Budget
- * Topic-Key Format: exchange|market|symbol|topic
- */
-export function schedule(topic: string, fn: ScheduleFn): void {
-  // Feature-Flag: Wenn disabled, sofort ausführen
-  if (!COALESCE_ENABLED) {
-    fn();
-    return;
-  }
-  
-  // Überschreibe ältere Funktionen für gleichen Topic (Coalescing!)
-  const wasNew = !pending.has(topic);
-  pending.set(topic, fn);
-  
-  if (!wasNew) {
-    coalescedCount++;
-  }
-  
-  // Schedule Flush (nur 1x pro Budget, idempotent)
-  if (timer === null && !isFlushing) {
-    timer = window.setTimeout(flush, BUDGET_MS);
-  }
-}
-
-/**
- * Cancel scheduled function (für Unmount)
- */
-export function cancel(topic: string): void {
-  pending.delete(topic);
-}
-
-/**
- * Flush mit Safeguards
- */
-function flush(): void {
-  // Drop-Guard: Verhindere Stacking
-  if (isFlushing) {
-    return;
-  }
-  
-  const startTime = performance.now();
-  isFlushing = true;
-  timer = null;
-  
-  // Starvation-Schutz: Max. MAX_BATCH_SIZE pro Flush
-  const fns = Array.from(pending.values()).slice(0, MAX_BATCH_SIZE);
-  const remainingKeys = Array.from(pending.keys()).slice(MAX_BATCH_SIZE);
-  pending.clear();
-  
-  // Alle Functions ausführen
-  for (const fn of fns) {
-    try {
-      fn();
-    } catch (error) {
-      console.error('[Scheduler] Flush error:', error);
-    }
-  }
-  
-  // Metriken
-  flushCount++;
-  flushDurationSum += performance.now() - startTime;
-  
-  isFlushing = false;
-  
-  // Starvation-Schutz: Rest in nächste Runde
-  if (remainingKeys.length > 0) {
-    console.warn(`[Scheduler] Batch overflow: ${remainingKeys.length} topics deferred`);
-    timer = window.setTimeout(flush, BUDGET_MS);
-  }
-}
-
-/**
- * Metriken für Monitoring
- */
-export function getSchedulerStats() {
-  return {
-    pendingCount: pending.size,
-    isScheduled: timer !== null,
-    flushCount,
-    coalescedCount,
-    avgFlushDuration: flushCount > 0 ? flushDurationSum / flushCount : 0
-  };
-}
-
-/**
- * Reset für Testing
- */
-export function resetScheduler(): void {
-  if (timer !== null) {
-    clearTimeout(timer);
-    timer = null;
-  }
-  pending.clear();
-  isFlushing = false;
-  flushCount = 0;
-  coalescedCount = 0;
-  flushDurationSum = 0;
-}
-</file>
-
 <file path="frontend/src/lib/react-query.ts">
 import { QueryClient } from '@tanstack/react-query';
 
@@ -78602,99 +75405,6 @@ export const queryKeys = {
   settings: (key: string) =>
     ['settings', key] as const,
 } as const;
-</file>
-
-<file path="frontend/src/lib/RingBuffer.ts">
-/**
- * RingBuffer für Performance
- * O(1) append, keine Re-allocation
- */
-
-export class RingBuffer<T> {
-  private buffer: T[];
-  private head = 0;
-  private size = 0;
-  
-  constructor(private capacity: number) {
-    this.buffer = new Array(capacity);
-  }
-  
-  /**
-   * Element hinzufügen (O(1))
-   */
-  push(item: T): void {
-    this.buffer[this.head] = item;
-    this.head = (this.head + 1) % this.capacity;
-    
-    if (this.size < this.capacity) {
-      this.size++;
-    }
-  }
-  
-  /**
-   * Alle Elemente als Array
-   */
-  toArray(): T[] {
-    const result: T[] = [];
-    const start = this.size < this.capacity ? 0 : this.head;
-    
-    for (let i = 0; i < this.size; i++) {
-      const index = (start + i) % this.capacity;
-      const item = this.buffer[index];
-      if (item !== undefined) {
-        result.push(item);
-      }
-    }
-    
-    return result;
-  }
-  
-  /**
-   * Letzten N Elemente
-   */
-  last(n: number): T[] {
-    const all = this.toArray();
-    return all.slice(-n);
-  }
-  
-  /**
-   * Aktuelle Größe
-   */
-  getSize(): number {
-    return this.size;
-  }
-  
-  /**
-   * Prüfe ob Buffer leer ist
-   */
-  isEmpty(): boolean {
-    return this.size === 0;
-  }
-  
-  /**
-   * Erstes Element entfernen und zurückgeben (FIFO)
-   */
-  shift(): T | undefined {
-    if (this.size === 0) {
-      return undefined;
-    }
-    
-    const start = this.size < this.capacity ? 0 : this.head;
-    const item = this.buffer[start];
-    
-    this.size--;
-    
-    return item;
-  }
-  
-  /**
-   * Buffer leeren
-   */
-  clear(): void {
-    this.head = 0;
-    this.size = 0;
-  }
-}
 </file>
 
 <file path="frontend/src/lib/ultraFastParsing.ts">
@@ -78827,362 +75537,6 @@ export class UltraFastParser {
       totalMessages: parseEntries.length,
       lastParseTime: parseEntries.length > 0 ? parseEntries[parseEntries.length - 1]?.duration || 0 : 0
     };
-  }
-}
-</file>
-
-<file path="frontend/src/lib/ultraLowLatencyWebSocket.ts">
-/**
- * Ultra-Low-Latency WebSocket Client for Trading
- * Optimized connection with performance monitoring
- * Target: <2ms WebSocket overhead
- */
-
-import { UltraFastParser } from './ultraFastParsing';
-import { DirectDOMUpdater } from './directDOMUpdater';
-
-interface PerformanceMetrics {
-  messagesReceived: number;
-  averageLatency: number;
-  lastLatency: number;
-  connectionUptime: number;
-  reconnectCount: number;
-}
-
-interface WebSocketConfig {
-  url: string;
-  symbol: string;
-  binaryType?: BinaryType;
-  protocols?: string | string[];
-  reconnectInterval?: number;
-  maxReconnectAttempts?: number;
-}
-
-export class UltraLowLatencyWebSocket {
-  private ws: WebSocket | null = null;
-  private config: WebSocketConfig;
-  private isConnected: boolean = false;
-  private reconnectAttempts: number = 0;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private connectTime: number = 0;
-  
-  private performanceMetrics: PerformanceMetrics = {
-    messagesReceived: 0,
-    averageLatency: 0,
-    lastLatency: 0,
-    connectionUptime: 0,
-    reconnectCount: 0
-  };
-
-  private messageHandlers = new Map<string, (data: any) => void>();
-
-  constructor(config: WebSocketConfig) {
-    this.config = {
-      reconnectInterval: 1000,
-      maxReconnectAttempts: 5,
-      binaryType: 'arraybuffer',
-      ...config
-    };
-  }
-
-  /**
-   * Optimierte Verbindung mit Performance-Monitoring
-   */
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        const startTime = performance.now();
-        
-        this.ws = new WebSocket(
-          this.config.url,
-          this.config.protocols
-        );
-
-        // Optimized WebSocket settings
-        this.ws.binaryType = this.config.binaryType || 'arraybuffer';
-
-        this.ws.onopen = () => {
-          const connectionTime = performance.now() - startTime;
-          this.connectTime = Date.now();
-          this.isConnected = true;
-          this.reconnectAttempts = 0;
-          
-          console.log(`✅ Ultra-fast WebSocket connected for ${this.config.symbol} in ${connectionTime.toFixed(2)}ms`);
-          
-          // Performance monitoring
-          performance.mark('ws-connect-end');
-          performance.measure('ws-connect-time', {
-            start: startTime,
-            end: performance.now()
-          });
-          
-          resolve();
-        };
-
-        this.ws.onmessage = (event) => this.handleMessage(event);
-        
-        this.ws.onerror = (error) => {
-          console.error(`WebSocket error for ${this.config.symbol}:`, error);
-          reject(error);
-        };
-
-        this.ws.onclose = (event) => {
-          this.isConnected = false;
-          console.log(`WebSocket closed for ${this.config.symbol}:`, event.reason);
-          
-          // Auto-reconnect logic
-          if (!event.wasClean && this.reconnectAttempts < (this.config.maxReconnectAttempts || 5)) {
-            this.scheduleReconnect();
-          }
-        };
-
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
-
-  /**
-   * Ultra-schnelle Message-Verarbeitung mit verschiedenen Optimierungsstrategien
-   */
-  private handleMessage(event: MessageEvent): void {
-    const messageStartTime = performance.now();
-    
-    try {
-      let data: any;
-      
-      // Optimized parsing based on message type
-      if (typeof event.data === 'string') {
-        // Use ultra-fast parser for JSON strings
-        data = UltraFastParser.parseTradingMessage(event.data);
-      } else if (event.data instanceof ArrayBuffer) {
-        // Handle binary data (faster for high-frequency updates)
-        data = this.parseBinaryMessage(event.data);
-      } else {
-        // Fallback to standard parsing
-        data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      }
-
-      if (!data) return;
-
-      // Route message to appropriate handler
-      this.routeMessage(data);
-
-      // Performance tracking
-      const messageEndTime = performance.now();
-      const latency = messageEndTime - messageStartTime;
-      
-      this.updatePerformanceMetrics(latency);
-      
-      // Performance measurement
-      performance.measure('ws-message-processing', {
-        start: messageStartTime,
-        end: messageEndTime
-      });
-
-    } catch (error) {
-      console.error(`Message processing error for ${this.config.symbol}:`, error);
-    }
-  }
-
-  /**
-   * Binary message parsing (fastest for high-frequency data)
-   */
-  private parseBinaryMessage(buffer: ArrayBuffer): any {
-    // Simplified binary protocol for ultra-low latency
-    // Structure: [type(1)][symbol_len(1)][symbol][price(8)][change(4)][timestamp(8)]
-    const view = new DataView(buffer);
-    let offset = 0;
-    
-    const type = view.getUint8(offset++);
-    const symbolLen = view.getUint8(offset++);
-    
-    // Extract symbol
-    const symbolBytes = new Uint8Array(buffer, offset, symbolLen);
-    const symbol = new TextDecoder().decode(symbolBytes);
-    offset += symbolLen;
-    
-    // Extract price data
-    const price = view.getFloat64(offset, true); // little-endian
-    offset += 8;
-    
-    const change = view.getFloat32(offset, true);
-    offset += 4;
-    
-    const timestamp = view.getBigUint64(offset, true);
-    
-    return {
-      type: type === 1 ? 'trade' : 'orderbook',
-      symbol,
-      price,
-      change,
-      timestamp: Number(timestamp)
-    };
-  }
-
-  /**
-   * Route messages to appropriate handlers for maximum performance
-   */
-  private routeMessage(data: any): void {
-    const { type, symbol } = data;
-
-    switch (type) {
-      case 'trade':
-      case 'price_update':
-        // Direct DOM update for price changes (bypasses React)
-        DirectDOMUpdater.updatePriceDirectly(
-          symbol,
-          data.price,
-          data.change
-        );
-        break;
-
-      case 'orderbook':
-        // Direct orderbook update
-        if (data.orders) {
-          DirectDOMUpdater.updateOrderBookDirectly(symbol, data.orders);
-        }
-        break;
-
-      case 'volume':
-        // Volume updates
-        DirectDOMUpdater.updateVolumeDirectly(
-          symbol,
-          data.volume,
-          data.volumeChange
-        );
-        break;
-
-      default:
-        // Custom message handlers
-        const handler = this.messageHandlers.get(type);
-        if (handler) {
-          handler(data);
-        }
-        break;
-    }
-  }
-
-  /**
-   * Register custom message handler
-   */
-  onMessage(messageType: string, handler: (data: any) => void): void {
-    this.messageHandlers.set(messageType, handler);
-  }
-
-  /**
-   * Send message with optimization
-   */
-  send(data: any): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn(`WebSocket not connected for ${this.config.symbol}`);
-      return;
-    }
-
-    try {
-      const message = typeof data === 'string' ? data : JSON.stringify(data);
-      this.ws.send(message);
-    } catch (error) {
-      console.error(`Failed to send message for ${this.config.symbol}:`, error);
-    }
-  }
-
-  /**
-   * Auto-reconnect with exponential backoff
-   */
-  private scheduleReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-    }
-
-    const delay = Math.min(
-      (this.config.reconnectInterval || 1000) * Math.pow(2, this.reconnectAttempts),
-      30000 // Max 30 seconds
-    );
-
-    console.log(`Reconnecting to ${this.config.symbol} in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectAttempts++;
-      this.performanceMetrics.reconnectCount++;
-      this.connect().catch(error => {
-        console.error(`Reconnect failed for ${this.config.symbol}:`, error);
-        if (this.reconnectAttempts < (this.config.maxReconnectAttempts || 5)) {
-          this.scheduleReconnect();
-        }
-      });
-    }, delay);
-  }
-
-  /**
-   * Update performance metrics with rolling average
-   */
-  private updatePerformanceMetrics(latency: number): void {
-    this.performanceMetrics.messagesReceived++;
-    this.performanceMetrics.lastLatency = latency;
-    
-    // Rolling average with smoothing factor
-    const alpha = 0.1;
-    this.performanceMetrics.averageLatency = 
-      this.performanceMetrics.averageLatency * (1 - alpha) + latency * alpha;
-    
-    // Update connection uptime
-    if (this.connectTime > 0) {
-      this.performanceMetrics.connectionUptime = Date.now() - this.connectTime;
-    }
-  }
-
-  /**
-   * Get performance metrics
-   */
-  getPerformanceMetrics(): PerformanceMetrics {
-    return { ...this.performanceMetrics };
-  }
-
-  /**
-   * Get WebSocket connection statistics
-   */
-  getConnectionStats() {
-    const wsEntries = performance.getEntriesByName('ws-message-processing');
-    const connectEntries = performance.getEntriesByName('ws-connect-time');
-    
-    return {
-      ...this.performanceMetrics,
-      averageMessageProcessingTime: wsEntries.length > 0
-        ? wsEntries.reduce((sum, entry) => sum + entry.duration, 0) / wsEntries.length
-        : 0,
-      connectionTime: connectEntries.length > 0 
-        ? connectEntries[connectEntries.length - 1]?.duration || 0 
-        : 0,
-      isConnected: this.isConnected,
-      readyState: this.ws?.readyState || WebSocket.CLOSED
-    };
-  }
-
-  /**
-   * Close connection and cleanup
-   */
-  close(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
-      this.ws = null;
-    }
-
-    this.isConnected = false;
-    this.messageHandlers.clear();
-  }
-
-  /**
-   * Force reconnect
-   */
-  reconnect(): Promise<void> {
-    this.close();
-    return this.connect();
   }
 }
 </file>
@@ -80156,1253 +76510,6 @@ export class EnterpriseAPI extends BaseAPI {
 }
 </file>
 
-<file path="frontend/src/services/storage/favorites.ts">
-import { LocalStorageService } from './localStorage';
-
-export class FavoritesService {
-  private static readonly STORAGE_KEY = 'coin-favorites';
-  
-  static getFavorites(): string[] {
-    return LocalStorageService.get(this.STORAGE_KEY, []);
-  }
-  
-  static addFavorite(symbol: string): void {
-    const favorites = this.getFavorites();
-    if (!favorites.includes(symbol)) {
-      LocalStorageService.set(this.STORAGE_KEY, [...favorites, symbol]);
-    }
-  }
-  
-  static removeFavorite(symbol: string): void {
-    const favorites = this.getFavorites();
-    LocalStorageService.set(this.STORAGE_KEY, favorites.filter(f => f !== symbol));
-  }
-  
-  static isFavorite(symbol: string): boolean {
-    return this.getFavorites().includes(symbol);
-  }
-}
-</file>
-
-<file path="frontend/src/services/storage/localStorage.ts">
-export class LocalStorageService {
-  static get<T>(key: string, defaultValue: T): T {
-    try {
-      const item = localStorage.getItem(key);
-      return item ? JSON.parse(item) : defaultValue;
-    } catch {
-      return defaultValue;
-    }
-  }
-  
-  static set<T>(key: string, value: T): void {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch (error) {
-      console.error('LocalStorage set error:', error);
-    }
-  }
-  
-  static remove(key: string): void {
-    localStorage.removeItem(key);
-  }
-}
-</file>
-
-<file path="frontend/src/services/storage/settings.ts">
-import { LocalStorageService } from './localStorage';
-
-export interface AppSettings {
-  theme: 'light' | 'dark';
-  chartSettings: any; // Placeholder for detailed chart settings
-  // Add other settings here
-}
-
-export class SettingsService {
-  private static readonly STORAGE_KEY = 'app-settings';
-
-  static getSettings(): AppSettings {
-    return LocalStorageService.get(this.STORAGE_KEY, {
-      theme: 'dark', // Default theme
-      chartSettings: {}, // Default empty chart settings
-    });
-  }
-
-  static setSettings(settings: Partial<AppSettings>): void {
-    const currentSettings = SettingsService.getSettings();
-    LocalStorageService.set(this.STORAGE_KEY, { ...currentSettings, ...settings });
-  }
-
-  static updateChartSettings(chartSettings: any): void {
-    const currentSettings = SettingsService.getSettings();
-    LocalStorageService.set(this.STORAGE_KEY, { ...currentSettings, chartSettings });
-  }
-}
-</file>
-
-<file path="frontend/src/services/websocket/WebSocketCache.ts">
-/**
- * WEBSOCKET CACHE - 0ms Latenz für Symbol-Daten
- * TradingView-Style LocalStorage-Cache + Live WebSocket-Updates
- */
-
-import { CoinData } from '../../features/trading/types/trading';
-
-interface CachedSymbolData {
-  symbols: CoinData[];
-  tickers: Record<string, any>;
-  timestamp: number;
-  exchange: string;
-}
-
-interface WebSocketMessage {
-  type: 'symbols_initial' | 'ticker_update' | 'ping' | 'pong';
-  exchange?: string;
-  symbols?: any[];
-  tickers?: Record<string, any>;
-  symbol?: string;
-  ticker?: any;
-  timestamp: string;
-  server_time: number;
-}
-
-interface WebSocketConfig {
-  symbolsRefreshInterval: number;    // 5min-24h (User-konfigurierbar)
-  tickerRefreshInterval: number;     // 1s-30s 
-  ohlcRefreshInterval: number;       // 50ms-5s (KRITISCH für Trading!)
-  orderbookRefreshInterval: number;  // 50ms-1s (ULTRA-KRITISCH!)
-  whalesRefreshInterval: number;     // 30s-10min
-  newsRefreshInterval: number;       // 1min-1h
-  aiRefreshInterval: number;         // 10s-5min
-  backgroundUpdates: boolean;        // Background-Updates aktiv
-}
-
-class WebSocketCache {
-  private static instance: WebSocketCache;
-  private connections: Map<string, WebSocket> = new Map();
-  private cache: Map<string, CachedSymbolData> = new Map();
-  private listeners: Map<string, Set<Function>> = new Map();
-  private connectionPromises: Map<string, Promise<WebSocket>> = new Map();
-  private isConnecting: Set<string> = new Set();
-  
-  // ✅ Configuration
-  private readonly baseUrl: string;
-  private readonly reconnectDelay = 2000;
-  private readonly maxReconnectAttempts = 5;
-  private reconnectAttempts: Map<string, number> = new Map();
-  
-  // 🚀 USER-CONFIGURABLE: Cache-Intervalle (aus API-Panel)
-  private config: WebSocketConfig = {
-    symbolsRefreshInterval: 15 * 60 * 1000,     // 15min Standard
-    tickerRefreshInterval: 5 * 1000,            // 5s für Ticker
-    ohlcRefreshInterval: 100,                   // <5ms für Live-Trading!
-    orderbookRefreshInterval: 50,               // <5ms ULTRA-KRITISCH!
-    whalesRefreshInterval: 60 * 1000,           // 1min Whale-Alerts
-    newsRefreshInterval: 10 * 60 * 1000,        // 10min News
-    aiRefreshInterval: 30 * 1000,               // 30s AI-Updates
-    backgroundUpdates: true                     // Background aktiv
-  };
-
-  private constructor() {
-    // ✅ WebSocket-URL aus bestehender API-Config (TypeScript-kompatibel)
-    const apiBaseUrl = (import.meta as any)?.env?.VITE_API_BASE_URL || 'http://localhost:8100';
-    this.baseUrl = apiBaseUrl.replace('http', 'ws');
-    
-    // 🚀 Config aus LocalStorage laden (Persistierung)
-    this.loadConfigFromStorage();
-    
-    console.log('🚀 WebSocketCache initialized:', {
-      baseUrl: this.baseUrl,
-      config: this.config
-    });
-  }
-
-  static getInstance(): WebSocketCache {
-    if (!WebSocketCache.instance) {
-      WebSocketCache.instance = new WebSocketCache();
-    }
-    return WebSocketCache.instance;
-  }
-
-  // ✅ INSTANT ACCESS - 0ms Latenz für gecachte Daten
-  async getSymbols(exchange: string): Promise<CoinData[]> {
-    // ✅ Instant return wenn Cache vorhanden
-    const cached = this.cache.get(exchange);
-    if (cached && this.isDataFresh(cached.timestamp)) {
-      console.log(`⚡ Instant symbols from cache: ${exchange} (${cached.symbols.length} symbols)`);
-      return cached.symbols;
-    }
-
-    // ✅ WebSocket-Verbindung initialisieren falls nötig
-    await this.ensureConnection(exchange);
-
-    // ✅ Auf initiale Daten warten (max 3 Sekunden)
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        console.warn(`⚠️ WebSocket timeout for ${exchange}, falling back to HTTP`);
-        this.fallbackToHTTP(exchange).then(resolve);
-      }, 3000);
-
-      this.onData(exchange, (data) => {
-        clearTimeout(timeout);
-        resolve(data.symbols);
-      });
-    });
-  }
-
-  // ✅ Live Ticker-Updates
-  async getTicker(exchange: string, symbol: string): Promise<any> {
-    const cached = this.cache.get(exchange);
-    if (cached?.tickers?.[symbol]) {
-      return cached.tickers[symbol];
-    }
-    return null;
-  }
-
-  // ✅ Real-Time Updates abonnieren
-  onSymbolsUpdate(exchange: string, callback: (data: CachedSymbolData) => void): () => void {
-    const key = `symbols:${exchange}`;
-    if (!this.listeners.has(key)) {
-      this.listeners.set(key, new Set());
-    }
-    this.listeners.get(key)!.add(callback);
-
-    // Cleanup-Funktion zurückgeben
-    return () => {
-      this.listeners.get(key)?.delete(callback);
-    };
-  }
-
-  // ✅ Ticker-Updates abonnieren
-  onTickerUpdate(exchange: string, callback: (symbol: string, ticker: any) => void): () => void {
-    const key = `ticker:${exchange}`;
-    if (!this.listeners.has(key)) {
-      this.listeners.set(key, new Set());
-    }
-    this.listeners.get(key)!.add(callback);
-
-    return () => {
-      this.listeners.get(key)?.delete(callback);
-    };
-  }
-
-  // ✅ PRIVATE: WebSocket-Verbindung sicherstellen
-  private async ensureConnection(exchange: string): Promise<WebSocket> {
-    const key = exchange;
-    
-    // Bereits verbunden
-    if (this.connections.has(key)) {
-      const ws = this.connections.get(key)!;
-      if (ws.readyState === WebSocket.OPEN) {
-        return ws;
-      }
-    }
-
-    // Bereits am Verbinden
-    if (this.connectionPromises.has(key)) {
-      return this.connectionPromises.get(key)!;
-    }
-
-    // Neue Verbindung erstellen
-    const connectionPromise = this.createConnection(exchange);
-    this.connectionPromises.set(key, connectionPromise);
-
-    try {
-      const ws = await connectionPromise;
-      this.connectionPromises.delete(key);
-      return ws;
-    } catch (error) {
-      this.connectionPromises.delete(key);
-      throw error;
-    }
-  }
-
-  // ✅ PRIVATE: WebSocket-Verbindung erstellen
-  private async createConnection(exchange: string): Promise<WebSocket> {
-    return new Promise((resolve, reject) => {
-      const wsUrl = `${this.baseUrl}/ws/symbols/${exchange}`;
-      console.log(`🔌 Connecting WebSocket: ${wsUrl}`);
-      
-      const ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        console.log(`✅ WebSocket connected: ${exchange}`);
-        this.connections.set(exchange, ws);
-        this.reconnectAttempts.set(exchange, 0);
-        resolve(ws);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data);
-          this.handleMessage(exchange, message);
-        } catch (error) {
-          console.error('Failed to parse WebSocket message:', error);
-        }
-      };
-
-      ws.onclose = (event) => {
-        console.log(`🔌 WebSocket closed: ${exchange} (${event.code})`);
-        this.connections.delete(exchange);
-        
-        // ✅ Auto-Reconnect
-        if (!event.wasClean) {
-          this.scheduleReconnect(exchange);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error(`❌ WebSocket error: ${exchange}`, error);
-        reject(error);
-      };
-
-      // ✅ Connection Timeout
-      setTimeout(() => {
-        if (ws.readyState !== WebSocket.OPEN) {
-          ws.close();
-          reject(new Error(`WebSocket connection timeout: ${exchange}`));
-        }
-      }, 10000);
-    });
-  }
-
-  // ✅ PRIVATE: WebSocket-Messages verarbeiten
-  private handleMessage(exchange: string, message: WebSocketMessage) {
-    switch (message.type) {
-      case 'symbols_initial':
-        console.log(`📦 Received initial data for ${exchange}: ${message.symbols?.length} symbols`);
-        
-        const symbolData: CachedSymbolData = {
-          symbols: this.transformSymbols(message.symbols || []),
-          tickers: message.tickers || {},
-          timestamp: Date.now(),
-          exchange: exchange
-        };
-        
-        this.cache.set(exchange, symbolData);
-        this.notifyListeners(`symbols:${exchange}`, symbolData);
-        break;
-
-      case 'ticker_update':
-        const cached = this.cache.get(exchange);
-        if (cached && message.symbol && message.ticker) {
-          cached.tickers[message.symbol] = message.ticker;
-          cached.timestamp = Date.now();
-          
-          this.notifyListeners(`ticker:${exchange}`, message.symbol, message.ticker);
-        }
-        break;
-
-      case 'ping':
-        // ✅ Pong senden
-        const ws = this.connections.get(exchange);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'pong' }));
-        }
-        break;
-    }
-  }
-
-  // ✅ PRIVATE: Symbol-Daten transformieren (bestehende Logik aus symbols.ts)
-  private transformSymbols(rawSymbols: any[]): CoinData[] {
-    return rawSymbols.map(symbol => ({
-      symbol: this.formatSymbol(symbol.symbol),
-      market: this.formatMarketType(symbol.market_type),
-      price: this.formatPrice(symbol.price || 0),
-      change: symbol.change || '+0.00%',
-      changePercent: symbol.changePercent || 0,
-    })).sort((a, b) => {
-      if (a.market !== b.market) return a.market === 'spot' ? -1 : 1;
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }
-
-  // ✅ PRIVATE: Helper-Funktionen (aus symbols.ts kopiert)
-  private formatSymbol(symbol: string): string {
-    if (symbol.includes('_')) return symbol.replace('_', '/').toUpperCase();
-    if (symbol.endsWith('USDT')) return `${symbol.slice(0, -4)}/USDT`;
-    if (symbol.endsWith('USDC')) return `${symbol.slice(0, -4)}/USDC`;
-    if (symbol.endsWith('BTC')) return `${symbol.slice(0, -3)}/BTC`;
-    return symbol;
-  }
-
-  private formatMarketType(marketType: string): string {
-    const marketMap: Record<string, string> = {
-      'spot': 'spot', 
-      'usdtm': 'USDT-M', 
-      'coinm': 'COIN-M', 
-      'usdcm': 'USDC-M',
-      'USDT-FUTURES': 'USDT-M', 
-      'COIN-FUTURES': 'COIN-M', 
-      'USDC-FUTURES': 'USDC-M',
-      'linear': 'USDT-M',
-      'inverse': 'COIN-M'
-    };
-    return marketMap[marketType.toLowerCase()] || marketType;
-  }
-
-  private formatPrice(price: number): string {
-    if (price === 0) return '0.00';
-    if (price < 0.0001) return price.toFixed(8);
-    if (price < 1) return price.toFixed(6);
-    if (price < 100) return price.toFixed(4);
-    if (price < 1000) return price.toFixed(2);
-    return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  // ✅ PRIVATE: Listener benachrichtigen
-  private notifyListeners(key: string, ...args: any[]) {
-    const listeners = this.listeners.get(key);
-    if (listeners) {
-      listeners.forEach(callback => {
-        try {
-          callback(...args);
-        } catch (error) {
-          console.error('Error in WebSocket listener:', error);
-        }
-      });
-    }
-  }
-
-  // ✅ PRIVATE: Daten-Frische prüfen (5 Minuten TTL)
-  private isDataFresh(timestamp: number): boolean {
-    return Date.now() - timestamp < 5 * 60 * 1000;
-  }
-
-  // ✅ PRIVATE: HTTP-Fallback (nutzt bestehende SymbolsAPI)
-  private async fallbackToHTTP(exchange: string): Promise<CoinData[]> {
-    console.log(`🔄 Falling back to HTTP for ${exchange}`);
-    try {
-      const { SymbolsAPI } = await import('../api/symbols');
-      return await SymbolsAPI.getSymbols(exchange);
-    } catch (error) {
-      console.error('HTTP fallback failed:', error);
-      return [];
-    }
-  }
-
-  // ✅ PRIVATE: Auto-Reconnect Logic
-  private scheduleReconnect(exchange: string) {
-    const attempts = this.reconnectAttempts.get(exchange) || 0;
-    
-    if (attempts >= this.maxReconnectAttempts) {
-      console.error(`❌ Max reconnect attempts reached for ${exchange}`);
-      return;
-    }
-
-    const delay = this.reconnectDelay * Math.pow(2, attempts); // Exponential backoff
-    console.log(`⏳ Reconnecting ${exchange} in ${delay}ms (attempt ${attempts + 1})`);
-
-    setTimeout(async () => {
-      try {
-        await this.ensureConnection(exchange);
-        console.log(`✅ Reconnected ${exchange}`);
-      } catch (error) {
-        console.error(`❌ Reconnect failed for ${exchange}:`, error);
-        this.reconnectAttempts.set(exchange, attempts + 1);
-        this.scheduleReconnect(exchange);
-      }
-    }, delay);
-  }
-
-  // ✅ PRIVATE: Helper für onData
-  private onData(exchange: string, callback: (data: CachedSymbolData) => void): void {
-    const cleanup = this.onSymbolsUpdate(exchange, callback);
-    
-    // Check if data already exists
-    const cached = this.cache.get(exchange);
-    if (cached) {
-      callback(cached);
-    }
-  }
-
-  // 🚀 PUBLIC: Cache-Intervalle konfigurieren (aus API-Panel)
-  updateConfig(newConfig: Partial<WebSocketConfig>): void {
-    this.config = { ...this.config, ...newConfig };
-    
-    // LocalStorage für Persistierung
-    localStorage.setItem('websocket_cache_config', JSON.stringify(this.config));
-    
-    console.log('⚙️ WebSocket-Config updated:', {
-      symbolsInterval: `${this.config.symbolsRefreshInterval / 1000}s`,
-      tickerInterval: `${this.config.tickerRefreshInterval / 1000}s`, 
-      ohlcInterval: `${this.config.ohlcRefreshInterval}ms`,
-      orderbookInterval: `${this.config.orderbookRefreshInterval}ms`,
-      backgroundUpdates: this.config.backgroundUpdates
-    });
-
-    // Backend über neue Intervalle informieren
-    this.notifyBackendConfig();
-  }
-
-  // 🚀 PUBLIC: Aktuelle Config abrufen
-  getConfig(): WebSocketConfig {
-    return { ...this.config };
-  }
-
-  // 🚀 PRIVATE: Config aus LocalStorage laden
-  private loadConfigFromStorage(): void {
-    try {
-      const stored = localStorage.getItem('websocket_cache_config');
-      if (stored) {
-        const parsedConfig = JSON.parse(stored);
-        this.config = { ...this.config, ...parsedConfig };
-        console.log('📱 Config loaded from LocalStorage:', this.config);
-      }
-    } catch (error) {
-      console.warn('Failed to load config from LocalStorage:', error);
-    }
-  }
-
-  // 🚀 PRIVATE: Backend über neue Intervalle informieren
-  private notifyBackendConfig(): void {
-    this.connections.forEach((ws, exchange) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(JSON.stringify({
-            type: 'config_update',
-            config: this.config,
-            timestamp: Date.now()
-          }));
-          console.log(`📡 Config sent to backend: ${exchange}`);
-        } catch (error) {
-          console.error(`Failed to send config to ${exchange}:`, error);
-        }
-      }
-    });
-  }
-
-  // ✅ PUBLIC: Cache-Status abrufen
-  getCacheStatus(): Record<string, { connected: boolean; dataAge: number; symbolCount: number }> {
-    const status: Record<string, any> = {};
-    
-    this.cache.forEach((data, exchange) => {
-      const ws = this.connections.get(exchange);
-      status[exchange] = {
-        connected: ws?.readyState === WebSocket.OPEN,
-        dataAge: Date.now() - data.timestamp,
-        symbolCount: data.symbols.length,
-        tickerCount: Object.keys(data.tickers).length,
-        config: this.config  // Config auch im Status
-      };
-    });
-    
-    return status;
-  }
-
-  // ✅ PUBLIC: Cleanup bei Komponenten-Unmount
-  cleanup() {
-    this.connections.forEach((ws, exchange) => {
-      console.log(`🛑 Closing WebSocket: ${exchange}`);
-      ws.close();
-    });
-    this.connections.clear();
-    this.cache.clear();
-    this.listeners.clear();
-  }
-}
-
-// ✅ Singleton Export
-export const webSocketCache = WebSocketCache.getInstance();
-
-// ✅ Type Exports
-export type { CachedSymbolData, WebSocketMessage };
-</file>
-
-<file path="frontend/src/services/performanceMetrics.ts">
-/**
- * Performance Metrics Service
- * Aggregiert alle Ultra-Low-Latency Metriken für das Dashboard
- */
-
-import { UltraFastParser } from '../lib/ultraFastParsing';
-import { DirectDOMUpdater } from '../lib/directDOMUpdater';
-import { UltraLowLatencyWebSocket } from '../lib/ultraLowLatencyWebSocket';
-
-export interface PerformanceMetrics {
-  // SLA Compliance
-  slaCompliance: number; // percentage
-  slaStatus: 'ACHIEVED' | 'WARNING' | 'CRITICAL';
-  
-  // Core Latencies (in ms)
-  jsonParseLatency: number;
-  domUpdateLatency: number;
-  webSocketLatency: number;
-  workerProcessingLatency: number;
-  
-  // Aggregate metrics
-  totalFrontendLatency: number;
-  fastApiLatency: number;
-  
-  // Performance counters
-  totalMessages: number;
-  messagesPerSecond: number;
-  
-  // System health
-  systemStatus: 'OPTIMAL' | 'STABLE' | 'DEGRADED';
-  lastUpdated: number;
-}
-
-export class PerformanceMetricsService {
-  private static instance: PerformanceMetricsService;
-  private metrics: PerformanceMetrics;
-  private subscribers: ((metrics: PerformanceMetrics) => void)[] = [];
-  private updateInterval: NodeJS.Timeout | null = null;
-  private webSocketClient: UltraLowLatencyWebSocket | null = null;
-  
-  // Performance history for trends
-  private metricsHistory: PerformanceMetrics[] = [];
-  private readonly MAX_HISTORY = 60; // 60 seconds of history
-
-  constructor() {
-    this.metrics = this.getInitialMetrics();
-    this.startPerformanceCollection();
-  }
-
-  static getInstance(): PerformanceMetricsService {
-    if (!PerformanceMetricsService.instance) {
-      PerformanceMetricsService.instance = new PerformanceMetricsService();
-    }
-    return PerformanceMetricsService.instance;
-  }
-
-  /**
-   * Startet kontinuierliche Metriken-Sammlung
-   */
-  private startPerformanceCollection(): void {
-    // Update metrics every 100ms for ultra-low-latency monitoring
-    this.updateInterval = setInterval(() => {
-      this.collectMetrics();
-      this.notifySubscribers();
-    }, 100);
-  }
-
-  /**
-   * Sammelt Metriken von allen Ultra-Low-Latency Komponenten
-   */
-  private collectMetrics(): void {
-    // Get metrics from all components
-    const parsingMetrics = UltraFastParser.getParsingMetrics();
-    const domMetrics = DirectDOMUpdater.getDOMUpdateMetrics();
-    const wsMetrics = this.webSocketClient?.getPerformanceMetrics() || {
-      averageLatency: 0,
-      connectionLatency: 0,
-      messagesSent: 0,
-      messagesReceived: 0,
-      reconnectCount: 0
-    };
-
-    // Calculate core latencies
-    const jsonParseLatency = parsingMetrics.lastParseTime || parsingMetrics.averageParseTime || 0;
-    const domUpdateLatency = domMetrics.lastUpdateTime || domMetrics.averagePriceUpdateTime || 0;
-    const webSocketLatency = wsMetrics.averageLatency || 0;
-    const workerProcessingLatency = this.getWorkerLatency();
-
-    // Calculate total frontend latency
-    const totalFrontendLatency = jsonParseLatency + domUpdateLatency + webSocketLatency + workerProcessingLatency;
-
-    // Mock FastAPI latency (would be real in production)
-    const fastApiLatency = Math.random() * 2; // 0-2ms for ultra-fast API
-
-    // Calculate SLA compliance
-    const slaCompliance = this.calculateSLACompliance(totalFrontendLatency, fastApiLatency);
-    
-    // Determine system status
-    const systemStatus = totalFrontendLatency < 3 ? 'OPTIMAL' : 
-                        totalFrontendLatency < 5 ? 'STABLE' : 'DEGRADED';
-
-    // Update metrics
-    this.metrics = {
-      slaCompliance,
-      slaStatus: slaCompliance >= 95 ? 'ACHIEVED' : slaCompliance >= 85 ? 'WARNING' : 'CRITICAL',
-      
-      jsonParseLatency: Number(jsonParseLatency.toFixed(3)),
-      domUpdateLatency: Number(domUpdateLatency.toFixed(3)),
-      webSocketLatency: Number(webSocketLatency.toFixed(3)),
-      workerProcessingLatency: Number(workerProcessingLatency.toFixed(3)),
-      
-      totalFrontendLatency: Number(totalFrontendLatency.toFixed(3)),
-      fastApiLatency: Number(fastApiLatency.toFixed(3)),
-      
-      totalMessages: parsingMetrics.totalMessages + wsMetrics.messagesReceived,
-      messagesPerSecond: this.calculateMessagesPerSecond(),
-      
-      systemStatus: systemStatus as 'OPTIMAL' | 'STABLE' | 'DEGRADED',
-      lastUpdated: Date.now()
-    };
-
-    // Add to history
-    this.addToHistory(this.metrics);
-  }
-
-  /**
-   * Berechnet SLA Compliance (<5ms Ziel)
-   */
-  private calculateSLACompliance(frontendLatency: number, apiLatency: number): number {
-    const totalLatency = frontendLatency + apiLatency;
-    const targetSLA = 5.0; // 5ms target
-    
-    if (totalLatency <= targetSLA) {
-      return 100;
-    } else if (totalLatency <= targetSLA * 1.5) { // 7.5ms
-      return Math.max(85, 100 - ((totalLatency - targetSLA) / targetSLA) * 15);
-    } else {
-      return Math.max(0, 85 - ((totalLatency - targetSLA * 1.5) / targetSLA) * 20);
-    }
-  }
-
-  /**
-   * Mock Worker Latency (würde echte Worker Performance messen)
-   */
-  private getWorkerLatency(): number {
-    // In production: measure actual web worker processing time
-    return Math.random() * 0.5; // 0-0.5ms
-  }
-
-  /**
-   * Berechnet Nachrichten pro Sekunde
-   */
-  private calculateMessagesPerSecond(): number {
-    if (this.metricsHistory.length < 2) return 0;
-    
-    const recent = this.metricsHistory.slice(-10); // Last 1 second
-    const oldestMessages = recent[0]?.totalMessages || 0;
-    const newestMessages = recent[recent.length - 1]?.totalMessages || 0;
-    const timeDiff = (recent[recent.length - 1]?.lastUpdated || 0) - (recent[0]?.lastUpdated || 0);
-    
-    return timeDiff > 0 ? ((newestMessages - oldestMessages) / timeDiff) * 1000 : 0;
-  }
-
-  /**
-   * Fügt Metriken zur Historie hinzu
-   */
-  private addToHistory(metrics: PerformanceMetrics): void {
-    this.metricsHistory.push({ ...metrics });
-    
-    if (this.metricsHistory.length > this.MAX_HISTORY) {
-      this.metricsHistory.shift();
-    }
-  }
-
-  /**
-   * Registriert WebSocket Client für Performance-Messung
-   */
-  setWebSocketClient(client: UltraLowLatencyWebSocket): void {
-    this.webSocketClient = client;
-  }
-
-  /**
-   * Aktuelle Metriken abrufen
-   */
-  getMetrics(): PerformanceMetrics {
-    return { ...this.metrics };
-  }
-
-  /**
-   * Performance-Historie abrufen
-   */
-  getHistory(): PerformanceMetrics[] {
-    return [...this.metricsHistory];
-  }
-
-  /**
-   * Subscriber für Metriken-Updates
-   */
-  subscribe(callback: (metrics: PerformanceMetrics) => void): () => void {
-    this.subscribers.push(callback);
-    
-    // Return unsubscribe function
-    return () => {
-      const index = this.subscribers.indexOf(callback);
-      if (index > -1) {
-        this.subscribers.splice(index, 1);
-      }
-    };
-  }
-
-  /**
-   * Benachrichtigt alle Subscriber über Updates
-   */
-  private notifySubscribers(): void {
-    this.subscribers.forEach(callback => {
-      try {
-        callback(this.metrics);
-      } catch (error) {
-        console.error('Error notifying performance metrics subscriber:', error);
-      }
-    });
-  }
-
-  /**
-   * Initial-Metriken
-   */
-  private getInitialMetrics(): PerformanceMetrics {
-    return {
-      slaCompliance: 100,
-      slaStatus: 'ACHIEVED',
-      
-      jsonParseLatency: 0,
-      domUpdateLatency: 0,
-      webSocketLatency: 0,
-      workerProcessingLatency: 0,
-      
-      totalFrontendLatency: 0,
-      fastApiLatency: 0,
-      
-      totalMessages: 0,
-      messagesPerSecond: 0,
-      
-      systemStatus: 'OPTIMAL',
-      lastUpdated: Date.now()
-    };
-  }
-
-  /**
-   * Cleanup
-   */
-  destroy(): void {
-    if (this.updateInterval) {
-      clearInterval(this.updateInterval);
-      this.updateInterval = null;
-    }
-    this.subscribers = [];
-    this.metricsHistory = [];
-  }
-}
-
-// Export singleton instance
-export const performanceMetrics = PerformanceMetricsService.getInstance();
-</file>
-
-<file path="frontend/src/services/UrlManager.ts">
-class UrlManager {
-  private static urlCache: Map<string, any> = new Map();
-  private static lastFetchTime: number = 0;
-  private static readonly CACHE_TTL = 30000; // 30 seconds
-  private static readonly MAX_RETRIES = 3;
-  
-  // Dynamische TTL basierend auf Provider-Typ + Environment Variables (Enterprise Optimierung)
-  private static PROVIDER_TTL_CONFIG: Record<string, number> = {
-    // Environment-based TTL Defaults mit Fallbacks
-    'binance': parseInt((import.meta as any)?.env?.VITE_TTL_BINANCE || '10000'),
-    'bitget': parseInt((import.meta as any)?.env?.VITE_TTL_BITGET || '10000'),
-    'etherscan': parseInt((import.meta as any)?.env?.VITE_TTL_ETHERSCAN || '60000'),
-    'bscscan': parseInt((import.meta as any)?.env?.VITE_TTL_BSCSCAN || '60000'),
-    'polygonscan': parseInt((import.meta as any)?.env?.VITE_TTL_POLYGONSCAN || '60000'),
-    'coingecko': parseInt((import.meta as any)?.env?.VITE_TTL_COINGECKO || '30000'),
-    'telegram': parseInt((import.meta as any)?.env?.VITE_TTL_TELEGRAM || '120000')
-  };
-
-  // TTL-Config Cache Management
-  private static ttlConfigCache: Record<string, number> | null = null;
-  private static ttlConfigLastFetch: number = 0;
-  private static readonly TTL_CONFIG_CACHE_TTL = 60000; // 1 min cache für TTL-Config selbst
-  
-  // Cache-Statistiken für Monitoring
-  private static cacheStats = {
-    hits: 0,
-    misses: 0,
-    fallbacks: 0,
-    errors: 0,
-    totalRequests: 0,
-    averageResponseTime: 0
-  };
-
-  static async getUrl(provider: string, endpointType: string): Promise<string> {
-    const startTime = performance.now();
-    const cacheKey = `${provider}-${endpointType}`;
-    const currentTime = Date.now();
-    
-    // Statistiken aktualisieren
-    this.cacheStats.totalRequests++;
-    
-    // Dynamische TTL basierend auf Provider
-    const providerTtl = this.PROVIDER_TTL_CONFIG[provider] || this.CACHE_TTL;
-    
-    // 1. Cache prüfen (mit dynamischem TTL)
-    if (this.urlCache.has(cacheKey) && 
-        (currentTime - this.lastFetchTime) < providerTtl) {
-      this.cacheStats.hits++;
-      this.updateResponseTimeStats(performance.now() - startTime);
-      return this.urlCache.get(cacheKey);
-    }
-    
-    // Cache MISS
-    this.cacheStats.misses++;
-    
-    // 2. Backend versuchen (mit Retry-Logic)
-    for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
-      try {
-        const response = await fetch(`/api/settings/urls/${provider}`, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(2000) // 2s timeout
-        });
-        
-        if (response.ok) {
-          const config = await response.json();
-          const url = config[endpointType];
-          
-          // Cache aktualisieren mit provider-spezifischem Timestamp
-          this.urlCache.set(cacheKey, url);
-          this.urlCache.set(`${cacheKey}_timestamp`, currentTime);
-          this.lastFetchTime = currentTime;
-          
-          console.log(`✅ URL fetched from backend (attempt ${attempt}, TTL: ${providerTtl}ms): ${url}`);
-          this.updateResponseTimeStats(performance.now() - startTime);
-          return url;
-        }
-      } catch (error) {
-        console.warn(`⚠️ Backend attempt ${attempt} failed:`, error);
-        if (attempt === this.MAX_RETRIES) {
-          this.cacheStats.errors++;
-          break; // Fallback verwenden
-        }
-        await this.delay(100 * attempt); // Exponential backoff
-      }
-    }
-    
-    // 3. Environment Variables Fallback
-    const envKey = `VITE_${provider.toUpperCase()}_${endpointType.toUpperCase()}`;
-    const envUrl = (import.meta as any)?.env?.[envKey];
-    
-    if (envUrl) {
-      console.log(`🔄 Using environment variable fallback (TTL: ${providerTtl}ms): ${envUrl}`);
-      this.urlCache.set(cacheKey, envUrl);
-      this.urlCache.set(`${cacheKey}_timestamp`, currentTime);
-      this.cacheStats.fallbacks++;
-      this.updateResponseTimeStats(performance.now() - startTime);
-      return envUrl;
-    }
-    
-    // 4. Ultimate Hardcoded Fallback
-    const fallbackUrl = this.getHardcodedFallback(provider, endpointType);
-    console.log(`🆘 Using hardcoded fallback (TTL: ${providerTtl}ms): ${fallbackUrl}`);
-    this.urlCache.set(cacheKey, fallbackUrl);
-    this.urlCache.set(`${cacheKey}_timestamp`, currentTime);
-    this.cacheStats.fallbacks++;
-    this.updateResponseTimeStats(performance.now() - startTime);
-    return fallbackUrl;
-  }
-  
-  static async getMultipleUrls(requests: Array<{provider: string, endpointType: string}>): Promise<Map<string, string>> {
-    const results = new Map();
-    const toFetch: Array<{provider: string, endpointType: string}> = [];
-    
-    // Prüfe was gecacht ist
-    for (const {provider, endpointType} of requests) {
-      const cacheKey = `${provider}-${endpointType}`;
-      if (this.isUrlCached(cacheKey)) {
-        results.set(cacheKey, this.urlCache.get(cacheKey));
-      } else {
-        toFetch.push({provider, endpointType});
-      }
-    }
-    
-    // Parallel fetch für nicht gecachte URLs
-    if (toFetch.length > 0) {
-      const fetchPromises = toFetch.map(({provider, endpointType}) => 
-        this.getUrl(provider, endpointType)
-      );
-      
-      const fetchedUrls = await Promise.all(fetchPromises);
-      toFetch.forEach(({provider, endpointType}, index) => {
-        const cacheKey = `${provider}-${endpointType}`;
-        results.set(cacheKey, fetchedUrls[index]);
-      });
-    }
-    
-    return results;
-  }
-  
-  // Preloading für kritische URLs beim App-Start
-  static async preloadCriticalUrls(): Promise<void> {
-    const criticalUrls = [
-      {provider: 'binance', endpointType: 'websocket'},
-      {provider: 'bitget', endpointType: 'websocket'},
-      {provider: 'binance', endpointType: 'rest'},
-      {provider: 'bitget', endpointType: 'rest'}
-    ];
-    
-    console.time('preloadCriticalUrls');
-    await this.getMultipleUrls(criticalUrls);
-    console.timeEnd('preloadCriticalUrls');
-  }
-  
-  // ==================== TTL-CONFIG MANAGEMENT ====================
-  
-  // Backend TTL-Config Loading (3-stufige Hierarchie)
-  static async loadTtlConfig(): Promise<void> {
-    const currentTime = Date.now();
-    
-    // TTL-Config selbst cachen (1 min)
-    if (this.ttlConfigCache && 
-        (currentTime - this.ttlConfigLastFetch) < this.TTL_CONFIG_CACHE_TTL) {
-      // Verwende gecachte TTL-Config
-      this.PROVIDER_TTL_CONFIG = { ...this.PROVIDER_TTL_CONFIG, ...this.ttlConfigCache };
-      return;
-    }
-    
-    try {
-      // 1. Versuch: Backend TTL-Config laden (Admin-Panel Priorität)
-      const response = await fetch('/api/settings/ttl-config', {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(5000) // 5s timeout für TTL-Config
-      });
-      
-      if (response.ok) {
-        const config = await response.json();
-        const backendTtlConfig = config.providers || {};
-        
-        // Backend-Config hat höchste Priorität
-        this.PROVIDER_TTL_CONFIG = { ...this.PROVIDER_TTL_CONFIG, ...backendTtlConfig };
-        this.ttlConfigCache = backendTtlConfig;
-        this.ttlConfigLastFetch = currentTime;
-        
-        console.log('🔧 TTL Config loaded from backend:', backendTtlConfig);
-        return;
-      }
-    } catch (error) {
-      console.warn('⚠️ Backend TTL config loading failed, using environment/defaults:', error);
-    }
-    
-    // 2. Fallback: Environment Variables (bereits geladen in Constructor)
-    // 3. Ultimate Fallback: Hardcoded Defaults (bereits als Fallback in Environment Variables)
-    console.log('🔄 Using environment/default TTL config:', this.PROVIDER_TTL_CONFIG);
-  }
-  
-  // Dynamic TTL Update (Admin-Panel Support)
-  static async updateTtlConfig(newConfig: Record<string, number>): Promise<boolean> {
-    try {
-      const response = await fetch('/api/settings/ttl-config', {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          providers: newConfig,
-          admin_user: 'frontend-admin',
-          reason: 'Frontend TTL configuration update'
-        }),
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Lokale TTL-Config sofort aktualisieren
-        this.PROVIDER_TTL_CONFIG = { ...this.PROVIDER_TTL_CONFIG, ...newConfig };
-        this.ttlConfigCache = { ...this.ttlConfigCache, ...newConfig };
-        this.ttlConfigLastFetch = Date.now();
-        
-        console.log('✅ TTL Config updated successfully:', result);
-        return true;
-      } else {
-        console.error('❌ TTL Config update failed:', response.statusText);
-        return false;
-      }
-    } catch (error) {
-      console.error('❌ TTL Config update error:', error);
-      return false;
-    }
-  }
-  
-  // TTL für spezifischen Provider aktualisieren
-  static async updateProviderTtl(provider: string, ttl: number): Promise<boolean> {
-    try {
-      const response = await fetch(`/api/settings/ttl-config/${provider}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          ttl: ttl,
-          admin_user: 'frontend-admin',
-          reason: `TTL update for ${provider} to ${ttl}ms`
-        }),
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Lokale TTL-Config sofort aktualisieren
-        this.PROVIDER_TTL_CONFIG[provider] = ttl;
-        if (this.ttlConfigCache) {
-          this.ttlConfigCache[provider] = ttl;
-        }
-        
-        console.log(`✅ TTL for ${provider} updated to ${ttl}ms:`, result);
-        return true;
-      } else {
-        console.error(`❌ TTL update for ${provider} failed:`, response.statusText);
-        return false;
-      }
-    } catch (error) {
-      console.error(`❌ TTL update for ${provider} error:`, error);
-      return false;
-    }
-  }
-  
-  // TTL-Config abrufen (für Admin-Panel)
-  static getTtlConfig(): Record<string, number> {
-    return { ...this.PROVIDER_TTL_CONFIG };
-  }
-  
-  // TTL-Config aus Backend abrufen (ohne Cache)
-  static async fetchTtlConfigFromBackend(): Promise<Record<string, number> | null> {
-    try {
-      const response = await fetch('/api/settings/ttl-config', {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        const config = await response.json();
-        return config.providers || {};
-      }
-      return null;
-    } catch (error) {
-      console.error('Error fetching TTL config from backend:', error);
-      return null;
-    }
-  }
-
-  // Cache-Management
-  static invalidateCache(): void {
-    this.urlCache.clear();
-    this.lastFetchTime = 0;
-    // TTL-Config Cache auch invalidieren
-    this.ttlConfigCache = null;
-    this.ttlConfigLastFetch = 0;
-    // Cache-Statistiken zurücksetzen
-    this.cacheStats = {
-      hits: 0,
-      misses: 0,
-      fallbacks: 0,
-      errors: 0,
-      totalRequests: 0,
-      averageResponseTime: 0
-    };
-    console.log('🗑️ Frontend URL cache and TTL config invalidated');
-  }
-  
-  // Cache-Statistiken für Monitoring
-  static getCacheStats() {
-    const hitRatio = this.cacheStats.totalRequests > 0 
-      ? (this.cacheStats.hits / this.cacheStats.totalRequests * 100).toFixed(2)
-      : '0.00';
-    
-    return {
-      ...this.cacheStats,
-      hitRatioPercent: parseFloat(hitRatio),
-      status: parseFloat(hitRatio) > 80 ? 'excellent' : parseFloat(hitRatio) > 50 ? 'good' : 'poor'
-    };
-  }
-  
-  // Response Time Statistiken aktualisieren
-  private static updateResponseTimeStats(responseTime: number): void {
-    const currentAvg = this.cacheStats.averageResponseTime;
-    const totalRequests = this.cacheStats.totalRequests;
-    
-    // Rolling average berechnen
-    this.cacheStats.averageResponseTime = totalRequests > 1
-      ? ((currentAvg * (totalRequests - 1)) + responseTime) / totalRequests
-      : responseTime;
-  }
-  
-  // Hilfsfunktionen
-  private static isUrlCached(cacheKey: string): boolean {
-    return this.urlCache.has(cacheKey) && 
-           (Date.now() - this.lastFetchTime) < this.CACHE_TTL;
-  }
-  
-  private static delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-  
-  private static getHardcodedFallback(provider: string, endpointType: string): string {
-    const fallbacks: Record<string, Record<string, string>> = {
-      binance: {
-        rest: 'https://api.binance.com',
-        websocket: 'wss://stream.binance.com:9443/ws'
-      },
-      bitget: {
-        rest: 'https://api.bitget.com',
-        websocket: 'wss://ws.bitget.com/spot/v1/stream'
-      }
-    };
-    
-    return fallbacks[provider]?.[endpointType] || '';
-  }
-}
-
-export default UrlManager;
-</file>
-
-<file path="frontend/src/shared/config/domainLanes.ts">
-export type Lane = 'FAST'|'MIDDLE'|'SLOW';
-
-export type Domain =
-  | 'KLINE_UPDATE'|'ORDERBOOK_UPDATE'|'TRADE_UPDATE'
-  | 'TICKER_UPDATE'|'SYMBOLS_UPDATE'|'SETTINGS_UPDATE'
-  | 'WEBSOCKET_STATUS'|'WEBSOCKET_MESSAGE';
-
-export interface DomainConfig {
-  lane: Lane;
-  keyOf: (payload: any) => string;
-  reducer?: (batch: any[], prev: any) => any;
-}
-
-export const DOMAIN_CONFIG: Record<Domain, DomainConfig> = {
-  // FAST Lane: Charts, OrderBook, Trades (rAF-Batched)
-  KLINE_UPDATE:    { 
-    lane: 'FAST', 
-    keyOf: p => `kline:${p.symbol}:${p.interval || '1m'}`,
-    reducer: (batch) => batch[batch.length - 1] // Latest candle wins
-  },
-  ORDERBOOK_UPDATE: { 
-    lane: 'FAST', 
-    keyOf: p => `ob:${p.symbol}:${p.exchange}`,
-    reducer: (batch) => batch[batch.length - 1] // Latest orderbook wins
-  },
-  TRADE_UPDATE: { 
-    lane: 'FAST', 
-    keyOf: p => `trades:${p.symbol}:${p.exchange}`,
-    reducer: (batch) => batch // Keep all trades in batch
-  },
-  
-  // MIDDLE Lane: Ticker, Symbols (Microtask-Batched)
-  TICKER_UPDATE:   { 
-    lane: 'MIDDLE', 
-    keyOf: p => `ticker:${p.symbol}:${p.exchange}`
-  },
-  SYMBOLS_UPDATE:  { 
-    lane: 'MIDDLE', 
-    keyOf: p => `symbols:${p.exchange || 'all'}`
-  },
-  
-  // FAST Lane: Settings für Trading - sofortige L/H Button Updates!
-  SETTINGS_UPDATE: { 
-    lane: 'FAST', 
-    keyOf: _ => 'settings',
-    reducer: (batch) => batch[batch.length - 1] // Latest settings win
-  },
-  WEBSOCKET_STATUS: { 
-    lane: 'MIDDLE', 
-    keyOf: _ => 'ws_status' 
-  },
-  WEBSOCKET_MESSAGE: { 
-    lane: 'MIDDLE', 
-    keyOf: p => `ws_msg:${p.type || 'unknown'}`
-  },
-};
-</file>
-
 <file path="frontend/src/shared/error/ErrorBoundary.tsx">
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { Button } from '../ui/button';
@@ -81526,718 +76633,6 @@ export class ErrorBoundary extends Component<Props, State> {
     return this.props.children;
   }
 }
-</file>
-
-<file path="frontend/src/shared/events/bridges/laneBridge.ts">
-import { DOMAIN_CONFIG, Domain } from '../../config/domainLanes';
-import { eventBus } from '../EventBus';
-import { fastPush, middlePush, slowReplace, slowUpsertMerge } from '../../state/laneStores';
-
-// Duplicate event prevention
-const seenEventIds = new Set<string>();
-
-function isEventSeen(eventId?: string): boolean {
-  return !!eventId && seenEventIds.has(eventId);
-}
-
-function markEventSeen(eventId?: string) {
-  if (!eventId) return;
-  seenEventIds.add(eventId);
-  
-  // Prevent memory leak: clear old IDs periodically
-  if (seenEventIds.size > 10000) {
-    seenEventIds.clear();
-  }
-}
-
-export function initLaneBridge() {
-  console.log('[LaneBridge] Initializing event routing...');
-  
-  // Subscribe to all configured domain events
-  (Object.keys(DOMAIN_CONFIG) as Domain[]).forEach(domain => {
-    eventBus.subscribe<any>(domain, (payload) => {
-      // Skip duplicate events
-      if (!payload || isEventSeen(payload.eventId)) {
-        return;
-      }
-      
-      const config = DOMAIN_CONFIG[domain];
-      const key = config.keyOf(payload);
-      
-      // Route to appropriate lane
-      switch (config.lane) {
-        case 'FAST':
-          fastPush(key, payload, config.reducer);
-          break;
-          
-        case 'MIDDLE':
-          middlePush(key, payload);
-          break;
-          
-        case 'SLOW': {
-          const action = payload.action as string | undefined;
-          if (action === 'loaded' || action === 'sync') {
-            slowReplace(key, payload.settings ?? payload);
-          } else {
-            slowUpsertMerge(key, payload.settings ?? payload);
-          }
-          break;
-        }
-        
-        default:
-          console.warn(`[LaneBridge] Unknown lane: ${config.lane} for domain: ${domain}`);
-      }
-      
-      // Mark event as processed
-      markEventSeen(payload.eventId);
-    });
-  });
-  
-  console.log(`[LaneBridge] Registered ${Object.keys(DOMAIN_CONFIG).length} domain routes`);
-}
-
-// Debug: Get bridge statistics
-export function getLaneBridgeStats() {
-  return {
-    seenEventsCount: seenEventIds.size,
-    registeredDomains: Object.keys(DOMAIN_CONFIG).length,
-    domainConfig: DOMAIN_CONFIG
-  };
-}
-</file>
-
-<file path="frontend/src/shared/events/bootstrap.ts">
-/**
- * EVENT-SYSTEM INTEGRATION
- * Verbindet bestehendes WebSocketService mit neuem Event-System
- */
-
-import { WebSocketService } from '../../services/api/websocket';
-import { routeInbound, emitWsStatus } from './EventRouter';
-import { initLaneBridge } from './bridges/laneBridge';
-
-let isBootstrapped = false;
-
-/**
- * Event-System initialisieren und mit WebSocketService verbinden
- */
-export function bootstrapEvents(): void {
-  // Nur einmal initialisieren
-  if (isBootstrapped) {
-    console.warn('[EventBus] Already bootstrapped');
-    return;
-  }
-
-  // Initialize Lane Bridge first
-  initLaneBridge();
-
-  const wsService = WebSocketService.getInstance();
-
-  // INTEGRATION: Alle WebSocket-Messages zu Event-Router weiterleiten
-  wsService.subscribe('message', (msg: any) => {
-    routeInbound(msg);
-  });
-
-  // INTEGRATION: WebSocket-Status-Events weiterleiten
-  wsService.subscribe('connected', () => {
-    emitWsStatus({ 
-      status: 'connected',
-      source: 'websocket'
-    });
-  });
-
-  wsService.subscribe('disconnected', () => {
-    emitWsStatus({ 
-      status: 'disconnected',
-      source: 'websocket'
-    });
-  });
-
-  wsService.subscribe('error', (error: any) => {
-    emitWsStatus({ 
-      status: 'error', 
-      error,
-      source: 'websocket'
-    });
-  });
-
-  isBootstrapped = true;
-  console.log('[EventBus] System bootstrapped with Lane Bridge');
-}
-
-/**
- * Event-System zurücksetzen (für Testing)
- */
-export function resetEventSystem(): void {
-  isBootstrapped = false;
-  console.log('[EventBus] System reset');
-}
-</file>
-
-<file path="frontend/src/shared/events/EventBus.ts">
-/**
- * ZENTRALE EVENT-VERTEILUNG
- * Typsichere Event-Kommunikation zwischen Komponenten
- */
-
-export type EventType =
-  | 'WEBSOCKET_STATUS' | 'WEBSOCKET_MESSAGE'
-  | 'SYMBOLS_UPDATE' | 'TICKER_UPDATE'
-  | 'TRADE_UPDATE' | 'ORDERBOOK_UPDATE' | 'KLINE_UPDATE'
-  | 'SETTINGS_UPDATE';
-
-type CB<T = any> = (payload: T) => void;
-
-export class EventBus {
-  private listeners = new Map<EventType, Set<CB>>();
-
-  /**
-   * Event-Subscription mit automatischem Cleanup
-   * @param type Event-Typ
-   * @param callback Handler-Funktion
-   * @returns Unsubscribe-Funktion
-   */
-  subscribe<T>(type: EventType, callback: CB<T>): () => void {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, new Set());
-    }
-    this.listeners.get(type)!.add(callback as CB);
-    
-    // Unsubscribe-Funktion zurückgeben
-    return () => this.listeners.get(type)?.delete(callback as CB);
-  }
-
-  /**
-   * Event emittieren
-   * @param type Event-Typ  
-   * @param payload Event-Daten
-   */
-  emit<T>(type: EventType, payload: T): void {
-    const set = this.listeners.get(type);
-    if (!set) return;
-    
-    set.forEach(fn => {
-      try {
-        (fn as CB<T>)(payload);
-      } catch (error) {
-        console.error('[EventBus] Handler error:', type, error);
-      }
-    });
-  }
-
-  /**
-   * Prüfe ob Subscribers für Event-Type existieren
-   * @param type Event-Typ
-   * @returns true wenn Subscriber existieren
-   */
-  hasSubscribers(type: EventType): boolean {
-    const set = this.listeners.get(type);
-    return set ? set.size > 0 : false;
-  }
-
-  /**
-   * Debug-Info für Entwicklung
-   */
-  getStats(): { totalTypes: number; totalListeners: number } {
-    let totalListeners = 0;
-    this.listeners.forEach(set => totalListeners += set.size);
-    
-    return {
-      totalTypes: this.listeners.size,
-      totalListeners
-    };
-  }
-}
-
-// Globale Event-Bus-Instanz
-export const eventBus = new EventBus();
-</file>
-
-<file path="frontend/src/shared/events/EventRouter.ts">
-/**
- * MESSAGE-PATTERN-ROUTING mit 8ms Coalescing
- * Intelligente Weiterleitung von WebSocket-Messages zu Event-Types
- * 
- * COALESCING-STRATEGIE:
- * - ORDERBOOK/TICKER/KLINES: 8ms Coalescing (nur letzter Stand)
- * - TRADES/ORDERS: SOFORT (kein Coalescing)
- */
-
-import { eventBus } from './EventBus';
-import { schedule } from '@/lib/rafScheduler';
-import { measureLag } from '@/lib/metrics';
-
-// Pattern-Matching für Message-Types
-const TYPE_PATTERNS = {
-  symbols: /symbols_initial|symbols_update|coinlist|symbollist/i,
-  ticker: /ticker_update|ticker|24hrticker/i,
-  trade: /trade|aggtrade|trades/i,
-  orderbook: /orderbook|depth/i,
-  kline: /kline|candle/i
-};
-
-/**
- * Eingehende WebSocket-Message zu Events routen
- * MIT 8MS COALESCING + SAFEGUARDS!
- * @param msg WebSocket-Message
- */
-export function routeInbound(msg: any): void {
-  if (!msg || typeof msg !== 'object') return;
-  
-  const msgType = String(msg.type || '').toLowerCase();
-  const symbol = msg.symbol || msg.data?.symbol || 'UNKNOWN';
-  const exchange = msg.exchange || 'unknown';
-  const market = msg.market || 'spot';
-  
-  // Clock-Tag: Ingest-Timestamp für Lag-Messung
-  const ingestTs = msg.ingestTs || performance.now();
-  
-  // Topic-Key: Konsistent exchange|market|symbol|topic
-  const topicKey = `${exchange}|${market}|${symbol}|${msgType}`;
-
-  // ORDERBOOK-UPDATES (8ms Coalescing!)
-  if (TYPE_PATTERNS.orderbook.test(msgType)) {
-    // Unsubscribe-Cleanup: Nur schedulen wenn Subscriber existieren
-    if (!eventBus.hasSubscribers('ORDERBOOK_UPDATE')) {
-      return;
-    }
-    
-    schedule(topicKey, () => {
-      measureLag(ingestTs);
-      
-      eventBus.emit('ORDERBOOK_UPDATE', {
-        exchange,
-        symbol,
-        market,
-        bids: msg.data?.bids || msg.bids || [],
-        asks: msg.data?.asks || msg.asks || [],
-        timestamp: Date.now(),
-      });
-    });
-    return;
-  }
-
-  // TICKER-UPDATES (8ms Coalescing!)
-  if (TYPE_PATTERNS.ticker.test(msgType)) {
-    // Unsubscribe-Cleanup: Nur schedulen wenn Subscriber existieren
-    if (!eventBus.hasSubscribers('TICKER_UPDATE')) {
-      return;
-    }
-    
-    schedule(topicKey, () => {
-      measureLag(ingestTs);
-      
-      eventBus.emit('TICKER_UPDATE', {
-        exchange,
-        symbol,
-        market,
-        data: msg.data ?? msg,
-        timestamp: Date.now(),
-      });
-    });
-    return;
-  }
-
-  // KLINE/CANDLE-UPDATES (8ms Coalescing!)
-  if (TYPE_PATTERNS.kline.test(msgType)) {
-    // Unsubscribe-Cleanup: Nur schedulen wenn Subscriber existieren
-    if (!eventBus.hasSubscribers('KLINE_UPDATE')) {
-      return;
-    }
-    
-    schedule(topicKey, () => {
-      measureLag(ingestTs);
-      
-      eventBus.emit('KLINE_UPDATE', {
-        exchange,
-        symbol,
-        market,
-        interval: msg.interval || msg.data?.interval,
-        candle: msg.data ?? msg,
-        timestamp: Date.now(),
-      });
-    });
-    return;
-  }
-
-  // TRADE-UPDATES (SOFORT, kein Coalescing!)
-  if (TYPE_PATTERNS.trade.test(msgType)) {
-    measureLag(ingestTs);
-    
-    eventBus.emit('TRADE_UPDATE', {
-      exchange,
-      symbol,
-      market,
-      data: msg.data ?? msg,
-      timestamp: Date.now(),
-    });
-    return;
-  }
-
-  // SYMBOL-UPDATES (SOFORT, kein Coalescing)
-  if (TYPE_PATTERNS.symbols.test(msgType)) {
-    eventBus.emit('SYMBOLS_UPDATE', {
-      exchange: msg.exchange || msg.data?.exchange || 'unknown',
-      symbols: msg.symbols || msg.data?.symbols || msg.data || [],
-      raw: msg,
-      timestamp: Date.now(),
-    });
-    return;
-  }
-
-  // FALLBACK: Generisches Event (kein Coalescing)
-  eventBus.emit('WEBSOCKET_MESSAGE', {
-    type: msgType,
-    data: msg,
-    timestamp: Date.now(),
-  });
-}
-
-/**
- * WebSocket-Status-Events emittieren
- * @param payload Status-Information
- */
-export function emitWsStatus(payload: any): void {
-  eventBus.emit('WEBSOCKET_STATUS', {
-    ...payload,
-    timestamp: Date.now(),
-  });
-}
-</file>
-
-<file path="frontend/src/shared/hooks/useGlobalPerformance.ts">
-/**
- * Global Performance Hook
- * Integriert mit PerformanceMetricsService für Ultra-Low-Latency Monitoring
- * Enterprise-grade Monitoring mit <5ms SLA-Compliance
- */
-
-import { useState, useEffect, useCallback } from 'react';
-import { performanceMetrics, PerformanceMetrics as NewPerformanceMetrics } from '../../services/performanceMetrics';
-import { getExchangeConfigSync } from '../../config/exchanges';
-
-interface PerformanceMetrics {
-  frontendLatency: number;
-  backendConnections: number;
-  messagesPerSecond: number;
-  parseTime: number;
-  domUpdateTime: number;
-  memoryUsage: number;
-  cpuUsage: number;
-  slaCompliance: number;
-  lastUpdate: number;
-  fastApiLatency: number;
-  websocketLatency: number;
-}
-
-interface HistoricalData {
-  timestamp: number;
-  latency: number;
-}
-
-interface WebSocketMetrics {
-  websocket: {
-    active_connections: number;
-    active_symbols: number;
-    messages_sent: number;
-    batch_interval_ms: number;
-  };
-  performance: {
-    avg_latency_ms: number;
-    sla_compliance: number;
-  };
-  status: string;
-}
-
-export const useGlobalPerformance = () => {
-  const [metrics, setMetrics] = useState<PerformanceMetrics>({
-    frontendLatency: 0,
-    backendConnections: 0,
-    messagesPerSecond: 0,
-    parseTime: 0,
-    domUpdateTime: 0,
-    memoryUsage: 0,
-    cpuUsage: 0,
-    slaCompliance: 100,
-    lastUpdate: Date.now(),
-    fastApiLatency: 0,
-    websocketLatency: 0
-  });
-  
-  const [historicalData, setHistoricalData] = useState<HistoricalData[]>([]);
-  const [isRecording, setIsRecording] = useState(false);
-  const [alertThreshold] = useState(5); // 5ms SLA threshold
-  const [isBackendOnline, setIsBackendOnline] = useState(false); // Backend Connection Status
-
-  /**
-   * Backend-Metriken von neuen /api/ws/metrics Endpoint abrufen
-   */
-  const fetchBackendMetrics = useCallback(async () => {
-    try {
-      const startTime = performance.now();
-      // ✅ ENTERPRISE: Nutze bestehende Exchange Config (TTL-Cache konform)
-      const exchangeConfig = getExchangeConfigSync();
-      const baseUrl = (import.meta as any).env.VITE_BACKEND_BASE || 'http://localhost:8100';
-      const response = await fetch(`${baseUrl}/api/monitoring/metrics`);
-      const endTime = performance.now();
-      
-      // FastAPI Latenz aus Header oder Messung
-      let fastApiLatency = endTime - startTime;
-      
-      // ✅ ENTERPRISE: Nutze Server-gemessene Response Time aus Middleware
-      const serverProcessTime = response.headers.get('X-Process-Time');
-      if (serverProcessTime) {
-        const serverLatency = parseFloat(serverProcessTime) * 1000; // Convert to ms
-        fastApiLatency = serverLatency;
-      }
-      
-      if (response.ok) {
-        const data: WebSocketMetrics = await response.json();
-        
-        // ✅ Backend ist online
-        setIsBackendOnline(true);
-        
-        return {
-          backendConnections: data.websocket?.active_connections || 0,
-          messagesPerSecond: data.websocket?.messages_sent || 0,
-          websocketLatency: data.performance?.avg_latency_ms || 0,
-          fastApiLatency,
-          backendSlaCompliance: data.performance?.sla_compliance || 100,
-          isOnline: true
-        };
-      }
-    } catch (error) {
-      console.warn('[useGlobalPerformance] Backend metrics unavailable:', error);
-    }
-    
-    // ❌ Backend ist offline
-    setIsBackendOnline(false);
-    
-    return {
-      backendConnections: 0,
-      messagesPerSecond: 0,
-      websocketLatency: 0,
-      fastApiLatency: 0,
-      backendSlaCompliance: 95,
-      isOnline: false
-    };
-  }, []);
-
-  /**
-   * Frontend Performance-Metriken von PerformanceMetricsService sammeln
-   */
-  const collectFrontendMetrics = useCallback(() => {
-    const serviceMetrics = performanceMetrics.getMetrics();
-    
-    // Memory Usage (wenn verfügbar)
-    let memoryUsage = 0;
-    if ('memory' in performance) {
-      const memory = (performance as any).memory;
-      memoryUsage = memory.usedJSHeapSize / 1024 / 1024; // MB
-    }
-    
-    return {
-      frontendLatency: serviceMetrics.totalFrontendLatency,
-      parseTime: serviceMetrics.jsonParseLatency,
-      domUpdateTime: serviceMetrics.domUpdateLatency,
-      memoryUsage,
-      serviceMetrics // Pass through the full service metrics
-    };
-  }, []);
-
-  /**
-   * SLA Compliance berechnen
-   */
-  const calculateSLACompliance = useCallback((latency: number, historical: HistoricalData[]) => {
-    const recent = historical.slice(-100); // Letzte 100 Measurements
-    if (recent.length === 0) return 100;
-    
-    const compliantMeasurements = recent.filter(data => data.latency <= alertThreshold).length;
-    return (compliantMeasurements / recent.length) * 100;
-  }, [alertThreshold]);
-
-  /**
-   * Metrics aktualisieren - Integriert mit PerformanceMetricsService
-   */
-  const updateMetrics = useCallback(async () => {
-    const startTime = performance.now();
-    
-    // Frontend Metriken von Service sammeln
-    const frontendMetrics = collectFrontendMetrics();
-    
-    // Backend Metriken abrufen
-    const backendMetrics = await fetchBackendMetrics();
-    
-    const endTime = performance.now();
-    const measurementLatency = endTime - startTime;
-    
-    // Historical Data aktualisieren
-    const newDataPoint: HistoricalData = {
-      timestamp: Date.now(),
-      latency: frontendMetrics.frontendLatency
-    };
-    
-    setHistoricalData(prev => {
-      const updated = [...prev, newDataPoint].slice(-200); // Letzte 200 Punkte behalten
-      
-      // SLA Compliance von PerformanceMetricsService verwenden (bereits korrekt berechnet)
-      const serviceCompliance = frontendMetrics.serviceMetrics?.slaCompliance || 100;
-      
-      // Metriken aktualisieren - Nutze echte Ultra-Low-Latency Daten
-      setMetrics({
-        frontendLatency: frontendMetrics.frontendLatency,
-        parseTime: frontendMetrics.parseTime,
-        domUpdateTime: frontendMetrics.domUpdateTime,
-        memoryUsage: frontendMetrics.memoryUsage,
-        backendConnections: backendMetrics.backendConnections,
-        messagesPerSecond: frontendMetrics.serviceMetrics?.messagesPerSecond || backendMetrics.messagesPerSecond,
-        websocketLatency: frontendMetrics.serviceMetrics?.webSocketLatency || backendMetrics.websocketLatency,
-        fastApiLatency: frontendMetrics.serviceMetrics?.fastApiLatency || backendMetrics.fastApiLatency,
-        slaCompliance: Math.min(serviceCompliance, backendMetrics.backendSlaCompliance),
-        cpuUsage: measurementLatency < 1 ? 5 : measurementLatency * 2, // Geschätzte CPU-Last
-        lastUpdate: Date.now()
-      });
-      
-      return updated;
-    });
-  }, [collectFrontendMetrics, fetchBackendMetrics, calculateSLACompliance]);
-
-  /**
-   * Performance Recording starten/stoppen - Integriert mit PerformanceMetricsService
-   */
-  const toggleRecording = useCallback(() => {
-    if (isRecording) {
-      // Stop Recording
-      setIsRecording(false);
-    } else {
-      // Start Recording
-      setIsRecording(true);
-      
-      // Performance-Messung starten
-      performance.mark('performance-recording-start');
-      
-      // Clear performance measures for fresh recording
-      if (performance.clearMeasures) {
-        performance.clearMeasures();
-      }
-      if (performance.clearMarks) {
-        performance.clearMarks();
-      }
-    }
-  }, [isRecording]);
-
-  /**
-   * Performance-Report exportieren - Integriert mit PerformanceMetricsService
-   */
-  const exportPerformanceReport = useCallback(() => {
-    const serviceMetrics = performanceMetrics.getMetrics();
-    const serviceHistory = performanceMetrics.getHistory();
-    
-    const report = {
-      timestamp: new Date().toISOString(),
-      version: '2.0-UltraLowLatency',
-      currentMetrics: metrics,
-      serviceMetrics: serviceMetrics,
-      historicalData: historicalData,
-      serviceHistory: serviceHistory,
-      ultraLowLatencyComponents: {
-        jsonParser: {
-          averageParseTime: serviceMetrics.jsonParseLatency,
-          description: 'Ultra-Fast JSON Parser with RegEx optimization'
-        },
-        domUpdater: {
-          averageUpdateTime: serviceMetrics.domUpdateLatency,
-          description: 'Direct DOM manipulation bypassing React reconciliation'
-        },
-        webSocket: {
-          latency: serviceMetrics.webSocketLatency,
-          description: 'Ultra-Low-Latency WebSocket with binary message parsing'
-        },
-        webWorker: {
-          processingTime: serviceMetrics.workerProcessingLatency,
-          description: 'Parallel processing with Web Worker for market data calculations'
-        }
-      },
-      slaThreshold: alertThreshold,
-      slaCompliance: serviceMetrics.slaCompliance,
-      systemStatus: serviceMetrics.systemStatus
-    };
-    
-    const blob = new Blob([JSON.stringify(report, null, 2)], { 
-      type: 'application/json' 
-    });
-    
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ultra-low-latency-report-${Date.now()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [metrics, historicalData, alertThreshold]);
-
-  // Automatische Aktualisierung - Adaptive Frequenz basierend auf Backend-Status
-  useEffect(() => {
-    // ✅ SMART POLLING: Wenn Backend offline, nur alle 5 Sekunden prüfen
-    // Wenn Backend online, alle 250ms für Ultra-Low-Latency
-    const pollInterval = isBackendOnline ? 250 : 5000;
-    
-    const interval = setInterval(updateMetrics, pollInterval);
-    
-    // Initial update
-    updateMetrics();
-    
-    return () => clearInterval(interval);
-  }, [updateMetrics, isBackendOnline]);
-
-  // Status-Farben basierend auf SLA
-  const getLatencyStatus = useCallback((latency: number) => {
-    if (latency <= 2) return { color: 'text-green-500', bg: 'bg-green-50 dark:bg-green-900/20', status: 'EXCELLENT' };
-    if (latency <= alertThreshold) return { color: 'text-yellow-500', bg: 'bg-yellow-50 dark:bg-yellow-900/20', status: 'GOOD' };
-    return { color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-900/20', status: 'CRITICAL' };
-  }, [alertThreshold]);
-
-  const getAmpelStatus = useCallback(() => {
-    const maxLatency = Math.max(metrics.frontendLatency, metrics.fastApiLatency, metrics.websocketLatency);
-    
-    // 🚦 KORREKTES AMPEL-SYSTEM: < 5ms = Grün, 5-39ms = Orange, > 39ms = Rot
-    if (maxLatency < 5) return { 
-      color: '🟢', 
-      textColor: 'text-green-500', 
-      bgColor: 'bg-green-50 dark:bg-green-900/20', 
-      status: 'GRÜN',
-      latencyMs: `${maxLatency.toFixed(1)}ms`
-    };
-    if (maxLatency <= 39) return { 
-      color: '🟡', 
-      textColor: 'text-yellow-500', 
-      bgColor: 'bg-yellow-50 dark:bg-yellow-900/20', 
-      status: 'ORANGE',
-      latencyMs: `${maxLatency.toFixed(1)}ms`
-    };
-    return { 
-      color: '🔴', 
-      textColor: 'text-red-500', 
-      bgColor: 'bg-red-50 dark:bg-red-900/20', 
-      status: 'ROT',
-      latencyMs: `${maxLatency.toFixed(1)}ms`
-    };
-  }, [metrics.frontendLatency, metrics.fastApiLatency, metrics.websocketLatency]);
-
-  return {
-    metrics,
-    historicalData,
-    isRecording,
-    alertThreshold,
-    isBackendOnline,
-    getLatencyStatus,
-    getAmpelStatus,
-    toggleRecording,
-    exportPerformanceReport,
-    updateMetrics
-  };
-};
 </file>
 
 <file path="frontend/src/shared/layout/AlertsPanel.tsx">
@@ -82669,1724 +77064,6 @@ const GlobalNav = () => {
 };
 
 export default GlobalNav;
-</file>
-
-<file path="frontend/src/shared/layout/GlobalPerformanceMonitor.tsx">
-/**
- * Global Performance Monitor
- * EXAKT gleicher Stil wie originales PerformanceDashboard
- * Position: RECHTS UNTEN auf allen Seiten
- */
-
-import React, { useState, useCallback } from 'react';
-import { useGlobalPerformance } from '../hooks/useGlobalPerformance';
-
-export const GlobalPerformanceMonitor: React.FC = () => {
-  const {
-    metrics,
-    historicalData,
-    isRecording,
-    alertThreshold,
-    toggleRecording,
-    exportPerformanceReport,
-    getAmpelStatus
-  } = useGlobalPerformance();
-
-  // Verwende corrected Ampel Status direkt aus Hook
-  const ampelStatus = getAmpelStatus();
-  const slaStatus = metrics.slaCompliance >= 99 ? 'COMPLIANT' : 'VIOLATION';
-
-  return (
-    <div className="bg-card border border-border rounded-lg p-6 space-y-6">
-      {/* Header - EXAKT wie original */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">Ultra-Low-Latency Monitor</h3>
-          <p className="text-sm text-muted-foreground">
-            Real-time Performance für &lt;5ms SLA-Compliance
-          </p>
-        </div>
-        
-        <div className="flex gap-2">
-          <button
-            onClick={toggleRecording}
-            className={`px-3 py-1 rounded text-sm font-medium ${
-              isRecording 
-                ? 'bg-[hsl(var(--status-error-bg))] text-[hsl(var(--status-error))]' 
-                : 'bg-[hsl(var(--status-success-bg))] text-[hsl(var(--status-success))]'
-            }`}
-          >
-            {isRecording ? '⏹ Stop' : '▶ Record'}
-          </button>
-          
-          <button
-            onClick={exportPerformanceReport}
-            className="px-3 py-1 bg-muted text-muted-foreground rounded text-sm font-medium hover:bg-muted-foreground/10"
-          >
-            📊 Export
-          </button>
-        </div>
-      </div>
-
-      {/* SLA Status Banner - EXAKT wie original */}
-      <div className={`p-4 rounded-lg border-2 ${
-        slaStatus === 'COMPLIANT' 
-          ? 'border-[hsl(var(--status-success-border))] bg-[hsl(var(--status-success-bg))]'
-          : 'border-[hsl(var(--status-error-border))] bg-[hsl(var(--status-error-bg))]'
-      }`}>
-        <div className="flex justify-between items-center">
-          <div>
-            <span className="text-sm font-medium text-muted-foreground">SLA Status:</span>
-            <span className={`ml-2 px-3 py-1 rounded text-sm font-bold ${
-              slaStatus === 'COMPLIANT' 
-                ? 'bg-[hsl(var(--status-success-bg))] text-[hsl(var(--status-success))]' 
-                : 'bg-[hsl(var(--status-error-bg))] text-[hsl(var(--status-error))]'
-            }`}>
-              {slaStatus === 'COMPLIANT' ? '✅ &lt;5ms ERREICHT' : '❌ SLA VERLETZT'}
-            </span>
-          </div>
-          
-          <div className="text-right">
-            <div className="text-2xl font-bold text-foreground">
-              {metrics.slaCompliance.toFixed(1)}%
-            </div>
-            <div className="text-sm text-muted-foreground">Compliance</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Key Metrics Grid - EXAKT wie original */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Frontend Latenz - AMPEL SYSTEM */}
-        <div className={`p-4 rounded-lg border ${ampelStatus.bgColor}`}>
-          <div className="text-sm text-muted-foreground">Frontend Latenz</div>
-          <div className={`text-2xl font-bold ${ampelStatus.textColor}`}>
-            {ampelStatus.latencyMs}
-          </div>
-          <div className={`text-xs font-medium ${ampelStatus.textColor}`}>
-            {ampelStatus.color} {ampelStatus.status}
-          </div>
-        </div>
-
-        {/* FastAPI Latenz */}
-        <div className="bg-muted rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">FastAPI</div>
-          <div className="text-2xl font-bold text-foreground">
-            {metrics.fastApiLatency.toFixed(1)}ms
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {metrics.fastApiLatency <= 20 ? 'Excellent' : 'Needs Optimization'}
-          </div>
-        </div>
-
-        {/* WebSocket Latenz */}
-        <div className="bg-muted rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">WebSocket</div>
-          <div className="text-2xl font-bold text-foreground">
-            {metrics.websocketLatency.toFixed(1)}ms
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {metrics.websocketLatency <= 50 ? 'Ultra-fast' : 'Can Improve'}
-          </div>
-        </div>
-
-        {/* Parse Time */}
-        <div className="bg-muted rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">JSON Parse</div>
-          <div className="text-2xl font-bold text-foreground">
-            {metrics.parseTime.toFixed(2)}ms
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {metrics.parseTime <= 1 ? 'Optimal' : 'Needs Optimization'}
-          </div>
-        </div>
-      </div>
-
-      {/* Detailed Metrics - EXAKT wie original */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* System Resources */}
-        <div className="bg-background rounded-lg border p-4">
-          <h4 className="font-medium mb-3 text-foreground">System Resources</h4>
-          
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Memory Usage</span>
-              <span className="text-sm font-mono text-foreground">
-                {metrics.memoryUsage.toFixed(1)} MB
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Est. CPU Usage</span>
-              <span className="text-sm font-mono text-foreground">
-                {metrics.cpuUsage.toFixed(1)}%
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Backend Connections</span>
-              <span className="text-sm font-mono text-foreground">
-                {metrics.backendConnections}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Performance Trends */}
-        <div className="bg-background rounded-lg border p-4">
-          <h4 className="font-medium mb-3 text-foreground">Performance Trends</h4>
-          
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Avg Latency (10m)</span>
-              <span className="text-sm font-mono text-foreground">
-                {historicalData.slice(-10).length > 0
-                  ? (historicalData.slice(-10).reduce((sum, d) => sum + d.latency, 0) / historicalData.slice(-10).length).toFixed(2)
-                  : '0.00'
-                }ms
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Peak Latency</span>
-              <span className="text-sm font-mono text-foreground">
-                {historicalData.length > 0
-                  ? Math.max(...historicalData.map(d => d.latency)).toFixed(2)
-                  : '0.00'
-                }ms
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Data Points</span>
-              <span className="text-sm font-mono text-foreground">
-                {historicalData.length}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Recording Status */}
-        <div className="bg-background rounded-lg border p-4">
-          <h4 className="font-medium mb-3 text-foreground">Recording Status</h4>
-          
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Recording</span>
-              <span className={`text-sm font-mono ${
-                isRecording ? 'text-[hsl(var(--status-error))]' : 'text-muted-foreground'
-              }`}>
-                {isRecording ? '🔴 ACTIVE' : '⚫ STOPPED'}
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Last Update</span>
-              <span className="text-sm font-mono text-foreground">
-                {new Date(metrics.lastUpdate).toLocaleTimeString()}
-              </span>
-            </div>
-            
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">SLA Threshold</span>
-              <span className="text-sm font-mono text-foreground">
-                {alertThreshold}ms
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Mini Latency Chart - EXAKT wie original */}
-      <div className="bg-background rounded-lg border p-4">
-        <h4 className="font-medium mb-3 text-foreground">Latency Trend (Last 20 Points)</h4>
-        
-        <div className="h-16 flex items-end justify-between gap-1">
-          {historicalData.slice(-20).map((point, index) => {
-            const height = Math.min((point.latency / (alertThreshold * 2)) * 100, 100);
-            const isAlert = point.latency > alertThreshold;
-            
-            // Verwende Ampel-System für Chart Colors mit CSS-Variablen
-            const getChartColor = (latency: number) => {
-              if (latency < 5) return 'bg-[hsl(var(--status-success))]';
-              if (latency <= 39) return 'bg-[hsl(var(--status-warning))]'; 
-              return 'bg-[hsl(var(--status-error))]';
-            };
-            
-            return (
-              <div
-                key={index}
-                className={`flex-1 rounded-t ${getChartColor(point.latency)}`}
-                style={{ height: `${Math.max(height, 2)}%` }}
-                title={`${point.latency.toFixed(2)}ms at ${new Date(point.timestamp).toLocaleTimeString()}`}
-              />
-            );
-          })}
-        </div>
-        
-        <div className="flex justify-between text-xs text-muted-foreground mt-2">
-          <span>20 points ago</span>
-          <span className="text-[hsl(var(--status-error))]">— {alertThreshold}ms SLA</span>
-          <span>Now</span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default GlobalPerformanceMonitor;
-</file>
-
-<file path="frontend/src/shared/layout/LatencyIndicatorMini.tsx">
-/**
- * Latency Indicator Mini
- * Schmale Zeile unten rechts mit FastAPI/WS/GUI Latenz-Werten
- * Jeder MS-Wert in individueller Ampel-Farbe ohne Symbole
- */
-
-import React from 'react';
-import { useGlobalPerformance } from '../hooks/useGlobalPerformance';
-
-interface LatencyIndicatorMiniProps {
-  onClick: () => void;
-}
-
-export const LatencyIndicatorMini: React.FC<LatencyIndicatorMiniProps> = ({ onClick }) => {
-  const { metrics, isBackendOnline } = useGlobalPerformance();
-
-  // Individuelle Thresholds für jeden Wert - GUI IMMER nach Wert färben!
-  const getLatencyColor = (value: number, type: 'fastapi' | 'websocket' | 'gui'): string => {
-    // ✅ GUI wird IMMER nach Wert gefärbt (unabhängig vom Backend-Status)
-    if (type === 'gui') {
-      if (value < 5) return 'text-[hsl(var(--status-success))]';
-      if (value <= 39) return 'text-[hsl(var(--status-warning))]';
-      return 'text-[hsl(var(--status-error))]';
-    }
-    
-    // ❌ Backend offline → FastAPI/WebSocket rot
-    if (!isBackendOnline) return 'text-[hsl(var(--status-error))]';
-    
-    // ✅ Backend online → normale Ampel-Logik für FastAPI/WebSocket
-    switch (type) {
-      case 'fastapi':
-        if (value < 5) return 'text-[hsl(var(--status-success))]';
-        if (value <= 20) return 'text-[hsl(var(--status-warning))]';
-        return 'text-[hsl(var(--status-error))]';
-      
-      case 'websocket':
-        if (value < 10) return 'text-[hsl(var(--status-success))]';
-        if (value <= 50) return 'text-[hsl(var(--status-warning))]';
-        return 'text-[hsl(var(--status-error))]';
-      
-      default:
-        return 'text-muted-foreground';
-    }
-  };
-
-  return (
-    <div 
-      onClick={onClick}
-      className="fixed bottom-4 right-4 z-40 bg-card/90 backdrop-blur-sm border border-border rounded-md px-4 py-2 cursor-pointer hover:bg-card/95 transition-colors text-sm"
-    >
-      <div className="flex items-center gap-4 whitespace-nowrap">
-        {/* Status-Anzeige: Grün wenn online, Rot wenn offline */}
-        <span className={isBackendOnline ? 'text-[hsl(var(--status-success))]' : 'text-[hsl(var(--status-error))]'}>
-          ● System connection {isBackendOnline ? 'stable' : 'offline'}
-        </span>
-        
-        <span className="text-muted-foreground">FastAPI =
-          <span className={`${getLatencyColor(metrics.fastApiLatency, 'fastapi')} inline-block w-16 text-right`}>
-            {isBackendOnline ? `${metrics.fastApiLatency.toFixed(1)}ms` : 'N/A'}
-          </span>
-        </span>
-        
-        <span className="text-muted-foreground">WS =
-          <span className={`${getLatencyColor(metrics.websocketLatency, 'websocket')} inline-block w-16 text-right`}>
-            {isBackendOnline ? `${metrics.websocketLatency.toFixed(1)}ms` : 'N/A'}
-          </span>
-        </span>
-        
-        <span className="text-muted-foreground">GUI =
-          <span className={`${getLatencyColor(metrics.frontendLatency, 'gui')} inline-block w-16 text-right`}>
-            {metrics.frontendLatency.toFixed(1)}ms
-          </span>
-        </span>
-      </div>
-    </div>
-  );
-};
-
-export default LatencyIndicatorMini;
-</file>
-
-<file path="frontend/src/shared/layout/LatencyMonitorContainer.tsx">
-/**
- * Latency Monitor Container
- * Kombiniert Mini-Indikator mit Modal-Toggle
- */
-
-import React, { useState } from 'react';
-import LatencyIndicatorMini from './LatencyIndicatorMini';
-import LatencyMonitorModal from './LatencyMonitorModal';
-
-export const LatencyMonitorContainer: React.FC = () => {
-  const [showModal, setShowModal] = useState(false);
-
-  const handleToggleModal = () => {
-    setShowModal(!showModal);
-  };
-
-  const handleCloseModal = () => {
-    setShowModal(false);
-  };
-
-  return (
-    <>
-      {/* Mini-Indikator (immer sichtbar) */}
-      <LatencyIndicatorMini onClick={handleToggleModal} />
-      
-      {/* Modal (nur bei Klick) */}
-      {showModal && (
-        <LatencyMonitorModal onClose={handleCloseModal} />
-      )}
-    </>
-  );
-};
-
-export default LatencyMonitorContainer;
-</file>
-
-<file path="frontend/src/shared/layout/LatencyMonitorModal.tsx">
-/**
- * Enterprise Monitoring Modal
- * Vollständiges Modal mit allen 6 Monitoring-Tabs
- * Öffnet sich beim Klick auf die Status-Leiste
- */
-
-import React from 'react';
-import { MonitoringTabs } from './MonitoringTabs';
-import { Button } from '../ui/button';
-
-interface LatencyMonitorModalProps {
-  onClose: () => void;
-}
-
-export const LatencyMonitorModal: React.FC<LatencyMonitorModalProps> = ({ onClose }) => {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-card border border-border rounded-lg max-w-7xl max-h-[95vh] overflow-hidden w-full mx-4">
-        {/* Header */}
-        <div className="flex justify-between items-center p-6 border-b border-border">
-          <div>
-            <h3 className="text-xl font-semibold text-foreground">Monitoring System</h3>
-            <p className="text-sm text-muted-foreground mt-1">
-              Comprehensive performance monitoring and system analytics
-            </p>
-          </div>
-          
-          <Button
-            onClick={onClose}
-            variant="outline"
-            size="sm"
-            className="hover:bg-muted"
-          >
-            ✕ Close
-          </Button>
-        </div>
-
-        {/* Content - MonitoringTabs mit allen 6 Tabs */}
-        <div className="p-6 overflow-y-auto max-h-[calc(95vh-120px)]">
-          <MonitoringTabs />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default LatencyMonitorModal;
-</file>
-
-<file path="frontend/src/shared/layout/MonitoringTabs.tsx">
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@/lib/utils"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs"
-import { Button } from "@/shared/ui/button"
-import { GlobalPerformanceMonitor } from "./GlobalPerformanceMonitor"
-import { TierPerformanceTab } from "./TierPerformanceTab"
-import { ProcessMonitorTab } from "./ProcessMonitorTab"
-import { AlertsPanel } from "./AlertsPanel"
-
-const monitoringTabsVariants = cva(
-  "w-full space-y-4",
-  {
-    variants: {
-      theme: {
-        default: "bg-background text-foreground",
-        enterprise: "bg-card text-card-foreground"
-      },
-      size: {
-        default: "p-6",
-        compact: "p-4",
-        full: "p-8"
-      }
-    },
-    defaultVariants: {
-      theme: "default",
-      size: "default"
-    }
-  }
-)
-
-export interface MonitoringTabsProps 
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof monitoringTabsVariants> {}
-
-const MonitoringTabs = React.forwardRef<HTMLDivElement, MonitoringTabsProps>(
-  ({ className, theme, size, ...props }, ref) => {
-    const handleRecord = () => {
-      console.log('Recording started...');
-    };
-
-    const handleExport = () => {
-      console.log('Exporting report...');
-    };
-
-    return (
-      <div
-        className={cn(monitoringTabsVariants({ theme, size, className }))}
-        ref={ref}
-        {...props}
-      >
-        <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid grid-cols-6 mb-4">
-            <TabsTrigger value="overview">📊 Overview</TabsTrigger>
-            <TabsTrigger value="tiers">🎯 Tiers</TabsTrigger>
-            <TabsTrigger value="processes">💻 Processes</TabsTrigger>
-            <TabsTrigger value="charts">📈 Charts</TabsTrigger>
-            <TabsTrigger value="alerts">🚨 Alerts</TabsTrigger>
-            <TabsTrigger value="reports">📋 Reports</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="overview">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">System Overview</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <GlobalPerformanceMonitor />
-          </TabsContent>
-          
-          <TabsContent value="tiers">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Tier Performance</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <TierPerformanceTab />
-          </TabsContent>
-          
-          <TabsContent value="processes">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Process Monitoring</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <ProcessMonitorTab />
-          </TabsContent>
-          
-          <TabsContent value="charts">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Performance Charts</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Latency Trends</h4>
-                <div className="h-64 flex items-center justify-center text-muted-foreground">
-                  Real-time latency charts will appear here
-                </div>
-              </div>
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Throughput Metrics</h4>
-                <div className="h-64 flex items-center justify-center text-muted-foreground">
-                  Throughput analytics will appear here
-                </div>
-              </div>
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Resource Usage</h4>
-                <div className="h-64 flex items-center justify-center text-muted-foreground">
-                  System resource charts will appear here
-                </div>
-              </div>
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h4 className="font-medium mb-3">SLA Compliance</h4>
-                <div className="h-64 flex items-center justify-center text-muted-foreground">
-                  SLA compliance tracking will appear here
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-          
-          <TabsContent value="alerts">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Alert Management</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <AlertsPanel
-              alerts={[]}
-              rules={[
-                {
-                  id: "frontend-latency",
-                  name: "Frontend Latency SLA",
-                  metric: "frontend.latency_ms",
-                  condition: "greater_than",
-                  threshold: 5,
-                  severity: "high",
-                  enabled: true,
-                  notification_channels: ["email", "slack"]
-                },
-                {
-                  id: "sla-compliance",
-                  name: "SLA Compliance Rate",
-                  metric: "sla.compliance_percent",
-                  condition: "less_than",
-                  threshold: 99,
-                  severity: "critical",
-                  enabled: true,
-                  notification_channels: ["email", "slack", "webhook"]
-                }
-              ]}
-            />
-          </TabsContent>
-          
-          <TabsContent value="reports">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Reports & Analytics</h3>
-              <div className="flex gap-2">
-                <Button onClick={handleRecord} size="sm" className="bg-green-600 hover:bg-green-700">
-                  ▶ Record
-                </Button>
-                <Button onClick={handleExport} size="sm" variant="outline">
-                  📊 Export
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-card border border-border rounded-lg p-6">
-                <h4 className="font-medium mb-3 flex items-center gap-2">
-                  📋 Performance Reports
-                </h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Generate comprehensive performance analysis reports with historical data and trends.
-                </p>
-                <Button variant="outline" className="w-full">
-                  Generate Performance Report
-                </Button>
-              </div>
-              
-              <div className="bg-card border border-border rounded-lg p-6">
-                <h4 className="font-medium mb-3 flex items-center gap-2">
-                  🎯 SLA Compliance Report
-                </h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Detailed SLA compliance analysis with breach notifications and recommendations.
-                </p>
-                <Button variant="outline" className="w-full">
-                  Generate SLA Report
-                </Button>
-              </div>
-              
-              <div className="bg-card border border-border rounded-lg p-6">
-                <h4 className="font-medium mb-3 flex items-center gap-2">
-                  💻 System Health Report
-                </h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Complete system health overview including resource usage and process monitoring.
-                </p>
-                <Button variant="outline" className="w-full">
-                  Generate Health Report
-                </Button>
-              </div>
-              
-              <div className="bg-card border border-border rounded-lg p-6">
-                <h4 className="font-medium mb-3 flex items-center gap-2">
-                  🚨 Incident Analysis
-                </h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Analyze incidents, alerts, and system anomalies with root cause analysis.
-                </p>
-                <Button variant="outline" className="w-full">
-                  Generate Incident Report
-                </Button>
-              </div>
-            </div>
-          </TabsContent>
-        </Tabs>
-      </div>
-    )
-  }
-)
-MonitoringTabs.displayName = "MonitoringTabs"
-
-export { MonitoringTabs, monitoringTabsVariants }
-</file>
-
-<file path="frontend/src/shared/layout/ProcessMonitorTab.tsx">
-import * as React from "react"
-import { ProcessRAMBar } from "./ProcessRAMBar"
-import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
-import { Badge } from "@/shared/ui/badge"
-import { Button } from "@/shared/ui/button"
-import { Switch } from "@/shared/ui/switch"
-import { Label } from "@/shared/ui/label"
-
-// Mock process data - will be replaced with real API data
-const mockProcessData = [
-  {
-    processName: "Tier 1 Quantum",
-    pid: 12345,
-    ramUsageMB: 245,
-    ramUsagePercent: 15.3,
-    cpuUsagePercent: 23.5,
-    status: "running"
-  },
-  {
-    processName: "Tier 2 Strategy",
-    pid: 12346,
-    ramUsageMB: 180,
-    ramUsagePercent: 11.2,
-    cpuUsagePercent: 18.7,
-    status: "running"
-  },
-  {
-    processName: "Tier 3 Neural",
-    pid: 12347,
-    ramUsageMB: 220,
-    ramUsagePercent: 13.8,
-    cpuUsagePercent: 31.2,
-    status: "running"
-  },
-  {
-    processName: "ClickHouse",
-    pid: 12348,
-    ramUsageMB: 150,
-    ramUsagePercent: 9.4,
-    cpuUsagePercent: 12.1,
-    status: "running"
-  },
-  {
-    processName: "Redis",
-    pid: 12349,
-    ramUsageMB: 90,
-    ramUsagePercent: 5.6,
-    cpuUsagePercent: 3.2,
-    status: "running"
-  },
-  {
-    processName: "Binance Collector",
-    pid: 12350,
-    ramUsageMB: 65,
-    ramUsagePercent: 4.1,
-    cpuUsagePercent: 15.8,
-    status: "running"
-  },
-  {
-    processName: "Bitget Collector",
-    pid: 12351,
-    ramUsageMB: 60,
-    ramUsagePercent: 3.8,
-    cpuUsagePercent: 14.3,
-    status: "running"
-  },
-  {
-    processName: "FastAPI Backend",
-    pid: 12352,
-    ramUsageMB: 120,
-    ramUsagePercent: 7.5,
-    cpuUsagePercent: 8.9,
-    status: "running"
-  }
-]
-
-const mockSystemStats = {
-  totalMemoryGB: 16,
-  usedMemoryGB: 1.13,
-  availableMemoryGB: 14.87,
-  memoryUsagePercent: 7.1,
-  cpuCores: 8,
-  avgCpuUsage: 15.2
-}
-
-export const ProcessMonitorTab = () => {
-  const [autoRefresh, setAutoRefresh] = React.useState(true)
-
-  // ASCII System Overview
-  const generateSystemASCII = () => {
-    const memoryBars = Math.floor((mockSystemStats.memoryUsagePercent / 100) * 40)
-    const memoryBar = "█".repeat(memoryBars) + "░".repeat(40 - memoryBars)
-    
-    return `
-RAM Usage by Process:
-┌─────────────────────────────────────────────────────────────┐
-│ Tier 1 Quantum     ████████░░░░░░░░░░░░░░░░░░░░ 245 MB │
-│ Tier 2 Strategy    ██████░░░░░░░░░░░░░░░░░░░░░░ 180 MB │
-│ Tier 3 Neural      ███████░░░░░░░░░░░░░░░░░░░░░ 220 MB │
-│ ClickHouse         █████░░░░░░░░░░░░░░░░░░░░░░░ 150 MB │
-│ Redis              ███░░░░░░░░░░░░░░░░░░░░░░░░░  90 MB │
-│ Binance Collector  ██░░░░░░░░░░░░░░░░░░░░░░░░░░  65 MB │
-│ Bitget Collector   ██░░░░░░░░░░░░░░░░░░░░░░░░░░  60 MB │
-│ FastAPI Backend    ████░░░░░░░░░░░░░░░░░░░░░░░░ 120 MB │
-└─────────────────────────────────────────────────────────────┘
-Total System: ${mockSystemStats.usedMemoryGB} GB / ${mockSystemStats.totalMemoryGB} GB (${mockSystemStats.memoryUsagePercent}%)
-
-System Overview:
-${memoryBar} ${mockSystemStats.memoryUsagePercent.toFixed(1)}% RAM
-CPU Cores: ${mockSystemStats.cpuCores} | Average Usage: ${mockSystemStats.avgCpuUsage}%
-    `
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Process Monitor Header */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              💻 System Process Monitor
-            </span>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center space-x-2">
-                <Switch
-                  id="auto-refresh"
-                  checked={autoRefresh}
-                  onCheckedChange={setAutoRefresh}
-                />
-                <Label htmlFor="auto-refresh" className="text-sm">Auto Refresh</Label>
-              </div>
-              <Button size="sm" variant="outline">
-                Refresh Now
-              </Button>
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-sm text-muted-foreground">
-            Real-time monitoring of system processes with memory and CPU usage tracking
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* System Overview Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-blue-600">
-                {mockSystemStats.usedMemoryGB} GB
-              </div>
-              <div className="text-xs text-muted-foreground">Memory Used</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-green-600">
-                {mockSystemStats.availableMemoryGB} GB
-              </div>
-              <div className="text-xs text-muted-foreground">Available</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-orange-600">
-                {mockSystemStats.avgCpuUsage}%
-              </div>
-              <div className="text-xs text-muted-foreground">Avg CPU</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold">
-                {mockProcessData.length}
-              </div>
-              <div className="text-xs text-muted-foreground">Processes</div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-
-      {/* Process List */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center justify-between">
-            <span>📊 Process Details</span>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">
-                Total: {mockSystemStats.usedMemoryGB} GB / {mockSystemStats.totalMemoryGB} GB
-              </Badge>
-              <Badge variant={mockSystemStats.memoryUsagePercent < 50 ? "default" : mockSystemStats.memoryUsagePercent < 80 ? "secondary" : "destructive"}>
-                {mockSystemStats.memoryUsagePercent.toFixed(1)}% Used
-              </Badge>
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {mockProcessData.map((process, index) => (
-            <ProcessRAMBar
-              key={process.pid}
-              processName={process.processName}
-              pid={process.pid}
-              ramUsageMB={process.ramUsageMB}
-              ramUsagePercent={process.ramUsagePercent}
-              cpuUsagePercent={process.cpuUsagePercent}
-            />
-          ))}
-        </CardContent>
-      </Card>
-
-      {/* Memory Distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Top Memory Consumers */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">🔥 Top Memory Consumers</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {mockProcessData
-                .sort((a, b) => b.ramUsageMB - a.ramUsageMB)
-                .slice(0, 5)
-                .map((process, index) => (
-                  <div key={process.pid} className="flex items-center justify-between p-2 rounded bg-muted/30">
-                    <div className="flex items-center gap-3">
-                      <Badge variant="outline" className="font-mono text-xs">
-                        #{index + 1}
-                      </Badge>
-                      <span className="font-medium">{process.processName}</span>
-                    </div>
-                    <div className="text-sm font-bold">
-                      {process.ramUsageMB} MB
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Top CPU Consumers */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">⚡ Top CPU Consumers</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {mockProcessData
-                .sort((a, b) => b.cpuUsagePercent - a.cpuUsagePercent)
-                .slice(0, 5)
-                .map((process, index) => (
-                  <div key={process.pid} className="flex items-center justify-between p-2 rounded bg-muted/30">
-                    <div className="flex items-center gap-3">
-                      <Badge variant="outline" className="font-mono text-xs">
-                        #{index + 1}
-                      </Badge>
-                      <span className="font-medium">{process.processName}</span>
-                    </div>
-                    <div className="text-sm font-bold">
-                      {process.cpuUsagePercent.toFixed(1)}%
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* System Health Indicators */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">💚 System Health Status</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="flex items-center justify-between p-3 border rounded-lg">
-              <div>
-                <div className="font-medium">Memory Health</div>
-                <div className="text-sm text-muted-foreground">
-                  {mockSystemStats.usedMemoryGB}GB / {mockSystemStats.totalMemoryGB}GB used
-                </div>
-              </div>
-              <Badge variant={mockSystemStats.memoryUsagePercent < 50 ? "default" : mockSystemStats.memoryUsagePercent < 80 ? "secondary" : "destructive"}>
-                {mockSystemStats.memoryUsagePercent < 50 ? "Excellent" : mockSystemStats.memoryUsagePercent < 80 ? "Good" : "Warning"}
-              </Badge>
-            </div>
-
-            <div className="flex items-center justify-between p-3 border rounded-lg">
-              <div>
-                <div className="font-medium">CPU Health</div>
-                <div className="text-sm text-muted-foreground">
-                  {mockSystemStats.avgCpuUsage}% average load
-                </div>
-              </div>
-              <Badge variant={mockSystemStats.avgCpuUsage < 30 ? "default" : mockSystemStats.avgCpuUsage < 70 ? "secondary" : "destructive"}>
-                {mockSystemStats.avgCpuUsage < 30 ? "Excellent" : mockSystemStats.avgCpuUsage < 70 ? "Good" : "Warning"}
-              </Badge>
-            </div>
-
-            <div className="flex items-center justify-between p-3 border rounded-lg">
-              <div>
-                <div className="font-medium">Process Status</div>
-                <div className="text-sm text-muted-foreground">
-                  {mockProcessData.length} processes running
-                </div>
-              </div>
-              <Badge variant="default">
-                All Running
-              </Badge>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
-</file>
-
-<file path="frontend/src/shared/layout/ProcessRAMBar.tsx">
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@/lib/utils"
-import { Progress } from "@/shared/ui/progress"
-import { Card, CardContent } from "@/shared/ui/card"
-
-const processRAMBarVariants = cva(
-  "font-mono text-sm transition-all duration-300",
-  {
-    variants: {
-      usage: {
-        low: "text-[hsl(var(--status-success))]",
-        medium: "text-[hsl(var(--status-warning))]", 
-        high: "text-[hsl(var(--status-error))]"
-      },
-      variant: {
-        compact: "p-2",
-        default: "p-3",
-        detailed: "p-4"
-      }
-    },
-    defaultVariants: {
-      usage: "low",
-      variant: "default"
-    }
-  }
-)
-
-const progressBarVariants = cva(
-  "h-4 transition-all duration-500",
-  {
-    variants: {
-      usage: {
-        low: "[&>div]:bg-[hsl(var(--status-success))]",
-        medium: "[&>div]:bg-[hsl(var(--status-warning))]",
-        high: "[&>div]:bg-[hsl(var(--status-error))]"
-      }
-    },
-    defaultVariants: {
-      usage: "low"
-    }
-  }
-)
-
-export interface ProcessRAMBarProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof processRAMBarVariants> {
-  processName: string
-  ramUsageMB: number
-  ramUsagePercent: number
-  cpuUsagePercent?: number
-  pid?: number
-}
-
-const ProcessRAMBar = React.forwardRef<HTMLDivElement, ProcessRAMBarProps>(
-  ({ className, usage, variant, processName, ramUsageMB, ramUsagePercent, cpuUsagePercent, pid, ...props }, ref) => {
-    const usageLevel = ramUsagePercent > 80 ? "high" : ramUsagePercent > 60 ? "medium" : "low"
-
-    return (
-      <Card className="hover:shadow-md transition-shadow">
-        <CardContent className={cn(processRAMBarVariants({ usage: usageLevel, variant, className }))} ref={ref} {...props}>
-          <div className="flex items-center gap-3">
-            {/* Process Name */}
-            <div className="w-32 truncate">
-              <span className="font-semibold">{processName}</span>
-              {pid && <span className="text-xs text-muted-foreground ml-1">({pid})</span>}
-            </div>
-            
-            {/* Progress Bar */}
-            <div className="flex-1">
-              <Progress 
-                value={ramUsagePercent}
-                className={cn(progressBarVariants({ usage: usageLevel }))}
-              />
-            </div>
-            
-            {/* Memory Usage */}
-            <div className="w-20 text-right">
-              <span className="font-bold">{ramUsageMB} MB</span>
-            </div>
-            
-            {/* CPU Usage (Optional) */}
-            {cpuUsagePercent !== undefined && (
-              <div className="w-16 text-right text-xs text-muted-foreground">
-                {cpuUsagePercent.toFixed(1)}% CPU
-              </div>
-            )}
-            
-            {/* Percentage */}
-            <div className="w-12 text-right text-xs">
-              {ramUsagePercent.toFixed(1)}%
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-)
-ProcessRAMBar.displayName = "ProcessRAMBar"
-
-export { ProcessRAMBar, processRAMBarVariants, progressBarVariants }
-</file>
-
-<file path="frontend/src/shared/layout/TierLatencyCard.tsx">
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@/lib/utils"
-import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
-import { Badge } from "@/shared/ui/badge"
-
-const tierLatencyVariants = cva(
-  "transition-all duration-300 hover:shadow-lg",
-  {
-    variants: {
-      status: {
-        success: "border-[hsl(var(--status-success-border))] bg-[hsl(var(--status-success-bg))] hover:bg-[hsl(var(--status-success-bg))]",
-        warning: "border-[hsl(var(--status-warning-border))] bg-[hsl(var(--status-warning-bg))] hover:bg-[hsl(var(--status-warning-bg))]",
-        error: "border-[hsl(var(--status-error-border))] bg-[hsl(var(--status-error-bg))] hover:bg-[hsl(var(--status-error-bg))]"
-      },
-      tier: {
-        tier1: "border-l-4 border-l-blue-500",
-        tier2: "border-l-4 border-l-purple-500",
-        tier3: "border-l-4 border-l-cyan-500"
-      }
-    },
-    defaultVariants: {
-      status: "success",
-      tier: "tier1"
-    }
-  }
-)
-
-const statusBadgeVariants = cva(
-  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-  {
-    variants: {
-      status: {
-        success: "bg-[hsl(var(--status-success-bg))] text-[hsl(var(--status-success))]",
-        warning: "bg-[hsl(var(--status-warning-bg))] text-[hsl(var(--status-warning))]",
-        error: "bg-[hsl(var(--status-error-bg))] text-[hsl(var(--status-error))]"
-      }
-    },
-    defaultVariants: {
-      status: "success"
-    }
-  }
-)
-
-export interface TierLatencyCardProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof tierLatencyVariants> {
-  tierName: string
-  currentLatency: number
-  targetLatency: number
-  throughput?: number
-  successRate?: number
-  icon: string
-}
-
-const TierLatencyCard = React.forwardRef<HTMLDivElement, TierLatencyCardProps>(
-  ({ className, status, tier, tierName, currentLatency, targetLatency, throughput, successRate, icon, ...props }, ref) => {
-    const statusText = currentLatency <= targetLatency ? "SUCCESS" : 
-                      currentLatency <= targetLatency * 2 ? "WARNING" : "ERROR"
-    
-    const actualStatus = currentLatency <= targetLatency ? "success" :
-                        currentLatency <= targetLatency * 2 ? "warning" : "error"
-
-    return (
-      <Card
-        className={cn(tierLatencyVariants({ status: actualStatus, tier, className }))}
-        ref={ref}
-        {...props}
-      >
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <span className="text-2xl">{icon}</span>
-            {tierName}
-          </CardTitle>
-          <Badge className={statusBadgeVariants({ status: actualStatus })}>
-            {statusText}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-muted-foreground">Current</span>
-              <span className="font-bold text-lg">
-                {currentLatency}{tier === "tier3" ? "s" : "ms"}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-muted-foreground">Target</span>
-              <span className="text-sm">
-                &lt;{targetLatency}{tier === "tier3" ? "s" : "ms"}
-              </span>
-            </div>
-            
-            {throughput && (
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-muted-foreground">Throughput</span>
-                <span className="text-sm font-medium">{throughput}/sec</span>
-              </div>
-            )}
-            
-            {successRate && (
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-muted-foreground">Success Rate</span>
-                <span className="text-sm font-medium">{successRate.toFixed(1)}%</span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-)
-TierLatencyCard.displayName = "TierLatencyCard"
-
-export { TierLatencyCard, tierLatencyVariants, statusBadgeVariants }
-</file>
-
-<file path="frontend/src/shared/layout/TierPerformanceTab.tsx">
-import * as React from "react"
-import { TierLatencyCard } from "./TierLatencyCard"
-import { Card, CardContent, CardHeader, CardTitle } from "@/shared/ui/card"
-import { Badge } from "@/shared/ui/badge"
-
-// Mock data - will be replaced with real hook data
-const mockTierData = {
-  tier1: {
-    target_latency_ms: 5,
-    current_latency_ms: 3.2,
-    throughput_signals_per_sec: 156,
-    success_rate_percent: 94.7,
-    last_signal_timestamp: new Date().toISOString()
-  },
-  tier2: {
-    target_latency_ms: 50,
-    current_latency_ms: 34,
-    assignments_per_minute: 89,
-    strategy_distribution: {
-      grid: 45,
-      daytrading: 35,
-      pattern: 20
-    },
-    confidence_avg: 78.3
-  },
-  tier3: {
-    target_latency_sec: 5,
-    current_latency_sec: 3.1,
-    forecasts_per_minute: 12,
-    model_accuracy: {
-      tft: 82,
-      nbeats: 79,
-      lstm: 85
-    },
-    risk_score_avg: 0.23
-  }
-}
-
-export const TierPerformanceTab = () => {
-  const overallSlaCompliance = React.useMemo(() => {
-    const tier1Compliant = mockTierData.tier1.current_latency_ms <= mockTierData.tier1.target_latency_ms
-    const tier2Compliant = mockTierData.tier2.current_latency_ms <= mockTierData.tier2.target_latency_ms
-    const tier3Compliant = mockTierData.tier3.current_latency_sec <= mockTierData.tier3.target_latency_sec
-    
-    const compliantTiers = [tier1Compliant, tier2Compliant, tier3Compliant].filter(Boolean).length
-    return (compliantTiers / 3) * 100
-  }, [])
-
-  return (
-    <div className="space-y-6">
-      {/* Overall Tier Performance Header */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              🎯 Tier System Performance Overview
-            </span>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">SLA Compliance:</span>
-              <Badge variant={overallSlaCompliance >= 99 ? "default" : overallSlaCompliance >= 90 ? "secondary" : "destructive"}>
-                {overallSlaCompliance.toFixed(1)}%
-              </Badge>
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-sm text-muted-foreground">
-            Real-time performance monitoring across all three-tier architecture levels
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Tier Performance Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Tier 1 - Quantum Screener */}
-        <TierLatencyCard
-          tier="tier1"
-          tierName="TIER 1 - QUANTUM SCREENER"
-          icon="🚀"
-          currentLatency={mockTierData.tier1.current_latency_ms}
-          targetLatency={mockTierData.tier1.target_latency_ms}
-          throughput={mockTierData.tier1.throughput_signals_per_sec}
-          successRate={mockTierData.tier1.success_rate_percent}
-        />
-
-        {/* Tier 2 - Strategy Engine */}
-        <TierLatencyCard
-          tier="tier2"
-          tierName="TIER 2 - STRATEGY ENGINE"
-          icon="🎯"
-          currentLatency={mockTierData.tier2.current_latency_ms}
-          targetLatency={mockTierData.tier2.target_latency_ms}
-          throughput={mockTierData.tier2.assignments_per_minute}
-          successRate={mockTierData.tier2.confidence_avg}
-        />
-
-        {/* Tier 3 - Forecast & Risk */}
-        <TierLatencyCard
-          tier="tier3"
-          tierName="TIER 3 - FORECAST & RISK"
-          icon="🔮"
-          currentLatency={mockTierData.tier3.current_latency_sec}
-          targetLatency={mockTierData.tier3.target_latency_sec}
-          throughput={mockTierData.tier3.forecasts_per_minute}
-        />
-      </div>
-
-      {/* Detailed Metrics Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Tier 2 Strategy Distribution */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
-              🎯 Strategy Distribution (Tier 2)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-sm">Grid Trading</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-primary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier2.strategy_distribution.grid}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier2.strategy_distribution.grid}%</span>
-                </div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm">Day Trading</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-secondary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier2.strategy_distribution.daytrading}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier2.strategy_distribution.daytrading}%</span>
-                </div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm">Pattern Recognition</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-tertiary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier2.strategy_distribution.pattern}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier2.strategy_distribution.pattern}%</span>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Tier 3 Model Accuracy */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
-              🔮 Model Accuracy (Tier 3)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-sm">TFT (Temporal Fusion)</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-tertiary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier3.model_accuracy.tft}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier3.model_accuracy.tft}%</span>
-                </div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm">N-BEATS</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-quaternary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier3.model_accuracy.nbeats}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier3.model_accuracy.nbeats}%</span>
-                </div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm">LSTM</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-[hsl(var(--chart-quinary))] transition-all duration-300"
-                      style={{ width: `${mockTierData.tier3.model_accuracy.lstm}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium w-8">{mockTierData.tier3.model_accuracy.lstm}%</span>
-                </div>
-              </div>
-              <div className="pt-2 border-t">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium">Risk Score Average</span>
-                  <Badge variant={mockTierData.tier3.risk_score_avg < 0.3 ? "default" : "destructive"}>
-                    {mockTierData.tier3.risk_score_avg.toFixed(3)}
-                  </Badge>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Performance Summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">📊 System Performance Summary</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-[hsl(var(--status-success))]">
-                {mockTierData.tier1.current_latency_ms}ms
-              </div>
-              <div className="text-xs text-muted-foreground">Tier 1 Latency</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-[hsl(var(--chart-secondary))]">
-                {mockTierData.tier2.current_latency_ms}ms
-              </div>
-              <div className="text-xs text-muted-foreground">Tier 2 Latency</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-[hsl(var(--chart-tertiary))]">
-                {mockTierData.tier3.current_latency_sec}s
-              </div>
-              <div className="text-xs text-muted-foreground">Tier 3 Latency</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold">
-                {overallSlaCompliance.toFixed(0)}%
-              </div>
-              <div className="text-xs text-muted-foreground">SLA Compliance</div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
-</file>
-
-<file path="frontend/src/shared/state/laneStores.ts">
-import { useSyncExternalStore } from 'react';
-
-// ========== FAST LANE: rAF + RingBuffer ==========
-type Listener = () => void;
-
-class RingBuffer<T> {
-  private array: T[];
-  private index = 0;
-  private filled = false;
-
-  constructor(private capacity: number) {
-    this.array = new Array<T>(capacity);
-  }
-
-  push(value: T) {
-    this.array[this.index] = value;
-    this.index = (this.index + 1) % this.capacity;
-    if (this.index === 0) this.filled = true;
-  }
-
-  drain(): T[] {
-    const output: T[] = [];
-    if (!this.filled && this.index === 0) return output;
-    
-    if (!this.filled) {
-      // Partially filled - return from start to index
-      for (let k = 0; k < this.index; k++) {
-        output.push(this.array[k]!);
-      }
-      this.index = 0;
-      return output;
-    }
-    
-    // Fully filled - return from index (oldest) to end, then start to index
-    for (let k = 0; k < this.capacity; k++) {
-      output.push(this.array[(this.index + k) % this.capacity]!);
-    }
-    this.index = 0;
-    this.filled = false;
-    return output;
-  }
-}
-
-type FastState = {
-  version: number;
-  snapshot: any;
-  buffer: RingBuffer<any>;
-  rafId: number | null;
-  listeners: Set<Listener>;
-  reducer?: (batch: any[], prev: any) => any;
-};
-
-const fastMap = new Map<string, FastState>();
-
-function getFastState(key: string, reducer?: FastState['reducer']): FastState {
-  let state = fastMap.get(key);
-  if (!state) {
-    state = {
-      version: 0,
-      snapshot: null,
-      buffer: new RingBuffer(2048), // 2048 events max per frame
-      rafId: null,
-      listeners: new Set(),
-      reducer
-    };
-    fastMap.set(key, state);
-  }
-  if (reducer && !state.reducer) {
-    state.reducer = reducer;
-  }
-  return state;
-}
-
-function scheduleFastFlush(state: FastState) {
-  if (state.rafId !== null) return;
-  
-  state.rafId = requestAnimationFrame(() => {
-    state.rafId = null;
-    const batch = state.buffer.drain();
-    if (batch.length) {
-      state.snapshot = state.reducer 
-        ? state.reducer(batch, state.snapshot)
-        : batch[batch.length - 1];
-      state.version++;
-      state.listeners.forEach(listener => listener());
-    }
-  });
-}
-
-export function fastPush(key: string, payload: any, reducer?: FastState['reducer']) {
-  const state = getFastState(key, reducer);
-  state.buffer.push(payload);
-  scheduleFastFlush(state);
-}
-
-export function useFastSnapshot<T = any>(key: string): T | null {
-  const state = getFastState(key);
-  
-  const subscribe = (listener: Listener) => {
-    state.listeners.add(listener);
-    return () => state.listeners.delete(listener);
-  };
-  
-  const getSnapshot = () => state.version;
-  
-  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  return state.snapshot as T | null;
-}
-
-// ========== MIDDLE LANE: Microtask Batch ==========
-type MiddleState = {
-  version: number;
-  map: Map<string, any>;
-  queue: Array<{ key: string; payload: any }>;
-  isEnqueued: boolean;
-  listeners: Set<Listener>;
-};
-
-const middleState: MiddleState = {
-  version: 0,
-  map: new Map(),
-  queue: [],
-  isEnqueued: false,
-  listeners: new Set()
-};
-
-function flushMiddle() {
-  if (!middleState.queue.length) return;
-  
-  for (const { key, payload } of middleState.queue) {
-    middleState.map.set(key, payload);
-  }
-  middleState.queue.length = 0;
-  middleState.version++;
-  middleState.listeners.forEach(listener => listener());
-}
-
-export function middlePush(key: string, payload: any) {
-  middleState.queue.push({ key, payload });
-  
-  if (!middleState.isEnqueued) {
-    middleState.isEnqueued = true;
-    queueMicrotask(() => {
-      middleState.isEnqueued = false;
-      flushMiddle();
-    });
-  }
-}
-
-export function useMiddleState<T = any>(key: string): T | undefined {
-  const subscribe = (listener: Listener) => {
-    middleState.listeners.add(listener);
-    return () => middleState.listeners.delete(listener);
-  };
-  
-  const getSnapshot = () => middleState.version;
-  
-  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  return middleState.map.get(key) as T | undefined;
-}
-
-// ========== SLOW LANE: Immediate Map Updates ==========
-type SlowState = {
-  version: number;
-  map: Map<string, any>;
-  listeners: Set<Listener>;
-};
-
-const slowState: SlowState = {
-  version: 0,
-  map: new Map(),
-  listeners: new Set()
-};
-
-export function slowReplace(key: string, value: any) {
-  slowState.map.set(key, value);
-  slowState.version++;
-  slowState.listeners.forEach(listener => listener());
-}
-
-export function slowUpsertMerge(key: string, partialValue: any) {
-  const existing = slowState.map.get(key) || {};
-  const merged = Array.isArray(existing) ? partialValue : { ...existing, ...partialValue };
-  slowState.map.set(key, merged);
-  slowState.version++;
-  slowState.listeners.forEach(listener => listener());
-}
-
-export function useSlow<T = any>(key: string): T | undefined {
-  const subscribe = (listener: Listener) => {
-    slowState.listeners.add(listener);
-    return () => slowState.listeners.delete(listener);
-  };
-  
-  const getSnapshot = () => slowState.version;
-  
-  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  return slowState.map.get(key) as T | undefined;
-}
-
-// ========== DEBUG UTILITIES ==========
-export function getLaneStats() {
-  return {
-    fast: {
-      keys: fastMap.size,
-      totalListeners: Array.from(fastMap.values()).reduce((sum, state) => sum + state.listeners.size, 0)
-    },
-    middle: {
-      keys: middleState.map.size,
-      listeners: middleState.listeners.size,
-      queueSize: middleState.queue.length
-    },
-    slow: {
-      keys: slowState.map.size,
-      listeners: slowState.listeners.size
-    }
-  };
-}
 </file>
 
 <file path="frontend/src/shared/state/SettingsProvider.tsx">
@@ -85089,494 +77766,6 @@ export function VirtualizedList<T>({
     </div>
   );
 }
-</file>
-
-<file path="frontend/src/workers/marketDataProcessor.worker.ts">
-/**
- * Web Worker for Market Data Processing
- * Parallel processing for heavy calculations (SMA, EMA, RSI)
- * Performance: 5-10ms → 0.5ms (Background processing)
- */
-
-interface WorkerMessage {
-  type: 'PROCESS_MARKET_DATA' | 'CALCULATE_INDICATORS' | 'BATCH_PROCESS';
-  data: any;
-  symbol: string;
-  id?: string;
-}
-
-interface MarketDataInput {
-  prices: number[];
-  volumes: number[];
-  timestamps: number[];
-}
-
-interface ProcessedIndicators {
-  sma20: number;
-  sma50: number;
-  ema12: number;
-  ema26: number;
-  rsi: number;
-  macd: {
-    macd: number;
-    signal: number;
-    histogram: number;
-  };
-  bollingerBands: {
-    upper: number;
-    middle: number;
-    lower: number;
-  };
-}
-
-// Worker-Context
-self.onmessage = (event: MessageEvent<WorkerMessage>) => {
-  const { type, data, symbol, id } = event.data;
-  
-  try {
-    const startTime = performance.now();
-    
-    switch (type) {
-      case 'PROCESS_MARKET_DATA':
-        const processedData = processMarketData(data);
-        self.postMessage({
-          type: 'MARKET_DATA_PROCESSED',
-          symbol,
-          id,
-          data: processedData,
-          processingTime: performance.now() - startTime
-        });
-        break;
-        
-      case 'CALCULATE_INDICATORS':
-        const indicators = calculateIndicators(data);
-        self.postMessage({
-          type: 'INDICATORS_CALCULATED',
-          symbol,
-          id,
-          data: indicators,
-          processingTime: performance.now() - startTime
-        });
-        break;
-        
-      case 'BATCH_PROCESS':
-        const batchResults = processBatch(data);
-        self.postMessage({
-          type: 'BATCH_PROCESSED',
-          symbol,
-          id,
-          data: batchResults,
-          processingTime: performance.now() - startTime
-        });
-        break;
-        
-      default:
-        console.warn('Unknown message type:', type);
-    }
-  } catch (error) {
-    self.postMessage({
-      type: 'ERROR',
-      symbol,
-      id,
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-};
-
-/**
- * Komplexe Berechnungen im Background Thread
- */
-function processMarketData(data: MarketDataInput): ProcessedIndicators {
-  const { prices, volumes } = data;
-  
-  if (!prices || prices.length === 0) {
-    throw new Error('No price data provided');
-  }
-
-  // Parallel calculation of multiple indicators
-  const sma20 = calculateSMA(prices, 20);
-  const sma50 = calculateSMA(prices, 50);
-  const ema12 = calculateEMA(prices, 12);
-  const ema26 = calculateEMA(prices, 26);
-  const rsi = calculateRSI(prices, 14);
-  const macd = calculateMACD(prices, 12, 26, 9);
-  const bollingerBands = calculateBollingerBands(prices, 20, 2);
-
-  return {
-    sma20,
-    sma50,
-    ema12,
-    ema26,
-    rsi,
-    macd,
-    bollingerBands
-  };
-}
-
-/**
- * Calculate Simple Moving Average
- */
-function calculateSMA(prices: number[], period: number): number {
-  if (prices.length === 0) return 0;
-  if (prices.length < period) return prices[prices.length - 1] ?? 0;
-  
-  const slice = prices.slice(-period);
-  return slice.reduce((sum, price) => sum + price, 0) / slice.length;
-}
-
-/**
- * Calculate Exponential Moving Average
- */
-function calculateEMA(prices: number[], period: number): number {
-  if (prices.length === 0) return 0;
-  if (prices.length === 1) return prices[0] ?? 0;
-  
-  const k = 2 / (period + 1);
-  let ema = prices[0] ?? 0;
-  
-  for (let i = 1; i < prices.length; i++) {
-    const currentPrice = prices[i] ?? 0;
-    ema = currentPrice * k + ema * (1 - k);
-  }
-  
-  return ema;
-}
-
-/**
- * Calculate Relative Strength Index
- */
-function calculateRSI(prices: number[], period: number = 14): number {
-  if (prices.length < period + 1) return 50; // Neutral RSI
-  
-  let gains = 0;
-  let losses = 0;
-  
-  // Calculate initial average gain/loss
-  for (let i = 1; i <= period; i++) {
-    const currentPrice = prices[i] ?? 0;
-    const previousPrice = prices[i - 1] ?? 0;
-    const change = currentPrice - previousPrice;
-    if (change > 0) {
-      gains += change;
-    } else {
-      losses += Math.abs(change);
-    }
-  }
-  
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-  
-  // Calculate RSI for remaining periods
-  for (let i = period + 1; i < prices.length; i++) {
-    const currentPrice = prices[i] ?? 0;
-    const previousPrice = prices[i - 1] ?? 0;
-    const change = currentPrice - previousPrice;
-    const gain = change > 0 ? change : 0;
-    const loss = change < 0 ? Math.abs(change) : 0;
-    
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
-  }
-  
-  if (avgLoss === 0) return 100;
-  
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
-
-/**
- * Calculate MACD (Moving Average Convergence Divergence)
- */
-function calculateMACD(prices: number[], fastPeriod: number = 12, slowPeriod: number = 26, signalPeriod: number = 9) {
-  const emaFast = calculateEMA(prices, fastPeriod);
-  const emaSlow = calculateEMA(prices, slowPeriod);
-  const macdLine = emaFast - emaSlow;
-  
-  // For simplicity, using current MACD as signal (in reality, signal is EMA of MACD)
-  const signal = macdLine * 0.9; // Simplified signal line
-  const histogram = macdLine - signal;
-  
-  return {
-    macd: macdLine,
-    signal,
-    histogram
-  };
-}
-
-/**
- * Calculate Bollinger Bands
- */
-function calculateBollingerBands(prices: number[], period: number = 20, stdDev: number = 2) {
-  const sma = calculateSMA(prices, period);
-  
-  if (prices.length < period) {
-    return {
-      upper: sma,
-      middle: sma,
-      lower: sma
-    };
-  }
-  
-  const slice = prices.slice(-period);
-  const variance = slice.reduce((sum, price) => sum + Math.pow(price - sma, 2), 0) / period;
-  const standardDeviation = Math.sqrt(variance);
-  
-  return {
-    upper: sma + (standardDeviation * stdDev),
-    middle: sma,
-    lower: sma - (standardDeviation * stdDev)
-  };
-}
-
-/**
- * Individual indicator calculation
- */
-function calculateIndicators(data: { type: string; prices: number[]; period?: number }) {
-  const { type, prices, period = 20 } = data;
-  
-  switch (type) {
-    case 'sma':
-      return calculateSMA(prices, period);
-    case 'ema':
-      return calculateEMA(prices, period);
-    case 'rsi':
-      return calculateRSI(prices, period);
-    case 'macd':
-      return calculateMACD(prices);
-    case 'bollinger':
-      return calculateBollingerBands(prices, period);
-    default:
-      throw new Error(`Unknown indicator type: ${type}`);
-  }
-}
-
-/**
- * Batch processing for multiple symbols
- */
-function processBatch(batchData: Array<{ symbol: string; prices: number[]; volumes?: number[] }>) {
-  return batchData.map(({ symbol, prices, volumes = [] }) => ({
-    symbol,
-    indicators: processMarketData({ prices, volumes, timestamps: [] })
-  }));
-}
-
-// Performance monitoring
-let processedMessages = 0;
-let totalProcessingTime = 0;
-
-self.addEventListener('message', () => {
-  processedMessages++;
-});
-
-// Send performance stats every 10 seconds
-setInterval(() => {
-  if (processedMessages > 0) {
-    self.postMessage({
-      type: 'PERFORMANCE_STATS',
-      data: {
-        processedMessages,
-        averageProcessingTime: totalProcessingTime / processedMessages,
-        messagesPerSecond: processedMessages / 10
-      }
-    });
-    
-    // Reset counters
-    processedMessages = 0;
-    totalProcessingTime = 0;
-  }
-}, 10000);
-</file>
-
-<file path="frontend/src/workers/websocket-shared-worker.ts">
-/// <reference lib="webworker" />
-
-/**
- * SHARED WORKER für Cross-Tab WebSocket-Support
- * Ermöglicht WebSocket-Sharing zwischen mehreren Browser-Tabs
- */
-
-interface SharedWorkerMessage {
-  type: 'INIT' | 'SYMBOLS_REQUEST' | 'SYMBOLS_RESPONSE' | 'TICKER_UPDATE' | 'STATUS_REQUEST' | 'STATUS_RESPONSE';
-  exchange?: string;
-  data?: any;
-  tabId?: string;
-}
-
-class WebSocketSharedWorker {
-  private connections: Map<string, WebSocket> = new Map();
-  private cache: Map<string, any> = new Map();
-  private tabs: Set<MessagePort> = new Set();
-  private tabIds: Map<MessagePort, string> = new Map();
-
-  constructor() {
-    console.log('🚀 WebSocket SharedWorker initialized');
-  }
-
-  // ✅ Tab-Registrierung
-  registerTab(port: MessagePort, tabId: string) {
-    this.tabs.add(port);
-    this.tabIds.set(port, tabId);
-    console.log(`📱 Tab registered: ${tabId} (Total: ${this.tabs.size})`);
-
-    port.onmessage = (event) => {
-      this.handleTabMessage(port, event.data);
-    };
-
-    port.onmessageerror = (error) => {
-      console.error('SharedWorker message error:', error);
-    };
-
-    // Cleanup bei Tab-Schließung
-    port.addEventListener('close', () => {
-      this.unregisterTab(port);
-    });
-  }
-
-  // ✅ Tab-Deregistrierung
-  unregisterTab(port: MessagePort) {
-    const tabId = this.tabIds.get(port);
-    this.tabs.delete(port);
-    this.tabIds.delete(port);
-    console.log(`📱 Tab unregistered: ${tabId} (Remaining: ${this.tabs.size})`);
-  }
-
-  // ✅ Message-Handling
-  handleTabMessage(sender: MessagePort, message: SharedWorkerMessage) {
-    switch (message.type) {
-      case 'INIT':
-        this.handleInit(sender, message);
-        break;
-      case 'SYMBOLS_REQUEST':
-        this.handleSymbolsRequest(sender, message);
-        break;
-      case 'STATUS_REQUEST':
-        this.handleStatusRequest(sender);
-        break;
-    }
-  }
-
-  // ✅ Tab-Initialisierung
-  handleInit(sender: MessagePort, message: SharedWorkerMessage) {
-    // Bestehende Cache-Daten an neuen Tab senden
-    this.cache.forEach((data, exchange) => {
-      sender.postMessage({
-        type: 'SYMBOLS_RESPONSE',
-        exchange: exchange,
-        data: data
-      });
-    });
-  }
-
-  // ✅ Symbol-Anfrage verarbeiten
-  async handleSymbolsRequest(sender: MessagePort, message: SharedWorkerMessage) {
-    const exchange = message.exchange!;
-    
-    // Cache-Hit
-    if (this.cache.has(exchange)) {
-      sender.postMessage({
-        type: 'SYMBOLS_RESPONSE',
-        exchange: exchange,
-        data: this.cache.get(exchange)
-      });
-      return;
-    }
-
-    // WebSocket-Verbindung für Exchange sicherstellen
-    await this.ensureWebSocketConnection(exchange);
-  }
-
-  // ✅ WebSocket-Verbindung verwalten
-  async ensureWebSocketConnection(exchange: string) {
-    if (this.connections.has(exchange)) {
-      const ws = this.connections.get(exchange)!;
-      if (ws.readyState === WebSocket.OPEN) {
-        return;
-      }
-    }
-
-    // Neue WebSocket-Verbindung
-    const wsUrl = `ws://localhost:8100/ws/symbols/${exchange}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      console.log(`✅ SharedWorker WebSocket connected: ${exchange}`);
-      this.connections.set(exchange, ws);
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      this.handleWebSocketMessage(exchange, data);
-    };
-
-    ws.onclose = () => {
-      console.log(`🔌 SharedWorker WebSocket closed: ${exchange}`);
-      this.connections.delete(exchange);
-    };
-
-    ws.onerror = (error) => {
-      console.error(`❌ SharedWorker WebSocket error: ${exchange}`, error);
-    };
-  }
-
-  // ✅ WebSocket-Message verarbeiten
-  handleWebSocketMessage(exchange: string, data: any) {
-    if (data.type === 'symbols_initial') {
-      // Cache aktualisieren
-      this.cache.set(exchange, data);
-      
-      // An alle Tabs broadcaaten
-      this.broadcastToAllTabs({
-        type: 'SYMBOLS_RESPONSE',
-        exchange: exchange,
-        data: data
-      });
-    } else if (data.type === 'ticker_update') {
-      // Live-Updates an alle Tabs
-      this.broadcastToAllTabs({
-        type: 'TICKER_UPDATE',
-        exchange: exchange,
-        data: data
-      });
-    }
-  }
-
-  // ✅ Status-Anfrage
-  handleStatusRequest(sender: MessagePort) {
-    const status = {
-      connections: Array.from(this.connections.keys()),
-      cacheSize: this.cache.size,
-      activeTabs: this.tabs.size
-    };
-
-    sender.postMessage({
-      type: 'STATUS_RESPONSE',
-      data: status
-    });
-  }
-
-  // ✅ Broadcast an alle Tabs
-  broadcastToAllTabs(message: any) {
-    this.tabs.forEach(port => {
-      try {
-        port.postMessage(message);
-      } catch (error) {
-        console.error('Failed to send message to tab:', error);
-      }
-    });
-  }
-}
-
-// ✅ SharedWorker-Instance
-const sharedWorker = new WebSocketSharedWorker();
-
-// ✅ Verbindungs-Handler
-self.addEventListener('connect', (event) => {
-  const port = (event as any).ports[0];
-  const tabId = `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  
-  sharedWorker.registerTab(port, tabId);
-  port.start();
-});
 </file>
 
 <file path="frontend/src/index.css">
@@ -104879,216 +97068,6 @@ async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, mar
             pass
 </file>
 
-<file path="backend/websocket/ws_unified.py">
-"""
-✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT - Delegiert zu ws_manager für echte WebSockets
-Ersetzt die SIMULATION mit ECHTER WebSocket-Delegation an ws_manager.py
-"""
-
-import logging
-from datetime import datetime
-from typing import Dict, Optional
-
-from .ws_manager import ws_manager
-
-logger = logging.getLogger("universal-websocket-service")
-
-class UniversalWsService:
-    """
-    ✅ UNIVERSAL WEBSOCKET SERVICE - REPARIERT
-    
-    Service Layer für alle Exchange WebSocket-Verbindungen:
-    - Delegiert alle technischen WebSocket-Operationen an ws_manager
-    - ws_manager: Echte WebSocket-Verbindungen zu Exchanges
-    - ws_lanes: State Management & Health Tracking
-    - ws_registry: Lane Registry & System Health
-    
-    KEINE SIMULATION MEHR - NUR ECHTE EXCHANGE-VERBINDUNGEN!
-    """
-    
-    def __init__(self):
-        self.active_lanes: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
-        self.running = False
-        
-    async def start(self):
-        """Startet den Universal WebSocket Service"""
-        if self.running:
-            logger.info("Universal WebSocket Service already running")
-            return
-            
-        logger.info("🚀 Starting Universal WebSocket Service (REAL WebSockets)")
-        self.running = True
-        logger.info("✅ Universal WebSocket Service started")
-    
-    async def start_exchange_websocket(self, exchange: str, symbol: str, market_type: str) -> str:
-        """
-        Startet WebSocket für eine Exchange/Symbol Kombination
-        ✅ DELEGIERT AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
-        
-        Args:
-            exchange: Exchange Name (binance, gateio, etc.)
-            symbol: Trading Symbol (BTCUSDT, ETHUSDT, etc.)
-            market_type: Market Type (spot, usdtm)
-        
-        Returns:
-            lane_key: Eindeutiger Key für diese WebSocket Lane
-        """
-        lane_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if lane_key in self.active_lanes:
-            logger.info(f"WebSocket lane already active: {lane_key}")
-            return lane_key
-            
-        try:
-            # ✅ DELEGIERE AN ws_manager FÜR ECHTE WEBSOCKET VERBINDUNG!
-            # ws_manager verbindet zu Exchange API und startet Message Loop
-            lane = await ws_manager.start_websocket_lane(
-                exchange=exchange,
-                symbol=symbol,
-                market=market_type
-            )
-            
-            # Speichere Referenz zur Lane
-            self.active_lanes[lane_key] = {
-                "exchange": exchange,
-                "symbol": symbol,  
-                "market_type": market_type,
-                "started_at": datetime.now(),
-                "lane": lane,  # ✅ ECHTE LANE REFERENZ!
-                "simulated": False  # ✅ KEINE SIMULATION MEHR!
-            }
-            
-            logger.info(f"✅ WebSocket lane started (REAL): {lane_key}")
-            return lane_key
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start WebSocket lane {lane_key}: {e}")
-            raise
-    
-    async def stop_exchange_websocket(self, exchange: str, symbol: str, market_type: str):
-        """Stoppt WebSocket für eine Exchange/Symbol Kombination"""
-        lane_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if lane_key not in self.active_lanes:
-            logger.warning(f"WebSocket lane not active: {lane_key}")
-            return
-            
-        try:
-            # ✅ DELEGIERE AN ws_manager ZUM STOPPEN
-            ws_manager.stop_websocket_lane(exchange, symbol, market_type)
-            
-            # Aus aktiven Lanes entfernen
-            del self.active_lanes[lane_key]
-            
-            logger.info(f"✅ WebSocket lane stopped: {lane_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to stop WebSocket lane {lane_key}: {e}")
-    
-    async def stop(self):
-        """Stoppt den Universal WebSocket Service und alle aktiven Lanes"""
-        if not self.running:
-            return
-            
-        logger.info("🛑 Stopping Universal WebSocket Service")
-        self.running = False
-        
-        # Alle aktiven Lanes stoppen
-        active_lanes_copy = list(self.active_lanes.keys())
-        for lane_key in active_lanes_copy:
-            exchange, symbol, market_type = lane_key.split(":")
-            await self.stop_exchange_websocket(exchange, symbol, market_type)
-                
-        logger.info("✅ Universal WebSocket Service stopped")
-    
-    def get_service_status(self) -> Dict:
-        """
-        Status des Universal WebSocket Service
-        ✅ ENTHÄLT ECHTEN ws_manager STATUS!
-        """
-        # ✅ HOLE ECHTEN ws_manager STATUS
-        ws_manager_status = ws_manager.get_all_status()
-        
-        return {
-            "service": "universal_ws_service",
-            "running": self.running,
-            "total_active_lanes": len(self.active_lanes),
-            "active_exchanges": list(set(info["exchange"] for info in self.active_lanes.values())),
-            "implementation": "delegated_to_ws_manager",  # ✅ ECHTE DELEGATION!
-            "ws_manager_status": ws_manager_status,  # ✅ ECHTER ws_manager STATUS!
-            "lanes": {
-                lane_key: {
-                    "exchange": info["exchange"],
-                    "symbol": info["symbol"],
-                    "market_type": info["market_type"],
-                    "started_at": info["started_at"].isoformat(),
-                    "simulated": False,  # ✅ KEINE SIMULATION MEHR!
-                    "lane_health": (
-                        info["lane"].get_health() 
-                        if "lane" in info and hasattr(info["lane"], "get_health") 
-                        else {}
-                    )
-                }
-                for lane_key, info in self.active_lanes.items()
-            }
-        }
-    
-    def get_exchange_lanes(self, exchange: str):
-        """Alle aktiven Lanes für eine Exchange"""
-        return [
-            {
-                "lane_key": lane_key,
-                "symbol": info["symbol"],
-                "market_type": info["market_type"],
-                "started_at": info["started_at"].isoformat()
-            }
-            for lane_key, info in self.active_lanes.items()
-            if info["exchange"] == exchange
-        ]
-    
-    def get_symbol_lanes(self, symbol: str):
-        """Alle aktiven Lanes für ein Symbol (über alle Exchanges)"""
-        return [
-            {
-                "lane_key": lane_key,
-                "exchange": info["exchange"],
-                "market_type": info["market_type"],
-                "started_at": info["started_at"].isoformat()
-            }
-            for lane_key, info in self.active_lanes.items()
-            if info["symbol"] == symbol
-        ]
-
-
-# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
-universal_ws_service = UniversalWsService()
-
-# ✅ SERVICE API - Einfache Funktionen für Collectors & main.py
-async def start_websocket_service():
-    """Startet den Universal WebSocket Service"""
-    await universal_ws_service.start()
-
-async def stop_websocket_service():
-    """Stoppt den Universal WebSocket Service"""
-    await universal_ws_service.stop()
-
-async def start_exchange_connection(exchange: str, symbol: str, market_type: str = "spot") -> str:
-    """Startet WebSocket Verbindung für Exchange - API für main.py & Collectors"""
-    return await universal_ws_service.start_exchange_websocket(exchange, symbol, market_type)
-
-async def stop_exchange_connection(exchange: str, symbol: str, market_type: str = "spot"):
-    """Stoppt WebSocket Verbindung für Exchange - API für main.py & Collectors"""
-    await universal_ws_service.stop_exchange_websocket(exchange, symbol, market_type)
-
-def get_service_status() -> Dict:
-    """Service Status - API für Health Checks"""
-    return universal_ws_service.get_service_status()
-
-def get_exchange_status(exchange: str):
-    """Exchange Status - API für Exchange Health"""
-    return universal_ws_service.get_exchange_lanes(exchange)
-</file>
-
 <file path="diag_py/deep_analysis.sh">
 #!/bin/bash
 
@@ -106489,194 +98468,245 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
-<file path="frontend/src/features/trading/hooks/useMarketTrades.ts">
-/**
- * useMarketTrades Hook - HYBRID + RingBuffer (REST Snapshot + Live Events)
- * =========================================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/market/trades
- * 2. Live WebSocket Events: TRADE_UPDATE (SOFORT, kein Coalescing!)
- * 3. RingBuffer: O(1) Performance, keine Re-allocation
- * 4. pendingRef Pattern: 1x setState pro requestAnimationFrame
- * 
- * VORTEILE:
- * - Echtzeit: Sofortige Trade-Updates via WebSocket (kein Coalescing!)
- * - Performance: RingBuffer statt Array (O(1) append)
- * - Effizient: Nur 1x setState pro Frame
- * - Deduplizierung: Trade-ID basiert
- * 
- * VERWENDUNG:
- * const { trades, loading, error, refresh } = useMarketTrades(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   50          // limit
- * );
- */
+<file path="frontend/src/hooks/useLiveCandles.ts">
+// src/hooks/useLiveCandles.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
 
-import { useState, useEffect, useRef } from 'react';
-import { TradingAPI } from '@/services/api/trading';
-import { useFastSnapshot } from '@/shared/state/laneStores';
-import { RingBuffer } from '@/lib/RingBuffer';
-import { WebSocketService } from '@/services/api/websocket';
-
-export interface Trade {
-  symbol: string;
-  price: number;
-  size: number;
-  side: 'buy' | 'sell';
-  timestamp: number;
+export type LiveCandle = {
   exchange: string;
+  symbol: string;
   market: string;
-  id?: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * useMarketTrades Hook mit RingBuffer + pendingRef
- */
-export function useMarketTrades(
-  symbol: string,
-  market: string = 'spot',
-  exchange: string,
-  limit: number = 50
-) {
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // RingBuffer statt Array (Performance! O(1) append)
-  const tradesBuffer = useRef(new RingBuffer<Trade>(100));
-  const flushScheduled = useRef(false);
-  const seenIds = useRef(new Set<string>());
-  
-  // Flush per requestAnimationFrame
-  const flushTrades = () => {
-    flushScheduled.current = false;
-    // Nur einmal pro Frame updaten!
-    setTrades(tradesBuffer.current.last(limit));
-  };
-  
-  // Initial REST Snapshot
-  const fetchTrades = async () => {
-    try {
-      setLoading(true);
-      const data = await TradingAPI.getTrades(symbol, market, exchange, limit);
-      
-      // Initial-Trades in RingBuffer laden
-      // API kann direkt Array oder {data: Trade[]} zurückgeben
-      const initialTrades = Array.isArray(data) 
-        ? data 
-        : ((data as any).data || []);
-      tradesBuffer.current.clear();
-      seenIds.current.clear();
-      
-      initialTrades.forEach((trade: any) => {
-        // ✅ Transform: Backend Strings → Numbers
-        const normalizedTrade: Trade = {
-          symbol: trade.symbol || symbol,
-          price: parseFloat(trade.price || trade.p || '0'),
-          size: parseFloat(trade.size || trade.qty || trade.q || '0'),
-          side: trade.side || (trade.isBuyerMaker === false ? 'buy' : 'sell'),
-          timestamp: trade.timestamp || trade.ts || trade.T || Date.now(),
-          exchange: trade.exchange || exchange,
-          market: trade.market || market,
-          id: trade.id || trade.trade_id || `${Date.now()}-${Math.random()}`
-        };
-        
-        tradesBuffer.current.push(normalizedTrade);
-        if (normalizedTrade.id) {
-          seenIds.current.add(normalizedTrade.id);
-        }
-      });
-      
-      // Sofort flushen für Initial-Render
-      flushTrades();
-      setLoading(false);
-    } catch (err) {
-      setError(err as Error);
-      setLoading(false);
-    }
-  };
-  
-  // 🚀 LANE SYSTEM: FAST Lane für Trade Updates  
-  const tradesKey = `trades:${symbol}:${exchange}`;
-  const liveTrades = useFastSnapshot<any[]>(tradesKey);
-  
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = Number.parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStart(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useLiveCandles(exchange: string, symbol: string, market = "spot", interval = "1s", maxCandles = 500) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
+
+  const lastRef = useRef<LiveCandle | null>(null);
+
   useEffect(() => {
-    if (!liveTrades || !Array.isArray(liveTrades)) return;
-    
-    liveTrades.forEach((event: any) => {
-      // Filter: Nur Events für aktuelles Symbol + Exchange
-      if (event.symbol !== symbol) return;
-      if (event.exchange && event.exchange !== exchange) return;
-      
-      const newTrade = event.data;
-      
-      // Deduplizierung: Trade-ID prüfen
-      if (newTrade?.id && seenIds.current.has(newTrade.id)) {
-        return; // Already seen, skip
+    setCandles([]);
+    lastRef.current = null;
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market || "spot", setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market || "spot", (msg: WsMsg) => {
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const t = toNum(m.t);
+        const cndl: LiveCandle = {
+          exchange: msg.exchange!,
+          symbol: msg.symbol!,
+          market: msg.market || market,
+          interval: (m.interval as string) || interval,
+          t: t || 0,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        if (!cndl.t) return;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [cndl];
+
+          if (cndl.t === last.t) {
+            const next = prev.slice(0, -1).concat(cndl);
+            return next;
+          }
+          if (cndl.t > last.t) {
+            const next = prev.concat(cndl);
+            if (next.length <= maxCandles) return next;
+            return next.slice(next.length - maxCandles);
+          }
+          return prev;
+        });
+
+        return;
       }
-      
-      // ✅ Transform: Backend Strings → Numbers
-      const normalizedTrade: Trade = {
-        symbol: newTrade?.symbol || symbol,
-        price: parseFloat(newTrade?.price || newTrade?.p || '0'),
-        size: parseFloat(newTrade?.size || newTrade?.qty || newTrade?.q || '0'),
-        side: newTrade?.side || (newTrade?.isBuyerMaker === false ? 'buy' : 'sell'),
-        timestamp: newTrade?.timestamp || newTrade?.ts || newTrade?.T || Date.now(),
-        exchange: newTrade?.exchange || exchange,
-        market: newTrade?.market || market,
-        id: newTrade?.id || newTrade?.trade_id || `${Date.now()}`
+
+      if (msg.type !== "trade") return;
+
+      const m: any = msg;
+      const price = toNum(m.price);
+      const size = toNum(m.size);
+      if (!price) return;
+
+      const nowMs = Date.now();
+      const t0 = bucketStart(nowMs, sec);
+
+      const cur = lastRef.current;
+      if (!cur || cur.t !== t0) {
+        const fresh: LiveCandle = {
+          exchange,
+          symbol,
+          market,
+          interval,
+          t: t0,
+          o: price,
+          h: price,
+          l: price,
+          c: price,
+          v: size || 0,
+        };
+        lastRef.current = fresh;
+
+        setCandles((prev) => {
+          const next = prev.concat(fresh);
+          if (next.length <= maxCandles) return next;
+          return next.slice(next.length - maxCandles);
+        });
+        return;
+      }
+
+      const upd: LiveCandle = {
+        ...cur,
+        h: Math.max(cur.h, price),
+        l: Math.min(cur.l, price),
+        c: price,
+        v: cur.v + (size || 0),
       };
-      
-      // In RingBuffer pushen (O(1)!)
-      tradesBuffer.current.push(normalizedTrade);
-      
-      // Trade-ID merken
-      if (newTrade?.id) {
-        seenIds.current.add(newTrade.id);
-        
-        // Cleanup alte IDs (behalte nur letzte 100)
-        if (seenIds.current.size > 100) {
-          const idsArray = Array.from(seenIds.current);
-          const toDelete = idsArray.slice(0, idsArray.length - 100);
-          toDelete.forEach(id => seenIds.current.delete(id));
-        }
+      lastRef.current = upd;
+
+      setCandles((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last) return [upd];
+        if (last.t !== upd.t) return prev.concat(upd);
+        return prev.slice(0, -1).concat(upd);
+      });
+    });
+
+    return () => {
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, interval, sec, maxCandles]);
+
+  return { status, candles };
+}
+</file>
+
+<file path="frontend/src/hooks/useLiveTrades.ts">
+// src/hooks/useLiveTrades.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function useLiveTrades(exchange: string, symbol: string, market = "spot", maxTrades = 200) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const pendingRef = useRef<LiveTrade[]>([]);
+  const rafRef = useRef<number | null>(null);
+
+  const key = useMemo(() => `${exchange}:${symbol}:${market}`, [exchange, symbol, market]);
+
+  useEffect(() => {
+    setTrades([]);
+    pendingRef.current = [];
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      if (msg.type !== "trade") return;
+
+      const t: LiveTrade = {
+        exchange: msg.exchange!,
+        symbol: msg.symbol!,
+        market: msg.market || market,
+        price: toNum((msg as any).price),
+        size: toNum((msg as any).size),
+        side: (msg as any).side,
+        ts: toNum((msg as any).ts) || undefined,
+      };
+
+      pendingRef.current.push(t);
+
+      if (rafRef.current === null) {
+        rafRef.current = window.requestAnimationFrame(() => {
+          rafRef.current = null;
+          const batch = pendingRef.current;
+          pendingRef.current = [];
+
+          if (batch.length === 0) return;
+
+          setTrades((prev) => {
+            const next = prev.concat(batch);
+            if (next.length <= maxTrades) return next;
+            return next.slice(next.length - maxTrades);
+          });
+        });
       }
     });
-    
-    // Schedule Flush (nur 1x pro Frame!)
-    if (!flushScheduled.current && liveTrades.length > 0) {
-      flushScheduled.current = true;
-      requestAnimationFrame(flushTrades);
-    }
-  }, [liveTrades, symbol, exchange, limit]);
-  
-  // Initial Load
-  useEffect(() => {
-    fetchTrades();
-  }, [symbol, market, exchange, limit]);
-  
-  // ✅ KRITISCH: WebSocket Connection aufbauen!
-  // OHNE DIES: Keine Live-Updates, Lane Stores bleiben leer!
-  useEffect(() => {
-    const wsService = WebSocketService.getInstance();
-    wsService.connect(symbol, market, exchange);
-    
-    return () => {
-      // Cleanup: Disconnect nur wenn Component unmounted
-      // Nicht bei jedem Re-Render!
-      wsService.disconnect();
-    };
-  }, [symbol, market, exchange]);
-  
-  // Refresh-Funktion
-  const refresh = () => {
-    fetchTrades();
-  };
 
-  return { trades, loading, error, refresh };
+    return () => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, maxTrades]);
+
+  return { status, trades };
 }
 </file>
 
@@ -107410,173 +99440,206 @@ export class WhalesAPI extends BaseAPI {
 }
 </file>
 
-<file path="frontend/src/services/websocket/WebSocketEventRouter.ts">
-/**
- * WebSocket Event Router - KRITISCHE BRÜCKE zwischen WebSocket und Lane Stores
- * =============================================================================
- * 
- * ZWECK:
- * - Subscribed auf WebSocketService Events ('trade', 'candle', etc.)
- * - Schreibt in Lane Stores (fastPush) für performante React Updates
- * - Ermöglicht Live-Updates in useChartView, useTradeList, etc.
- * 
- * ARCHITEKTUR:
- * Backend WS → websocket.ts → emit(type, message) → Event Router → fastPush(key, data) → useFastSnapshot → React Component
- * 
- * OHNE DIESEN ROUTER:
- * - WebSocket empfängt Daten, aber niemand schreibt in Lane Stores
- * - useFastSnapshot returnt immer null
- * - Charts/Components sehen keine Live-Updates
- */
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+// src/services/ws/WebSocketPool.ts
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
 
-import { WebSocketService } from '../api/websocket';
-import { fastPush } from '@/shared/state/laneStores';
+export type WsMsg =
+  | { type: "trade"; exchange: string; symbol: string; market?: string; price?: number | string; size?: number | string; side?: string; ts?: number | string; [k: string]: any }
+  | { type: "candle"; exchange: string; symbol: string; market?: string; interval?: string; t?: number | string; o?: number | string; h?: number | string; l?: number | string; c?: number | string; v?: number | string; [k: string]: any }
+  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
 
-class WebSocketEventRouter {
-  private ws: WebSocketService;
-  private initialized = false;
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (status: WsStatus) => void;
 
-  constructor() {
-    this.ws = WebSocketService.getInstance();
-  }
+type ConnKey = string; // `${exchange}:${symbol}:${market}`
+type Conn = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+  ws: WebSocket | null;
+  status: WsStatus;
 
-  /**
-   * Initialisiert Event-Subscriptions
-   * MUSS beim App-Start aufgerufen werden!
-   */
-  initialize() {
-    if (this.initialized) {
-      console.warn('WebSocketEventRouter already initialized');
-      return;
-    }
-    
-    this.initialized = true;
-    console.log('🔌 WebSocketEventRouter initializing...');
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
 
-    // ========================================
-    // CANDLE Events → Fast Lane
-    // ========================================
-    this.ws.subscribe('candle', (message: any) => {
-      try {
-        const { exchange, symbol, market, t, o, h, l, c, v, server_ms, server_iso } = message;
-        
-        if (!exchange || !symbol) {
-          console.warn('Invalid candle message (missing exchange/symbol):', message);
-          return;
-        }
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
 
-        // ✅ KRITISCH: Key MUSS exchange enthalten für Eindeutigkeit
-        // Format: kline:exchange:symbol:interval
-        // TODO: Interval aus Backend Message extrahieren wenn vorhanden
-        const interval = message.interval || '1m';
-        const key = `kline:${exchange}:${symbol}:${interval}`;
-        
-        const candleData = {
-          exchange,
-          symbol,
-          market: market || 'spot',
-          interval,
-          candle: {
-            time: t,
-            t,
-            open: o,
-            o,
-            high: h,
-            h,
-            low: l,
-            l,
-            close: c,
-            c,
-            volume: v,
-            v,
-          },
-          server_ms,
-          server_iso,
-          clientReceivedAt: message.clientReceivedAt,
-        };
-        
-        // Push to Fast Lane (rAF batched)
-        fastPush(key, candleData);
-        
-        // Debug Log (nur jede 10. Message)
-        if (Math.random() < 0.1) {
-          console.log(`📊 Candle → Lane [${key}]:`, candleData.candle);
-        }
-      } catch (error) {
-        console.error('Error processing candle event:', error, message);
-      }
-    });
+function mkKey(exchange: string, symbol: string, market: string): ConnKey {
+  return `${exchange}:${symbol}:${market}`;
+}
 
-    // ========================================
-    // TRADE Events → Fast Lane
-    // ========================================
-    this.ws.subscribe('trade', (message: any) => {
-      try {
-        const { exchange, symbol, market, price, size, side, ts, server_ms } = message;
-        
-        if (!exchange || !symbol) {
-          console.warn('Invalid trade message (missing exchange/symbol):', message);
-          return;
-        }
+function wsUrlFor(exchange: string, symbol: string, market: string) {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
+}
 
-        // Key: trades:exchange:symbol
-        const key = `trades:${exchange}:${symbol}`;
-        
-        const tradeData = {
-          exchange,
-          symbol,
-          market: market || 'spot',
-          price: parseFloat(price),
-          size: parseFloat(size),
-          side,
-          timestamp: ts,
-          server_ms,
-          clientReceivedAt: message.clientReceivedAt,
-        };
-        
-        // Push to Fast Lane
-        fastPush(key, tradeData);
-        
-        // Debug Log (nur jede 50. Message)
-        if (Math.random() < 0.02) {
-          console.log(`💹 Trade → Lane [${key}]:`, tradeData);
-        }
-      } catch (error) {
-        console.error('Error processing trade event:', error, message);
-      }
-    });
-
-    // ========================================
-    // CONNECTION Events → Monitoring
-    // ========================================
-    this.ws.subscribe('connected', (data: any) => {
-      console.log('✅ WebSocket connected:', data);
-    });
-
-    this.ws.subscribe('disconnected', (data: any) => {
-      console.warn('⚠️ WebSocket disconnected:', data);
-    });
-
-    this.ws.subscribe('error', (error: any) => {
-      console.error('❌ WebSocket error:', error);
-    });
-
-    console.log('✅ WebSocketEventRouter initialized');
-  }
-
-  /**
-   * Cleanup (optional, für Hot-Reload / Tests)
-   */
-  destroy() {
-    this.initialized = false;
-    console.log('🔌 WebSocketEventRouter destroyed');
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }
 
-// ========================================
-// SINGLETON EXPORT
-// ========================================
-export const wsEventRouter = new WebSocketEventRouter();
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _instance: WebSocketPool | null = null;
+  static get instance(): WebSocketPool {
+    if (!this._instance) this._instance = new WebSocketPool();
+    return this._instance;
+  }
+
+  private conns = new Map<ConnKey, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+    if (!c) {
+      c = {
+        exchange,
+        symbol,
+        market,
+        url: wsUrlFor(exchange, symbol, market),
+        ws: null,
+        status: "INIT",
+        listeners: new Set(),
+        statusListeners: new Set(),
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+    }
+    c.refCount += 1;
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount === 0) {
+      this.close(c);
+      this.conns.delete(key);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  getStatus(exchange: string, symbol: string, market: string) {
+    const key = mkKey(exchange, symbol, market);
+    return this.conns.get(key)?.status ?? "INIT";
+  }
+
+  private setStatus(c: Conn, st: WsStatus) {
+    c.status = st;
+    for (const fn of c.statusListeners) fn(st);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed && c.refCount > 0) {
+        this.scheduleReconnect(c);
+      }
+    };
+
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+    };
+
+    ws.onmessage = (ev) => {
+      const obj = safeJsonParse(ev.data);
+      if (!obj) return;
+      const msg: WsMsg = obj;
+
+      if (!msg.exchange) msg.exchange = c.exchange;
+      if (!msg.symbol) msg.symbol = c.symbol;
+      if (!msg.market) msg.market = c.market;
+
+      for (const fn of c.listeners) fn(msg);
+    };
+  }
+
+  private scheduleReconnect(c: Conn) {
+    const attempt = c.reconnectAttempt + 1;
+    c.reconnectAttempt = attempt;
+
+    const base = 500 * Math.pow(2, attempt - 1);
+    const delay = clamp(base, 500, 10_000);
+
+    c.reconnectTimer = window.setTimeout(() => {
+      c.reconnectTimer = null;
+      if (c.refCount > 0 && !c.manuallyClosed) {
+        this.open(c);
+      }
+    }, delay);
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+    try {
+      c.ws?.close();
+    } catch {}
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+}
 </file>
 
 <file path="frontend/src/services/config.ts">
@@ -108058,93 +100121,6 @@ export function clearCache(): void {
   cache.clear();
   console.log('[SymbolsAPI] Cache cleared');
 }
-</file>
-
-<file path="frontend/src/App.tsx">
-import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Suspense, lazy, useEffect } from "react";
-import { AppLayout } from "./shared/layout/AppLayout";
-import ThemeProvider from "./shared/ui/theme-provider";
-import { TradingProvider } from "./contexts/TradingContext";
-import { queryClient } from "./lib/react-query";
-
-// 🚀 LANE SYSTEM - SETTINGS PROVIDER
-import { SettingsProvider } from "./shared/state/SettingsProvider";
-
-// 🔌 WEBSOCKET EVENT ROUTER - KRITISCHE BRÜCKE
-import { wsEventRouter } from "./services/websocket/WebSocketEventRouter";
-
-// ✅ Code-Splitting: Pages lazy laden
-const TradingPage = lazy(() => import("./pages/TradingPage"));
-const QuantumPage = lazy(() => import("./pages/QuantumPage"));
-const BotPage = lazy(() => import("./pages/BotPage"));
-const MLPage = lazy(() => import("./pages/MLPage"));
-const DatabasePage = lazy(() => import("./pages/DatabasePage"));
-const WhalesPage = lazy(() => import("./pages/WhalesPage"));
-const NewsPage = lazy(() => import("./pages/NewsPage"));
-const APIPage = lazy(() => import("./pages/APIPage"));
-const SettingsPage = lazy(() => import("./pages/SettingsPage"));
-
-// ✅ Logs Feature
-const LogsPage = lazy(() => import("./features/logs").then(m => ({ default: m.LogsPage })));
-const DiagnosticsPage = lazy(() => import("./features/logs").then(m => ({ default: m.DiagnosticsPage })));
-
-// Loading Fallback Component
-const PageLoader = () => (
-  <div className="flex items-center justify-center h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-  </div>
-);
-
-// 🚀 LANE SYSTEM - SIMPLIFIED APP WITH SETTINGS PROVIDER + WS EVENT ROUTER
-const App = () => {
-  // ✅ KRITISCH: WebSocket Event Router beim App-Start initialisieren
-  // Ohne dies: WebSocket empfängt Daten, aber Lane Stores bleiben leer
-  useEffect(() => {
-    wsEventRouter.initialize();
-    console.log('🎯 App initialized with WebSocket Event Router');
-    
-    return () => {
-      // Cleanup bei App-Unmount (z.B. Hot-Reload)
-      wsEventRouter.destroy();
-    };
-  }, []);
-
-  return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <TradingProvider>
-          <SettingsProvider>
-            <BrowserRouter>
-              <Suspense fallback={<PageLoader />}>
-                <Routes>
-                  <Route path="/" element={<AppLayout />}>
-                    <Route index element={<Navigate to="/trading" replace />} />
-                    <Route path="trading" element={<TradingPage />} />
-                    <Route path="quantum" element={<QuantumPage />} />
-                    <Route path="bot" element={<BotPage />} />
-                    <Route path="ml" element={<MLPage />} />
-                    <Route path="database" element={<DatabasePage />} />
-                    <Route path="whales" element={<WhalesPage />} />
-                    <Route path="news" element={<NewsPage />} />
-                    <Route path="api" element={<APIPage />} />
-                    <Route path="settings" element={<SettingsPage />} />
-                    <Route path="diagnostics" element={<DiagnosticsPage />} />
-                    <Route path="logs/:exchange" element={<LogsPage />} />
-                  </Route>
-                </Routes>
-              </Suspense>
-            </BrowserRouter>
-          </SettingsProvider>
-        </TradingProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
-  );
-};
-
-export default App;
-// Updated Sun Sep 14 18:57:08 CEST 2025
 </file>
 
 <file path="frontend/src/main.tsx">
@@ -109448,6 +101424,577 @@ watch -n 10 'curl -s http://localhost:8100/ws/metrics/ | jq ".exchanges"'
 
 **STATUS:** 🔴 Ready for Implementation  
 **NEXT:** Starte mit Task 1 (Analyse bestehender Dateien)
+</file>
+
+<file path="readme/000_frontend_build_1.md">
+# FRONTEND WEBSOCKET ARCHITEKTUR - CLEAN SLATE REBUILD
+
+**Problem:** 4 parallele WebSocket-Systeme → Inkonsistenz, keine Live-Daten  
+**Root Cause:** Over-Engineering (Lane Stores, Event Router, Workers, RingBuffer)  
+**Lösung:** 1 WebSocketPool + Simple Hooks → Single Source of Truth
+
+---
+
+## Komplette 1:1 Anleitung (Terminal + Validierung + typische Fixes)
+
+### Voraussetzungen
+
+* Projektpfad: `/Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI`
+* Frontend läuft auf `http://localhost:8080`
+* Backend WS via Vite Proxy `/ws/...`
+
+---
+
+# 0) Safety: eigener Branch + Status check
+
+```bash
+cd /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI
+git status
+git checkout -b feat/ws-clean-slate
+```
+
+---
+
+# 1) PHASE 1 – Löschen (Tasks 1–5)
+
+## TASK 1–5: löschen
+
+```bash
+cd /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/frontend
+
+rm -rf src/services/websocket/
+rm -rf src/shared/events/
+rm -f  src/shared/state/laneStores.ts
+rm -rf src/workers/
+rm -f  src/lib/RingBuffer.ts
+rm -f  src/lib/rafScheduler.ts
+```
+
+## Validierung: existiert wirklich nicht mehr
+
+```bash
+ls -la src/services/websocket 2>/dev/null || echo "OK: services/websocket gelöscht"
+ls -la src/shared/events      2>/dev/null || echo "OK: shared/events gelöscht"
+ls -la src/shared/state/laneStores.ts 2>/dev/null || echo "OK: laneStores.ts gelöscht"
+ls -la src/workers            2>/dev/null || echo "OK: workers gelöscht"
+ls -la src/lib/RingBuffer.ts  2>/dev/null || echo "OK: RingBuffer.ts gelöscht"
+ls -la src/lib/rafScheduler.ts 2>/dev/null || echo "OK: rafScheduler.ts gelöscht"
+```
+
+---
+
+# 2) PHASE 1 – App.tsx aufräumen (TASK 6)
+
+## TASK 6: Router-Imports entfernen
+
+### A) Suche nach alten Imports (muss danach 0 Treffer liefern)
+
+```bash
+rg -n "services/websocket|WebSocketEventRouter|wsEventRouter|laneStores|shared/events" src/App.tsx src -S
+```
+
+### B) `App.tsx` editieren
+
+Entferne alles davon:
+
+* `import { wsEventRouter } ...`
+* `wsEventRouter.initialize()`
+* `wsEventRouter.destroy()` (falls vorhanden)
+
+### C) Validierung: keine Treffer mehr
+
+```bash
+rg -n "wsEventRouter|WebSocketEventRouter|services/websocket" src/App.tsx -S || echo "OK: App.tsx sauber"
+```
+
+---
+
+# 3) PHASE 2 – Neue Dateien anlegen (TASKS 7–9)
+
+## Ordner anlegen
+
+```bash
+mkdir -p src/services/ws
+mkdir -p src/hooks
+```
+
+## TASK 7: `src/services/ws/WebSocketPool.ts`
+
+**Vollständiger Code:**
+
+```typescript
+// src/services/ws/WebSocketPool.ts
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+
+export type WsMsg =
+  | { type: "trade"; exchange: string; symbol: string; market?: string; price?: number | string; size?: number | string; side?: string; ts?: number | string; [k: string]: any }
+  | { type: "candle"; exchange: string; symbol: string; market?: string; interval?: string; t?: number | string; o?: number | string; h?: number | string; l?: number | string; c?: number | string; v?: number | string; [k: string]: any }
+  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
+
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (status: WsStatus) => void;
+
+type ConnKey = string; // `${exchange}:${symbol}:${market}`
+type Conn = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+  ws: WebSocket | null;
+  status: WsStatus;
+
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
+
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
+
+function mkKey(exchange: string, symbol: string, market: string): ConnKey {
+  return `${exchange}:${symbol}:${market}`;
+}
+
+function wsUrlFor(exchange: string, symbol: string, market: string) {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
+}
+
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _instance: WebSocketPool | null = null;
+  static get instance(): WebSocketPool {
+    if (!this._instance) this._instance = new WebSocketPool();
+    return this._instance;
+  }
+
+  private conns = new Map<ConnKey, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+    if (!c) {
+      c = {
+        exchange,
+        symbol,
+        market,
+        url: wsUrlFor(exchange, symbol, market),
+        ws: null,
+        status: "INIT",
+        listeners: new Set(),
+        statusListeners: new Set(),
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+    }
+    c.refCount += 1;
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount === 0) {
+      this.close(c);
+      this.conns.delete(key);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  getStatus(exchange: string, symbol: string, market: string) {
+    const key = mkKey(exchange, symbol, market);
+    return this.conns.get(key)?.status ?? "INIT";
+  }
+
+  private setStatus(c: Conn, st: WsStatus) {
+    c.status = st;
+    for (const fn of c.statusListeners) fn(st);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed && c.refCount > 0) {
+        this.scheduleReconnect(c);
+      }
+    };
+
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+    };
+
+    ws.onmessage = (ev) => {
+      const obj = safeJsonParse(ev.data);
+      if (!obj) return;
+      const msg: WsMsg = obj;
+
+      if (!msg.exchange) msg.exchange = c.exchange;
+      if (!msg.symbol) msg.symbol = c.symbol;
+      if (!msg.market) msg.market = c.market;
+
+      for (const fn of c.listeners) fn(msg);
+    };
+  }
+
+  private scheduleReconnect(c: Conn) {
+    const attempt = c.reconnectAttempt + 1;
+    c.reconnectAttempt = attempt;
+
+    const base = 500 * Math.pow(2, attempt - 1);
+    const delay = clamp(base, 500, 10_000);
+
+    c.reconnectTimer = window.setTimeout(() => {
+      c.reconnectTimer = null;
+      if (c.refCount > 0 && !c.manuallyClosed) {
+        this.open(c);
+      }
+    }, delay);
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+    try {
+      c.ws?.close();
+    } catch {}
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+}
+```
+
+**Validierung:**
+
+```bash
+test -f src/services/ws/WebSocketPool.ts && echo "OK: WebSocketPool.ts vorhanden"
+```
+
+---
+
+## TASK 8: `src/hooks/useLiveTrades.ts`
+
+**Vollständiger Code:**
+
+```typescript
+// src/hooks/useLiveTrades.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function useLiveTrades(exchange: string, symbol: string, market = "spot", maxTrades = 200) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const pendingRef = useRef<LiveTrade[]>([]);
+  const rafRef = useRef<number | null>(null);
+
+  const key = useMemo(() => `${exchange}:${symbol}:${market}`, [exchange, symbol, market]);
+
+  useEffect(() => {
+    setTrades([]);
+    pendingRef.current = [];
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      if (msg.type !== "trade") return;
+
+      const t: LiveTrade = {
+        exchange: msg.exchange!,
+        symbol: msg.symbol!,
+        market: msg.market || market,
+        price: toNum((msg as any).price),
+        size: toNum((msg as any).size),
+        side: (msg as any).side,
+        ts: toNum((msg as any).ts) || undefined,
+      };
+
+      pendingRef.current.push(t);
+
+      if (rafRef.current === null) {
+        rafRef.current = window.requestAnimationFrame(() => {
+          rafRef.current = null;
+          const batch = pendingRef.current;
+          pendingRef.current = [];
+
+          if (batch.length === 0) return;
+
+          setTrades((prev) => {
+            const next = prev.concat(batch);
+            if (next.length <= maxTrades) return next;
+            return next.slice(next.length - maxTrades);
+          });
+        });
+      }
+    });
+
+    return () => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, maxTrades]);
+
+  return { status, trades };
+}
+```
+
+**Validierung:**
+
+```bash
+test -f src/hooks/useLiveTrades.ts && echo "OK: useLiveTrades.ts vorhanden"
+```
+
+---
+
+## TASK 9: `src/hooks/useLiveCandles.ts`
+
+**Vollständiger Code:**
+
+```typescript
+// src/hooks/useLiveCandles.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "../services/ws/WebSocketPool";
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStart(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useLiveCandles(exchange: string, symbol: string, market = "spot", interval = "1s", maxCandles = 500) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+  const key = useMemo(() => `${exchange}:${symbol}:${market}:${interval}`, [exchange, symbol, market, interval]);
+
+  const lastRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    setCandles([]);
+    lastRef.current = null;
+  }, [key]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const t = toNum(m.t);
+        const cndl: LiveCandle = {
+          exchange: msg.exchange!,
+          symbol: msg.symbol!,
+          market: msg.market || market,
+          interval: (m.interval as string) || interval,
+          t: t || 0,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        if (!cndl.t) return;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [cndl];
+
+          if (cndl.t === last.t) {
+            const next = prev.slice(0, -1).concat(cndl);
+            return next;
+          }
+          if (cndl.t > last.t) {
+            const next = prev.concat(cndl);
+            if (next.length <= maxCandles) return next;
+            return next.slice(next.length - maxCandles);
+          }
+          return prev;
+        });
+
+        return;
+      }
+
+      if (msg.type !== "trade") return;
+
+      const m: any = msg;
+      const price = toNum(m.price);
+      const size = toNum(m.size);
+      if (!price) return;
+
+      const nowMs = Date.now();
+      const t0 = bucketStart(nowMs, sec);
+
+      const cur = lastRef.current;
+      if (!cur || cur.t !== t0) {
+        const fresh: LiveCandle = {
+          exchange,
+          symbol,
+          market,
+          interval,
+          t: t0,
+          o: price,
+          h: price,
+          l: price,
+          c: price,
+          v: size || 0,
+        };
+        lastRef.current = fresh;
+
+        setCandles((prev) => {
+          const next = prev.concat(fresh);
+          if (next.length <= maxCandles) return next;
+          return next.slice(next.length - maxCandles);
+        });
+        return;
+      }
+
+      const upd: LiveCandle = {
+        ...cur,
+        h: Math.max(cur.h, price),
+        l: Math.min(cur.l, price),
+        c: price,
+        v: cur.v + (size || 0),
+      };
+      lastRef.current = upd;
+
+      setCandles((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last) return [upd];
+        if (last.t !== upd.t) return prev.concat(upd);
+        return prev.slice(0, -1).concat(upd);
+      });
+    });
+
+    return () => {
+      offMsg();
+      offStatus();
+    };
+  }, [exchange, symbol, market, interval, sec, maxCandles]);
+
+  return { status, candles };
+}
+```
+
+**Validierung:**
+
+```bash
+test -f src/hooks/useLiveCandles.ts && echo "OK: useLiveCandles.ts vorhanden"
+```
 </file>
 
 <file path="readme/000_hardcoded_change.md">
@@ -191197,6 +183744,95 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="frontend/src/pages/BTCUSDTMonitor.tsx">
+import React, { useMemo } from "react";
+import { useLiveTrades } from "../hooks/useLiveTrades";
+import { useLiveCandles } from "../hooks/useLiveCandles";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1s";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
+      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
+        BTCUSDT Live Monitor (Hooks-only)
+      </h1>
+
+      <div style={{ marginBottom: 12, opacity: 0.85 }}>
+        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+      </div>
+
+      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
+          <thead>
+            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
+              <th style={{ padding: 10 }}>Exchange</th>
+              <th style={{ padding: 10 }}>WS</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
+              <th style={{ padding: 10 }}>Side</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
+        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
+          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
+  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
+
+  return (
+    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
+      <td style={{ padding: 10 }}>{status}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
+      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
+      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
+        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
+      </td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
+    </tr>
+  );
+}
+</file>
+
 <file path="frontend/src/services/api/market.ts">
 import { BaseAPI } from './base';
 
@@ -191769,201 +184405,93 @@ export type BackfillTask = z.infer<typeof BackfillTaskSchema>;
 export type Health = z.infer<typeof HealthSchema>;
 </file>
 
-<file path="frontend/src/services/api/websocket.ts">
-import { RingBuffer } from '../../lib/RingBuffer';
+<file path="frontend/src/App.tsx">
+import { QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, lazy, useEffect } from "react";
+import { AppLayout } from "./shared/layout/AppLayout";
+import ThemeProvider from "./shared/ui/theme-provider";
+import { TradingProvider } from "./contexts/TradingContext";
+import { queryClient } from "./lib/react-query";
 
-/**
- * FINAL WebSocketService
- * - Connects to backend gateway: ws://localhost:8100/ws/{exchange}/{symbol}/{market}
- * - Reconnect without losing listeners
- * - Emits full message for message.type (no message.data assumptions)
- */
-export class WebSocketService {
-  private static instance: WebSocketService;
+// 🚀 LANE SYSTEM - SETTINGS PROVIDER
+import { SettingsProvider } from "./shared/state/SettingsProvider";
 
-  private ws: WebSocket | null = null;
-  private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 8;
+// 🔌 WEBSOCKET EVENT ROUTER - KRITISCHE BRÜCKE
+import { wsEventRouter } from "./services/websocket/WebSocketEventRouter";
 
-  private listeners: Map<string, Function[]> = new Map();
-  private currentUrl: string = '';
+// ✅ Code-Splitting: Pages lazy laden
+const TradingPage = lazy(() => import("./pages/TradingPage"));
+const QuantumPage = lazy(() => import("./pages/QuantumPage"));
+const BotPage = lazy(() => import("./pages/BotPage"));
+const MLPage = lazy(() => import("./pages/MLPage"));
+const DatabasePage = lazy(() => import("./pages/DatabasePage"));
+const WhalesPage = lazy(() => import("./pages/WhalesPage"));
+const NewsPage = lazy(() => import("./pages/NewsPage"));
+const APIPage = lazy(() => import("./pages/APIPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
 
-  private messageQueue = new RingBuffer<string>(500);
-  private flushing = false;
-  private flushInterval: number | null = null;
+// ✅ Logs Feature
+const LogsPage = lazy(() => import("./features/logs").then(m => ({ default: m.LogsPage })));
+const DiagnosticsPage = lazy(() => import("./features/logs").then(m => ({ default: m.DiagnosticsPage })));
 
-  static getInstance(): WebSocketService {
-    if (!WebSocketService.instance) {
-      WebSocketService.instance = new WebSocketService();
-    }
-    return WebSocketService.instance;
-  }
+// Loading Fallback Component
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+  </div>
+);
 
-  connect(symbol: string, market: string, exchange: string): void {
-    // ✅ FIX: Relative WS URL für Vite Proxy (läuft auf Port 8080, nicht 8100!)
-    // Vite proxy leitet /ws -> ws://localhost:8100/ws weiter
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host; // localhost:8080 in dev
-    const base = (import.meta as any)?.env?.VITE_BACKEND_WS_URL || `${protocol}//${host}/ws`;
-
-    const ex = String(exchange || '').toLowerCase();
-    const sym = String(symbol || '').toUpperCase();
-    const mkt = String(market || 'spot').toLowerCase();
-
-    const wsUrl = `${base}/${ex}/${sym}/${mkt}`;
-
-    // ✅ FIX: Prüfe auch CONNECTING state um Race Conditions zu vermeiden
-    if (this.ws && this.currentUrl === wsUrl) {
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        return; // Bereits verbunden oder verbindet gerade
-      }
-    }
-
-    this.closeSocketOnly(); // KEEP listeners
-    this.currentUrl = wsUrl;
-
-    this.ws = new WebSocket(wsUrl);
-    this.setupEventHandlers();
-  }
-
-  private setupEventHandlers(): void {
-    if (!this.ws) return;
-
-    this.ws.onopen = () => {
-      this.reconnectAttempts = 0;
-      this.emit('connected', { url: this.currentUrl, ts: Date.now() });
+// 🚀 LANE SYSTEM - SIMPLIFIED APP WITH SETTINGS PROVIDER + WS EVENT ROUTER
+const App = () => {
+  // ✅ KRITISCH: WebSocket Event Router beim App-Start initialisieren
+  // Ohne dies: WebSocket empfängt Daten, aber Lane Stores bleiben leer
+  useEffect(() => {
+    wsEventRouter.initialize();
+    console.log('🎯 App initialized with WebSocket Event Router');
+    
+    return () => {
+      // Cleanup bei App-Unmount (z.B. Hot-Reload)
+      wsEventRouter.destroy();
     };
+  }, []);
 
-    this.ws.onmessage = (event: MessageEvent) => {
-      this.messageQueue.push(event.data);
-      if (!this.flushInterval) this.startFlushLoop();
-    };
+  return (
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <TradingProvider>
+          <SettingsProvider>
+            <BrowserRouter>
+              <Suspense fallback={<PageLoader />}>
+                <Routes>
+                  <Route path="/" element={<AppLayout />}>
+                    <Route index element={<Navigate to="/trading" replace />} />
+                    <Route path="trading" element={<TradingPage />} />
+                    <Route path="quantum" element={<QuantumPage />} />
+                    <Route path="bot" element={<BotPage />} />
+                    <Route path="ml" element={<MLPage />} />
+                    <Route path="database" element={<DatabasePage />} />
+                    <Route path="whales" element={<WhalesPage />} />
+                    <Route path="news" element={<NewsPage />} />
+                    <Route path="api" element={<APIPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="diagnostics" element={<DiagnosticsPage />} />
+                    <Route path="logs/:exchange" element={<LogsPage />} />
+                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
+                  </Route>
+                </Routes>
+              </Suspense>
+            </BrowserRouter>
+          </SettingsProvider>
+        </TradingProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
+};
 
-    this.ws.onclose = (event: CloseEvent) => {
-      this.emit('disconnected', { code: event.code, reason: event.reason });
-      this.handleReconnect();
-    };
-
-    this.ws.onerror = (error: Event) => {
-      this.emit('error', error);
-    };
-  }
-
-  private dispatchInbound(message: any): void {
-    if (message && typeof message === 'object') {
-      message.clientReceivedAt = performance.now();
-    }
-
-    this.emit('message', message);
-
-    if (message && typeof message.type === 'string') {
-      this.emit(message.type, message);
-    } else {
-      this.emit('raw_message', message);
-    }
-  }
-
-  private flushMessages(): void {
-    if (this.flushing) return;
-    this.flushing = true;
-
-    // robust even in background tabs:
-    setTimeout(() => {
-      let raw: string | undefined;
-      let processed = 0;
-      const maxBatch = 200;
-
-      while ((raw = this.messageQueue.shift()) && processed < maxBatch) {
-        try {
-          this.dispatchInbound(JSON.parse(raw));
-        } catch (e) {
-          this.emit('error', e);
-        }
-        processed++;
-      }
-
-      this.flushing = false;
-    }, 0);
-  }
-
-  private startFlushLoop(): void {
-    if (this.flushInterval) return;
-
-    this.flushInterval = window.setInterval(() => {
-      if (!this.messageQueue.isEmpty()) this.flushMessages();
-    }, 8); // 8ms ≈ 125Hz
-  }
-
-  private stopFlushLoop(): void {
-    if (this.flushInterval) {
-      clearInterval(this.flushInterval);
-      this.flushInterval = null;
-    }
-  }
-
-  private handleReconnect(): void {
-    if (!this.currentUrl) return;
-
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      this.emit('error', new Error('Max reconnection attempts reached'));
-      return;
-    }
-
-    this.reconnectAttempts++;
-    const delay = Math.min(250 * this.reconnectAttempts, 2000);
-
-    setTimeout(() => {
-      if (!this.currentUrl) return;
-      this.connectFromUrl(this.currentUrl);
-    }, delay);
-  }
-
-  private connectFromUrl(url: string): void {
-    this.closeSocketOnly();
-    this.currentUrl = url;
-    this.ws = new WebSocket(url);
-    this.setupEventHandlers();
-  }
-
-  subscribe(event: string, callback: Function): void {
-    if (!this.listeners.has(event)) this.listeners.set(event, []);
-    this.listeners.get(event)!.push(callback);
-  }
-
-  unsubscribe(event: string, callback: Function): void {
-    const arr = this.listeners.get(event);
-    if (!arr) return;
-    const i = arr.indexOf(callback);
-    if (i >= 0) arr.splice(i, 1);
-  }
-
-  private emit(event: string, data: any): void {
-    const arr = this.listeners.get(event) || [];
-    for (const cb of [...arr]) {
-      try { cb(data); } catch {}
-    }
-  }
-
-  private closeSocketOnly(): void {
-    this.stopFlushLoop();
-    if (this.ws) {
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
-    this.messageQueue.clear();
-  }
-
-  disconnect(): void {
-    this.closeSocketOnly();
-    this.currentUrl = '';
-    this.reconnectAttempts = 0;
-  }
-
-  destroy(): void {
-    this.disconnect();
-    this.listeners.clear();
-  }
-}
+export default App;
+// Updated Sun Sep 14 18:57:08 CEST 2025
 </file>
 
 <file path="readme/000_backfill_loop.md">
@@ -196254,206 +188782,6 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="frontend/src/features/trading/hooks/useChartView.ts">
-/**
- * useChartView Hook - HYBRID + pendingRef (REST Snapshot + Live Events)
- * ======================================================================
- * 
- * ARCHITEKTUR:
- * 1. Initial REST Snapshot: GET /api/chart/history
- * 2. Live WebSocket Events: KLINE_UPDATE (mit 8ms Coalescing im Router)
- * 3. pendingRef Pattern: 1x setState pro requestAnimationFrame
- * 4. Merge Logic: Letzte Candle updaten wenn time matched
- * 
- * VORTEILE:
- * - Echtzeit: Candlestick-Updates via WebSocket (8ms coalescet)
- * - Performance: pendingRef Pattern, 1x setState pro Frame
- * - Effizient: Nur 1x REST initial, dann nur Events
- * 
- * VERWENDUNG:
- * const { chartData, loading, error, refresh } = useChartView(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   '1m',       // interval
- *   100         // limit
- * );
- */
-
-import { useState, useEffect, useRef } from 'react';
-import { ChartAPI } from '@/services/api/chart';
-import { useFastSnapshot } from '@/shared/state/laneStores';
-import { cancel } from '@/lib/rafScheduler';
-import { WebSocketService } from '@/services/api/websocket';
-
-export interface ChartData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-/**
- * useChartView Hook mit pendingRef Pattern
- */
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string = '1m',
-  limit: number = 100
-) {
-  const [chartData, setChartData] = useState<ChartData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // pendingRef: Events sammeln, 1x setState pro Frame
-  const pendingData = useRef<ChartData[] | null>(null);
-  const flushScheduled = useRef(false);
-  
-  // Flush per requestAnimationFrame
-  const flushUpdate = () => {
-    flushScheduled.current = false;
-    
-    if (pendingData.current) {
-      setChartData(pendingData.current);
-      pendingData.current = null;
-    }
-  };
-  
-  // Initial REST Snapshot
-  const fetchChartData = async () => {
-    try {
-      setLoading(true);
-      const data = await ChartAPI.getHistory(symbol, exchange, interval, limit);
-      
-      // ✅ FIX: ChartAPI gibt direkt Array zurück, nicht {data: [...]}
-      const rawData = Array.isArray(data) ? data : ((data as any).data || []);
-      
-      // Transform: Backend Format → ChartData[]
-      const transformed: ChartData[] = rawData.map((d: any) => ({
-        time: d.time,
-        open: parseFloat(d.open),
-        high: parseFloat(d.high),
-        low: parseFloat(d.low),
-        close: parseFloat(d.close),
-        volume: parseFloat(d.volume),
-      }));
-      
-      pendingData.current = transformed;
-      flushUpdate();
-      setLoading(false);
-    } catch (err) {
-      setError(err as Error);
-      setLoading(false);
-    }
-  };
-  
-  // 🚀 LANE SYSTEM: FAST Lane für KLINE Updates
-  // ✅ KRITISCH: Key MUSS exchange enthalten (sonst Collision bei multi-exchange)
-  const klineKey = `kline:${exchange}:${symbol}:${interval}`;
-  const liveKline = useFastSnapshot<any>(klineKey);
-  
-  useEffect(() => {
-    if (!liveKline) return;
-    
-    // Filter: Nur Events für aktuelles Symbol + Exchange + Interval
-    if (liveKline.symbol !== symbol) return;
-    if (liveKline.exchange && liveKline.exchange !== exchange) return;
-    if (liveKline.interval && liveKline.interval !== interval) return;
-    
-    const newCandle = liveKline.candle;
-    const currentData = pendingData.current || chartData;
-    
-    if (currentData.length === 0) {
-      // Leere Daten: Neuen Candle hinzufügen
-      pendingData.current = [{
-        time: newCandle.ts || newCandle.time || newCandle.t,
-        open: parseFloat(newCandle.open || newCandle.o),
-        high: parseFloat(newCandle.high || newCandle.h),
-        low: parseFloat(newCandle.low || newCandle.l),
-        close: parseFloat(newCandle.close || newCandle.c),
-        volume: parseFloat(newCandle.volume || newCandle.v),
-      }];
-    } else {
-      const lastCandle = currentData[currentData.length - 1];
-      if (!lastCandle) return;
-      
-      const candleTime = newCandle.ts || newCandle.time || newCandle.t;
-      
-      // Update letzte Candle wenn Zeit matched
-      if (lastCandle.time === candleTime) {
-        const updatedData = [...currentData];
-        updatedData[updatedData.length - 1] = {
-          time: candleTime,
-          open: parseFloat(newCandle.open || newCandle.o),
-          high: parseFloat(newCandle.high || newCandle.h),
-          low: parseFloat(newCandle.low || newCandle.l),
-          close: parseFloat(newCandle.close || newCandle.c),
-          volume: parseFloat(newCandle.volume || newCandle.v),
-        };
-        pendingData.current = updatedData;
-      }
-      // Neue Candle anhängen wenn Zeit > last
-      else if (candleTime > lastCandle.time) {
-        const updatedData = [...currentData, {
-          time: candleTime,
-          open: parseFloat(newCandle.open || newCandle.o),
-          high: parseFloat(newCandle.high || newCandle.h),
-          low: parseFloat(newCandle.low || newCandle.l),
-          close: parseFloat(newCandle.close || newCandle.c),
-          volume: parseFloat(newCandle.volume || newCandle.v),
-        }];
-        // Limit beachten
-        pendingData.current = updatedData.slice(-limit);
-      }
-      // Event älter: Ignorieren
-      else {
-        return;
-      }
-    }
-    
-    // Schedule Flush (nur 1x pro frame!)
-    if (!flushScheduled.current) {
-      flushScheduled.current = true;
-      requestAnimationFrame(flushUpdate);
-    }
-  }, [liveKline, symbol, exchange, interval, limit, chartData]);
-  
-  // Initial Load
-  useEffect(() => {
-    fetchChartData();
-  }, [symbol, market, exchange, interval, limit]);
-  
-  // 🔌 WebSocket Connection Management
-  useEffect(() => {
-    const wsService = WebSocketService.getInstance();
-    wsService.connect(symbol, market, exchange);
-    
-    return () => {
-      wsService.disconnect();
-    };
-  }, [symbol, market, exchange]);
-  
-  // Cleanup bei Unmount
-  useEffect(() => {
-    return () => {
-      const topicKey = `${exchange}|${market}|${symbol}|kline`;
-      cancel(topicKey);
-    };
-  }, [exchange, market, symbol]);
-  
-  // Refresh-Funktion
-  const refresh = () => {
-    fetchChartData();
-  };
-
-  return { chartData, loading, error, refresh };
-}
-</file>
-
 <file path="start-health.sh">
 #!/bin/bash
 
@@ -198419,6 +190747,91 @@ class MultiResCandleAgg:
         return finished
 </file>
 
+<file path="backend/websocket/ws_config.py">
+import os
+from typing import Dict, Any, Set
+
+def _load_ws_urls() -> Dict[str, str]:
+    """Lädt URLs aus ENV für aktivierte Exchanges - Single Source of Truth"""
+    enabled = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    # URLs aus ENV laden (Pattern: {EXCHANGE}_WS_URL)
+    urls = {}
+    exchanges = enabled or ["binance", "bitget", "bybit", "coinbase", "gateio", "htx", "mexc", "okx"]
+    
+    for ex in exchanges:
+        env_var = f"{ex.upper()}_WS_URL"
+        url = os.getenv(env_var)
+        if url:
+            urls[ex] = url
+        else:
+            # Fallback-URLs (nur wenn keine ENV gesetzt)
+            fallbacks = {
+                "binance": "wss://stream.binance.com:9443/ws",
+                "bitget": "wss://ws.bitget.com/v2/ws/public",
+                "bybit": "wss://stream.bybit.com/v5/public/spot",
+                "coinbase": "wss://advanced-trade-ws.coinbase.com",
+                "gateio": "wss://api.gateio.ws/ws/v4/",
+                "htx": "wss://api-aws.huobi.pro/ws",
+                "mexc": "wss://wbs-api.mexc.com/ws",
+                "okx": "wss://ws.okx.com:8443/ws/v5/public"
+            }
+            if ex in fallbacks:
+                urls[ex] = fallbacks[ex]
+    
+    return urls
+
+# ✅ DYNAMISCH - aus .env geladen
+WS_URLS: Dict[str, str] = _load_ws_urls()
+
+# ws Timeouts (Sekunden) - zentral für alle Exchanges
+WS_TIMEOUTS: Dict[str, int] = {
+    "ping_interval": 20,  # ✅ ERHÖHT (war 10)
+    "ping_timeout": 10,   # ✅ ERHÖHT (war 5)
+    "close_timeout": 5,
+    "heartbeat_timeout": 30,
+    "reconnect_delay": 5,
+    "max_reconnect_delay": 60
+}
+
+# Rate Limiting für WebSocket-Verbindungen
+WS_RATE_LIMITS: Dict[str, int] = {
+    "max_reconnects": 10,
+    "messages_per_second": 100,
+    "connection_limit_per_5min": 300,
+    "max_concurrent_connections": 50
+}
+
+# Kritische WebSocket-Komponenten
+CRITICAL_WS_COMPONENTS: Set[str] = {
+    "websocket.binance-manager",
+    "websocket.gateio-manager",
+    "redis.stream-aggregator",
+    "clickhouse.persistence"
+}
+
+# Exchange-spezifische Stream-Formate - KORRIGIERT!
+STREAM_FORMATS: Dict[str, str] = {
+    "binance": "{symbol}@trade",  # ✅ URL-basiert (btcusdt@trade)
+    "bitget": "",  # ✅ Subscribe-Message (kein URL-Path)
+    "bybit": "",  # ✅ Subscribe-Message
+    "coinbase": "",  # ✅ Subscribe-Message
+    "gateio": "",  # ✅ Subscribe-Message
+    "htx": "",  # ✅ KORRIGIERT: HTX ist NICHT URL-basiert, braucht Subscribe-Message!
+    "mexc": "",  # ✅ Subscribe-Message
+    "okx": ""  # ✅ Subscribe-Message
+}
+
+# ws Health Thresholds
+WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,
+    "min_overall_health": 0.6,
+    "connection_error_threshold": 3,
+    "message_error_threshold": 10,
+    "stale_timeout_seconds": 60
+}
+</file>
+
 <file path="frontend/src/services/api/base.ts">
 import { ZodSchema } from 'zod';
 import { logger } from '../../lib/logger';
@@ -200044,91 +192457,6 @@ EXPOSE 8100
 
 # Start der App
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
-</file>
-
-<file path="backend/websocket/ws_config.py">
-import os
-from typing import Dict, Any, Set
-
-def _load_ws_urls() -> Dict[str, str]:
-    """Lädt URLs aus ENV für aktivierte Exchanges - Single Source of Truth"""
-    enabled = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    # URLs aus ENV laden (Pattern: {EXCHANGE}_WS_URL)
-    urls = {}
-    exchanges = enabled or ["binance", "bitget", "bybit", "coinbase", "gateio", "htx", "mexc", "okx"]
-    
-    for ex in exchanges:
-        env_var = f"{ex.upper()}_WS_URL"
-        url = os.getenv(env_var)
-        if url:
-            urls[ex] = url
-        else:
-            # Fallback-URLs (nur wenn keine ENV gesetzt)
-            fallbacks = {
-                "binance": "wss://stream.binance.com:9443/ws",
-                "bitget": "wss://ws.bitget.com/v2/ws/public",
-                "bybit": "wss://stream.bybit.com/v5/public/spot",
-                "coinbase": "wss://advanced-trade-ws.coinbase.com",
-                "gateio": "wss://api.gateio.ws/ws/v4/",
-                "htx": "wss://api-aws.huobi.pro/ws",
-                "mexc": "wss://wbs-api.mexc.com/ws",
-                "okx": "wss://ws.okx.com:8443/ws/v5/public"
-            }
-            if ex in fallbacks:
-                urls[ex] = fallbacks[ex]
-    
-    return urls
-
-# ✅ DYNAMISCH - aus .env geladen
-WS_URLS: Dict[str, str] = _load_ws_urls()
-
-# ws Timeouts (Sekunden) - zentral für alle Exchanges
-WS_TIMEOUTS: Dict[str, int] = {
-    "ping_interval": 20,  # ✅ ERHÖHT (war 10)
-    "ping_timeout": 10,   # ✅ ERHÖHT (war 5)
-    "close_timeout": 5,
-    "heartbeat_timeout": 30,
-    "reconnect_delay": 5,
-    "max_reconnect_delay": 60
-}
-
-# Rate Limiting für WebSocket-Verbindungen
-WS_RATE_LIMITS: Dict[str, int] = {
-    "max_reconnects": 10,
-    "messages_per_second": 100,
-    "connection_limit_per_5min": 300,
-    "max_concurrent_connections": 50
-}
-
-# Kritische WebSocket-Komponenten
-CRITICAL_WS_COMPONENTS: Set[str] = {
-    "websocket.binance-manager",
-    "websocket.gateio-manager",
-    "redis.stream-aggregator",
-    "clickhouse.persistence"
-}
-
-# Exchange-spezifische Stream-Formate - KORRIGIERT!
-STREAM_FORMATS: Dict[str, str] = {
-    "binance": "{symbol}@trade",  # ✅ URL-basiert (btcusdt@trade)
-    "bitget": "",  # ✅ Subscribe-Message (kein URL-Path)
-    "bybit": "",  # ✅ Subscribe-Message
-    "coinbase": "",  # ✅ Subscribe-Message
-    "gateio": "",  # ✅ Subscribe-Message
-    "htx": "",  # ✅ KORRIGIERT: HTX ist NICHT URL-basiert, braucht Subscribe-Message!
-    "mexc": "",  # ✅ Subscribe-Message
-    "okx": ""  # ✅ Subscribe-Message
-}
-
-# ws Health Thresholds
-WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,
-    "min_overall_health": 0.6,
-    "connection_error_threshold": 3,
-    "message_error_threshold": 10,
-    "stale_timeout_seconds": 60
-}
 </file>
 
 <file path="frontend/src/services/api/trading.ts">
@@ -202256,6 +194584,543 @@ curl -s "http://localhost:8100/api/historical/backfill/status?exchange=binance&s
 ---
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+# Load .env file before any other imports that depend on env vars
+env_path = Path(__file__).parent.parent / "config" / ".env"
+load_dotenv(env_path)
+logger_env = logging.getLogger("main.env")
+logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="backend/services/usecases/backfill_loop_service.py">
 from __future__ import annotations
 
@@ -203191,543 +196056,6 @@ async def get_supported_historical_exchanges():
         },
         headers={"Cache-Control": "public, max-age=60"},
     )
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-# Load .env file before any other imports that depend on env vars
-env_path = Path(__file__).parent.parent / "config" / ".env"
-load_dotenv(env_path)
-logger_env = logging.getLogger("main.env")
-logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -206321,262 +198649,6 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'COLLECTOR_SYMBOLS', 
-    'BTCUSDT,ETHUSDT,ADAUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
-</file>
-
 <file path="start-system.sh">
 #!/bin/bash
 
@@ -208161,6 +200233,262 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
+</file>
+
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'COLLECTOR_SYMBOLS', 
+    'BTCUSDT,ETHUSDT,ADAUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 </files>
