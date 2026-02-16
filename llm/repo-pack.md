@@ -71934,18 +71934,6 @@ export type TierFilterType = 'all' | '1' | '2' | '3';
 export type NLModelType = 'local' | 'anthropic:claude-sonnet-4-20250514' | 'anthropic:sonnet-4.1-1m' | 'openai:gpt-5-thinking';
 </file>
 
-<file path="frontend/src/features/quantum/index.ts">
-export { default as QuantumScreener } from './components/QuantumScreener';
-
-// Hooks
-export { useQuantumData } from './hooks/useQuantumData';
-export { useQuantumClock } from './hooks/useQuantumClock';
-export { useQuantumNL } from './hooks/useQuantumNL';
-
-// Types
-export * from './types/quantum';
-</file>
-
 <file path="frontend/src/features/trading/components/ChartSection.tsx">
 import React from "react";
 import {
@@ -75417,402 +75405,6 @@ const BotPage = () => {
 export default BotPage;
 </file>
 
-<file path="frontend/src/pages/DatabasePage.tsx">
-import { useState, useEffect } from "react";
-import ThemeProvider from "../shared/ui/theme-provider";
-import ThemeToggle from "../shared/ui/theme-toggle";
-import { saveSettings, CoinSetting } from "../shared/api/trading";
-import { RefreshCw, Save, Calendar, AlertCircle } from "lucide-react";
-import { useFastSnapshot } from "../shared/state/laneStores";
-
-interface DatabaseProps {
-  onBackToTrading?: () => void;
-}
-
-const DatabasePage = ({ onBackToTrading }: DatabaseProps = {}) => {
-  const [activeTable, setActiveTable] = useState("database");
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  // 🚀 LANE SYSTEM: Direct from FAST lane - einheitlich mit CoinSelector!
-  const settings = useFastSnapshot<CoinSetting[]>('settings');
-  const safeSettings = Array.isArray(settings) ? settings : [];
-  
-  // Load settings ist nicht nötig - Lane System synchronisiert automatisch
-  const loadSettings = async () => {
-    // Lane System refreshed automatically via bridge
-    console.log('[DatabasePage] Settings auto-synced via Lane System');
-  };
-
-  // Clear messages after delay
-  useEffect(() => {
-    if (successMessage) {
-      const timer = setTimeout(() => setSuccessMessage(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [successMessage]);
-
-  // Get current setting for symbol/market
-  const getCurrentSetting = (symbol: string, market: string): CoinSetting => {
-    const existing = safeSettings.find(s => s.symbol === symbol && s.market === market);
-    return existing || {
-      symbol,
-      market,
-      store_live: false,
-      load_history: false,
-      history_until: '',
-      favorite: false,
-      chart_resolution: '1m',
-      db_resolutions: []
-    };
-  };
-
-  // 🆕 LANE SYSTEM: L/H Button Handler (wie im CoinSelector)
-  const handleLiveToggle = async (symbol: string, market: string, exchange: string, enabled: boolean) => {
-    setError(null);
-    
-    const updated = safeSettings.map((s: CoinSetting) => 
-      s.symbol === symbol && s.exchange === exchange && s.market === market
-        ? { ...s, store_live: enabled } : s
-    );
-    
-    // API Call triggers SETTINGS_UPDATE event automatically
-    await saveSettings(updated);
-    setSuccessMessage(`Live data ${enabled ? 'enabled' : 'disabled'} for ${symbol}`);
-  };
-
-  const handleHistoricalToggle = async (symbol: string, market: string, exchange: string, enabled: boolean, untilDate: string) => {
-    setError(null);
-    
-    const updated = safeSettings.map((s: CoinSetting) => 
-      s.symbol === symbol && s.exchange === exchange && s.market === market
-        ? { ...s, load_history: enabled, history_until: untilDate } : s
-    );
-    
-    // API Call triggers SETTINGS_UPDATE event automatically  
-    await saveSettings(updated);
-    setSuccessMessage(`Historical data ${enabled ? 'enabled' : 'disabled'} for ${symbol}`);
-  };
-
-  // 🆕 LANE SYSTEM: L/H Status Check
-  const isLiveEnabled = (symbol: string, market: string, exchange: string): boolean => {
-    const setting = safeSettings.find((s: CoinSetting) => 
-      s.symbol === symbol && 
-      s.exchange === exchange && 
-      s.market === market
-    );
-    return setting?.store_live || false;
-  };
-
-  const isHistoricalEnabled = (symbol: string, market: string, exchange: string): boolean => {
-    const setting = safeSettings.find((s: CoinSetting) => 
-      s.symbol === symbol && 
-      s.exchange === exchange && 
-      s.market === market
-    );
-    return setting?.load_history || false;
-  };
-
-  // Update setting (für UI Changes)
-  const updateSetting = async (symbol: string, market: string, updates: Partial<CoinSetting>) => {
-    const updated = safeSettings.map((s: CoinSetting) => 
-      s.symbol === symbol && s.market === market 
-        ? { ...s, ...updates } : s
-    );
-    
-    // API Call triggers SETTINGS_UPDATE event automatically
-    await saveSettings(updated);
-  };
-
-  // Save settings to backend
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    setSuccessMessage(null);
-    
-    try {
-      const success = await saveSettings(safeSettings);
-      if (success) {
-        setSuccessMessage('Settings saved successfully!');
-      } else {
-        setError('Failed to save settings');
-      }
-    } catch (err) {
-      setError('Failed to save settings');
-      console.error('Error saving settings:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-
-  // Get all unique symbols/markets from settings
-  const allSymbols = Array.from(new Set(safeSettings.map(s => `${s.symbol}_${s.market}`)))
-    .map(key => {
-      const parts = key.split('_');
-      const market = parts.pop() || '';
-      const symbol = parts.join('_');
-      return { symbol, market };
-    })
-    .sort((a, b) => a.symbol.localeCompare(b.symbol));
-
-  const sidebarItems = [
-    { id: "database", name: "Database", icon: "🗄️" },
-    { id: "analytics", name: "Analytics", icon: "📊" },
-    { id: "wallets", name: "Wallets", icon: "💰" },
-    { id: "transactions", name: "Transactions", icon: "🔄" },
-  ];
-
-  const renderDatabaseSection = () => (
-    <div className="flex-1 p-6 overflow-y-auto">
-      {/* Error/Success Messages */}
-      {error && (
-        <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-          <div className="flex items-center gap-2 text-red-800 dark:text-red-200">
-            <AlertCircle size={16} />
-            {error}
-          </div>
-        </div>
-      )}
-
-      {successMessage && (
-        <div className="mb-4 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-          <div className="flex items-center gap-2 text-green-800 dark:text-green-200">
-            <Save size={16} />
-            {successMessage}
-          </div>
-        </div>
-      )}
-
-      {loading ? (
-        <div className="text-center py-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600 dark:text-gray-400">Loading settings...</p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {/* 🎯 Hinweis: Coins werden über Trading Page L/H Buttons hinzugefügt */}
-          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 p-4">
-            <div className="flex items-start gap-3">
-              <div className="text-blue-600 dark:text-blue-400 text-lg">💡</div>
-              <div>
-                <h3 className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-1">
-                  Wie füge ich Coins hinzu?
-                </h3>
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  Gehe zur <strong>Trading Page</strong> → Coin Dropdown → klicke <strong>L</strong> oder <strong>H</strong> Button neben einem Coin. 
-                  Der Coin erscheint dann automatisch in dieser Tabelle.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Settings Table */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 dark:bg-gray-700">
-                  <tr>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      COIN
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      EXCHANGE
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      Market
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      LIVE
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      HISTORIC
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                      UNTIL
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                  {allSymbols.map(({ symbol, market }) => {
-                    const setting = getCurrentSetting(symbol, market);
-                    const exchange = setting.exchange || 'bitget';
-                    return (
-                      <tr key={`${symbol}_${market}_${exchange}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex items-center">
-                            <span className="text-sm font-medium text-gray-900 dark:text-white">
-                              {symbol}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <select
-                            value={exchange}
-                            onChange={(e) => updateSetting(symbol, market, { exchange: e.target.value })}
-                            className="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          >
-                            <option value="bitget">BITGET</option>
-                            <option value="binance">BINANCE</option>
-                            <option value="bybit">BYBIT</option>
-                            <option value="okx">OKX</option>
-                            <option value="mexc">MEXC</option>
-                            <option value="gateio">GATE.IO</option>
-                            <option value="htx">HTX</option>
-                            <option value="coinbase">COINBASE</option>
-                          </select>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-gray-600 text-gray-800 dark:text-gray-200">
-                            {market}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <div
-                            onClick={() => handleLiveToggle(symbol, market, exchange, !isLiveEnabled(symbol, market, exchange))}
-                            className={`inline-block w-4 h-4 rounded-full cursor-pointer transition-colors hover:scale-110 ${
-                              isLiveEnabled(symbol, market, exchange)
-                                ? 'bg-green-500 hover:bg-green-600'
-                                : 'bg-red-500 hover:bg-red-600'
-                            }`}
-                            title={isLiveEnabled(symbol, market, exchange) 
-                              ? `Live data ACTIVE for ${symbol}` 
-                              : `Enable Live data for ${symbol}`}
-                          />
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <div
-                            onClick={() => handleHistoricalToggle(symbol, market, exchange, !isHistoricalEnabled(symbol, market, exchange), setting.history_until || '2020-01-01')}
-                            className={`inline-block w-4 h-4 rounded-full cursor-pointer transition-colors hover:scale-110 ${
-                              isHistoricalEnabled(symbol, market, exchange)
-                                ? 'bg-green-500 hover:bg-green-600'
-                                : 'bg-red-500 hover:bg-red-600'
-                            }`}
-                            title={isHistoricalEnabled(symbol, market, exchange) 
-                              ? `Historical data ACTIVE for ${symbol}` 
-                              : `Enable Historical data for ${symbol}`}
-                          />
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                          <div className="relative">
-                            <Calendar size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                            <input
-                              type="date"
-                              value={setting.history_until || ''}
-                              onChange={(e) => {
-                                updateSetting(symbol, market, { 
-                                  history_until: e.target.value 
-                                });
-                              }}
-                              disabled={!setting.load_history}
-                              className="pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm w-full disabled:opacity-50 disabled:cursor-not-allowed"
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-
-        </div>
-      )}
-    </div>
-  );
-
-  const renderContent = () => {
-    switch (activeTable) {
-      case "database":
-        return renderDatabaseSection();
-      default:
-        return (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
-                {sidebarItems.find((item) => item.id === activeTable)?.name}
-              </h3>
-              <p className="text-gray-600 dark:text-gray-400">
-                This section is under development
-              </p>
-            </div>
-          </div>
-        );
-    }
-  };
-
-  return (
-    <ThemeProvider>
-      <div className="bg-white dark:bg-gray-900 text-gray-900 dark:text-white min-h-screen font-['Inter']">
-        {/* Header */}
-        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-          <div className="px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              {onBackToTrading && (
-                <button
-                  onClick={onBackToTrading}
-                  className="px-3 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center gap-2"
-                >
-                  ← Back to Trading
-                </button>
-              )}
-              <h1 className="text-2xl font-bold">Database Management</h1>
-            </div>
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => loadSettings()}
-                disabled={loading}
-                className="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-              >
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                Refresh
-              </button>
-              <ThemeToggle />
-            </div>
-          </div>
-        </div>
-
-        <div className="flex h-[calc(100vh-73px)]">
-          {/* Sidebar */}
-          <div className="w-64 bg-gray-50 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
-            <div className="p-4">
-              <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4">
-                Data Tables
-              </h3>
-              <nav className="space-y-1">
-                {sidebarItems.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setActiveTable(item.id)}
-                    className={`w-full flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
-                      activeTable === item.id
-                        ? "bg-blue-600 text-white"
-                        : "text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-                    }`}
-                  >
-                    <span className="mr-3">{item.icon}</span>
-                    {item.name}
-                  </button>
-                ))}
-              </nav>
-            </div>
-          </div>
-
-          {/* Main Content */}
-          {renderContent()}
-        </div>
-      </div>
-    </ThemeProvider>
-  );
-};
-
-export default DatabasePage;
-</file>
-
 <file path="frontend/src/pages/index.ts">
 export { default as TradingPage } from './TradingPage';
 export { default as QuantumPage } from './QuantumPage';
@@ -75975,95 +75567,6 @@ const SettingsPage = () => {
 };
 
 export default SettingsPage;
-</file>
-
-<file path="frontend/src/pages/TradingPage.tsx">
-import { useState, useMemo } from "react";
-import {
-  PriceDisplay,
-  CoinSelector,
-  TradingTerminal
-} from "../features/trading";
-import TimeButtons from "../features/trading/components/TimeButtons";
-import ChartSection from "../features/trading/components/ChartSection";
-import { useTradingContext } from "../contexts/TradingContext";
-import { useTicker } from '../features/trading/hooks/useMarketData';
-import { getMarketFilter } from '../config/exchangeSupport';
-
-const TradingPage = () => {
-  const { selectedExchange, selectedMarket } = useTradingContext();
-  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
-  const [selectedInterval, setSelectedInterval] = useState("1m");
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-
-  // ✅ SINGLE SOURCE OF TRUTH: Alle Daten vom Hook
-  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
-  const { marketData } = useTicker(selectedExchange, selectedCoin, marketFilter);
-
-  // ✅ Performance: useMemo für currentCoinData
-  const currentCoinData = useMemo(() => ({
-    id: selectedCoin,
-    symbol: selectedCoin,
-    market: marketFilter,
-    price: marketData.price,
-    change: marketData.change24h,
-    changePercent: marketData.changePercent,
-    isFavorite: false,
-    liveStatus: "green" as const,
-    histStatus: "green" as const
-  }), [selectedCoin, marketFilter, marketData.price, marketData.change24h, marketData.changePercent]);
-
-  return (
-    <div className="px-6 py-5">
-      {/* Market & Price Section */}
-      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
-        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
-          <CoinSelector
-            selectedSymbol={selectedCoin}
-            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
-            exchange={selectedExchange}
-            selectedMarket={selectedMarket}
-          />
-        </div>
-
-        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
-          <PriceDisplay
-            currentCoinData={currentCoinData}
-            marketData={marketData}
-            tradingMode={selectedMarket}
-          />
-        </div>
-      </div>
-
-      {/* Time Buttons */}
-      <TimeButtons 
-        onIntervalChange={setSelectedInterval}
-        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
-          prev.includes(indicator) ? prev : [...prev, indicator]
-        )}
-      />
-
-      {/* Main Content: Multi-Chart + Orderbook */}
-      <ChartSection 
-        selectedCoin={selectedCoin}
-        selectedMarket={marketFilter}
-        selectedInterval={selectedInterval}
-        selectedIndicators={selectedIndicators}
-        selectedExchange={selectedExchange}
-        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
-          prev.filter(i => i !== indicator)
-        )}
-      />
-
-      {/* Trading Terminal */}
-      <div className="mt-4 space-y-2">
-        <TradingTerminal />
-      </div>
-    </div>
-  );
-};
-
-export default TradingPage;
 </file>
 
 <file path="frontend/src/pages/WhalesPage.tsx">
@@ -76874,49 +76377,6 @@ const GlobalNav = () => {
 };
 
 export default GlobalNav;
-</file>
-
-<file path="frontend/src/shared/state/SettingsProvider.tsx">
-import React, { useEffect } from 'react';
-import { useFastSnapshot } from './laneStores';
-import { getSettings } from '../../shared/api/trading';
-
-export interface SettingsProviderProps {
-  children: React.ReactNode;
-}
-
-export function SettingsProvider({ children }: SettingsProviderProps) {
-  const settings = useFastSnapshot<any[]>('settings');
-  
-  useEffect(() => {
-    // Initial load if no settings
-    if (!settings || !settings.length) {
-      console.log('[SettingsProvider] Loading initial settings...');
-      getSettings();
-    }
-    
-    // Auto-refresh on window focus
-    const handleFocus = () => {
-      console.log('[SettingsProvider] Window focus - refreshing settings');
-      getSettings();
-    };
-    
-    // Periodic refresh every minute
-    const intervalId = setInterval(() => {
-      console.log('[SettingsProvider] Periodic refresh - reloading settings');
-      getSettings();
-    }, 60_000);
-    
-    window.addEventListener('focus', handleFocus);
-    
-    return () => {
-      clearInterval(intervalId);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, [settings?.length]);
-  
-  return <>{children}</>;
-}
 </file>
 
 <file path="frontend/src/shared/ui/alert.tsx">
@@ -98278,109 +97738,9 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
-<file path="frontend/src/features/trading/components/MarketTrades.tsx">
-import React, { useState, useEffect } from "react";
-// import { WebSocketService } from '../../../services/api/websocket'; // REMOVED: Clean-Slate
-// import { useFastSnapshot } from '../../../shared/state/laneStores'; // REMOVED: Clean-Slate
-import { useLiveTrades } from '../../../hooks/useLiveTrades';
-
-// Trade interface inline definiert (war in services/api/trading.ts)
-interface Trade {
-  id: string;
-  price: number;
-  size: number;
-  time: string;
-  side: string;
-  ts: number;
-}
-
-interface MarketTradesProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  maxLength?: number;
-}
-
-export const MarketTrades: React.FC<MarketTradesProps> = ({
-  symbol,
-  market,
-  exchange,
-  maxLength = 30,
-}) => {
-  // 🚀 NEW: Use WebSocketPool via Hook
-  const { trades: liveTrades } = useLiveTrades(exchange, symbol, market, maxLength);
-  
-  // Convert to Trade interface format
-  const trades = React.useMemo(() => {
-    return liveTrades.map((t, idx) => ({
-      id: `${t.ts || Date.now()}-${idx}`,
-      price: t.price,
-      size: t.size,
-      time: t.ts ? new Date(t.ts).toLocaleTimeString() : new Date().toLocaleTimeString(),
-      side: t.side || 'buy',
-      ts: t.ts || Date.now(),
-    } as Trade));
-  }, [liveTrades]);
-
-  return (
-    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-bold text-lg text-text-primary">Market Trades</span>
-      </div>
-      <div className="overflow-y-auto max-h-80">
-        <table className="w-full text-xs">
-          <thead>
-            <tr>
-              <th align="left">Time</th>
-              <th align="right">Price</th>
-              <th align="right">Amount</th>
-              <th align="center">Side</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t, idx) => (
-              <tr key={idx} className="border-b border-border-color last:border-b-0">
-                <td className="py-1">{t.time}</td>
-                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
-                <td align="right">{t.size.toFixed(4)}</td>
-                <td align="center">{t.side}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
-      </div>
-    </div>
-  );
-};
-</file>
-
-<file path="frontend/src/features/trading/components/SystemStatus.tsx">
-import React from 'react';
-// import { useGlobalPerformance } from '../../../shared/hooks/useGlobalPerformance'; // REMOVED: Clean-Slate
-// import { useSystemStatus as useHealth } from '../hooks/useSystemStatus'; // REMOVED: Hook doesn't exist
-
-const SystemStatus: React.FC = () => {
-  // Simplified: Just show a basic status indicator
-  const backendStatus = 'online'; // TODO: Add real health check later
-  const healthStatus = 'unknown';
-
-  return (
-    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
-      <div className="flex items-center gap-1">
-        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
-        <span className="text-[hsl(var(--status-success))] font-medium">
-          System {backendStatus}
-        </span>
-        <span className="text-muted-foreground ml-2">
-          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
-        </span>
-      </div>
-    </div>
-  );
-};
-
-export default SystemStatus;
+<file path="frontend/src/features/quantum/index.ts">
+export { default as QuantumScreener } from './components/QuantumScreener';
+export * from './types/quantum';
 </file>
 
 <file path="frontend/src/hooks/useLiveTrades.ts">
@@ -98520,6 +97880,504 @@ export function createDecimalSchema<T extends string>(fields: T[]) {
   });
   return z.object(shape as Record<T, z.ZodTypeAny>).passthrough();
 }
+</file>
+
+<file path="frontend/src/pages/DatabasePage.tsx">
+import { useState, useEffect } from "react";
+import ThemeProvider from "../shared/ui/theme-provider";
+import ThemeToggle from "../shared/ui/theme-toggle";
+import { saveSettings, CoinSetting, getSettings } from "../shared/api/trading";
+import { RefreshCw, Save, Calendar, AlertCircle } from "lucide-react";
+
+interface DatabaseProps {
+  onBackToTrading?: () => void;
+}
+
+const DatabasePage = ({ onBackToTrading }: DatabaseProps = {}) => {
+  const [activeTable, setActiveTable] = useState("database");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [settings, setSettings] = useState<CoinSetting[]>([]);
+  
+  const safeSettings = Array.isArray(settings) ? settings : [];
+  
+  const loadSettings = async () => {
+    setLoading(true);
+    try {
+      const data = await getSettings();
+      setSettings(data);
+    } catch (err) {
+      console.error('[DatabasePage] Failed to load settings:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  // Clear messages after delay
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  // Get current setting for symbol/market
+  const getCurrentSetting = (symbol: string, market: string): CoinSetting => {
+    const existing = safeSettings.find(s => s.symbol === symbol && s.market === market);
+    return existing || {
+      symbol,
+      market,
+      store_live: false,
+      load_history: false,
+      history_until: '',
+      favorite: false,
+      chart_resolution: '1m',
+      db_resolutions: []
+    };
+  };
+
+  // 🆕 LANE SYSTEM: L/H Button Handler (wie im CoinSelector)
+  const handleLiveToggle = async (symbol: string, market: string, exchange: string, enabled: boolean) => {
+    setError(null);
+    
+    const updated = safeSettings.map((s: CoinSetting) => 
+      s.symbol === symbol && s.exchange === exchange && s.market === market
+        ? { ...s, store_live: enabled } : s
+    );
+    
+    // API Call triggers SETTINGS_UPDATE event automatically
+    await saveSettings(updated);
+    setSuccessMessage(`Live data ${enabled ? 'enabled' : 'disabled'} for ${symbol}`);
+  };
+
+  const handleHistoricalToggle = async (symbol: string, market: string, exchange: string, enabled: boolean, untilDate: string) => {
+    setError(null);
+    
+    const updated = safeSettings.map((s: CoinSetting) => 
+      s.symbol === symbol && s.exchange === exchange && s.market === market
+        ? { ...s, load_history: enabled, history_until: untilDate } : s
+    );
+    
+    // API Call triggers SETTINGS_UPDATE event automatically  
+    await saveSettings(updated);
+    setSuccessMessage(`Historical data ${enabled ? 'enabled' : 'disabled'} for ${symbol}`);
+  };
+
+  // 🆕 LANE SYSTEM: L/H Status Check
+  const isLiveEnabled = (symbol: string, market: string, exchange: string): boolean => {
+    const setting = safeSettings.find((s: CoinSetting) => 
+      s.symbol === symbol && 
+      s.exchange === exchange && 
+      s.market === market
+    );
+    return setting?.store_live || false;
+  };
+
+  const isHistoricalEnabled = (symbol: string, market: string, exchange: string): boolean => {
+    const setting = safeSettings.find((s: CoinSetting) => 
+      s.symbol === symbol && 
+      s.exchange === exchange && 
+      s.market === market
+    );
+    return setting?.load_history || false;
+  };
+
+  // Update setting (für UI Changes)
+  const updateSetting = async (symbol: string, market: string, updates: Partial<CoinSetting>) => {
+    const updated = safeSettings.map((s: CoinSetting) => 
+      s.symbol === symbol && s.market === market 
+        ? { ...s, ...updates } : s
+    );
+    
+    // API Call triggers SETTINGS_UPDATE event automatically
+    await saveSettings(updated);
+  };
+
+  // Save settings to backend
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    setSuccessMessage(null);
+    
+    try {
+      const success = await saveSettings(safeSettings);
+      if (success) {
+        setSuccessMessage('Settings saved successfully!');
+      } else {
+        setError('Failed to save settings');
+      }
+    } catch (err) {
+      setError('Failed to save settings');
+      console.error('Error saving settings:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+
+  // Get all unique symbols/markets from settings
+  const allSymbols = Array.from(new Set(safeSettings.map(s => `${s.symbol}_${s.market}`)))
+    .map(key => {
+      const parts = key.split('_');
+      const market = parts.pop() || '';
+      const symbol = parts.join('_');
+      return { symbol, market };
+    })
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+  const sidebarItems = [
+    { id: "database", name: "Database", icon: "🗄️" },
+    { id: "analytics", name: "Analytics", icon: "📊" },
+    { id: "wallets", name: "Wallets", icon: "💰" },
+    { id: "transactions", name: "Transactions", icon: "🔄" },
+  ];
+
+  const renderDatabaseSection = () => (
+    <div className="flex-1 p-6 overflow-y-auto">
+      {/* Error/Success Messages */}
+      {error && (
+        <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+          <div className="flex items-center gap-2 text-red-800 dark:text-red-200">
+            <AlertCircle size={16} />
+            {error}
+          </div>
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="mb-4 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+          <div className="flex items-center gap-2 text-green-800 dark:text-green-200">
+            <Save size={16} />
+            {successMessage}
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center py-8">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600 dark:text-gray-400">Loading settings...</p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* 🎯 Hinweis: Coins werden über Trading Page L/H Buttons hinzugefügt */}
+          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 p-4">
+            <div className="flex items-start gap-3">
+              <div className="text-blue-600 dark:text-blue-400 text-lg">💡</div>
+              <div>
+                <h3 className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-1">
+                  Wie füge ich Coins hinzu?
+                </h3>
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  Gehe zur <strong>Trading Page</strong> → Coin Dropdown → klicke <strong>L</strong> oder <strong>H</strong> Button neben einem Coin. 
+                  Der Coin erscheint dann automatisch in dieser Tabelle.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Settings Table */}
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      COIN
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      EXCHANGE
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Market
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      LIVE
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      HISTORIC
+                    </th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      UNTIL
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                  {allSymbols.map(({ symbol, market }) => {
+                    const setting = getCurrentSetting(symbol, market);
+                    const exchange = setting.exchange || 'bitget';
+                    return (
+                      <tr key={`${symbol}_${market}_${exchange}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <span className="text-sm font-medium text-gray-900 dark:text-white">
+                              {symbol}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <select
+                            value={exchange}
+                            onChange={(e) => updateSetting(symbol, market, { exchange: e.target.value })}
+                            className="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          >
+                            <option value="bitget">BITGET</option>
+                            <option value="binance">BINANCE</option>
+                            <option value="bybit">BYBIT</option>
+                            <option value="okx">OKX</option>
+                            <option value="mexc">MEXC</option>
+                            <option value="gateio">GATE.IO</option>
+                            <option value="htx">HTX</option>
+                            <option value="coinbase">COINBASE</option>
+                          </select>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-gray-600 text-gray-800 dark:text-gray-200">
+                            {market}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <div
+                            onClick={() => handleLiveToggle(symbol, market, exchange, !isLiveEnabled(symbol, market, exchange))}
+                            className={`inline-block w-4 h-4 rounded-full cursor-pointer transition-colors hover:scale-110 ${
+                              isLiveEnabled(symbol, market, exchange)
+                                ? 'bg-green-500 hover:bg-green-600'
+                                : 'bg-red-500 hover:bg-red-600'
+                            }`}
+                            title={isLiveEnabled(symbol, market, exchange) 
+                              ? `Live data ACTIVE for ${symbol}` 
+                              : `Enable Live data for ${symbol}`}
+                          />
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <div
+                            onClick={() => handleHistoricalToggle(symbol, market, exchange, !isHistoricalEnabled(symbol, market, exchange), setting.history_until || '2020-01-01')}
+                            className={`inline-block w-4 h-4 rounded-full cursor-pointer transition-colors hover:scale-110 ${
+                              isHistoricalEnabled(symbol, market, exchange)
+                                ? 'bg-green-500 hover:bg-green-600'
+                                : 'bg-red-500 hover:bg-red-600'
+                            }`}
+                            title={isHistoricalEnabled(symbol, market, exchange) 
+                              ? `Historical data ACTIVE for ${symbol}` 
+                              : `Enable Historical data for ${symbol}`}
+                          />
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <div className="relative">
+                            <Calendar size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                            <input
+                              type="date"
+                              value={setting.history_until || ''}
+                              onChange={(e) => {
+                                updateSetting(symbol, market, { 
+                                  history_until: e.target.value 
+                                });
+                              }}
+                              disabled={!setting.load_history}
+                              className="pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+
+        </div>
+      )}
+    </div>
+  );
+
+  const renderContent = () => {
+    switch (activeTable) {
+      case "database":
+        return renderDatabaseSection();
+      default:
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+                {sidebarItems.find((item) => item.id === activeTable)?.name}
+              </h3>
+              <p className="text-gray-600 dark:text-gray-400">
+                This section is under development
+              </p>
+            </div>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <ThemeProvider>
+      <div className="bg-white dark:bg-gray-900 text-gray-900 dark:text-white min-h-screen font-['Inter']">
+        {/* Header */}
+        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+          <div className="px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              {onBackToTrading && (
+                <button
+                  onClick={onBackToTrading}
+                  className="px-3 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center gap-2"
+                >
+                  ← Back to Trading
+                </button>
+              )}
+              <h1 className="text-2xl font-bold">Database Management</h1>
+            </div>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => loadSettings()}
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+              <ThemeToggle />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex h-[calc(100vh-73px)]">
+          {/* Sidebar */}
+          <div className="w-64 bg-gray-50 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
+            <div className="p-4">
+              <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4">
+                Data Tables
+              </h3>
+              <nav className="space-y-1">
+                {sidebarItems.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTable(item.id)}
+                    className={`w-full flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+                      activeTable === item.id
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                    }`}
+                  >
+                    <span className="mr-3">{item.icon}</span>
+                    {item.name}
+                  </button>
+                ))}
+              </nav>
+            </div>
+          </div>
+
+          {/* Main Content */}
+          {renderContent()}
+        </div>
+      </div>
+    </ThemeProvider>
+  );
+};
+
+export default DatabasePage;
+</file>
+
+<file path="frontend/src/pages/TradingPage.tsx">
+import { useState, useMemo } from "react";
+import {
+  PriceDisplay,
+  CoinSelector,
+  TradingTerminal
+} from "../features/trading";
+import TimeButtons from "../features/trading/components/TimeButtons";
+import ChartSection from "../features/trading/components/ChartSection";
+import { useTradingContext } from "../contexts/TradingContext";
+import { getMarketFilter } from '../config/exchangeSupport';
+
+const TradingPage = () => {
+  const { selectedExchange, selectedMarket } = useTradingContext();
+  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
+  const [selectedInterval, setSelectedInterval] = useState("1m");
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+
+  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
+
+  const currentCoinData = useMemo(() => ({
+    id: selectedCoin,
+    symbol: selectedCoin,
+    market: marketFilter,
+    price: 0,
+    change: 0,
+    changePercent: 0,
+    isFavorite: false,
+    liveStatus: "green" as const,
+    histStatus: "green" as const
+  }), [selectedCoin, marketFilter]);
+
+  const marketData = {
+    price: 0,
+    change24h: 0,
+    changePercent: 0,
+    high24h: 0,
+    low24h: 0,
+    volume24h: 0
+  };
+
+  return (
+    <div className="px-6 py-5">
+      {/* Market & Price Section */}
+      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
+        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
+          <CoinSelector
+            selectedSymbol={selectedCoin}
+            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
+            exchange={selectedExchange}
+            selectedMarket={selectedMarket}
+          />
+        </div>
+
+        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
+          <PriceDisplay
+            currentCoinData={currentCoinData}
+            marketData={marketData}
+            tradingMode={selectedMarket}
+          />
+        </div>
+      </div>
+
+      {/* Time Buttons */}
+      <TimeButtons 
+        onIntervalChange={setSelectedInterval}
+        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
+          prev.includes(indicator) ? prev : [...prev, indicator]
+        )}
+      />
+
+      {/* Main Content: Multi-Chart + Orderbook */}
+      <ChartSection 
+        selectedCoin={selectedCoin}
+        selectedMarket={marketFilter}
+        selectedInterval={selectedInterval}
+        selectedIndicators={selectedIndicators}
+        selectedExchange={selectedExchange}
+        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
+          prev.filter(i => i !== indicator)
+        )}
+      />
+
+      {/* Trading Terminal */}
+      <div className="mt-4 space-y-2">
+        <TradingTerminal />
+      </div>
+    </div>
+  );
+};
+
+export default TradingPage;
 </file>
 
 <file path="frontend/src/services/api/chart.ts">
@@ -99381,370 +99239,42 @@ export function resetMarketTypeConfig(): void {
 }
 </file>
 
-<file path="frontend/src/shared/api/trading.ts">
-import { eventBus } from '../events/EventBus';
+<file path="frontend/src/shared/state/SettingsProvider.tsx">
+import React, { useEffect } from 'react';
+import { getSettings } from '../../shared/api/trading';
 
-// Generate unique event IDs
-function generateEventId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+export interface SettingsProviderProps {
+  children: React.ReactNode;
 }
 
-// API endpoint for symbols data
-export interface ApiSymbol {
-  symbol: string;
-  market: string;
-  price: string;
-  change: string;
-  changePercent: number;
-}
-
-export interface ApiResponse {
-  symbols: ApiSymbol[];
-}
-
-// Backend API interfaces
-interface BackendSymbol {
-  symbol: string;
-  market_type: string;
-  status: string;
-  baseAsset: string;
-  quoteAsset: string;
-}
-
-interface BackendTicker {
-  symbol: string;
-  last: number;
-  high24h: number;
-  low24h: number;
-  changeRate: number;
-  baseVol: number;
-  quoteVol: number;
-  market_type: string;
-}
-
-interface BackendSymbolsResponse {
-  symbols: BackendSymbol[];
-  db_symbols: any[];
-}
-
-// Configuration - Uses Vite Environment Variables (TypeScript-safe)
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8100/api';
-const CACHE_TTL = 300000; // 5 minutes for symbols
-const TICKER_CACHE_TTL = 10000; // 10 seconds for tickers
-
-// Cache storage
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-  ttl: number;
-}
-
-const cache = new Map<string, CacheEntry<any>>();
-
-// Cache utilities
-function getCached<T>(key: string): T | null {
-  const entry = cache.get(key);
-  if (!entry) return null;
+export function SettingsProvider({ children }: SettingsProviderProps) {
+  useEffect(() => {
+    // Initial load
+    console.log('[SettingsProvider] Loading initial settings...');
+    getSettings();
+    
+    // Auto-refresh on window focus
+    const handleFocus = () => {
+      console.log('[SettingsProvider] Window focus - refreshing settings');
+      getSettings();
+    };
+    
+    // Periodic refresh every minute
+    const intervalId = setInterval(() => {
+      console.log('[SettingsProvider] Periodic refresh - reloading settings');
+      getSettings();
+    }, 60_000);
+    
+    window.addEventListener('focus', handleFocus);
+    
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
   
-  if (Date.now() - entry.timestamp > entry.ttl) {
-    cache.delete(key);
-    return null;
-  }
-  
-  return entry.data;
+  return <>{children}</>;
 }
-
-function setCache<T>(key: string, data: T, ttl: number): void {
-  cache.set(key, {
-    data,
-    timestamp: Date.now(),
-    ttl,
-  });
-}
-
-// Settings API functions
-export interface CoinSetting {
-  exchange?: string;  // New: Exchange parameter
-  symbol: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite: boolean;
-  db_resolutions: number[];  // Updated: Now array instead of single value
-  chart_resolution: string;
-}
-
-// Exchange configuration - DYNAMISCH aus ENV
-export type Exchange = string; // ✅ Beliebiger Exchange aus .env
-export const DEFAULT_EXCHANGE: Exchange = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance'; // ✅ Aus ENV oder Fallback
-
-// Fetch settings with exchange support
-export async function getSettings(exchange?: Exchange, symbol?: string, market?: string): Promise<CoinSetting[]> {
-  try {
-    const params = new URLSearchParams();
-    // 🚨 FIX: Nur gültige Parameter hinzufügen, NIEMALS undefined!
-    const filteredExchange = (exchange && exchange !== 'all') ? exchange : undefined;
-    if (filteredExchange) params.append('exchange', filteredExchange);
-    if (symbol && symbol !== 'undefined') params.append('symbol', symbol);
-    if (market && market !== 'undefined') params.append('market', market);
-    
-    const queryString = params.toString();
-    const url = `${API_BASE}/settings/settings${queryString ? `?${queryString}` : ''}`;
-    
-    console.log(`[SymbolsAPI] Calling: ${url} (original: ${exchange}, filtered: ${filteredExchange || 'none'})`);
-    
-    const response = await fetch(url, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    // Emit event for Lane Bridge
-    eventBus.emit('SETTINGS_UPDATE', {
-      eventId: generateEventId(),
-      action: 'loaded',
-      settings: data,
-      exchange: exchange,
-      timestamp: Date.now()
-    });
-    
-    console.log(`[SymbolsAPI] ✅ Got ${data.length} settings from ${url}`);
-    return data;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to fetch settings:', error);
-    return [];
-  }
-}
-
-// Save settings with exchange support
-export async function saveSettings(settings: CoinSetting[]): Promise<boolean> {
-  const eventId = generateEventId();
-  
-  try {
-    // Ensure each setting has an exchange field (default to bitget for legacy compatibility)
-    const settingsWithExchange = settings.map(setting => ({
-      ...setting,
-      exchange: setting.exchange || DEFAULT_EXCHANGE,
-      // Convert single db_resolution to array for backward compatibility
-      db_resolutions: Array.isArray(setting.db_resolutions) 
-        ? setting.db_resolutions 
-        : [(setting as any).db_resolution || 60]
-    }));
-    
-    // Optimistic update
-    eventBus.emit('SETTINGS_UPDATE', {
-      eventId: eventId,
-      action: 'patched',
-      settings: settingsWithExchange,
-      timestamp: Date.now()
-    });
-    
-    const response = await fetch(`${API_BASE}/settings/settings`, {
-      method: 'PUT',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(settingsWithExchange),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const result = await response.json();
-    
-    // Confirm successful save
-    eventBus.emit('SETTINGS_UPDATE', {
-      eventId: generateEventId(),
-      action: 'saved',
-      settings: settingsWithExchange,
-      timestamp: Date.now()
-    });
-    
-    console.log('[SymbolsAPI] Settings saved successfully:', result);
-    return true;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to save settings:', error);
-    
-    // Rollback: reload fresh settings
-    try {
-      const freshSettings = await fetch(`${API_BASE}/settings/settings`).then(r => r.json());
-      eventBus.emit('SETTINGS_UPDATE', {
-        eventId: generateEventId(),
-        action: 'loaded',
-        settings: freshSettings,
-        timestamp: Date.now()
-      });
-    } catch (rollbackError) {
-      console.error('[SymbolsAPI] Settings rollback failed:', rollbackError);
-    }
-    
-    return false;
-  }
-}
-
-// Get settings for all exchanges
-export async function getAllSettings(): Promise<CoinSetting[]> {
-  try {
-    const [binanceSettings, bitgetSettings] = await Promise.all([
-      getSettings('binance').catch(() => []),
-      getSettings('bitget').catch(() => [])
-    ]);
-    
-    const allSettings = [...binanceSettings, ...bitgetSettings];
-    console.log(`[SymbolsAPI] Combined ${allSettings.length} settings from all exchanges`);
-    return allSettings;
-  } catch (error) {
-    console.error('[SymbolsAPI] Failed to fetch settings from all exchanges:', error);
-    return [];
-  }
-}
-
-// Fetch symbols from backend with exchange support
-export async function fetchSymbols(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendSymbolsResponse> {
-  const cacheKey = `symbols_${exchange}`;
-  const cached = getCached<BackendSymbolsResponse>(cacheKey);
-  if (cached) return cached;
-  
-  try {
-    const response = await fetch(`${API_BASE}/market/symbols?exchange=${exchange}`, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-        timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
-    } as any);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    setCache(cacheKey, data, CACHE_TTL);
-    
-    console.log(`[SymbolsAPI] Fetched ${data.symbols?.length || 0} symbols from ${exchange}`);
-    return data;
-  } catch (error) {
-    console.error(`[SymbolsAPI] Failed to fetch symbols from ${exchange}:`, error);
-    throw error;
-  }
-}
-
-// Fetch tickers from backend with exchange support
-export async function fetchTickers(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendTicker[]> {
-  const cacheKey = `tickers_${exchange}`;
-  const cached = getCached<BackendTicker[]>(cacheKey);
-  if (cached) return cached;
-  
-  try {
-    const response = await fetch(`${API_BASE}/market/ticker?exchange=${exchange}`, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
-    } as any);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    // Handle new unified backend response format
-    const tickers = data.tickers || data; // Support both old and new format
-    setCache(cacheKey, tickers, TICKER_CACHE_TTL);
-    
-    console.log(`[SymbolsAPI] Fetched ${tickers.length} tickers from ${exchange}`);
-    return tickers;
-  } catch (error) {
-    console.error(`[SymbolsAPI] Failed to fetch tickers from ${exchange}:`, error);
-    throw error;
-  }
-}
-
-// Clear cache function for manual refresh
-export function clearCache(): void {
-  cache.clear();
-  console.log('[SymbolsAPI] Cache cleared');
-}
-</file>
-
-<file path="frontend/src/shared/layout/AppLayout.tsx">
-import React from 'react';
-import { Outlet } from 'react-router-dom';
-import GlobalNav from './GlobalNav';
-// import LatencyMonitorContainer from './LatencyMonitorContainer'; // REMOVED: Clean-Slate
-
-export const AppLayout: React.FC = () => {
-  return (
-    <div className="min-h-screen bg-background text-foreground transition-colors">
-      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
-        <GlobalNav />
-        <main>
-          <Outlet />
-        </main>
-        
-        {/* 🚀 ENTERPRISE: Latency Monitor auf ALLEN Seiten - RECHTS UNTEN */}
-        {/* <LatencyMonitorContainer /> */} {/* REMOVED: Clean-Slate */}
-      </div>
-    </div>
-  );
-};
-</file>
-
-<file path="frontend/src/main.tsx">
-import { createRoot } from "react-dom/client";
-import App from "./App.tsx";
-import "./index.css";
-
-// Error Handling
-import { ErrorBoundary } from "./shared/error/ErrorBoundary";
-
-// Event-System initialisieren
-import { bootstrapEvents } from "./shared/events/bootstrap";
-import { SettingsProvider } from "./shared/state/SettingsProvider";
-
-// ✅ Exchange & Market-Type Config laden (Single Source of Truth: backend/.env)
-import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
-
-bootstrapEvents();
-
-// ✅ App-Initialization: Lade Exchange-Config bevor React rendert
-async function initializeApp() {
-  console.log('🚀 Initializing DarkMa Trading System...');
-  
-  try {
-    // Lade Exchange-Liste und Market-Types vom Backend (parallel, cached)
-    const [exchangeConfig, marketTypeConfig] = await Promise.all([
-      loadExchangeConfig(),
-      loadMarketTypeConfig()
-    ]);
-    console.log(`✅ System ready: ${exchangeConfig.count} exchanges, ${marketTypeConfig.count} market types available`);
-  } catch (error) {
-    console.error('⚠️ Config initialization failed (using fallback):', error);
-  }
-  
-  // Render React App
-  createRoot(document.getElementById("root")!).render(
-    <ErrorBoundary>
-      <SettingsProvider>
-        <App />
-      </SettingsProvider>
-    </ErrorBoundary>
-  );
-}
-
-// Start App
-initializeApp();
 </file>
 
 <file path="readme/000_backfill_build.md">
@@ -183322,6 +182852,107 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="frontend/src/features/trading/components/MarketTrades.tsx">
+import React, { useState, useEffect } from "react";
+import { useLiveTrades } from '../../../hooks/useLiveTrades';
+
+// Trade interface inline definiert (war in services/api/trading.ts)
+interface Trade {
+  id: string;
+  price: number;
+  size: number;
+  time: string;
+  side: string;
+  ts: number;
+}
+
+interface MarketTradesProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  maxLength?: number;
+}
+
+export const MarketTrades: React.FC<MarketTradesProps> = ({
+  symbol,
+  market,
+  exchange,
+  maxLength = 30,
+}) => {
+  // 🚀 NEW: Use WebSocketPool via Hook
+  const { trades: liveTrades } = useLiveTrades(exchange, symbol, market, maxLength);
+  
+  // Convert to Trade interface format
+  const trades = React.useMemo(() => {
+    return liveTrades.map((t, idx) => ({
+      id: `${t.ts || Date.now()}-${idx}`,
+      price: t.price,
+      size: t.size,
+      time: t.ts ? new Date(t.ts).toLocaleTimeString() : new Date().toLocaleTimeString(),
+      side: t.side || 'buy',
+      ts: t.ts || Date.now(),
+    } as Trade));
+  }, [liveTrades]);
+
+  return (
+    <div className="p-4 bg-bg-secondary rounded-xl shadow w-full max-w-md">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-bold text-lg text-text-primary">Market Trades</span>
+      </div>
+      <div className="overflow-y-auto max-h-80">
+        <table className="w-full text-xs">
+          <thead>
+            <tr>
+              <th align="left">Time</th>
+              <th align="right">Price</th>
+              <th align="right">Amount</th>
+              <th align="center">Side</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((t, idx) => (
+              <tr key={idx} className="border-b border-border-color last:border-b-0">
+                <td className="py-1">{t.time}</td>
+                <td align="right" className={t.side === "buy" ? "text-color-buy" : "text-color-sell"}>{t.price.toFixed(4)}</td>
+                <td align="right">{t.size.toFixed(4)}</td>
+                <td align="center">{t.side}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {trades.length === 0 && <div className="text-text-secondary p-2 text-center">No trades yet.</div>}
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="frontend/src/features/trading/components/SystemStatus.tsx">
+import React from 'react';
+
+const SystemStatus: React.FC = () => {
+  // Simplified: Just show a basic status indicator
+  const backendStatus = 'online'; // TODO: Add real health check later
+  const healthStatus = 'unknown';
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
+      <div className="flex items-center gap-1">
+        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
+        <span className="text-[hsl(var(--status-success))] font-medium">
+          System {backendStatus}
+        </span>
+        <span className="text-muted-foreground ml-2">
+          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
+export default SystemStatus;
+</file>
+
 <file path="frontend/src/hooks/useLiveCandles.ts">
 // src/hooks/useLiveCandles.ts
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -184394,93 +184025,315 @@ export class WebSocketPool {
 }
 </file>
 
-<file path="frontend/src/App.tsx">
-import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Suspense, lazy, useEffect } from "react";
-import { AppLayout } from "./shared/layout/AppLayout";
-import ThemeProvider from "./shared/ui/theme-provider";
-import { TradingProvider } from "./contexts/TradingContext";
-import { queryClient } from "./lib/react-query";
+<file path="frontend/src/shared/api/trading.ts">
+// API endpoint for symbols data
+export interface ApiSymbol {
+  symbol: string;
+  market: string;
+  price: string;
+  change: string;
+  changePercent: number;
+}
 
-// 🚀 LANE SYSTEM - SETTINGS PROVIDER
-import { SettingsProvider } from "./shared/state/SettingsProvider";
+export interface ApiResponse {
+  symbols: ApiSymbol[];
+}
 
-// 🔌 WEBSOCKET EVENT ROUTER - KRITISCHE BRÜCKE
-import { wsEventRouter } from "./services/websocket/WebSocketEventRouter";
+// Backend API interfaces
+interface BackendSymbol {
+  symbol: string;
+  market_type: string;
+  status: string;
+  baseAsset: string;
+  quoteAsset: string;
+}
 
-// ✅ Code-Splitting: Pages lazy laden
-const TradingPage = lazy(() => import("./pages/TradingPage"));
-const QuantumPage = lazy(() => import("./pages/QuantumPage"));
-const BotPage = lazy(() => import("./pages/BotPage"));
-const MLPage = lazy(() => import("./pages/MLPage"));
-const DatabasePage = lazy(() => import("./pages/DatabasePage"));
-const WhalesPage = lazy(() => import("./pages/WhalesPage"));
-const NewsPage = lazy(() => import("./pages/NewsPage"));
-const APIPage = lazy(() => import("./pages/APIPage"));
-const SettingsPage = lazy(() => import("./pages/SettingsPage"));
-const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
+interface BackendTicker {
+  symbol: string;
+  last: number;
+  high24h: number;
+  low24h: number;
+  changeRate: number;
+  baseVol: number;
+  quoteVol: number;
+  market_type: string;
+}
 
-// ✅ Logs Feature
-const LogsPage = lazy(() => import("./features/logs").then(m => ({ default: m.LogsPage })));
-const DiagnosticsPage = lazy(() => import("./features/logs").then(m => ({ default: m.DiagnosticsPage })));
+interface BackendSymbolsResponse {
+  symbols: BackendSymbol[];
+  db_symbols: any[];
+}
 
-// Loading Fallback Component
-const PageLoader = () => (
-  <div className="flex items-center justify-center h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-  </div>
-);
+// Configuration - Uses Vite Environment Variables (TypeScript-safe)
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8100/api';
+const CACHE_TTL = 300000; // 5 minutes for symbols
+const TICKER_CACHE_TTL = 10000; // 10 seconds for tickers
 
-// 🚀 LANE SYSTEM - SIMPLIFIED APP WITH SETTINGS PROVIDER + WS EVENT ROUTER
-const App = () => {
-  // ✅ KRITISCH: WebSocket Event Router beim App-Start initialisieren
-  // Ohne dies: WebSocket empfängt Daten, aber Lane Stores bleiben leer
-  useEffect(() => {
-    wsEventRouter.initialize();
-    console.log('🎯 App initialized with WebSocket Event Router');
+// Cache storage
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+  ttl: number;
+}
+
+const cache = new Map<string, CacheEntry<any>>();
+
+// Cache utilities
+function getCached<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  
+  if (Date.now() - entry.timestamp > entry.ttl) {
+    cache.delete(key);
+    return null;
+  }
+  
+  return entry.data;
+}
+
+function setCache<T>(key: string, data: T, ttl: number): void {
+  cache.set(key, {
+    data,
+    timestamp: Date.now(),
+    ttl,
+  });
+}
+
+// Settings API functions
+export interface CoinSetting {
+  exchange?: string;  // New: Exchange parameter
+  symbol: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite: boolean;
+  db_resolutions: number[];  // Updated: Now array instead of single value
+  chart_resolution: string;
+}
+
+// Exchange configuration - DYNAMISCH aus ENV
+export type Exchange = string; // ✅ Beliebiger Exchange aus .env
+export const DEFAULT_EXCHANGE: Exchange = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance'; // ✅ Aus ENV oder Fallback
+
+// Fetch settings with exchange support
+export async function getSettings(exchange?: Exchange, symbol?: string, market?: string): Promise<CoinSetting[]> {
+  try {
+    const params = new URLSearchParams();
+    // 🚨 FIX: Nur gültige Parameter hinzufügen, NIEMALS undefined!
+    const filteredExchange = (exchange && exchange !== 'all') ? exchange : undefined;
+    if (filteredExchange) params.append('exchange', filteredExchange);
+    if (symbol && symbol !== 'undefined') params.append('symbol', symbol);
+    if (market && market !== 'undefined') params.append('market', market);
     
-    return () => {
-      // Cleanup bei App-Unmount (z.B. Hot-Reload)
-      wsEventRouter.destroy();
-    };
-  }, []);
+    const queryString = params.toString();
+    const url = `${API_BASE}/settings/settings${queryString ? `?${queryString}` : ''}`;
+    
+    console.log(`[SymbolsAPI] Calling: ${url} (original: ${exchange}, filtered: ${filteredExchange || 'none'})`);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    console.log(`[SymbolsAPI] ✅ Got ${data.length} settings from ${url}`);
+    return data;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to fetch settings:', error);
+    return [];
+  }
+}
 
+// Save settings with exchange support
+export async function saveSettings(settings: CoinSetting[]): Promise<boolean> {
+  try {
+    // Ensure each setting has an exchange field (default to bitget for legacy compatibility)
+    const settingsWithExchange = settings.map(setting => ({
+      ...setting,
+      exchange: setting.exchange || DEFAULT_EXCHANGE,
+      // Convert single db_resolution to array for backward compatibility
+      db_resolutions: Array.isArray(setting.db_resolutions) 
+        ? setting.db_resolutions 
+        : [(setting as any).db_resolution || 60]
+    }));
+    
+    const response = await fetch(`${API_BASE}/settings/settings`, {
+      method: 'PUT',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(settingsWithExchange),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    
+    console.log('[SymbolsAPI] Settings saved successfully:', result);
+    return true;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to save settings:', error);
+    return false;
+  }
+}
+
+// Get settings for all exchanges
+export async function getAllSettings(): Promise<CoinSetting[]> {
+  try {
+    const [binanceSettings, bitgetSettings] = await Promise.all([
+      getSettings('binance').catch(() => []),
+      getSettings('bitget').catch(() => [])
+    ]);
+    
+    const allSettings = [...binanceSettings, ...bitgetSettings];
+    console.log(`[SymbolsAPI] Combined ${allSettings.length} settings from all exchanges`);
+    return allSettings;
+  } catch (error) {
+    console.error('[SymbolsAPI] Failed to fetch settings from all exchanges:', error);
+    return [];
+  }
+}
+
+// Fetch symbols from backend with exchange support
+export async function fetchSymbols(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendSymbolsResponse> {
+  const cacheKey = `symbols_${exchange}`;
+  const cached = getCached<BackendSymbolsResponse>(cacheKey);
+  if (cached) return cached;
+  
+  try {
+    const response = await fetch(`${API_BASE}/market/symbols?exchange=${exchange}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+        timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
+    } as any);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    setCache(cacheKey, data, CACHE_TTL);
+    
+    console.log(`[SymbolsAPI] Fetched ${data.symbols?.length || 0} symbols from ${exchange}`);
+    return data;
+  } catch (error) {
+    console.error(`[SymbolsAPI] Failed to fetch symbols from ${exchange}:`, error);
+    throw error;
+  }
+}
+
+// Fetch tickers from backend with exchange support
+export async function fetchTickers(exchange: Exchange = DEFAULT_EXCHANGE): Promise<BackendTicker[]> {
+  const cacheKey = `tickers_${exchange}`;
+  const cached = getCached<BackendTicker[]>(cacheKey);
+  if (cached) return cached;
+  
+  try {
+    const response = await fetch(`${API_BASE}/market/ticker?exchange=${exchange}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      timeout: parseInt((import.meta as any)?.env?.VITE_API_TIMEOUT || '10000'),
+    } as any);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    // Handle new unified backend response format
+    const tickers = data.tickers || data; // Support both old and new format
+    setCache(cacheKey, tickers, TICKER_CACHE_TTL);
+    
+    console.log(`[SymbolsAPI] Fetched ${tickers.length} tickers from ${exchange}`);
+    return tickers;
+  } catch (error) {
+    console.error(`[SymbolsAPI] Failed to fetch tickers from ${exchange}:`, error);
+    throw error;
+  }
+}
+
+// Clear cache function for manual refresh
+export function clearCache(): void {
+  cache.clear();
+  console.log('[SymbolsAPI] Cache cleared');
+}
+</file>
+
+<file path="frontend/src/shared/layout/AppLayout.tsx">
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+import GlobalNav from './GlobalNav';
+
+export const AppLayout: React.FC = () => {
   return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <TradingProvider>
-          <SettingsProvider>
-            <BrowserRouter>
-              <Suspense fallback={<PageLoader />}>
-                <Routes>
-                  <Route path="/" element={<AppLayout />}>
-                    <Route index element={<Navigate to="/trading" replace />} />
-                    <Route path="trading" element={<TradingPage />} />
-                    <Route path="quantum" element={<QuantumPage />} />
-                    <Route path="bot" element={<BotPage />} />
-                    <Route path="ml" element={<MLPage />} />
-                    <Route path="database" element={<DatabasePage />} />
-                    <Route path="whales" element={<WhalesPage />} />
-                    <Route path="news" element={<NewsPage />} />
-                    <Route path="api" element={<APIPage />} />
-                    <Route path="settings" element={<SettingsPage />} />
-                    <Route path="diagnostics" element={<DiagnosticsPage />} />
-                    <Route path="logs/:exchange" element={<LogsPage />} />
-                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
-                  </Route>
-                </Routes>
-              </Suspense>
-            </BrowserRouter>
-          </SettingsProvider>
-        </TradingProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
+    <div className="min-h-screen bg-background text-foreground transition-colors">
+      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
+        <GlobalNav />
+        <main>
+          <Outlet />
+        </main>
+      </div>
+    </div>
   );
 };
+</file>
 
-export default App;
-// Updated Sun Sep 14 18:57:08 CEST 2025
+<file path="frontend/src/main.tsx">
+import { createRoot } from "react-dom/client";
+import App from "./App.tsx";
+import "./index.css";
+
+// Error Handling
+import { ErrorBoundary } from "./shared/error/ErrorBoundary";
+
+// Settings Provider
+import { SettingsProvider } from "./shared/state/SettingsProvider";
+
+// ✅ Exchange & Market-Type Config laden (Single Source of Truth: backend/.env)
+import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
+
+// ✅ App-Initialization: Lade Exchange-Config bevor React rendert
+async function initializeApp() {
+  console.log('🚀 Initializing DarkMa Trading System...');
+  
+  try {
+    // Lade Exchange-Liste und Market-Types vom Backend (parallel, cached)
+    const [exchangeConfig, marketTypeConfig] = await Promise.all([
+      loadExchangeConfig(),
+      loadMarketTypeConfig()
+    ]);
+    console.log(`✅ System ready: ${exchangeConfig.count} exchanges, ${marketTypeConfig.count} market types available`);
+  } catch (error) {
+    console.error('⚠️ Config initialization failed (using fallback):', error);
+  }
+  
+  // Render React App
+  createRoot(document.getElementById("root")!).render(
+    <ErrorBoundary>
+      <SettingsProvider>
+        <App />
+      </SettingsProvider>
+    </ErrorBoundary>
+  );
+}
+
+// Start App
+initializeApp();
 </file>
 
 <file path="readme/000_backfill_loop.md">
@@ -188769,6 +188622,77 @@ def main():
 if __name__ == "__main__":
     success = main()
     sys.exit(0 if success else 1)
+</file>
+
+<file path="frontend/src/App.tsx">
+import { QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, lazy } from "react";
+import { AppLayout } from "./shared/layout/AppLayout";
+import ThemeProvider from "./shared/ui/theme-provider";
+import { TradingProvider } from "./contexts/TradingContext";
+import { queryClient } from "./lib/react-query";
+import { SettingsProvider } from "./shared/state/SettingsProvider";
+
+// ✅ Code-Splitting: Pages lazy laden
+const TradingPage = lazy(() => import("./pages/TradingPage"));
+const QuantumPage = lazy(() => import("./pages/QuantumPage"));
+const BotPage = lazy(() => import("./pages/BotPage"));
+const MLPage = lazy(() => import("./pages/MLPage"));
+const DatabasePage = lazy(() => import("./pages/DatabasePage"));
+const WhalesPage = lazy(() => import("./pages/WhalesPage"));
+const NewsPage = lazy(() => import("./pages/NewsPage"));
+const APIPage = lazy(() => import("./pages/APIPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
+
+// ✅ Logs Feature
+const LogsPage = lazy(() => import("./features/logs").then(m => ({ default: m.LogsPage })));
+const DiagnosticsPage = lazy(() => import("./features/logs").then(m => ({ default: m.DiagnosticsPage })));
+
+// Loading Fallback Component
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+  </div>
+);
+
+const App = () => {
+  return (
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <TradingProvider>
+          <SettingsProvider>
+            <BrowserRouter>
+              <Suspense fallback={<PageLoader />}>
+                <Routes>
+                  <Route path="/" element={<AppLayout />}>
+                    <Route index element={<Navigate to="/trading" replace />} />
+                    <Route path="trading" element={<TradingPage />} />
+                    <Route path="quantum" element={<QuantumPage />} />
+                    <Route path="bot" element={<BotPage />} />
+                    <Route path="ml" element={<MLPage />} />
+                    <Route path="database" element={<DatabasePage />} />
+                    <Route path="whales" element={<WhalesPage />} />
+                    <Route path="news" element={<NewsPage />} />
+                    <Route path="api" element={<APIPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="diagnostics" element={<DiagnosticsPage />} />
+                    <Route path="logs/:exchange" element={<LogsPage />} />
+                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
+                  </Route>
+                </Routes>
+              </Suspense>
+            </BrowserRouter>
+          </SettingsProvider>
+        </TradingProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
+};
+
+export default App;
+// Updated Sun Sep 14 18:57:08 CEST 2025
 </file>
 
 <file path="start-health.sh">
@@ -197641,427 +197565,6 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
-                await self.broadcast_to_frontend(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    message_type="trade_data",
-                    data=trade_data
-                )
-                
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
-</file>
-
 <file path="backend/websocket/ws_message_parsers.py">
 import json
 import gzip
@@ -198636,6 +198139,427 @@ def get_ws_message_parser(exchange: str) -> BaseMessageParser:
     """Hole Message Parser für Exchange"""
     parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
     return parser_class(exchange)
+</file>
+
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                if not trade_data:
+                    return  # Keine Trade-Daten in Message
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
+                from backend.database.redis import unified_rs_service
+                
+                # Nutze rs_ Lane System für Redis Operations
+                success = await unified_rs_service.add_trade(
+                    exchange, symbol, trade_data, market
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                
+                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
+                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
+                await self.broadcast_to_frontend(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    message_type="trade_data",
+                    data=trade_data
+                )
+                
+                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
 </file>
 
 <file path="start-system.sh">
