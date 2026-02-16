@@ -403,6 +403,7 @@ frontend/
     robots.txt
   src/
     config/
+      candleResolutions.ts
       env.ts
       exchangeSupport.ts
     contexts/
@@ -83175,81 +83176,6 @@ def get_ollama_config() -> Dict[str, Any]:
     return ai_config.get_model_config("ollama")
 </file>
 
-<file path="backend/api/routers/ro_config.py">
-"""
-Config Router - System Configuration API
-Stellt dynamische Konfiguration für Frontend bereit (Single Source of Truth)
-"""
-
-from fastapi import APIRouter
-import os
-import logging
-
-logger = logging.getLogger("ro-config")
-
-router = APIRouter(prefix="/api/config", tags=["Config"])
-
-
-@router.get("/exchanges")
-async def get_exchanges():
-    """
-    Gibt die Liste der aktivierten Exchanges zurück
-    
-    Source: ENABLED_EXCHANGES in backend/config/.env
-    Frontend fragt diese Liste dynamisch ab (keine Hardcodes!)
-    
-    Returns:
-        {
-            "exchanges": ["binance", "bitget", ...],
-            "default": "binance",
-            "count": 8
-        }
-    """
-    # Lese aus Environment Variable
-    exchanges_str = os.getenv("ENABLED_EXCHANGES", "binance")
-    exchanges = [e.strip() for e in exchanges_str.split(",")]
-    
-    default_exchange = os.getenv("DEFAULT_EXCHANGE", "binance")
-    
-    logger.info(f"📋 Config requested: {len(exchanges)} exchanges, default={default_exchange}")
-    
-    return {
-        "exchanges": exchanges,
-        "default": default_exchange,
-        "count": len(exchanges)
-    }
-
-
-@router.get("/market-types")
-async def get_market_types():
-    """
-    Gibt die Liste der aktivierten Market-Types zurück
-    
-    Source: ENABLED_MARKET_TYPES in backend/config/.env
-    Frontend fragt diese Liste dynamisch ab (keine Hardcodes!)
-    
-    Returns:
-        {
-            "market_types": ["spot", "usdtm", "futures"],
-            "default": "spot",
-            "count": 3
-        }
-    """
-    # Lese aus Environment Variable
-    market_types_str = os.getenv("ENABLED_MARKET_TYPES", "spot")
-    market_types = [m.strip() for m in market_types_str.split(",")]
-    
-    default_market_type = os.getenv("DEFAULT_MARKET_TYPE", "spot")
-    
-    logger.info(f"📊 Config requested: {len(market_types)} market types, default={default_market_type}")
-    
-    return {
-        "market_types": market_types,
-        "default": default_market_type,
-        "count": len(market_types)
-    }
-</file>
-
 <file path="backend/api/routers/ro_market_data.py">
 """
 ro_market_data.py – Unified Market Data Router
@@ -91037,6 +90963,91 @@ echo "✅ VERIFICATION COMPLETE"
 echo "=================================================="
 </file>
 
+<file path="frontend/src/config/candleResolutions.ts">
+// frontend/src/config/candleResolutions.ts
+// ✅ SINGLE SOURCE OF TRUTH: Candle Resolutions vom Backend API
+
+let cachedResolutions: string[] | null = null;
+
+/**
+ * Fetch candle resolutions from backend API
+ * Backend reads from WS_CANDLE_RESOLUTIONS env variable
+ */
+export async function fetchCandleResolutions(): Promise<string[]> {
+  if (cachedResolutions) {
+    return cachedResolutions;
+  }
+
+  try {
+    const response = await fetch('/api/config/candle-resolutions');
+    if (!response.ok) {
+      throw new Error(`Failed to fetch candle resolutions: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const resolutions = data.resolutions || [];
+    cachedResolutions = resolutions;
+    
+    console.log(`✅ Loaded ${resolutions.length} candle resolutions from backend`);
+    return resolutions;
+  } catch (error) {
+    console.error('Failed to fetch candle resolutions from backend:', error);
+    
+    // Fallback: Default resolutions
+    const fallback = ["1s", "5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h", "4h", "1d"];
+    console.warn('Using fallback candle resolutions:', fallback);
+    return fallback;
+  }
+}
+
+/**
+ * Get all available candle resolutions
+ * Includes extended list for UI display
+ */
+export async function getAllIntervals(): Promise<Array<{ label: string; value: string }>> {
+  // Extended list for UI (includes more options than backend aggregates)
+  const allIntervals = [
+    { label: "1s", value: "1s" },
+    { label: "5s", value: "5s" },
+    { label: "10s", value: "10s" },
+    { label: "15s", value: "15s" },
+    { label: "30s", value: "30s" },
+    { label: "1m", value: "1m" },
+    { label: "2m", value: "2m" },
+    { label: "5m", value: "5m" },
+    { label: "10m", value: "10m" },
+    { label: "15m", value: "15m" },
+    { label: "30m", value: "30m" },
+    { label: "1h", value: "1h" },
+    { label: "2h", value: "2h" },
+    { label: "4h", value: "4h" },
+    { label: "6h", value: "6h" },
+    { label: "12h", value: "12h" },
+    { label: "1d", value: "1d" },
+    { label: "1w", value: "1w" },
+    { label: "1M", value: "1M" },
+    { label: "6M", value: "6M" },
+  ];
+
+  return allIntervals;
+}
+
+/**
+ * Get default selected intervals for display
+ * Uses backend resolutions as basis
+ */
+export async function getDefaultSelectedIntervals(): Promise<Set<string>> {
+  const backendResolutions = await fetchCandleResolutions();
+  
+  // Filter to only include resolutions that backend actually aggregates
+  const defaultSelected = backendResolutions.filter(r => 
+    ["1s", "5s", "15s", "1m", "1h"].includes(r)
+  );
+  
+  return new Set(defaultSelected.length > 0 ? defaultSelected : ["1s", "5s", "15s", "1m", "1h"]);
+}
+</file>
+
 <file path="frontend/src/config/env.ts">
 // frontend/src/config/env.ts
 export const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || "";
@@ -91821,358 +91832,6 @@ const SystemStatus: React.FC = () => {
 };
 
 export default SystemStatus;
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
-import { useState } from "react";
-
-interface TimeButtonsProps {
-  onIntervalChange?: (interval: string) => void;
-  onIndicatorSelect?: (indicator: string) => void;
-}
-
-const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
-  const [activeTime, setActiveTime] = useState("1m");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [selectedIntervals, setSelectedIntervals] = useState(
-    new Set(["1s", "5s", "15s", "1m", "1h"]),
-  );
-  const [isGridView, setIsGridView] = useState(false);
-
-  const displayIntervals = Array.from(selectedIntervals);
-
-  const allIntervals = [
-    { label: "1s", value: "1s" },
-    { label: "5s", value: "5s" },
-    { label: "10s", value: "10s" },
-    { label: "15s", value: "15s" },
-    { label: "30s", value: "30s" },
-    { label: "1m", value: "1m" },
-    { label: "2m", value: "2m" },
-    { label: "5m", value: "5m" },
-    { label: "10m", value: "10m" },
-    { label: "15m", value: "15m" },
-    { label: "30m", value: "30m" },
-    { label: "1h", value: "1h" },
-    { label: "2h", value: "2h" },
-    { label: "4h", value: "4h" },
-    { label: "6h", value: "6h" },
-    { label: "12h", value: "12h" },
-    { label: "1d", value: "1d" },
-    { label: "1w", value: "1w" },
-    { label: "1M", value: "1M" },
-    { label: "6M", value: "6M" },
-  ];
-
-  const handleTimeSelect = (interval: string) => {
-    setActiveTime(interval);
-    setIsDropdownOpen(false);
-    
-    if (onIntervalChange) {
-      onIntervalChange(interval);
-    }
-  };
-
-  const handleEditToggle = () => {
-    setIsEditMode(!isEditMode);
-  };
-
-  const handleIntervalToggle = (interval: string) => {
-    const newSelected = new Set(selectedIntervals);
-    if (newSelected.has(interval)) {
-      newSelected.delete(interval);
-    } else {
-      newSelected.add(interval);
-    }
-    setSelectedIntervals(newSelected);
-  };
-
-  const handleSave = () => {
-    setIsEditMode(false);
-  };
-
-  const handleIndicatorSelect = (indicator: string) => {
-    if (onIndicatorSelect) {
-      onIndicatorSelect(indicator);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-3 my-3 text-sm">
-      <label className="font-medium text-muted-foreground mr-2">
-        Zeit
-      </label>
-
-      {/* Display Buttons */}
-      {displayIntervals.map((interval) => (
-        <div
-          key={interval}
-          className={`cursor-pointer select-none ${
-            activeTime === interval
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-foreground hover:bg-muted/80"
-          }`}
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => handleTimeSelect(interval)}
-        >
-          {interval}
-        </div>
-      ))}
-
-      {/* Dropdown Button */}
-      <div className="relative">
-        <div
-          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            display: "flex",
-            alignItems: "center",
-            gap: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-        >
-          ▽
-        </div>
-
-        {/* Dropdown Menu */}
-        {isDropdownOpen && (
-          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-900 dark:text-white">
-                  Intervall auswählen
-                </h3>
-                <button
-                  className="text-blue-500 text-sm font-medium"
-                  onClick={isEditMode ? handleSave : handleEditToggle}
-                >
-                  {isEditMode ? "Speichern" : "Bearbeiten"}
-                </button>
-              </div>
-
-              {/* Grid of time intervals */}
-              <div className="grid grid-cols-4 gap-2">
-                {allIntervals.map((interval) => (
-                  <div
-                    key={interval.value}
-                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
-                      activeTime === interval.value && !isEditMode
-                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
-                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
-                    }`}
-                    onClick={() =>
-                      isEditMode
-                        ? handleIntervalToggle(interval.value)
-                        : handleTimeSelect(interval.value)
-                    }
-                  >
-                    {interval.label}
-
-                    {/* Checkbox in edit mode */}
-                    {isEditMode && (
-                      <div className="absolute top-1 right-1">
-                        <div
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
-                            selectedIntervals.has(interval.value)
-                              ? "bg-blue-500 text-white"
-                              : "bg-gray-300 text-gray-600"
-                          }`}
-                        >
-                          {selectedIntervals.has(interval.value) ? "✓" : ""}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Overlay to close dropdown */}
-        {isDropdownOpen && (
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setIsDropdownOpen(false)}
-          />
-        )}
-      </div>
-
-      {/* Separator */}
-      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
-
-      {/* Indicators Button - Simplified (kein Modal Import) */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => console.log("Indicators clicked")}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M2 12L5 9L8 11L12 7"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 4V7H9"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span>Indikatoren</span>
-      </div>
-
-      {/* Grid View Button */}
-      <div
-        className={`cursor-pointer select-none flex items-center justify-center ${
-          isGridView
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground hover:bg-muted/80"
-        }`}
-        style={{
-          padding: "4px 8px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-          width: "28px",
-          height: "24px",
-        }}
-        onClick={() => setIsGridView(!isGridView)}
-        title="Grid View"
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <rect
-            x="1"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="1"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-        </svg>
-      </div>
-
-      {/* Alarm Button */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => {
-          console.log("Alarm clicked");
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <path
-            d="M7 4V7L9 9"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-          />
-        </svg>
-        Alarm
-      </div>
-    </div>
-  );
-};
-
-export default TimeButtons;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TradingTerminal.tsx">
@@ -186953,6 +186612,107 @@ echo "🔗 Check: https://github.com/sawyerma/ws_ai_llm"
 </html>
 </file>
 
+<file path="backend/api/routers/ro_config.py">
+"""
+Config Router - System Configuration API
+Stellt dynamische Konfiguration für Frontend bereit (Single Source of Truth)
+"""
+
+from fastapi import APIRouter
+import os
+import logging
+
+logger = logging.getLogger("ro-config")
+
+router = APIRouter(prefix="/api/config", tags=["Config"])
+
+
+@router.get("/exchanges")
+async def get_exchanges():
+    """
+    Gibt die Liste der aktivierten Exchanges zurück
+    
+    Source: ENABLED_EXCHANGES in backend/config/.env
+    Frontend fragt diese Liste dynamisch ab (keine Hardcodes!)
+    
+    Returns:
+        {
+            "exchanges": ["binance", "bitget", ...],
+            "default": "binance",
+            "count": 8
+        }
+    """
+    # Lese aus Environment Variable
+    exchanges_str = os.getenv("ENABLED_EXCHANGES", "binance")
+    exchanges = [e.strip() for e in exchanges_str.split(",")]
+    
+    default_exchange = os.getenv("DEFAULT_EXCHANGE", "binance")
+    
+    logger.info(f"📋 Config requested: {len(exchanges)} exchanges, default={default_exchange}")
+    
+    return {
+        "exchanges": exchanges,
+        "default": default_exchange,
+        "count": len(exchanges)
+    }
+
+
+@router.get("/market-types")
+async def get_market_types():
+    """
+    Gibt die Liste der aktivierten Market-Types zurück
+    
+    Source: ENABLED_MARKET_TYPES in backend/config/.env
+    Frontend fragt diese Liste dynamisch ab (keine Hardcodes!)
+    
+    Returns:
+        {
+            "market_types": ["spot", "usdtm", "futures"],
+            "default": "spot",
+            "count": 3
+        }
+    """
+    # Lese aus Environment Variable
+    market_types_str = os.getenv("ENABLED_MARKET_TYPES", "spot")
+    market_types = [m.strip() for m in market_types_str.split(",")]
+    
+    default_market_type = os.getenv("DEFAULT_MARKET_TYPE", "spot")
+    
+    logger.info(f"📊 Config requested: {len(market_types)} market types, default={default_market_type}")
+    
+    return {
+        "market_types": market_types,
+        "default": default_market_type,
+        "count": len(market_types)
+    }
+
+
+@router.get("/candle-resolutions")
+async def get_candle_resolutions():
+    """
+    Gibt die Liste der WebSocket Candle Resolutions zurück
+    
+    Source: WS_CANDLE_RESOLUTIONS in .env
+    Frontend fragt diese Liste dynamisch ab (Single Source of Truth!)
+    
+    Returns:
+        {
+            "resolutions": ["1s", "5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+            "count": 11
+        }
+    """
+    # Lese aus Environment Variable
+    resolutions_str = os.getenv("WS_CANDLE_RESOLUTIONS", "1s,5s,15s,30s,1m,5m,15m,30m,1h,4h,1d")
+    resolutions = [r.strip() for r in resolutions_str.split(",") if r.strip()]
+    
+    logger.info(f"📈 Config requested: {len(resolutions)} candle resolutions")
+    
+    return {
+        "resolutions": resolutions,
+        "count": len(resolutions)
+    }
+</file>
+
 <file path="backend/database/clickhouse/__init__.py">
 # ClickHouse Lane System - Unified Export Module
 # Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
@@ -187698,292 +187458,6 @@ WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
-        }
-
-
-ws_manager = PerformantWebSocketManager()
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
 <file path="backend/websocket/ws_router.py">
 from fastapi import APIRouter, WebSocket
 from datetime import datetime
@@ -188276,6 +187750,354 @@ const ChartSection = ({
 };
 
 export default ChartSection;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
+import { useState, useEffect } from "react";
+import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
+
+interface TimeButtonsProps {
+  onIntervalChange?: (interval: string) => void;
+  onIndicatorSelect?: (indicator: string) => void;
+}
+
+const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
+  const [activeTime, setActiveTime] = useState("1m");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIntervals, setSelectedIntervals] = useState<Set<string>>(
+    new Set(["1s", "5s", "15s", "1m", "1h"]),
+  );
+  const [isGridView, setIsGridView] = useState(false);
+  const [allIntervals, setAllIntervals] = useState<Array<{ label: string; value: string }>>([]);
+
+  // ✅ Load intervals from backend API on mount
+  useEffect(() => {
+    const loadIntervals = async () => {
+      try {
+        const intervals = await getAllIntervals();
+        setAllIntervals(intervals);
+        
+        const defaultSelected = await getDefaultSelectedIntervals();
+        setSelectedIntervals(defaultSelected);
+      } catch (error) {
+        console.error("Failed to load candle intervals:", error);
+      }
+    };
+    
+    loadIntervals();
+  }, []);
+
+  const displayIntervals = Array.from(selectedIntervals);
+
+  const handleTimeSelect = (interval: string) => {
+    setActiveTime(interval);
+    setIsDropdownOpen(false);
+    
+    if (onIntervalChange) {
+      onIntervalChange(interval);
+    }
+  };
+
+  const handleEditToggle = () => {
+    setIsEditMode(!isEditMode);
+  };
+
+  const handleIntervalToggle = (interval: string) => {
+    const newSelected = new Set(selectedIntervals);
+    if (newSelected.has(interval)) {
+      newSelected.delete(interval);
+    } else {
+      newSelected.add(interval);
+    }
+    setSelectedIntervals(newSelected);
+  };
+
+  const handleSave = () => {
+    setIsEditMode(false);
+  };
+
+  const handleIndicatorSelect = (indicator: string) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3 my-3 text-sm">
+      <label className="font-medium text-muted-foreground mr-2">
+        Zeit
+      </label>
+
+      {/* Display Buttons */}
+      {displayIntervals.map((interval) => (
+        <div
+          key={interval}
+          className={`cursor-pointer select-none ${
+            activeTime === interval
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-foreground hover:bg-muted/80"
+          }`}
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => handleTimeSelect(interval)}
+        >
+          {interval}
+        </div>
+      ))}
+
+      {/* Dropdown Button */}
+      <div className="relative">
+        <div
+          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+        >
+          ▽
+        </div>
+
+        {/* Dropdown Menu */}
+        {isDropdownOpen && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  Intervall auswählen
+                </h3>
+                <button
+                  className="text-blue-500 text-sm font-medium"
+                  onClick={isEditMode ? handleSave : handleEditToggle}
+                >
+                  {isEditMode ? "Speichern" : "Bearbeiten"}
+                </button>
+              </div>
+
+              {/* Grid of time intervals */}
+              <div className="grid grid-cols-4 gap-2">
+                {allIntervals.map((interval) => (
+                  <div
+                    key={interval.value}
+                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
+                      activeTime === interval.value && !isEditMode
+                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                    onClick={() =>
+                      isEditMode
+                        ? handleIntervalToggle(interval.value)
+                        : handleTimeSelect(interval.value)
+                    }
+                  >
+                    {interval.label}
+
+                    {/* Checkbox in edit mode */}
+                    {isEditMode && (
+                      <div className="absolute top-1 right-1">
+                        <div
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
+                            selectedIntervals.has(interval.value)
+                              ? "bg-blue-500 text-white"
+                              : "bg-gray-300 text-gray-600"
+                          }`}
+                        >
+                          {selectedIntervals.has(interval.value) ? "✓" : ""}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Overlay to close dropdown */}
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsDropdownOpen(false)}
+          />
+        )}
+      </div>
+
+      {/* Separator */}
+      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+
+      {/* Indicators Button - Simplified (kein Modal Import) */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => console.log("Indicators clicked")}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M2 12L5 9L8 11L12 7"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 4V7H9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Indikatoren</span>
+      </div>
+
+      {/* Grid View Button */}
+      <div
+        className={`cursor-pointer select-none flex items-center justify-center ${
+          isGridView
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-foreground hover:bg-muted/80"
+        }`}
+        style={{
+          padding: "4px 8px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+          width: "28px",
+          height: "24px",
+        }}
+        onClick={() => setIsGridView(!isGridView)}
+        title="Grid View"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <rect
+            x="1"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="1"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      {/* Alarm Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => {
+          console.log("Alarm clicked");
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <path
+            d="M7 4V7L9 9"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+          />
+        </svg>
+        Alarm
+      </div>
+    </div>
+  );
+};
+
+export default TimeButtons;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
@@ -193291,206 +193113,6 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
-<file path="backend/core/config.py">
-# backend/core/config.py
-
-import os
-from typing import Dict, Any, List
-import yaml
-from pathlib import Path
-import logging
-import urllib.parse
-
-logger = logging.getLogger(__name__)
-
-# ===== HELPER FUNCTIONS (P0.3) =====
-def _parse_csv_env(name: str) -> List[str]:
-    """Parse comma-separated ENV variable"""
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return []
-    return [x.strip() for x in raw.split(",") if x.strip()]
-
-def _discover_exchanges_from_fs() -> List[str]:
-    """
-    Discover exchanges from filesystem (no circular imports)
-    Scans backend/exchanges/* directories
-    """
-    ex_root = Path(__file__).resolve().parents[1] / "exchanges"
-    if not ex_root.exists():
-        logger.warning(f"Exchanges directory not found: {ex_root}")
-        return []
-    
-    out: List[str] = []
-    for p in sorted(ex_root.iterdir()):
-        if p.is_dir() and not p.name.startswith((".", "_")) and p.name != "__pycache__":
-            # Validate: must have services/rest_api.py
-            rest_api = p / "services" / "rest_api.py"
-            if rest_api.exists():
-                out.append(p.name)
-    
-    return out
-
-class Config:
-    """Lädt und verwaltet alle Systemkonfigurationen"""
-    
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
-            cls._instance._load_config()
-        return cls._instance
-    
-    def _load_config(self):
-        """Lädt alle Konfigurationsdateien"""
-        # ✅ P2.2: Konsistent zu main.py: backend/config
-        config_path = Path(__file__).resolve().parents[1] / "config"
-        
-        # ENTFERNT: Tier-Konfigurationen (jetzt in ai/shared/)
-        # ENTFERNT: AI System Konfiguration (jetzt in ai/shared/)
-        # ENTFERNT: Telegram Konfiguration (jetzt in ai/shared/)
-        
-        # Umgebungsvariablen für Datenbanken und Dienste
-        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
-        
-        # ClickHouse-Verbindung aus Umgebungsvariablen oder Standardwerten
-        self.clickhouse_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
-        self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
-        self.clickhouse_user = os.getenv("CLICKHOUSE_USER", "admin")
-        self.clickhouse_password = os.getenv("CLICKHOUSE_PASSWORD", "admin")
-        self.clickhouse_database = os.getenv("CLICKHOUSE_DATABASE", "trading")
-        
-        # Aliases für Rückwärtskompatibilität (Großgeschrieben)
-        self.REDIS_URL = self.redis_url
-        self.CLICKHOUSE_HOST = self.clickhouse_host
-        self.CLICKHOUSE_PORT = self.clickhouse_port
-        self.CLICKHOUSE_USER = self.clickhouse_user
-        self.CLICKHOUSE_PASSWORD = self.clickhouse_password
-        self.CLICKHOUSE_DATABASE = self.clickhouse_database
-        
-        # ✅ P0.3: Exchanges - ENV oder Filesystem-Discovery
-        env_ex = _parse_csv_env("EXCHANGES")
-        self.exchanges = env_ex if env_ex else _discover_exchanges_from_fs()
-        
-        if not self.exchanges:
-            logger.warning("⚠️ No exchanges discovered! Check EXCHANGES env or filesystem")
-        
-        # Dynamisch alle Exchange API Keys laden
-        for exchange in self.exchanges:
-            exchange_upper = exchange.upper()
-            setattr(self, f"{exchange}_api_key", os.getenv(f"{exchange_upper}_API_KEY"))
-            setattr(self, f"{exchange}_api_secret", os.getenv(f"{exchange_upper}_API_SECRET"))
-            
-            # Backwards compatibility - auch die UPPERCASE Attribute setzen
-            setattr(self, f"{exchange_upper}_API_KEY", os.getenv(f"{exchange_upper}_API_KEY"))
-            setattr(self, f"{exchange_upper}_API_SECRET", os.getenv(f"{exchange_upper}_API_SECRET"))
-        
-        # ✅ P0.3: Symbols - ENV (kein Hardcoding-Default)
-        self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS")
-        
-        if not self.SYMBOLS:
-            logger.warning("⚠️ No trading symbols configured! Set TRADING_SYMBOLS env")
-        
-        # ✅ WebSocket Data Limits - ENV
-        self.ws_max_trades = int(os.getenv("WS_MAX_TRADES", "500"))
-        self.ws_max_candles = int(os.getenv("WS_MAX_CANDLES", "2000"))
-    
-    def _load_yaml(self, file_path: Path) -> Dict[str, Any]:
-        """Lädt eine YAML Konfigurationsdatei"""
-        if file_path.exists():
-            with open(file_path, 'r') as f:
-                return yaml.safe_load(f)
-        return {}
-    
-    # ENTFERNT: get_tier_config() - jetzt in ai/shared/
-    # ENTFERNT: get_ai_config() - jetzt in ai/shared/
-    # ENTFERNT: _get_default_ai_config() - jetzt in ai/shared/
-
-
-# Globale Konfigurationsinstanz, die im gesamten System verwendet wird
-try:
-    config = Config()
-    settings = config  # Alias für Kompatibilität
-except Exception as e:
-    logger.critical(f"FATAL: Could not initialize Config. Error: {e}")
-    # Fallback to a minimal config object to prevent further crashes
-    class MinimalConfig:
-        def __init__(self):
-            # ENTFERNT: AI/Tier configs
-            self.redis_url = "redis://redis:6379"
-            self.clickhouse_host = "clickhouse"
-            self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-            self.clickhouse_user = "admin"
-            self.clickhouse_password = "admin"
-            self.clickhouse_database = "trading"
-            
-            # Aliases für Rückwärtskompatibilität (Großgeschrieben)
-            self.REDIS_URL = self.redis_url
-            self.CLICKHOUSE_HOST = self.clickhouse_host
-            self.CLICKHOUSE_PORT = self.clickhouse_port
-            self.CLICKHOUSE_USER = self.clickhouse_user
-            self.CLICKHOUSE_PASSWORD = self.clickhouse_password
-            self.CLICKHOUSE_DATABASE = self.clickhouse_database
-            
-            # ✅ DYNAMISCH aus ENV (wie Haupt-Config) - nur 1 Exchange als Fallback
-            self.exchanges = _parse_csv_env("ENABLED_EXCHANGES") or ["binance"]
-            self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS") or []
-            
-            # Dynamisch alle Exchange API Keys auf None setzen
-            for exchange in self.exchanges:
-                setattr(self, f"{exchange}_api_key", None)
-                setattr(self, f"{exchange}_api_secret", None)
-                # Backwards compatibility - auch UPPERCASE
-                setattr(self, f"{exchange.upper()}_API_KEY", None)
-                setattr(self, f"{exchange.upper()}_API_SECRET", None)
-    config = MinimalConfig()
-    settings = config  # Alias für Kompatibilität
-
-
-# ===== BACKWARDS COMPATIBILITY ALIASES =====
-# Für bestehende Imports die diese Namen erwarten
-core_config = config          # Legacy alias
-
-# ===== CONVENIENCE FUNCTIONS =====
-def get_core_config() -> Config:
-    """Gibt die globale Core Config Instanz zurück"""
-    return config
-
-def get_system_redis_config() -> Dict[str, Any]:
-    """Convenience function für Redis Config"""
-    # ✅ P0.1: Parse Redis URL korrekt
-    parsed = urllib.parse.urlparse(config.redis_url)
-    
-    return {
-        "url": config.redis_url,
-        "host": parsed.hostname or "redis",
-        "port": parsed.port or 6379
-    }
-
-def get_system_clickhouse_config() -> Dict[str, Any]:
-    """Convenience function für ClickHouse Config"""
-    return {
-        "host": config.clickhouse_host,
-        "port": config.clickhouse_port,
-        "user": config.clickhouse_user,
-        "password": config.clickhouse_password,
-        "database": config.clickhouse_database
-    }
-
-# ===== EXPORTS =====
-__all__ = [
-    "Config",
-    "config",           # Main instance
-    "settings",         # Alias
-    "core_config",      # Legacy
-    "get_core_config",
-    "get_system_redis_config", 
-    "get_system_clickhouse_config"
-]
-</file>
-
 <file path="backend/database/clickhouse/cl_message_handlers.py">
 import asyncio
 import logging
@@ -194217,6 +193839,314 @@ class MultiResCandleAgg:
                     c["l"] = price
 
         return finished
+</file>
+
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(payloads)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: dict, market_type: str) -> None:
+    """
+    ✅ Broadcast Orderbook Updates to Frontend
+    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
+    """
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
+        "market": market,
+        "bids": orderbook_data.get("bids", []),
+        "asks": orderbook_data.get("asks", []),
+        "timestamp": orderbook_data.get("timestamp"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="frontend/src/contexts/TradingContext.tsx">
@@ -195006,6 +194936,214 @@ echo ""
 echo "=================================================="
 echo "🏁 DIAGNOSTIC COMPLETE"
 echo "=================================================="
+</file>
+
+<file path="backend/core/config.py">
+# backend/core/config.py
+
+import os
+from typing import Dict, Any, List
+import yaml
+from pathlib import Path
+import logging
+import urllib.parse
+
+logger = logging.getLogger(__name__)
+
+# ===== HELPER FUNCTIONS (P0.3) =====
+def _parse_csv_env(name: str) -> List[str]:
+    """Parse comma-separated ENV variable"""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+def _discover_exchanges_from_fs() -> List[str]:
+    """
+    Discover exchanges from filesystem (no circular imports)
+    Scans backend/exchanges/* directories
+    """
+    ex_root = Path(__file__).resolve().parents[1] / "exchanges"
+    if not ex_root.exists():
+        logger.warning(f"Exchanges directory not found: {ex_root}")
+        return []
+    
+    out: List[str] = []
+    for p in sorted(ex_root.iterdir()):
+        if p.is_dir() and not p.name.startswith((".", "_")) and p.name != "__pycache__":
+            # Validate: must have services/rest_api.py
+            rest_api = p / "services" / "rest_api.py"
+            if rest_api.exists():
+                out.append(p.name)
+    
+    return out
+
+class Config:
+    """Lädt und verwaltet alle Systemkonfigurationen"""
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance._load_config()
+        return cls._instance
+    
+    def _load_config(self):
+        """Lädt alle Konfigurationsdateien"""
+        # ✅ P2.2: Konsistent zu main.py: backend/config
+        config_path = Path(__file__).resolve().parents[1] / "config"
+        
+        # ENTFERNT: Tier-Konfigurationen (jetzt in ai/shared/)
+        # ENTFERNT: AI System Konfiguration (jetzt in ai/shared/)
+        # ENTFERNT: Telegram Konfiguration (jetzt in ai/shared/)
+        
+        # Umgebungsvariablen für Datenbanken und Dienste
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        
+        # ClickHouse-Verbindung aus Umgebungsvariablen oder Standardwerten
+        self.clickhouse_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+        self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+        self.clickhouse_user = os.getenv("CLICKHOUSE_USER", "admin")
+        self.clickhouse_password = os.getenv("CLICKHOUSE_PASSWORD", "admin")
+        self.clickhouse_database = os.getenv("CLICKHOUSE_DATABASE", "trading")
+        
+        # Aliases für Rückwärtskompatibilität (Großgeschrieben)
+        self.REDIS_URL = self.redis_url
+        self.CLICKHOUSE_HOST = self.clickhouse_host
+        self.CLICKHOUSE_PORT = self.clickhouse_port
+        self.CLICKHOUSE_USER = self.clickhouse_user
+        self.CLICKHOUSE_PASSWORD = self.clickhouse_password
+        self.CLICKHOUSE_DATABASE = self.clickhouse_database
+        
+        # ✅ P0.3: Exchanges - ENV oder Filesystem-Discovery
+        env_ex = _parse_csv_env("EXCHANGES")
+        self.exchanges = env_ex if env_ex else _discover_exchanges_from_fs()
+        
+        if not self.exchanges:
+            logger.warning("⚠️ No exchanges discovered! Check EXCHANGES env or filesystem")
+        
+        # Dynamisch alle Exchange API Keys laden
+        for exchange in self.exchanges:
+            exchange_upper = exchange.upper()
+            setattr(self, f"{exchange}_api_key", os.getenv(f"{exchange_upper}_API_KEY"))
+            setattr(self, f"{exchange}_api_secret", os.getenv(f"{exchange_upper}_API_SECRET"))
+            
+            # Backwards compatibility - auch die UPPERCASE Attribute setzen
+            setattr(self, f"{exchange_upper}_API_KEY", os.getenv(f"{exchange_upper}_API_KEY"))
+            setattr(self, f"{exchange_upper}_API_SECRET", os.getenv(f"{exchange_upper}_API_SECRET"))
+        
+        # ✅ P0.3: Symbols - ENV (kein Hardcoding-Default)
+        self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS")
+        
+        if not self.SYMBOLS:
+            logger.warning("⚠️ No trading symbols configured! Set TRADING_SYMBOLS env")
+        
+        # ✅ WebSocket Data Limits - ENV
+        self.ws_max_trades = int(os.getenv("WS_MAX_TRADES", "500"))
+        self.ws_max_candles = int(os.getenv("WS_MAX_CANDLES", "2000"))
+        
+        # ✅ WebSocket Candle Resolutions - ENV (DYNAMISCH)
+        resolutions_raw = os.getenv("WS_CANDLE_RESOLUTIONS", "1s,5s,15s,30s,1m,5m,15m,30m,1h,4h,1d")
+        self.ws_candle_resolutions = [r.strip() for r in resolutions_raw.split(",") if r.strip()]
+        
+        if not self.ws_candle_resolutions:
+            logger.warning("⚠️ No candle resolutions configured! Using default")
+            self.ws_candle_resolutions = ["1s", "5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+    
+    def _load_yaml(self, file_path: Path) -> Dict[str, Any]:
+        """Lädt eine YAML Konfigurationsdatei"""
+        if file_path.exists():
+            with open(file_path, 'r') as f:
+                return yaml.safe_load(f)
+        return {}
+    
+    # ENTFERNT: get_tier_config() - jetzt in ai/shared/
+    # ENTFERNT: get_ai_config() - jetzt in ai/shared/
+    # ENTFERNT: _get_default_ai_config() - jetzt in ai/shared/
+
+
+# Globale Konfigurationsinstanz, die im gesamten System verwendet wird
+try:
+    config = Config()
+    settings = config  # Alias für Kompatibilität
+except Exception as e:
+    logger.critical(f"FATAL: Could not initialize Config. Error: {e}")
+    # Fallback to a minimal config object to prevent further crashes
+    class MinimalConfig:
+        def __init__(self):
+            # ENTFERNT: AI/Tier configs
+            self.redis_url = "redis://redis:6379"
+            self.clickhouse_host = "clickhouse"
+            self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
+            self.clickhouse_user = "admin"
+            self.clickhouse_password = "admin"
+            self.clickhouse_database = "trading"
+            
+            # Aliases für Rückwärtskompatibilität (Großgeschrieben)
+            self.REDIS_URL = self.redis_url
+            self.CLICKHOUSE_HOST = self.clickhouse_host
+            self.CLICKHOUSE_PORT = self.clickhouse_port
+            self.CLICKHOUSE_USER = self.clickhouse_user
+            self.CLICKHOUSE_PASSWORD = self.clickhouse_password
+            self.CLICKHOUSE_DATABASE = self.clickhouse_database
+            
+            # ✅ DYNAMISCH aus ENV (wie Haupt-Config) - nur 1 Exchange als Fallback
+            self.exchanges = _parse_csv_env("ENABLED_EXCHANGES") or ["binance"]
+            self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS") or []
+            
+            # Dynamisch alle Exchange API Keys auf None setzen
+            for exchange in self.exchanges:
+                setattr(self, f"{exchange}_api_key", None)
+                setattr(self, f"{exchange}_api_secret", None)
+                # Backwards compatibility - auch UPPERCASE
+                setattr(self, f"{exchange.upper()}_API_KEY", None)
+                setattr(self, f"{exchange.upper()}_API_SECRET", None)
+    config = MinimalConfig()
+    settings = config  # Alias für Kompatibilität
+
+
+# ===== BACKWARDS COMPATIBILITY ALIASES =====
+# Für bestehende Imports die diese Namen erwarten
+core_config = config          # Legacy alias
+
+# ===== CONVENIENCE FUNCTIONS =====
+def get_core_config() -> Config:
+    """Gibt die globale Core Config Instanz zurück"""
+    return config
+
+def get_system_redis_config() -> Dict[str, Any]:
+    """Convenience function für Redis Config"""
+    # ✅ P0.1: Parse Redis URL korrekt
+    parsed = urllib.parse.urlparse(config.redis_url)
+    
+    return {
+        "url": config.redis_url,
+        "host": parsed.hostname or "redis",
+        "port": parsed.port or 6379
+    }
+
+def get_system_clickhouse_config() -> Dict[str, Any]:
+    """Convenience function für ClickHouse Config"""
+    return {
+        "host": config.clickhouse_host,
+        "port": config.clickhouse_port,
+        "user": config.clickhouse_user,
+        "password": config.clickhouse_password,
+        "database": config.clickhouse_database
+    }
+
+# ===== EXPORTS =====
+__all__ = [
+    "Config",
+    "config",           # Main instance
+    "settings",         # Alias
+    "core_config",      # Legacy
+    "get_core_config",
+    "get_system_redis_config", 
+    "get_system_clickhouse_config"
+]
 </file>
 
 <file path="backend/core/router_registry.py">
@@ -197402,452 +197540,6 @@ EXPOSE 8100
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
-                await self.broadcast_to_frontend(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    message_type="trade_data",
-                    data=trade_data
-                )
-                
-                # 4. ✅ NEU: Candle Aggregation + Broadcast
-                from backend.services.adapter.stream_aggregator import MultiResCandleAgg
-                
-                # Aggregator pro Lane erstellen (einmalig)
-                if not hasattr(lane, 'candle_agg'):
-                    lane.candle_agg = MultiResCandleAgg(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        resolutions=["1s", "5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h", "4h", "1d"]
-                    )
-                
-                # Trade zu Candles aggregieren
-                finished_candles = lane.candle_agg.on_trade(trade_data)
-                
-                # Finished Candles broadcasten
-                for candle in finished_candles:
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="candle_data",
-                        data=candle
-                    )
-                
-                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
-</file>
-
 <file path="backend/websocket/ws_message_parsers.py">
 import json
 import gzip
@@ -198487,6 +198179,473 @@ def get_ws_message_parser(exchange: str) -> BaseMessageParser:
     """Hole Message Parser für Exchange"""
     parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
     return parser_class(exchange)
+</file>
+
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                
+                # ✅ TRADE PARSING
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                # ✅ ORDERBOOK PARSING
+                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
+                
+                # Wenn weder Trade noch Orderbook, return
+                if not trade_data and not orderbook_data:
+                    return
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data and trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ TRADE DATA PROCESSING
+                if trade_data:
+                    # Redis Stream über rs_ Lane System
+                    from backend.database.redis import unified_rs_service
+                    
+                    success = await unified_rs_service.add_trade(
+                        exchange, symbol, trade_data, market
+                    )
+                    
+                    if not success:
+                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                    
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="trade_data",
+                        data=trade_data
+                    )
+                
+                # 3. ✅ ORDERBOOK DATA PROCESSING
+                if orderbook_data:
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="orderbook_data",
+                        data=orderbook_data
+                    )
+                
+                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
+                if trade_data:
+                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg
+                    from backend.core.config import config
+                    
+                    # Aggregator pro Lane erstellen (einmalig)
+                    if not hasattr(lane, 'candle_agg'):
+                        # ✅ DYNAMISCH: Resolutions aus ENV
+                        lane.candle_agg = MultiResCandleAgg(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            resolutions=config.ws_candle_resolutions
+                        )
+                    
+                    # Trade zu Candles aggregieren
+                    finished_candles = lane.candle_agg.on_trade(trade_data)
+                    
+                    # Finished Candles broadcasten
+                    for candle in finished_candles:
+                        await self.broadcast_to_frontend(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            message_type="candle_data",
+                            data=candle
+                        )
+                
+                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            elif message_type == "orderbook_data":
+                await broadcast_orderbook_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
 </file>
 
 <file path="frontend/src/App.tsx">
