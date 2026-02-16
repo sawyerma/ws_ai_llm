@@ -490,6 +490,54 @@ frontend/
         theme-provider.tsx
         theme-toggle.tsx
         virtualized-list.tsx
+    src/
+      contexts/
+        TradingContext.tsx
+      features/
+        trading/
+          components/
+            ChartSection.tsx
+            CoinSelector.tsx
+            PriceDisplay.tsx
+            SystemStatus.tsx
+            TimeButtons.tsx
+            TradingTerminal.tsx
+          index.ts
+      lib/
+        react-query.ts
+      pages/
+        APIPage.tsx
+        BotPage.tsx
+        BTCUSDTMonitor.tsx
+        DatabasePage.tsx
+        index.ts
+        LogsPage.tsx
+        MLPage.tsx
+        NewsPage.tsx
+        QuantumPage.tsx
+        SettingsPage.tsx
+        TradingPage.tsx
+        WhalesPage.tsx
+      services/
+        ws/
+          WebSocketPool.ts
+        config.ts
+      shared/
+        error/
+          ErrorBoundary.tsx
+        layout/
+          AppLayout.tsx
+        state/
+          SettingsProvider.tsx
+        ui/
+          badge.tsx
+          button.tsx
+          card.tsx
+          theme-provider.tsx
+          theme-toggle.tsx
+      App.tsx
+      index.css
+      main.tsx
   lib/
     lightweight-charts.standalone.development.js
   public/
@@ -500,53 +548,35 @@ frontend/
     placeholder.svg
     robots.txt
   src/
-    contexts/
-      TradingContext.tsx
-    features/
-      trading/
+    config/
+      exchangeSupport.ts
+    pages/
+      CoinMonitor/
+        components/
+          AlertPanel.tsx
+        hook/
+          usePriceAlerts.ts
+        CoinMonitor.tsx
+        index.tsx
+      TradingPage/
         components/
           ChartSection.tsx
-          CoinSelector.tsx
-          PriceDisplay.tsx
-          SystemStatus.tsx
-          TimeButtons.tsx
-          TradingTerminal.tsx
-        index.ts
-    lib/
-      react-query.ts
-    pages/
-      APIPage.tsx
-      BotPage.tsx
-      BTCUSDTMonitor.tsx
-      DatabasePage.tsx
-      index.ts
-      LogsPage.tsx
-      MLPage.tsx
-      NewsPage.tsx
-      QuantumPage.tsx
-      SettingsPage.tsx
-      TradingPage.tsx
-      WhalesPage.tsx
+          OrderbookPanel.tsx
+          TradesPanel.tsx
+        index.tsx
+        TradingPage.tsx
     services/
       ws/
+        useWsLane.ts
         WebSocketPool.ts
       config.ts
     shared/
-      error/
-        ErrorBoundary.tsx
+      components/
+        PriceDisplay.tsx
       layout/
-        AppLayout.tsx
-      state/
-        SettingsProvider.tsx
-      ui/
-        badge.tsx
-        button.tsx
-        card.tsx
-        theme-provider.tsx
-        theme-toggle.tsx
+        Navigation.tsx
+        RootLayout.tsx
     App.tsx
-    index.css
-    main.tsx
   vite/
     client
   @react-refresh
@@ -69946,1148 +69976,6 @@ User-agent: *
 Allow: /
 </file>
 
-<file path="frontend/src/features/trading/components/ChartSection.tsx">
-import React from "react";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/shared/ui/resizable";
-import OrderBook from "./OrderBook";
-import ChartView from "./ChartView";
-import { MarketTrades } from "./MarketTrades";
-
-interface ChartSectionProps {
-  selectedCoin?: string;
-  selectedMarket?: string;
-  selectedInterval?: string;
-  selectedIndicators?: string[];
-  selectedExchange?: string;
-  onIndicatorRemove?: (indicator: string) => void;
-}
-
-const ChartSection = ({
-  selectedCoin = "BTC/USDT",
-  selectedMarket = "spot",
-  selectedInterval = "1m",
-  selectedIndicators = [],
-  selectedExchange = "bitget",
-  onIndicatorRemove,
-}: ChartSectionProps) => {
-  return (
-    <div className="mt-1 space-y-4">
-      <div className="h-[500px]">
-        <ResizablePanelGroup
-          direction="horizontal"
-          className="min-h-[500px] rounded-lg border"
-        >
-          {/* Chart Panel */}
-          <ResizablePanel defaultSize={75} minSize={50}>
-            <div className="h-full">
-              <ChartView
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                interval={selectedInterval}
-              />
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          {/* Right Panel - OrderBook with Tabs (like original) */}
-          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
-            <div className="h-full">
-              <OrderBook 
-                selectedCoin={selectedCoin}
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                currentPrice={104534.14}
-                onDataUpdate={(data) => {
-                  console.log("Orderbook data updated:", data);
-                }}
-                onTabChange={(tab) => {
-                  console.log("Tab changed:", tab);
-                }}
-              />
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </div>
-    </div>
-  );
-};
-
-export default ChartSection;
-</file>
-
-<file path="frontend/src/features/trading/components/TimeButtons.tsx">
-import { useState } from "react";
-import { Button } from "@/shared/ui/button";
-import IndicatorsModal from "./IndicatorsModal";
-
-interface TimeButtonsProps {
-  onIntervalChange?: (interval: string) => void;
-  onIndicatorSelect?: (indicator: string) => void;
-}
-
-const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
-  const [activeTime, setActiveTime] = useState("1m");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [selectedIntervals, setSelectedIntervals] = useState(
-    new Set(["1s", "5s", "15s", "1m", "1h"]),
-  );
-  const [isIndicatorsModalOpen, setIsIndicatorsModalOpen] = useState(false);
-  const [isGridView, setIsGridView] = useState(false);
-
-  const displayIntervals = Array.from(selectedIntervals);
-
-  const allIntervals = [
-    { label: "1s", value: "1s" },
-    { label: "5s", value: "5s" },
-    { label: "10s", value: "10s" },
-    { label: "15s", value: "15s" },
-    { label: "30s", value: "30s" },
-    { label: "1m", value: "1m" },
-    { label: "2m", value: "2m" },
-    { label: "5m", value: "5m" },
-    { label: "10m", value: "10m" },
-    { label: "15m", value: "15m" },
-    { label: "30m", value: "30m" },
-    { label: "1h", value: "1h" },
-    { label: "2h", value: "2h" },
-    { label: "4h", value: "4h" },
-    { label: "6h", value: "6h" },
-    { label: "12h", value: "12h" },
-    { label: "1d", value: "1d" },
-    { label: "1w", value: "1w" },
-    { label: "1M", value: "1M" },
-    { label: "6M", value: "6M" },
-  ];
-
-  const handleTimeSelect = (interval: string) => {
-    setActiveTime(interval);
-    setIsDropdownOpen(false);
-    
-    if (onIntervalChange) {
-      onIntervalChange(interval);
-    }
-  };
-
-  const handleEditToggle = () => {
-    setIsEditMode(!isEditMode);
-  };
-
-  const handleIntervalToggle = (interval: string) => {
-    const newSelected = new Set(selectedIntervals);
-    if (newSelected.has(interval)) {
-      newSelected.delete(interval);
-    } else {
-      newSelected.add(interval);
-    }
-    setSelectedIntervals(newSelected);
-  };
-
-  const handleSave = () => {
-    setIsEditMode(false);
-  };
-
-  const handleIndicatorSelect = (indicator: string) => {
-    if (onIndicatorSelect) {
-      onIndicatorSelect(indicator);
-    }
-  };
-
-  const handleIndicatorSave = (settings: any) => {
-    console.log('Indicator settings saved:', settings);
-    // Here you would typically apply the indicator to the chart
-    // For now, we'll just log the settings
-  };
-
-  return (
-    <div className="flex items-center gap-3 my-3 text-sm">
-      <label className="font-medium text-muted-foreground mr-2">
-        Zeit
-      </label>
-
-      {/* Display Buttons */}
-      {displayIntervals.map((interval) => (
-        <div
-          key={interval}
-          className={`cursor-pointer select-none ${
-            activeTime === interval
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-foreground hover:bg-muted/80"
-          }`}
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => handleTimeSelect(interval)}
-        >
-          {interval}
-        </div>
-      ))}
-
-      {/* Dropdown Button */}
-      <div className="relative">
-        <div
-          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            display: "flex",
-            alignItems: "center",
-            gap: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-        >
-          ▽
-        </div>
-
-        {/* Dropdown Menu */}
-        {isDropdownOpen && (
-          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-900 dark:text-white">
-                  Intervall auswählen
-                </h3>
-                <button
-                  className="text-blue-500 text-sm font-medium"
-                  onClick={isEditMode ? handleSave : handleEditToggle}
-                >
-                  {isEditMode ? "Speichern" : "Bearbeiten"}
-                </button>
-              </div>
-
-              {/* Grid of time intervals */}
-              <div className="grid grid-cols-4 gap-2">
-                {allIntervals.map((interval) => (
-                  <div
-                    key={interval.value}
-                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
-                      activeTime === interval.value && !isEditMode
-                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
-                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
-                    }`}
-                    onClick={() =>
-                      isEditMode
-                        ? handleIntervalToggle(interval.value)
-                        : handleTimeSelect(interval.value)
-                    }
-                  >
-                    {interval.label}
-
-                    {/* Checkbox in edit mode */}
-                    {isEditMode && (
-                      <div className="absolute top-1 right-1">
-                        <div
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
-                            selectedIntervals.has(interval.value)
-                              ? "bg-blue-500 text-white"
-                              : "bg-gray-300 text-gray-600"
-                          }`}
-                        >
-                          {selectedIntervals.has(interval.value) ? "✓" : ""}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Overlay to close dropdown */}
-        {isDropdownOpen && (
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setIsDropdownOpen(false)}
-          />
-        )}
-      </div>
-
-      {/* Separator */}
-      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
-
-      {/* Indicators Button */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => setIsIndicatorsModalOpen(true)}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M2 12L5 9L8 11L12 7"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 4V7H9"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span>Indikatoren</span>
-      </div>
-
-      {/* Grid View Button */}
-      <div
-        className={`cursor-pointer select-none flex items-center justify-center ${
-          isGridView
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground hover:bg-muted/80"
-        }`}
-        style={{
-          padding: "4px 8px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-          width: "28px",
-          height: "24px",
-        }}
-        onClick={() => setIsGridView(!isGridView)}
-        title="Grid View"
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <rect
-            x="1"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="1"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-        </svg>
-      </div>
-
-      {/* Alarm Button */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => {
-          console.log("Alarm clicked");
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <path
-            d="M7 4V7L9 9"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-          />
-        </svg>
-        Alarm
-      </div>
-
-      {/* Indicators Selection Modal */}
-      <IndicatorsModal 
-        isOpen={isIndicatorsModalOpen} 
-        onClose={() => setIsIndicatorsModalOpen(false)} 
-        onIndicatorSelect={handleIndicatorSelect} 
-      />
-    </div>
-  );
-};
-
-export default TimeButtons;
-</file>
-
-<file path="frontend/src/features/trading/components/TradingTerminal.tsx">
-import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Play, Save, Folder, FileText, Terminal, Code, Plus, X } from "lucide-react";
-import { Button } from "@/shared/ui/button";
-
-interface TradingTerminalProps {
-  className?: string;
-}
-
-const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState("editor");
-
-  if (!isExpanded) {
-    return (
-      <div className={className}>
-        <button
-          onClick={() => setIsExpanded(true)}
-          className="text-xs text-text-secondary hover:text-text-primary transition-colors"
-        >
-          Trading Terminal Component
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`bg-bg-secondary border border-border-color rounded-lg overflow-hidden ${className}`}>
-      <div className="flex items-center justify-between bg-bg-tertiary px-4 py-2 border-b border-border-color">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setIsExpanded(false)}
-            className="flex items-center gap-2 text-text-primary hover:text-white transition-colors"
-          >
-            <ChevronDown size={16} />
-            <span className="font-medium">Trading Terminal</span>
-          </button>
-          {/* Tabs */}
-        </div>
-        <div className="flex items-center gap-3">
-          <Button size="sm" variant="secondary"><Play size={12} className="mr-1" />Run</Button>
-          <Button size="sm"><Save size={12} className="mr-1" />Save</Button>
-        </div>
-      </div>
-      <div className="h-96">
-        {/* Placeholder for content like editor, terminal etc. */}
-        <div className="p-4 text-text-secondary text-sm">
-            Terminal content will be implemented here. This is a placeholder to ensure the layout is correct.
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default TradingTerminal;
-</file>
-
-<file path="frontend/src/lib/react-query.ts">
-import { QueryClient } from '@tanstack/react-query';
-
-/**
- * React Query Configuration
- * Enterprise-grade caching & data synchronization
- */
-export const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      // Cache-Strategie
-      staleTime: 5000, // 5s - Daten gelten als fresh
-      gcTime: 1000 * 60 * 5, // 5min - Garbage Collection
-      
-      // Retry-Budget: Smart Retry-Logic
-      retry: (failureCount, error: any) => {
-        // Keine Retries bei Rate-Limit (429)
-        if (String(error).includes('Rate limit')) {
-          return false; // BaseAPI handled 429 bereits
-        }
-        
-        // Keine Retries bei 4xx Client-Errors (außer 429)
-        if (String(error).includes('API Error: 4')) {
-          return false;
-        }
-        
-        // Max 2 Retries bei 5xx Server-Errors
-        return failureCount < 2;
-      },
-      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
-      
-      // Performance
-      refetchOnWindowFocus: false, // Kein Auto-Refetch bei Tab-Switch
-      refetchOnReconnect: true, // Refetch bei Internet-Reconnect
-      refetchOnMount: false, // Kein Auto-Refetch bei Component-Mount
-      
-      // Error Handling
-      throwOnError: false, // Errors werden im QueryResult zurückgegeben
-    },
-    mutations: {
-      retry: (failureCount, error: any) => {
-        // Keine Retries bei Rate-Limit
-        if (String(error).includes('Rate limit')) {
-          return false;
-        }
-        // Max 1 Retry bei Mutations
-        return failureCount < 1;
-      },
-      onError: (error) => {
-        console.error('[ReactQuery] Mutation failed:', error);
-      },
-    },
-  },
-});
-
-/**
- * Query Keys Factory
- * Zentrale Verwaltung aller Query Keys für Type-Safety
- */
-export const queryKeys = {
-  // Trading
-  orderBook: (exchange: string, symbol: string, market: string) =>
-    ['orderbook', exchange, symbol, market] as const,
-  
-  trades: (exchange: string, symbol: string, market: string) =>
-    ['trades', exchange, symbol, market] as const,
-  
-  ticker: (exchange: string, symbol?: string) =>
-    ['ticker', exchange, symbol] as const,
-  
-  symbols: (exchange: string) =>
-    ['symbols', exchange] as const,
-  
-  // Chart
-  chartHistory: (symbol: string, exchange: string, interval: string) =>
-    ['chart', 'history', symbol, exchange, interval] as const,
-  
-  // Market
-  health: () => ['health'] as const,
-  metrics: () => ['metrics'] as const,
-  
-  // Whales
-  whaleRecent: (limit: number, hours: number) =>
-    ['whales', 'recent', limit, hours] as const,
-  
-  whaleStatistics: (days: number) =>
-    ['whales', 'statistics', days] as const,
-  
-  // Settings
-  settings: (key: string) =>
-    ['settings', key] as const,
-} as const;
-</file>
-
-<file path="frontend/src/pages/BotPage.tsx">
-const BotPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-foreground mb-2">Trading Bot</h1>
-        <p className="text-muted-foreground">Configure and monitor your automated trading strategies.</p>
-      </div>
-      
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="text-center text-muted-foreground">
-          <div className="text-4xl mb-4">🤖</div>
-          <h2 className="text-xl font-semibold mb-2">Trading Bot Configuration</h2>
-          <p>Bot management interface coming soon...</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default BotPage;
-</file>
-
-<file path="frontend/src/pages/index.ts">
-export { default as TradingPage } from './TradingPage';
-export { default as QuantumPage } from './QuantumPage';
-export { default as BotPage } from './BotPage';
-export { default as MLPage } from './MLPage';
-export { default as DatabasePage } from './DatabasePage';
-export { default as WhalesPage } from './WhalesPage';
-export { default as NewsPage } from './NewsPage';
-export { default as APIPage } from './APIPage';
-export { default as SettingsPage } from './SettingsPage';
-</file>
-
-<file path="frontend/src/pages/MLPage.tsx">
-const MLPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-foreground mb-2">Machine Learning</h1>
-        <p className="text-muted-foreground">AI-powered trading analytics and predictive models.</p>
-      </div>
-      
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="text-center text-muted-foreground">
-          <div className="text-4xl mb-4">🧠</div>
-          <h2 className="text-xl font-semibold mb-2">ML Analytics Dashboard</h2>
-          <p>Machine learning models and predictions coming soon...</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default MLPage;
-</file>
-
-<file path="frontend/src/pages/NewsPage.tsx">
-const NewsPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-foreground mb-2">News</h1>
-        <p className="text-muted-foreground">Market news, sentiment analysis, and trading insights.</p>
-      </div>
-      
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="text-center text-muted-foreground">
-          <div className="text-4xl mb-4">📰</div>
-          <h2 className="text-xl font-semibold mb-2">News & Sentiment Analysis</h2>
-          <p>Market news aggregation and sentiment tracking coming soon...</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default NewsPage;
-</file>
-
-<file path="frontend/src/pages/QuantumPage.tsx">
-import { QuantumScreener } from "../features/quantum";
-
-const QuantumPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <QuantumScreener />
-    </div>
-  );
-};
-
-export default QuantumPage;
-</file>
-
-<file path="frontend/src/pages/SettingsPage.tsx">
-const SettingsPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-foreground mb-2">Settings</h1>
-        <p className="text-muted-foreground">Application settings and configuration options.</p>
-      </div>
-      
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="text-center text-muted-foreground">
-          <div className="text-4xl mb-4">⚙️</div>
-          <h2 className="text-xl font-semibold mb-2">Application Settings</h2>
-          <p>Settings and configuration panel coming soon...</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default SettingsPage;
-</file>
-
-<file path="frontend/src/pages/WhalesPage.tsx">
-const WhalesPage = () => {
-  return (
-    <div className="px-6 py-5">
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-foreground mb-2">Whales</h1>
-        <p className="text-muted-foreground">Large wallet tracking and whale movement analysis.</p>
-      </div>
-      
-      <div className="bg-card border border-border rounded-lg p-6">
-        <div className="text-center text-muted-foreground">
-          <div className="text-4xl mb-4">🐋</div>
-          <h2 className="text-xl font-semibold mb-2">Whale Tracking Dashboard</h2>
-          <p>Whale movement monitoring and analysis coming soon...</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default WhalesPage;
-</file>
-
-<file path="frontend/src/shared/error/ErrorBoundary.tsx">
-import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { Button } from '../ui/button';
-import { Alert } from '../ui/alert';
-
-interface Props {
-  children: ReactNode;
-  fallback?: ReactNode;
-}
-
-interface State {
-  hasError: boolean;
-  error: Error | null;
-  errorInfo: ErrorInfo | null;
-}
-
-/**
- * Global ErrorBoundary Component
- * Fängt React-Fehler und zeigt User-friendly Error-UI
- * 
- * Usage:
- * <ErrorBoundary>
- *   <App />
- * </ErrorBoundary>
- */
-export class ErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
-    super(props);
-    this.state = {
-      hasError: false,
-      error: null,
-      errorInfo: null
-    };
-  }
-
-  static getDerivedStateFromError(error: Error): Partial<State> {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    // Log zu Console (Production: Sentry/LogRocket)
-    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
-    
-    this.setState({
-      error,
-      errorInfo
-    });
-
-    // Optional: Senden an Error-Tracking-Service
-    if ((import.meta as any).env.PROD) {
-      this.reportError(error, errorInfo);
-    }
-  }
-
-  private reportError(error: Error, errorInfo: ErrorInfo) {
-    // TODO: Sentry Integration
-    // Sentry.captureException(error, { extra: errorInfo });
-  }
-
-  private handleReset = () => {
-    this.setState({
-      hasError: false,
-      error: null,
-      errorInfo: null
-    });
-  };
-
-  private handleReload = () => {
-    window.location.reload();
-  };
-
-  render() {
-    if (this.state.hasError) {
-      // Custom Fallback UI wenn vorhanden
-      if (this.props.fallback) {
-        return this.props.fallback;
-      }
-
-      // Default Error UI
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-background p-4">
-          <div className="max-w-2xl w-full space-y-4">
-            <Alert variant="destructive">
-              <h2 className="text-xl font-bold mb-2">
-                Etwas ist schiefgelaufen
-              </h2>
-              <p className="text-sm text-muted-foreground mb-4">
-                Die Anwendung ist auf einen unerwarteten Fehler gestoßen. 
-                Bitte versuchen Sie, die Seite neu zu laden.
-              </p>
-            </Alert>
-
-            {(import.meta as any).env.DEV && this.state.error && (
-              <div className="bg-muted p-4 rounded-lg">
-                <h3 className="text-sm font-semibold mb-2">Error Details (DEV only):</h3>
-                <pre className="text-xs overflow-auto max-h-48">
-                  {this.state.error.toString()}
-                  {this.state.errorInfo && (
-                    <>
-                      {'\n\n'}
-                      {this.state.errorInfo.componentStack}
-                    </>
-                  )}
-                </pre>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <Button onClick={this.handleReset} variant="outline">
-                Erneut versuchen
-              </Button>
-              <Button onClick={this.handleReload}>
-                Seite neu laden
-              </Button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-</file>
-
-<file path="frontend/src/shared/ui/theme-provider.tsx">
-import { ReactNode } from "react";
-import { ThemeProviderContext, useThemeLogic } from "../../hooks/use-theme";
-
-interface ThemeProviderProps {
-  children: ReactNode;
-}
-
-const ThemeProvider = ({ children }: ThemeProviderProps) => {
-  const themeLogic = useThemeLogic();
-
-  return (
-    <ThemeProviderContext.Provider value={themeLogic}>
-      {children}
-    </ThemeProviderContext.Provider>
-  );
-};
-
-export default ThemeProvider;
-</file>
-
-<file path="frontend/src/shared/ui/theme-toggle.tsx">
-import { useTheme } from "../../hooks/use-theme";
-
-const ThemeToggle = () => {
-  const { theme, setTheme } = useTheme();
-
-  const toggleTheme = () => {
-    switch (theme) {
-      case "light":
-        setTheme("dark");
-        break;
-      case "dark":
-        setTheme("system");
-        break;
-      case "system":
-        setTheme("light");
-        break;
-    }
-  };
-
-  const getIcon = () => {
-    switch (theme) {
-      case "light":
-        return (
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <circle
-              cx="12"
-              cy="12"
-              r="5"
-              stroke="currentColor"
-              strokeWidth="2"
-            />
-            <path
-              d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
-              stroke="currentColor"
-              strokeWidth="2"
-            />
-          </svg>
-        );
-      case "dark":
-        return (
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"
-              stroke="currentColor"
-              strokeWidth="2"
-              fill="currentColor"
-            />
-          </svg>
-        );
-      case "system":
-        return (
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <rect
-              x="2"
-              y="4"
-              width="20"
-              height="14"
-              rx="2"
-              stroke="currentColor"
-              strokeWidth="2"
-            />
-            <path d="M8 20h8" stroke="currentColor" strokeWidth="2" />
-            <path d="M12 16v4" stroke="currentColor" strokeWidth="2" />
-          </svg>
-        );
-    }
-  };
-
-  const getTooltip = () => {
-    switch (theme) {
-      case "light":
-        return "Hell-Modus";
-      case "dark":
-        return "Dunkel-Modus";
-      case "system":
-        return "System-Modus";
-    }
-  };
-
-  return (
-    <button
-      onClick={toggleTheme}
-      className={`px-3 py-1.5 rounded font-medium transition-colors ${"text-foreground hover:bg-muted"}`}
-      title={getTooltip()}
-      aria-label={`Aktueller Modus: ${getTooltip()}. Klicken zum Wechseln.`}
-    >
-      {getIcon()}
-    </button>
-  );
-};
-
-export default ThemeToggle;
-</file>
-
-<file path="frontend/src/index.css">
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@layer base {
-  /**
-   * Tailwind CSS theme
-   * tailwind.config.ts expects the following color variables to be expressed as HSL values.
-   * A different format will require also updating the theme in tailwind.config.ts.
-  */
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-
-    /* Status Colors für Ampelsystem */
-    --status-success: 142.1 76.2% 36.3%; /* Grün für < 5ms */
-    --status-success-foreground: 355.7 100% 97.3%;
-    --status-warning: 47.9 95.8% 53.1%; /* Orange für 5-39ms */
-    --status-warning-foreground: 26 83.3% 14.1%;
-    --status-error: 0 84.2% 60.2%; /* Rot für > 39ms */
-    --status-error-foreground: 210 40% 98%;
-    
-    /* Status Background Colors */
-    --status-success-bg: 143 85% 96%;
-    --status-warning-bg: 48 100% 96%;
-    --status-error-bg: 0 86% 97%;
-    
-    /* Status Border Colors */
-    --status-success-border: 145 79% 85%;
-    --status-warning-border: 48 96% 89%;
-    --status-error-border: 0 79% 86%;
-
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-
-    --radius: 0.5rem;
-
-    --sidebar-background: 0 0% 98%;
-
-    --sidebar-foreground: 240 5.3% 26.1%;
-
-    --sidebar-primary: 240 5.9% 10%;
-
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    /* Status Colors für Ampelsystem - Dark Mode */
-    --status-success: 142.1 70.6% 45.3%; /* Grün für Dark Mode */
-    --status-success-foreground: 144.9 80.4% 10%;
-    --status-warning: 47.9 95.8% 53.1%; /* Orange für Dark Mode */
-    --status-warning-foreground: 26 83.3% 14.1%;
-    --status-error: 0 72.2% 50.6%; /* Rot für Dark Mode */
-    --status-error-foreground: 210 40% 98%;
-    
-    /* Status Background Colors - Dark Mode */
-    --status-success-bg: 144 61% 9%;
-    --status-warning-bg: 48 100% 4%;
-    --status-error-bg: 0 43% 7%;
-    
-    /* Status Border Colors - Dark Mode */
-    --status-success-border: 145 79% 16%;
-    --status-warning-border: 48 96% 15%;
-    --status-error-border: 0 79% 17%;
-
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
-  }
-}
-
-@layer base {
-  * {
-    @apply border-border;
-  }
-
-  body {
-    @apply bg-background text-foreground;
-  }
-}
-</file>
-
 <file path="frontend/vite/client">
 import "/node_modules/vite/dist/client/env.mjs";
 
@@ -100280,7 +99168,166 @@ export function VirtualizedList<T>({
 }
 </file>
 
-<file path="frontend/src/features/trading/components/CoinSelector.tsx">
+<file path="frontend/delete/src/contexts/TradingContext.tsx">
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { MarketType } from '../config/exchangeSupport';
+import { getDefaultExchange, getDefaultMarketType } from '../../src/services/config';
+
+interface TradingContextType {
+  selectedExchange: string;
+  selectedMarket: MarketType;
+  setSelectedExchange: (exchange: string) => void;
+  setSelectedMarket: (market: MarketType) => void;
+}
+
+// ✅ Temporäre Defaults aus ENV (bis Backend geladen ist)
+const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance';
+const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || 'spot';
+
+const TradingContext = createContext<TradingContextType>({
+  selectedExchange: TEMP_DEFAULT_EXCHANGE,
+  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
+  setSelectedExchange: () => {},
+  setSelectedMarket: () => {},
+});
+
+interface TradingProviderProps {
+  children: ReactNode;
+}
+
+export const TradingProvider = ({ children }: TradingProviderProps) => {
+  const [selectedExchange, setSelectedExchange] = useState(TEMP_DEFAULT_EXCHANGE);
+  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // ✅ Lade Defaults vom Backend beim Start
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        const [exchange, market] = await Promise.all([
+          getDefaultExchange(),
+          getDefaultMarketType()
+        ]);
+        setSelectedExchange(exchange);
+        setSelectedMarket(market as MarketType);
+        console.log(`[TradingContext] Loaded defaults from backend: ${exchange} / ${market}`);
+      } catch (error) {
+        console.error('[TradingContext] Failed to load defaults, using fallbacks:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadDefaults();
+  }, []);
+
+  if (isLoading) {
+    // Optional: Loading-Spinner hier rendern
+    return <>{children}</>; // oder ein Loading-Wrapper
+  }
+
+  return (
+    <TradingContext.Provider
+      value={{
+        selectedExchange,
+        selectedMarket,
+        setSelectedExchange,
+        setSelectedMarket,
+      }}
+    >
+      {children}
+    </TradingContext.Provider>
+  );
+};
+
+export const useTradingContext = () => {
+  const context = useContext(TradingContext);
+  if (!context) {
+    throw new Error('useTradingContext must be used within a TradingProvider');
+  }
+  return context;
+};
+
+export { TradingContext };
+</file>
+
+<file path="frontend/delete/src/features/trading/components/ChartSection.tsx">
+import React from "react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/shared/ui/resizable";
+import OrderBook from "./OrderBook";
+import ChartView from "./ChartView";
+import { MarketTrades } from "./MarketTrades";
+
+interface ChartSectionProps {
+  selectedCoin?: string;
+  selectedMarket?: string;
+  selectedInterval?: string;
+  selectedIndicators?: string[];
+  selectedExchange?: string;
+  onIndicatorRemove?: (indicator: string) => void;
+}
+
+const ChartSection = ({
+  selectedCoin = "BTC/USDT",
+  selectedMarket = "spot",
+  selectedInterval = "1m",
+  selectedIndicators = [],
+  selectedExchange = "bitget",
+  onIndicatorRemove,
+}: ChartSectionProps) => {
+  return (
+    <div className="mt-1 space-y-4">
+      <div className="h-[500px]">
+        <ResizablePanelGroup
+          direction="horizontal"
+          className="min-h-[500px] rounded-lg border"
+        >
+          {/* Chart Panel */}
+          <ResizablePanel defaultSize={75} minSize={50}>
+            <div className="h-full">
+              <ChartView
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                interval={selectedInterval}
+              />
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Right Panel - OrderBook with Tabs (like original) */}
+          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
+            <div className="h-full">
+              <OrderBook 
+                selectedCoin={selectedCoin}
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                currentPrice={104534.14}
+                onDataUpdate={(data) => {
+                  console.log("Orderbook data updated:", data);
+                }}
+                onTabChange={(tab) => {
+                  console.log("Tab changed:", tab);
+                }}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
+    </div>
+  );
+};
+
+export default ChartSection;
+</file>
+
+<file path="frontend/delete/src/features/trading/components/CoinSelector.tsx">
 import React, { useState, useEffect, useMemo } from 'react';
 import { Search, RefreshCw, Settings } from 'lucide-react';
 import { CoinSetting, saveSettings, getSettings } from '../../../shared/api/trading';
@@ -100648,7 +99695,7 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 export default CoinSelector;
 </file>
 
-<file path="frontend/src/features/trading/components/PriceDisplay.tsx">
+<file path="frontend/delete/src/features/trading/components/PriceDisplay.tsx">
 import { useState, useEffect } from "react";
 import { CoinData, MarketData } from '../types/trading';
 
@@ -100781,7 +99828,458 @@ const PriceDisplay = ({
 export default PriceDisplay;
 </file>
 
-<file path="frontend/src/features/trading/index.ts">
+<file path="frontend/delete/src/features/trading/components/SystemStatus.tsx">
+import React from 'react';
+
+const SystemStatus: React.FC = () => {
+  // Simplified: Just show a basic status indicator
+  const backendStatus = 'online'; // TODO: Add real health check later
+  const healthStatus = 'unknown';
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
+      <div className="flex items-center gap-1">
+        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
+        <span className="text-[hsl(var(--status-success))] font-medium">
+          System {backendStatus}
+        </span>
+        <span className="text-muted-foreground ml-2">
+          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
+export default SystemStatus;
+</file>
+
+<file path="frontend/delete/src/features/trading/components/TimeButtons.tsx">
+import { useState } from "react";
+import { Button } from "@/shared/ui/button";
+import IndicatorsModal from "./IndicatorsModal";
+
+interface TimeButtonsProps {
+  onIntervalChange?: (interval: string) => void;
+  onIndicatorSelect?: (indicator: string) => void;
+}
+
+const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
+  const [activeTime, setActiveTime] = useState("1m");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIntervals, setSelectedIntervals] = useState(
+    new Set(["1s", "5s", "15s", "1m", "1h"]),
+  );
+  const [isIndicatorsModalOpen, setIsIndicatorsModalOpen] = useState(false);
+  const [isGridView, setIsGridView] = useState(false);
+
+  const displayIntervals = Array.from(selectedIntervals);
+
+  const allIntervals = [
+    { label: "1s", value: "1s" },
+    { label: "5s", value: "5s" },
+    { label: "10s", value: "10s" },
+    { label: "15s", value: "15s" },
+    { label: "30s", value: "30s" },
+    { label: "1m", value: "1m" },
+    { label: "2m", value: "2m" },
+    { label: "5m", value: "5m" },
+    { label: "10m", value: "10m" },
+    { label: "15m", value: "15m" },
+    { label: "30m", value: "30m" },
+    { label: "1h", value: "1h" },
+    { label: "2h", value: "2h" },
+    { label: "4h", value: "4h" },
+    { label: "6h", value: "6h" },
+    { label: "12h", value: "12h" },
+    { label: "1d", value: "1d" },
+    { label: "1w", value: "1w" },
+    { label: "1M", value: "1M" },
+    { label: "6M", value: "6M" },
+  ];
+
+  const handleTimeSelect = (interval: string) => {
+    setActiveTime(interval);
+    setIsDropdownOpen(false);
+    
+    if (onIntervalChange) {
+      onIntervalChange(interval);
+    }
+  };
+
+  const handleEditToggle = () => {
+    setIsEditMode(!isEditMode);
+  };
+
+  const handleIntervalToggle = (interval: string) => {
+    const newSelected = new Set(selectedIntervals);
+    if (newSelected.has(interval)) {
+      newSelected.delete(interval);
+    } else {
+      newSelected.add(interval);
+    }
+    setSelectedIntervals(newSelected);
+  };
+
+  const handleSave = () => {
+    setIsEditMode(false);
+  };
+
+  const handleIndicatorSelect = (indicator: string) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator);
+    }
+  };
+
+  const handleIndicatorSave = (settings: any) => {
+    console.log('Indicator settings saved:', settings);
+    // Here you would typically apply the indicator to the chart
+    // For now, we'll just log the settings
+  };
+
+  return (
+    <div className="flex items-center gap-3 my-3 text-sm">
+      <label className="font-medium text-muted-foreground mr-2">
+        Zeit
+      </label>
+
+      {/* Display Buttons */}
+      {displayIntervals.map((interval) => (
+        <div
+          key={interval}
+          className={`cursor-pointer select-none ${
+            activeTime === interval
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-foreground hover:bg-muted/80"
+          }`}
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => handleTimeSelect(interval)}
+        >
+          {interval}
+        </div>
+      ))}
+
+      {/* Dropdown Button */}
+      <div className="relative">
+        <div
+          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+        >
+          ▽
+        </div>
+
+        {/* Dropdown Menu */}
+        {isDropdownOpen && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  Intervall auswählen
+                </h3>
+                <button
+                  className="text-blue-500 text-sm font-medium"
+                  onClick={isEditMode ? handleSave : handleEditToggle}
+                >
+                  {isEditMode ? "Speichern" : "Bearbeiten"}
+                </button>
+              </div>
+
+              {/* Grid of time intervals */}
+              <div className="grid grid-cols-4 gap-2">
+                {allIntervals.map((interval) => (
+                  <div
+                    key={interval.value}
+                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
+                      activeTime === interval.value && !isEditMode
+                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                    onClick={() =>
+                      isEditMode
+                        ? handleIntervalToggle(interval.value)
+                        : handleTimeSelect(interval.value)
+                    }
+                  >
+                    {interval.label}
+
+                    {/* Checkbox in edit mode */}
+                    {isEditMode && (
+                      <div className="absolute top-1 right-1">
+                        <div
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
+                            selectedIntervals.has(interval.value)
+                              ? "bg-blue-500 text-white"
+                              : "bg-gray-300 text-gray-600"
+                          }`}
+                        >
+                          {selectedIntervals.has(interval.value) ? "✓" : ""}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Overlay to close dropdown */}
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsDropdownOpen(false)}
+          />
+        )}
+      </div>
+
+      {/* Separator */}
+      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+
+      {/* Indicators Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => setIsIndicatorsModalOpen(true)}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M2 12L5 9L8 11L12 7"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 4V7H9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Indikatoren</span>
+      </div>
+
+      {/* Grid View Button */}
+      <div
+        className={`cursor-pointer select-none flex items-center justify-center ${
+          isGridView
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-foreground hover:bg-muted/80"
+        }`}
+        style={{
+          padding: "4px 8px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+          width: "28px",
+          height: "24px",
+        }}
+        onClick={() => setIsGridView(!isGridView)}
+        title="Grid View"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <rect
+            x="1"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="1"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      {/* Alarm Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => {
+          console.log("Alarm clicked");
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <path
+            d="M7 4V7L9 9"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+          />
+        </svg>
+        Alarm
+      </div>
+
+      {/* Indicators Selection Modal */}
+      <IndicatorsModal 
+        isOpen={isIndicatorsModalOpen} 
+        onClose={() => setIsIndicatorsModalOpen(false)} 
+        onIndicatorSelect={handleIndicatorSelect} 
+      />
+    </div>
+  );
+};
+
+export default TimeButtons;
+</file>
+
+<file path="frontend/delete/src/features/trading/components/TradingTerminal.tsx">
+import { useState, useRef, useEffect } from "react";
+import { ChevronDown, Play, Save, Folder, FileText, Terminal, Code, Plus, X } from "lucide-react";
+import { Button } from "@/shared/ui/button";
+
+interface TradingTerminalProps {
+  className?: string;
+}
+
+const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState("editor");
+
+  if (!isExpanded) {
+    return (
+      <div className={className}>
+        <button
+          onClick={() => setIsExpanded(true)}
+          className="text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          Trading Terminal Component
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`bg-bg-secondary border border-border-color rounded-lg overflow-hidden ${className}`}>
+      <div className="flex items-center justify-between bg-bg-tertiary px-4 py-2 border-b border-border-color">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIsExpanded(false)}
+            className="flex items-center gap-2 text-text-primary hover:text-white transition-colors"
+          >
+            <ChevronDown size={16} />
+            <span className="font-medium">Trading Terminal</span>
+          </button>
+          {/* Tabs */}
+        </div>
+        <div className="flex items-center gap-3">
+          <Button size="sm" variant="secondary"><Play size={12} className="mr-1" />Run</Button>
+          <Button size="sm"><Save size={12} className="mr-1" />Save</Button>
+        </div>
+      </div>
+      <div className="h-96">
+        {/* Placeholder for content like editor, terminal etc. */}
+        <div className="p-4 text-text-secondary text-sm">
+            Terminal content will be implemented here. This is a placeholder to ensure the layout is correct.
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TradingTerminal;
+</file>
+
+<file path="frontend/delete/src/features/trading/index.ts">
 export { default as PriceDisplay } from './components/PriceDisplay';
 export { default as CoinSelector } from './components/CoinSelector';
 export { default as TradingTerminal } from './components/TradingTerminal';
@@ -100790,7 +100288,101 @@ export { default as ChartSection } from './components/ChartSection';
 export { default as SystemStatus } from './components/SystemStatus';
 </file>
 
-<file path="frontend/src/pages/APIPage.tsx">
+<file path="frontend/delete/src/lib/react-query.ts">
+import { QueryClient } from '@tanstack/react-query';
+
+/**
+ * React Query Configuration
+ * Enterprise-grade caching & data synchronization
+ */
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Cache-Strategie
+      staleTime: 5000, // 5s - Daten gelten als fresh
+      gcTime: 1000 * 60 * 5, // 5min - Garbage Collection
+      
+      // Retry-Budget: Smart Retry-Logic
+      retry: (failureCount, error: any) => {
+        // Keine Retries bei Rate-Limit (429)
+        if (String(error).includes('Rate limit')) {
+          return false; // BaseAPI handled 429 bereits
+        }
+        
+        // Keine Retries bei 4xx Client-Errors (außer 429)
+        if (String(error).includes('API Error: 4')) {
+          return false;
+        }
+        
+        // Max 2 Retries bei 5xx Server-Errors
+        return failureCount < 2;
+      },
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      
+      // Performance
+      refetchOnWindowFocus: false, // Kein Auto-Refetch bei Tab-Switch
+      refetchOnReconnect: true, // Refetch bei Internet-Reconnect
+      refetchOnMount: false, // Kein Auto-Refetch bei Component-Mount
+      
+      // Error Handling
+      throwOnError: false, // Errors werden im QueryResult zurückgegeben
+    },
+    mutations: {
+      retry: (failureCount, error: any) => {
+        // Keine Retries bei Rate-Limit
+        if (String(error).includes('Rate limit')) {
+          return false;
+        }
+        // Max 1 Retry bei Mutations
+        return failureCount < 1;
+      },
+      onError: (error) => {
+        console.error('[ReactQuery] Mutation failed:', error);
+      },
+    },
+  },
+});
+
+/**
+ * Query Keys Factory
+ * Zentrale Verwaltung aller Query Keys für Type-Safety
+ */
+export const queryKeys = {
+  // Trading
+  orderBook: (exchange: string, symbol: string, market: string) =>
+    ['orderbook', exchange, symbol, market] as const,
+  
+  trades: (exchange: string, symbol: string, market: string) =>
+    ['trades', exchange, symbol, market] as const,
+  
+  ticker: (exchange: string, symbol?: string) =>
+    ['ticker', exchange, symbol] as const,
+  
+  symbols: (exchange: string) =>
+    ['symbols', exchange] as const,
+  
+  // Chart
+  chartHistory: (symbol: string, exchange: string, interval: string) =>
+    ['chart', 'history', symbol, exchange, interval] as const,
+  
+  // Market
+  health: () => ['health'] as const,
+  metrics: () => ['metrics'] as const,
+  
+  // Whales
+  whaleRecent: (limit: number, hours: number) =>
+    ['whales', 'recent', limit, hours] as const,
+  
+  whaleStatistics: (days: number) =>
+    ['whales', 'statistics', days] as const,
+  
+  // Settings
+  settings: (key: string) =>
+    ['settings', key] as const,
+} as const;
+</file>
+
+<file path="frontend/delete/src/pages/APIPage.tsx">
 import React from 'react';
 import APIMain from '../features/api/components/APIMain';
 
@@ -100801,7 +100393,119 @@ export const APIPage: React.FC = () => {
 export default APIPage;
 </file>
 
-<file path="frontend/src/pages/DatabasePage.tsx">
+<file path="frontend/delete/src/pages/BotPage.tsx">
+const BotPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-foreground mb-2">Trading Bot</h1>
+        <p className="text-muted-foreground">Configure and monitor your automated trading strategies.</p>
+      </div>
+      
+      <div className="bg-card border border-border rounded-lg p-6">
+        <div className="text-center text-muted-foreground">
+          <div className="text-4xl mb-4">🤖</div>
+          <h2 className="text-xl font-semibold mb-2">Trading Bot Configuration</h2>
+          <p>Bot management interface coming soon...</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default BotPage;
+</file>
+
+<file path="frontend/delete/src/pages/BTCUSDTMonitor.tsx">
+import React, { useMemo } from "react";
+import { useLiveTrades } from "../hooks/useLiveTrades";
+import { useLiveCandles } from "../hooks/useLiveCandles";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1s";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
+      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
+        BTCUSDT Live Monitor (Hooks-only)
+      </h1>
+
+      <div style={{ marginBottom: 12, opacity: 0.85 }}>
+        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+      </div>
+
+      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
+          <thead>
+            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
+              <th style={{ padding: 10 }}>Exchange</th>
+              <th style={{ padding: 10 }}>WS</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
+              <th style={{ padding: 10 }}>Side</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
+        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
+          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
+  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
+
+  return (
+    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
+      <td style={{ padding: 10 }}>{status}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
+      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
+      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
+        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
+      </td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
+    </tr>
+  );
+}
+</file>
+
+<file path="frontend/delete/src/pages/DatabasePage.tsx">
 import { useState, useEffect } from "react";
 import ThemeProvider from "../shared/ui/theme-provider";
 import ThemeToggle from "../shared/ui/theme-toggle";
@@ -101205,7 +100909,19 @@ const DatabasePage = ({ onBackToTrading }: DatabaseProps = {}) => {
 export default DatabasePage;
 </file>
 
-<file path="frontend/src/pages/LogsPage.tsx">
+<file path="frontend/delete/src/pages/index.ts">
+export { default as TradingPage } from './TradingPage';
+export { default as QuantumPage } from './QuantumPage';
+export { default as BotPage } from './BotPage';
+export { default as MLPage } from './MLPage';
+export { default as DatabasePage } from './DatabasePage';
+export { default as WhalesPage } from './WhalesPage';
+export { default as NewsPage } from './NewsPage';
+export { default as APIPage } from './APIPage';
+export { default as SettingsPage } from './SettingsPage';
+</file>
+
+<file path="frontend/delete/src/pages/LogsPage.tsx">
 import { useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../shared/ui/card";
 import { Button } from "../shared/ui/button";
@@ -101987,7 +101703,453 @@ const LogsPage = () => {
 export default LogsPage;
 </file>
 
-<file path="frontend/src/services/config.ts">
+<file path="frontend/delete/src/pages/MLPage.tsx">
+const MLPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-foreground mb-2">Machine Learning</h1>
+        <p className="text-muted-foreground">AI-powered trading analytics and predictive models.</p>
+      </div>
+      
+      <div className="bg-card border border-border rounded-lg p-6">
+        <div className="text-center text-muted-foreground">
+          <div className="text-4xl mb-4">🧠</div>
+          <h2 className="text-xl font-semibold mb-2">ML Analytics Dashboard</h2>
+          <p>Machine learning models and predictions coming soon...</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MLPage;
+</file>
+
+<file path="frontend/delete/src/pages/NewsPage.tsx">
+const NewsPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-foreground mb-2">News</h1>
+        <p className="text-muted-foreground">Market news, sentiment analysis, and trading insights.</p>
+      </div>
+      
+      <div className="bg-card border border-border rounded-lg p-6">
+        <div className="text-center text-muted-foreground">
+          <div className="text-4xl mb-4">📰</div>
+          <h2 className="text-xl font-semibold mb-2">News & Sentiment Analysis</h2>
+          <p>Market news aggregation and sentiment tracking coming soon...</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default NewsPage;
+</file>
+
+<file path="frontend/delete/src/pages/QuantumPage.tsx">
+import { QuantumScreener } from "../features/quantum";
+
+const QuantumPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <QuantumScreener />
+    </div>
+  );
+};
+
+export default QuantumPage;
+</file>
+
+<file path="frontend/delete/src/pages/SettingsPage.tsx">
+const SettingsPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-foreground mb-2">Settings</h1>
+        <p className="text-muted-foreground">Application settings and configuration options.</p>
+      </div>
+      
+      <div className="bg-card border border-border rounded-lg p-6">
+        <div className="text-center text-muted-foreground">
+          <div className="text-4xl mb-4">⚙️</div>
+          <h2 className="text-xl font-semibold mb-2">Application Settings</h2>
+          <p>Settings and configuration panel coming soon...</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SettingsPage;
+</file>
+
+<file path="frontend/delete/src/pages/TradingPage.tsx">
+import { useState, useMemo } from "react";
+import {
+  PriceDisplay,
+  CoinSelector,
+  TradingTerminal
+} from "../features/trading";
+import TimeButtons from "../features/trading/components/TimeButtons";
+import ChartSection from "../features/trading/components/ChartSection";
+import SystemStatus from "../features/trading/components/SystemStatus";
+import { useTradingContext } from "../contexts/TradingContext";
+import { getMarketFilter } from '../config/exchangeSupport';
+
+const TradingPage = () => {
+  const { selectedExchange, selectedMarket } = useTradingContext();
+  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
+  const [selectedInterval, setSelectedInterval] = useState("1m");
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+
+  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
+
+  const currentCoinData = useMemo(() => ({
+    id: selectedCoin,
+    symbol: selectedCoin,
+    market: marketFilter,
+    price: "0.00",
+    change: "0.00",
+    changePercent: 0,
+    isFavorite: false,
+    liveStatus: "green" as const,
+    histStatus: "green" as const
+  }), [selectedCoin, marketFilter]);
+
+  const marketData = {
+    price: 0,
+    change24h: "0.00",
+    changePercent: 0,
+    high24h: "0.00",
+    low24h: "0.00",
+    volume24h: "0.00",
+    turnover24h: "0.00",
+
+  };
+
+  return (
+    <div className="px-6 py-5">
+      {/* Market & Price Section */}
+      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
+        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
+          <CoinSelector
+            selectedSymbol={selectedCoin}
+            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
+            exchange={selectedExchange}
+            selectedMarket={selectedMarket}
+          />
+        </div>
+
+        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
+          <PriceDisplay
+            currentCoinData={currentCoinData}
+            marketData={marketData}
+            tradingMode={selectedMarket}
+          />
+        </div>
+      </div>
+
+      {/* Time Buttons */}
+      <TimeButtons 
+        onIntervalChange={setSelectedInterval}
+        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
+          prev.includes(indicator) ? prev : [...prev, indicator]
+        )}
+      />
+
+      {/* Main Content: Multi-Chart + Orderbook */}
+      <ChartSection 
+        selectedCoin={selectedCoin}
+        selectedMarket={marketFilter}
+        selectedInterval={selectedInterval}
+        selectedIndicators={selectedIndicators}
+        selectedExchange={selectedExchange}
+        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
+          prev.filter(i => i !== indicator)
+        )}
+      />
+
+      {/* Trading Terminal */}
+      <div className="mt-4 space-y-2">
+        <TradingTerminal />
+      </div>
+
+      {/* System Status */}
+      <SystemStatus />
+    </div>
+  );
+};
+
+export default TradingPage;
+</file>
+
+<file path="frontend/delete/src/pages/WhalesPage.tsx">
+const WhalesPage = () => {
+  return (
+    <div className="px-6 py-5">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-foreground mb-2">Whales</h1>
+        <p className="text-muted-foreground">Large wallet tracking and whale movement analysis.</p>
+      </div>
+      
+      <div className="bg-card border border-border rounded-lg p-6">
+        <div className="text-center text-muted-foreground">
+          <div className="text-4xl mb-4">🐋</div>
+          <h2 className="text-xl font-semibold mb-2">Whale Tracking Dashboard</h2>
+          <p>Whale movement monitoring and analysis coming soon...</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default WhalesPage;
+</file>
+
+<file path="frontend/delete/src/services/ws/WebSocketPool.ts">
+// src/services/ws/WebSocketPool.ts
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+
+export type WsMsg =
+  | {
+      type: "trade";
+      exchange: string;
+      symbol: string;
+      market?: string;
+      price?: number | string;
+      size?: number | string;
+      side?: string;
+      ts?: number | string;
+      [k: string]: any;
+    }
+  | {
+      type: "candle";
+      exchange: string;
+      symbol: string;
+      market?: string;
+      interval?: string;
+      t?: number | string;
+      o?: number | string;
+      h?: number | string;
+      l?: number | string;
+      c?: number | string;
+      v?: number | string;
+      [k: string]: any;
+    }
+  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
+
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (status: WsStatus) => void;
+
+type ConnKey = string; // `${exchange}:${symbol}:${market}`
+type Conn = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+  ws: WebSocket | null;
+  status: WsStatus;
+
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
+
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
+
+function mkKey(exchange: string, symbol: string, market: string): ConnKey {
+  return `${exchange}:${symbol}:${market}`;
+}
+
+// SAME-ORIGIN WS: ws(s)://{current-host}/ws/...
+function wsUrlFor(exchange: string, symbol: string, market: string) {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(
+    symbol
+  )}/${encodeURIComponent(market)}`;
+}
+
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _instance: WebSocketPool | null = null;
+  static get instance(): WebSocketPool {
+    if (!this._instance) this._instance = new WebSocketPool();
+    return this._instance;
+  }
+
+  private conns = new Map<ConnKey, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+    if (!c) {
+      c = {
+        exchange,
+        symbol,
+        market,
+        url: wsUrlFor(exchange, symbol, market),
+        ws: null,
+        status: "INIT",
+        listeners: new Set(),
+        statusListeners: new Set(),
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+    }
+    c.refCount += 1;
+
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount === 0) {
+      this.close(c);
+      this.conns.delete(key);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    const key = this.acquire(exchange, symbol, market);
+    const c = this.conns.get(key)!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  getStatus(exchange: string, symbol: string, market: string) {
+    const key = mkKey(exchange, symbol, market);
+    return this.conns.get(key)?.status ?? "INIT";
+  }
+
+  private setStatus(c: Conn, st: WsStatus) {
+    c.status = st;
+    for (const fn of c.statusListeners) fn(st);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    // Avoid duplicate open if already connecting/open
+    if (c.ws && (c.status === "CONNECTING" || c.status === "OPEN")) return;
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed && c.refCount > 0) {
+        this.scheduleReconnect(c);
+      }
+    };
+
+    // IMPORTANT: ensure reconnect even if browser does not emit close reliably after error
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+      try {
+        ws.close();
+      } catch {
+        // If close fails, still schedule reconnect
+        if (!c.manuallyClosed && c.refCount > 0) this.scheduleReconnect(c);
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      const obj = safeJsonParse(ev.data);
+      if (!obj) return;
+
+      const msg: WsMsg = obj;
+
+      if (!msg.exchange) msg.exchange = c.exchange;
+      if (!msg.symbol) msg.symbol = c.symbol;
+      if (!msg.market) msg.market = c.market;
+
+      for (const fn of c.listeners) fn(msg);
+    };
+  }
+
+  private scheduleReconnect(c: Conn) {
+    const attempt = c.reconnectAttempt + 1;
+    c.reconnectAttempt = attempt;
+
+    const base = 500 * Math.pow(2, attempt - 1);
+    const delay = clamp(base, 500, 10_000);
+
+    c.reconnectTimer = window.setTimeout(() => {
+      c.reconnectTimer = null;
+      if (c.refCount > 0 && !c.manuallyClosed) {
+        this.open(c);
+      }
+    }, delay);
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+    try {
+      c.ws?.close();
+    } catch {}
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+}
+</file>
+
+<file path="frontend/delete/src/services/config.ts">
 /**
  * Config Service - Dynamic Exchange & Market-Type Configuration
  * Single Source of Truth: backend/config/.env
@@ -102171,7 +102333,163 @@ export function resetMarketTypeConfig(): void {
 }
 </file>
 
-<file path="frontend/src/shared/ui/badge.tsx">
+<file path="frontend/delete/src/shared/error/ErrorBoundary.tsx">
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { Button } from '../ui/button';
+import { Alert } from '../ui/alert';
+
+interface Props {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+  error: Error | null;
+  errorInfo: ErrorInfo | null;
+}
+
+/**
+ * Global ErrorBoundary Component
+ * Fängt React-Fehler und zeigt User-friendly Error-UI
+ * 
+ * Usage:
+ * <ErrorBoundary>
+ *   <App />
+ * </ErrorBoundary>
+ */
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null
+    };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // Log zu Console (Production: Sentry/LogRocket)
+    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+    
+    this.setState({
+      error,
+      errorInfo
+    });
+
+    // Optional: Senden an Error-Tracking-Service
+    if ((import.meta as any).env.PROD) {
+      this.reportError(error, errorInfo);
+    }
+  }
+
+  private reportError(error: Error, errorInfo: ErrorInfo) {
+    // TODO: Sentry Integration
+    // Sentry.captureException(error, { extra: errorInfo });
+  }
+
+  private handleReset = () => {
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null
+    });
+  };
+
+  private handleReload = () => {
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      // Custom Fallback UI wenn vorhanden
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+
+      // Default Error UI
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+          <div className="max-w-2xl w-full space-y-4">
+            <Alert variant="destructive">
+              <h2 className="text-xl font-bold mb-2">
+                Etwas ist schiefgelaufen
+              </h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Die Anwendung ist auf einen unerwarteten Fehler gestoßen. 
+                Bitte versuchen Sie, die Seite neu zu laden.
+              </p>
+            </Alert>
+
+            {(import.meta as any).env.DEV && this.state.error && (
+              <div className="bg-muted p-4 rounded-lg">
+                <h3 className="text-sm font-semibold mb-2">Error Details (DEV only):</h3>
+                <pre className="text-xs overflow-auto max-h-48">
+                  {this.state.error.toString()}
+                  {this.state.errorInfo && (
+                    <>
+                      {'\n\n'}
+                      {this.state.errorInfo.componentStack}
+                    </>
+                  )}
+                </pre>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button onClick={this.handleReset} variant="outline">
+                Erneut versuchen
+              </Button>
+              <Button onClick={this.handleReload}>
+                Seite neu laden
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+</file>
+
+<file path="frontend/delete/src/shared/layout/AppLayout.tsx">
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+import GlobalNav from './GlobalNav';
+
+export const AppLayout: React.FC = () => {
+  return (
+    <div className="min-h-screen bg-background text-foreground transition-colors">
+      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
+        <GlobalNav />
+        <main>
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="frontend/delete/src/shared/state/SettingsProvider.tsx">
+import React from "react";
+
+export interface SettingsProviderProps {
+  children: React.ReactNode;
+}
+
+export function SettingsProvider({ children }: SettingsProviderProps) {
+  return <>{children}</>;
+}
+</file>
+
+<file path="frontend/delete/src/shared/ui/badge.tsx">
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 
@@ -102210,7 +102528,7 @@ function Badge({ className, variant, ...props }: BadgeProps) {
 export { Badge, badgeVariants };
 </file>
 
-<file path="frontend/src/shared/ui/button.tsx">
+<file path="frontend/delete/src/shared/ui/button.tsx">
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -102269,7 +102587,7 @@ Button.displayName = "Button";
 export { Button, buttonVariants };
 </file>
 
-<file path="frontend/src/shared/ui/card.tsx">
+<file path="frontend/delete/src/shared/ui/card.tsx">
 import * as React from "react";
 
 import { cn } from "delete/lib/utils";
@@ -102349,6 +102667,1516 @@ const CardFooter = React.forwardRef<
 CardFooter.displayName = "CardFooter";
 
 export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
+</file>
+
+<file path="frontend/delete/src/shared/ui/theme-provider.tsx">
+import { ReactNode } from "react";
+import { ThemeProviderContext, useThemeLogic } from "../../hooks/use-theme";
+
+interface ThemeProviderProps {
+  children: ReactNode;
+}
+
+const ThemeProvider = ({ children }: ThemeProviderProps) => {
+  const themeLogic = useThemeLogic();
+
+  return (
+    <ThemeProviderContext.Provider value={themeLogic}>
+      {children}
+    </ThemeProviderContext.Provider>
+  );
+};
+
+export default ThemeProvider;
+</file>
+
+<file path="frontend/delete/src/shared/ui/theme-toggle.tsx">
+import { useTheme } from "../../hooks/use-theme";
+
+const ThemeToggle = () => {
+  const { theme, setTheme } = useTheme();
+
+  const toggleTheme = () => {
+    switch (theme) {
+      case "light":
+        setTheme("dark");
+        break;
+      case "dark":
+        setTheme("system");
+        break;
+      case "system":
+        setTheme("light");
+        break;
+    }
+  };
+
+  const getIcon = () => {
+    switch (theme) {
+      case "light":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="5"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            <path
+              d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+          </svg>
+        );
+      case "dark":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"
+              stroke="currentColor"
+              strokeWidth="2"
+              fill="currentColor"
+            />
+          </svg>
+        );
+      case "system":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect
+              x="2"
+              y="4"
+              width="20"
+              height="14"
+              rx="2"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            <path d="M8 20h8" stroke="currentColor" strokeWidth="2" />
+            <path d="M12 16v4" stroke="currentColor" strokeWidth="2" />
+          </svg>
+        );
+    }
+  };
+
+  const getTooltip = () => {
+    switch (theme) {
+      case "light":
+        return "Hell-Modus";
+      case "dark":
+        return "Dunkel-Modus";
+      case "system":
+        return "System-Modus";
+    }
+  };
+
+  return (
+    <button
+      onClick={toggleTheme}
+      className={`px-3 py-1.5 rounded font-medium transition-colors ${"text-foreground hover:bg-muted"}`}
+      title={getTooltip()}
+      aria-label={`Aktueller Modus: ${getTooltip()}. Klicken zum Wechseln.`}
+    >
+      {getIcon()}
+    </button>
+  );
+};
+
+export default ThemeToggle;
+</file>
+
+<file path="frontend/delete/src/App.tsx">
+import { QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, lazy } from "react";
+
+import { AppLayout } from "./shared/layout/AppLayout";
+import ThemeProvider from "./shared/ui/theme-provider";
+import { TradingProvider } from "./contexts/TradingContext";
+import { queryClient } from "./lib/react-query";
+import { SettingsProvider } from "./shared/state/SettingsProvider";
+
+/* =========================================================
+   1) OPTIONAL: Toggle Lazy Routes
+   - Set USE_LAZY_ROUTES = true  -> Code-Splitting (lazy)
+   - Set USE_LAZY_ROUTES = false -> Direct imports (no lazy)
+   ========================================================= */
+const USE_LAZY_ROUTES = true;
+
+/* =========================================================
+   2) PAGE IMPORTS (NO LAZY)  <-- easy to comment in/out
+   ========================================================= */
+// import TradingPage from "./pages/TradingPage";
+// import QuantumPage from "./pages/QuantumPage";
+// import BotPage from "./pages/BotPage";
+// import MLPage from "./pages/MLPage";
+// import DatabasePage from "./pages/DatabasePage";
+// import WhalesPage from "./pages/WhalesPage";
+// import NewsPage from "./pages/NewsPage";
+// import APIPage from "./pages/APIPage";
+// import SettingsPage from "./pages/SettingsPage";
+// import BTCUSDTMonitor from "./pages/BTCUSDTMonitor";
+
+// Logs Feature (no lazy)
+// import { LogsPage, DiagnosticsPage } from "./features/logs";
+
+/* =========================================================
+   3) PAGE IMPORTS (LAZY)  <-- easy to comment in/out
+   ========================================================= */
+// const TradingPage = lazy(() => import("./pages/TradingPage"));
+// const QuantumPage = lazy(() => import("./pages/QuantumPage"));
+// const BotPage = lazy(() => import("./pages/BotPage"));
+// const MLPage = lazy(() => import("./pages/MLPage"));
+// const DatabasePage = lazy(() => import("./pages/DatabasePage"));
+// const WhalesPage = lazy(() => import("./pages/WhalesPage"));
+// const NewsPage = lazy(() => import("./pages/NewsPage"));
+// const APIPage = lazy(() => import("./pages/APIPage"));
+// const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+// const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
+
+// Logs Feature (lazy named exports)
+/// const LogsPage = lazy(() =>
+///   import("./features/logs").then((m) => ({ default: m.LogsPage }))
+/// );
+/// const DiagnosticsPage = lazy(() =>
+///   import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
+/// );
+
+/* =========================================================
+   4) ACTIVE ROUTE COMPONENTS (single place to switch)
+   ========================================================= */
+const TradingPage = USE_LAZY_ROUTES
+  ? lazy(() => import("./pages/TradingPage")): 
+    (null as any);
+
+/* ==== COMMENTED OUT: all other lazy route components ==== */
+
+// const QuantumPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/QuantumPage"))
+//   : (null as any);
+
+// const BotPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/BotPage"))
+//   : (null as any);
+
+// const MLPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/MLPage"))
+//   : (null as any);
+
+// const DatabasePage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/DatabasePage"))
+//   : (null as any);
+
+// const WhalesPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/WhalesPage"))
+//   : (null as any);
+
+// const NewsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/NewsPage"))
+//   : (null as any);
+
+// const APIPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/APIPage"))
+//   : (null as any);
+
+// const SettingsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/SettingsPage"))
+//   : (null as any);
+
+// const BTCUSDTMonitor = USE_LAZY_ROUTES
+//   ? lazy(() => import("./pages/BTCUSDTMonitor"))
+//   : (null as any);
+
+// const LogsPage = USE_LAZY_ROUTES
+//   ? lazy(() => import("./features/logs").then((m) => ({ default: m.LogsPage })))
+//   : (null as any);
+
+// const DiagnosticsPage = USE_LAZY_ROUTES
+//   ? lazy(() =>
+//       import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
+//     )
+//   : (null as any);
+
+/* =========================================================
+   5) NO-LAZY RESOLVER (only used when USE_LAZY_ROUTES=false)
+   - IMPORTANT: You MUST uncomment the direct imports above
+     and then paste them here (see instructions below).
+   ========================================================= */
+type AnyComp = React.ComponentType<any>;
+
+function assertComponent<T extends AnyComp | null>(
+  c: T,
+  name: string
+): asserts c is Exclude<T, null> {
+  if (!c) throw new Error(`Route component not set: ${name}`);
+}
+
+/* =========================================================
+   6) Loading Fallback
+   ========================================================= */
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+  </div>
+);
+
+/* =========================================================
+   7) APP
+   ========================================================= */
+const App = () => {
+  // If you turn off lazy, you MUST provide the direct imports.
+  if (!USE_LAZY_ROUTES) {
+    // 1) Uncomment the "NO LAZY" imports section (2)
+    // 2) Then replace these nulls by the imported symbols.
+    //
+    // Example:
+    // assertComponent(TradingPage, "TradingPage");  // not needed if you rewire below
+    //
+    // The clean approach is: DO NOT use this mixed-mode block.
+    // Instead, when USE_LAZY_ROUTES=false:
+    // - Comment section (4)
+    // - Uncomment section (2)
+    // - Use Routes directly with the imported components.
+    //
+    // Kept here only to force an explicit error if you forget.
+    assertComponent(TradingPage as any, "TradingPage");
+    // assertComponent(QuantumPage as any, "QuantumPage");
+    // assertComponent(BotPage as any, "BotPage");
+    // assertComponent(MLPage as any, "MLPage");
+    // assertComponent(DatabasePage as any, "DatabasePage");
+    // assertComponent(WhalesPage as any, "WhalesPage");
+    // assertComponent(NewsPage as any, "NewsPage");
+    // assertComponent(APIPage as any, "APIPage");
+    // assertComponent(SettingsPage as any, "SettingsPage");
+    // assertComponent(BTCUSDTMonitor as any, "BTCUSDTMonitor");
+    // assertComponent(LogsPage as any, "LogsPage");
+    // assertComponent(DiagnosticsPage as any, "DiagnosticsPage");
+  }
+
+  return (
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <TradingProvider>
+          <SettingsProvider>
+            <BrowserRouter>
+              <Suspense fallback={<PageLoader />}>
+                <Routes>
+                  <Route path="/" element={<AppLayout />}>
+                    <Route index element={<Navigate to="/trading" replace />} />
+
+                    <Route path="trading" element={<TradingPage />} />
+
+                    {/* ==== COMMENTED OUT: all other routes ==== */}
+                    {/*
+                    <Route path="quantum" element={<QuantumPage />} />
+                    <Route path="bot" element={<BotPage />} />
+                    <Route path="ml" element={<MLPage />} />
+                    <Route path="database" element={<DatabasePage />} />
+                    <Route path="whales" element={<WhalesPage />} />
+                    <Route path="news" element={<NewsPage />} />
+                    <Route path="api" element={<APIPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+
+                    <Route path="diagnostics" element={<DiagnosticsPage />} />
+                    <Route path="logs/:exchange" element={<LogsPage />} />
+
+                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
+                    */}
+                  </Route>
+                </Routes>
+              </Suspense>
+            </BrowserRouter>
+          </SettingsProvider>
+        </TradingProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
+};
+
+export default App;
+</file>
+
+<file path="frontend/delete/src/index.css">
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /**
+   * Tailwind CSS theme
+   * tailwind.config.ts expects the following color variables to be expressed as HSL values.
+   * A different format will require also updating the theme in tailwind.config.ts.
+  */
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Status Colors für Ampelsystem */
+    --status-success: 142.1 76.2% 36.3%; /* Grün für < 5ms */
+    --status-success-foreground: 355.7 100% 97.3%;
+    --status-warning: 47.9 95.8% 53.1%; /* Orange für 5-39ms */
+    --status-warning-foreground: 26 83.3% 14.1%;
+    --status-error: 0 84.2% 60.2%; /* Rot für > 39ms */
+    --status-error-foreground: 210 40% 98%;
+    
+    /* Status Background Colors */
+    --status-success-bg: 143 85% 96%;
+    --status-warning-bg: 48 100% 96%;
+    --status-error-bg: 0 86% 97%;
+    
+    /* Status Border Colors */
+    --status-success-border: 145 79% 85%;
+    --status-warning-border: 48 96% 89%;
+    --status-error-border: 0 79% 86%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Status Colors für Ampelsystem - Dark Mode */
+    --status-success: 142.1 70.6% 45.3%; /* Grün für Dark Mode */
+    --status-success-foreground: 144.9 80.4% 10%;
+    --status-warning: 47.9 95.8% 53.1%; /* Orange für Dark Mode */
+    --status-warning-foreground: 26 83.3% 14.1%;
+    --status-error: 0 72.2% 50.6%; /* Rot für Dark Mode */
+    --status-error-foreground: 210 40% 98%;
+    
+    /* Status Background Colors - Dark Mode */
+    --status-success-bg: 144 61% 9%;
+    --status-warning-bg: 48 100% 4%;
+    --status-error-bg: 0 43% 7%;
+    
+    /* Status Border Colors - Dark Mode */
+    --status-success-border: 145 79% 16%;
+    --status-warning-border: 48 96% 15%;
+    --status-error-border: 0 79% 17%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+</file>
+
+<file path="frontend/delete/src/main.tsx">
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./index.css";
+
+import { ErrorBoundary } from "./shared/error/ErrorBoundary";
+import { SettingsProvider } from "./shared/state/SettingsProvider";
+
+import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
+
+try {
+  loadExchangeConfig?.();
+  loadMarketTypeConfig?.();
+} catch {
+  // bewusst still: build/boot darf nicht wegen optionaler Config scheitern
+}
+
+createRoot(document.getElementById("root")!).render(
+  <ErrorBoundary>
+    <SettingsProvider>
+      <App />
+    </SettingsProvider>
+  </ErrorBoundary>
+);
+</file>
+
+<file path="frontend/src/config/exchangeSupport.ts">
+// frontend/src/config/exchangeSupport.ts
+
+export type MarketType = "spot" | "futures" | "margin";
+
+/**
+ * Normalisiert alles was aus UI/Context kommen kann auf Backend-Route MarketType.
+ * Wenn du später Labels wie "Spot" / "Futures" nutzt -> hier mappen.
+ */
+export function getMarketFilter(market: string): MarketType {
+  const m = String(market || "").toLowerCase().trim();
+  if (m === "spot") return "spot";
+  if (m === "futures") return "futures";
+  if (m === "margin") return "margin";
+
+  // tolerante Aliases
+  if (m.includes("future")) return "futures";
+  if (m.includes("marg")) return "margin";
+  return "spot";
+}
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/components/AlertPanel.tsx">
+// frontend/src/pages/Monitor/components/AlertPanel.tsx
+import { useState } from "react";
+import type { Alert } from "../hooks/usePriceAlerts";
+
+type Props = {
+  alerts: Alert[];
+  currentPrice: number;
+  onAdd: (price: number) => void;
+  onRemove: (id: string) => void;
+  onResetTriggered: (id: string) => void;
+};
+
+export function AlertPanel({ alerts, currentPrice, onAdd, onRemove, onResetTriggered }: Props) {
+  const [input, setInput] = useState("");
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseFloat(input);
+    if (Number.isFinite(p) && p > 0) {
+      onAdd(p);
+      setInput("");
+    }
+  };
+
+  return (
+    <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-semibold">Price Alerts</div>
+        <div className="text-xs text-gray-400">
+          cur: {currentPrice ? currentPrice.toFixed(2) : "—"}
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="flex gap-2 mb-4">
+        <input
+          type="number"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Target price..."
+          className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2"
+        />
+        <button type="submit" className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">
+          Add
+        </button>
+      </form>
+
+      <div className="space-y-2">
+        {alerts.length === 0 && (
+          <div className="text-sm text-gray-400">Keine Alerts.</div>
+        )}
+
+        {alerts.map((a) => {
+          const cls = a.triggered
+            ? "bg-yellow-900/30 border border-yellow-700"
+            : "bg-gray-800 border border-gray-800";
+          return (
+            <div key={a.id} className={`flex justify-between items-center p-2 rounded ${cls}`}>
+              <div className={a.triggered ? "text-yellow-400" : ""}>
+                {a.direction === "above" ? "↑" : "↓"} ${a.price.toFixed(2)}
+              </div>
+
+              <div className="flex gap-2">
+                {a.triggered && (
+                  <button
+                    onClick={() => onResetTriggered(a.id)}
+                    className="text-xs text-gray-200 hover:text-white"
+                  >
+                    reset
+                  </button>
+                )}
+                <button
+                  onClick={() => onRemove(a.id)}
+                  className="text-red-400 hover:text-red-300 text-sm"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/hook/usePriceAlerts.ts">
+// frontend/src/pages/CoinMonitor/hooks/usePriceAlerts.ts
+import { useCallback, useEffect, useState } from "react";
+
+export type Alert = {
+  id: string;
+  price: number;
+  direction: "above" | "below";
+  triggered: boolean;
+};
+
+export function usePriceAlerts(currentPrice: number) {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+
+  useEffect(() => {
+    if (!currentPrice) return;
+    setAlerts((prev) =>
+      prev.map((a) => {
+        if (a.triggered) return a;
+        const hit =
+          (a.direction === "above" && currentPrice >= a.price) ||
+          (a.direction === "below" && currentPrice <= a.price);
+        return hit ? { ...a, triggered: true } : a;
+      })
+    );
+  }, [currentPrice]);
+
+  const addAlert = useCallback(
+    (price: number) => {
+      if (!price || price <= 0) return;
+      const direction: Alert["direction"] = price > currentPrice ? "above" : "below";
+      const id = Math.random().toString(36).slice(2, 10);
+      setAlerts((prev) => prev.concat({ id, price, direction, triggered: false }));
+    },
+    [currentPrice]
+  );
+
+  const removeAlert = useCallback((id: string) => {
+    setAlerts((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const resetTriggered = useCallback((id: string) => {
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, triggered: false } : a)));
+  }, []);
+
+  return { alerts, addAlert, removeAlert, resetTriggered };
+}
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
+// frontend/src/pages/CoinMonitor/CoinMonitor.tsx
+import React, { useMemo, useState } from "react";
+import { RootLayout } from "../../shared/layout/RootLayout";
+import { ENABLED_EXCHANGES, ENABLED_MARKETS, DEFAULTS, Exchange, Market } from "../../config/env";
+import { usePriceAlerts } from "./hooks/usePriceAlerts";
+import { useWsLane } from "../../services/ws/useWsLane";
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export default function CoinMonitor() {
+  const [symbol, setSymbol] = useState(DEFAULTS.symbol);
+  const [market, setMarket] = useState<Market>(DEFAULTS.market);
+
+  const exchanges = useMemo(() => [...ENABLED_EXCHANGES].slice().sort(), []);
+
+  return (
+    <RootLayout title="Coin Monitor" subtitle={`Symbol: ${symbol} • Market: ${market}`}>
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label className="text-sm">
+            <div className="text-gray-400 mb-1">Symbol</div>
+            <input
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value.trim().toUpperCase())}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+              placeholder="BTCUSDT"
+            />
+          </label>
+
+          <label className="text-sm">
+            <div className="text-gray-400 mb-1">Market</div>
+            <select
+              value={market}
+              onChange={(e) => setMarket(e.target.value as Market)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+            >
+              {ENABLED_MARKETS.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto border border-gray-800 rounded-lg">
+        <table className="w-full border-collapse min-w-[1100px]">
+          <thead>
+            <tr className="text-left bg-gray-900/60">
+              <th className="p-3">Exchange</th>
+              <th className="p-3">WS</th>
+              <th className="p-3 text-right">Trades</th>
+              <th className="p-3 text-right">Last Price</th>
+              <th className="p-3 text-right">Last Size</th>
+              <th className="p-3">Side</th>
+              <th className="p-3 text-right">Candle O/H/L/C</th>
+              <th className="p-3 text-right">Candle V</th>
+              <th className="p-3">Alerts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} symbol={symbol} market={market} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 p-4 bg-gray-900/60 border border-gray-800 rounded-lg text-sm text-gray-300">
+        <div className="font-semibold mb-2">Diagnose</div>
+        <ul className="list-disc pl-5 space-y-1">
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
+          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
+        </ul>
+      </div>
+    </RootLayout>
+  );
+}
+
+function Row({ exchange, symbol, market }: { exchange: Exchange; symbol: string; market: Market }) {
+  const { status, trades, candles } = useWsLane(exchange, symbol, market, "1s", { maxTrades: 800, maxCandles: 2000 });
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
+
+  const price = lastTrade?.price ?? lastCandle?.c ?? 0;
+  const { alerts, addAlert, removeAlert } = usePriceAlerts(price);
+
+  return (
+    <tr className="border-t border-gray-800">
+      <td className="p-3 font-semibold">{exchange}</td>
+      <td className="p-3">{status}</td>
+      <td className="p-3 text-right">{trades.length}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.price, 8)}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.size, 8)}</td>
+      <td className="p-3">{lastTrade?.side ?? "-"}</td>
+      <td className="p-3 text-right font-mono text-xs">
+        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
+      </td>
+      <td className="p-3 text-right">{fmt(lastCandle?.v, 8)}</td>
+      <td className="p-3">
+        <div className="flex gap-2 items-center">
+          <button
+            className="px-2 py-1 text-xs border border-gray-700 rounded bg-gray-800 hover:bg-gray-700"
+            onClick={() => {
+              const target = prompt(`Alert price for ${exchange}/${symbol}:`, price ? String(price) : "");
+              const p = target ? parseFloat(target) : NaN;
+              if (Number.isFinite(p) && p > 0) addAlert(p);
+            }}
+          >
+            + Alert
+          </button>
+          <div className="flex flex-col gap-1">
+            {alerts.slice(-3).map((a) => (
+              <div key={a.id} className="text-xs text-gray-300 flex gap-2 items-center">
+                <span>{a.direction === "above" ? "↑" : "↓"} {a.price.toFixed(2)}</span>
+                <button className="text-red-400 hover:text-red-300" onClick={() => removeAlert(a.id)}>x</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/index.tsx">
+// frontend/src/pages/CoinMonitor/index.tsx
+export { default } from "./CoinMonitor";
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
+// frontend/src/pages/TradingPage/components/ChartSection.tsx
+import { useEffect, useMemo, useRef } from "react";
+import type { LiveCandle } from "../hooks/useWsLane";
+
+declare global {
+  interface Window {
+    LightweightCharts?: any;
+  }
+}
+
+type Props = {
+  candlesLive: LiveCandle[];
+  candlesHist: LiveCandle[];
+};
+
+function toSeries(c: LiveCandle) {
+  return {
+    time: c.t, // seconds
+    open: c.o,
+    high: c.h,
+    low: c.l,
+    close: c.c,
+  };
+}
+
+export function ChartSection({ candlesLive, candlesHist }: Props) {
+  const elRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<any | null>(null);
+  const seriesRef = useRef<any | null>(null);
+
+  const merged = useMemo(() => {
+    // Historie + Live in eine Timeline (keine zweite Lane)
+    const map = new Map<number, LiveCandle>();
+    for (const c of candlesHist) map.set(c.t, c);
+    for (const c of candlesLive) map.set(c.t, c);
+
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  }, [candlesHist, candlesLive]);
+
+  useEffect(() => {
+    const root = elRef.current;
+    if (!root) return;
+
+    const L = window.LightweightCharts;
+    if (!L) return;
+
+    const chart = L.createChart(root, {
+      layout: { background: { type: "solid", color: "#030712" }, textColor: "#e5e7eb" },
+      grid: { vertLines: { color: "#111827" }, horzLines: { color: "#111827" } },
+      timeScale: { timeVisible: true, secondsVisible: true },
+      rightPriceScale: { borderColor: "#1f2937" },
+      crosshair: { mode: 1 },
+      width: root.clientWidth,
+      height: 520,
+    });
+
+    // UMD: addSeries(window.LightweightCharts.CandlestickSeries)
+    const series = chart.addSeries(L.CandlestickSeries, {
+      priceLineVisible: true,
+      lastValueVisible: true,
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const ro = new ResizeObserver(() => {
+      if (!chartRef.current || !elRef.current) return;
+      chartRef.current.applyOptions({ width: elRef.current.clientWidth });
+    });
+    ro.observe(root);
+
+    return () => {
+      ro.disconnect();
+      try {
+        chart.remove();
+      } catch {
+        // ignore
+      }
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const L = window.LightweightCharts;
+    if (!L) return;
+    const series = seriesRef.current;
+    if (!series) return;
+
+    const data = merged.map(toSeries);
+    series.setData(data);
+
+    if (data.length > 5 && chartRef.current) {
+      chartRef.current.timeScale().fitContent();
+    }
+  }, [merged]);
+
+  const hasLib = !!window.LightweightCharts;
+
+  return (
+    <div className="bg-gray-900 rounded-lg border border-gray-800 p-3">
+      <div className="flex items-center justify-between px-2 py-2">
+        <div className="font-semibold">Chart</div>
+        {!hasLib && (
+          <div className="text-xs text-red-400">
+            LightweightCharts nicht geladen (window.LightweightCharts fehlt)
+          </div>
+        )}
+      </div>
+      <div ref={elRef} className="w-full" />
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/OrderbookPanel.tsx">
+// frontend/src/pages/TradingPage/components/OrderbookPanel.tsx
+import type { Orderbook } from "../hooks/useWsLane";
+
+type Props = {
+  orderbook: Orderbook | null;
+  currentPrice: number;
+};
+
+export function OrderbookPanel({ orderbook, currentPrice }: Props) {
+  const asks = orderbook?.asks ?? [];
+  const bids = orderbook?.bids ?? [];
+  const spread = orderbook?.spread ?? 0;
+
+  return (
+    <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-semibold">Orderbook</div>
+        <div className="text-xs text-gray-400">{currentPrice ? currentPrice.toFixed(2) : "—"}</div>
+      </div>
+
+      {!orderbook ? (
+        <div className="text-sm text-gray-400">
+          Kein Orderbook-Stream (Backend muss type="orderbook" senden oder Requests akzeptieren)
+        </div>
+      ) : (
+        <>
+          <div className="space-y-1">
+            {asks.slice(0, 12).map((a, i) => (
+              <div key={`a-${i}`} className="flex justify-between text-sm text-red-400">
+                <span>{a[0].toFixed(2)}</span>
+                <span>{a[1].toFixed(6)}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="py-2 text-center text-xs text-gray-500 border-y border-gray-800 my-2">
+            Spread: {spread.toFixed(2)}
+          </div>
+
+          <div className="space-y-1">
+            {bids.slice(0, 12).map((b, i) => (
+              <div key={`b-${i}`} className="flex justify-between text-sm text-green-400">
+                <span>{b[0].toFixed(2)}</span>
+                <span>{b[1].toFixed(6)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
+// frontend/src/pages/TradingPage/components/TradesPanel.tsx
+import type { LiveTrade } from "../hooks/useWsLane";
+
+type Props = {
+  trades: LiveTrade[];
+};
+
+export function TradesPanel({ trades }: Props) {
+  return (
+    <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-semibold">Trades</div>
+        <div className="text-xs text-gray-400">{trades.length}</div>
+      </div>
+
+      <div className="space-y-2 max-h-[320px] overflow-auto pr-1">
+        {trades.slice(-80).reverse().map((t, i) => (
+          <div
+            key={`${t.ts ?? "x"}-${i}`}
+            className="flex justify-between text-sm border-b border-gray-800 pb-2"
+          >
+            <span className={t.side === "buy" ? "text-green-400" : "text-red-400"}>
+              {t.price.toFixed(2)}
+            </span>
+            <span className="text-gray-400">{t.size.toFixed(6)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/TradingPage/index.tsx">
+// frontend/src/pages/TradingPage/index.tsx
+export { default } from "./TradingPage";
+</file>
+
+<file path="frontend/src/pages/TradingPage/TradingPage.tsx">
+// frontend/src/pages/TradingPage/TradingPage.tsx
+import { useEffect, useMemo, useState } from "react";
+import { RootLayout } from "../../shared/layout/RootLayout";
+import { PriceDisplay } from "../../shared/components/PriceDisplay";
+import { DEFAULTS, ENABLED_EXCHANGES, ENABLED_MARKETS, ENABLED_INTERVALS, Exchange, Market, Interval } from "../../config/env";
+import { useWsLane } from "./hooks/useWsLane";
+
+export default function TradingPage() {
+  const [exchange, setExchange] = useState<Exchange>(DEFAULTS.exchange);
+  const [market, setMarket] = useState<Market>(DEFAULTS.market);
+  const [symbol, setSymbol] = useState<string>(DEFAULTS.symbol);
+  const [interval, setInterval] = useState<Interval>(DEFAULTS.interval);
+
+  const { status, trades, candles, historical, orderbook, requestHistorical, requestOrderbook } =
+    useWsLane(exchange, symbol, market, interval, { maxTrades: 600, maxCandles: 4000 });
+
+  const currentPrice = useMemo(() => {
+    const bid = orderbook?.bids?.[0]?.[0];
+    if (bid && Number.isFinite(bid)) return bid;
+
+    const lastTrade = trades[trades.length - 1];
+    if (lastTrade && Number.isFinite(lastTrade.price)) return lastTrade.price;
+
+    const lastC = candles[candles.length - 1];
+    if (lastC && Number.isFinite(lastC.c)) return lastC.c;
+
+    return 0;
+  }, [orderbook, trades, candles]);
+
+  useEffect(() => {
+    requestHistorical(interval, 1000);
+    requestOrderbook();
+  }, [exchange, symbol, market, interval]);
+
+  return (
+    <RootLayout title="Trading" subtitle={`${exchange} / ${symbol} / ${market} • WS: ${status}`}>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <label className="text-sm">
+                <div className="text-gray-400 mb-1">Exchange</div>
+                <select
+                  value={exchange}
+                  onChange={(e) => setExchange(e.target.value as Exchange)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                >
+                  {ENABLED_EXCHANGES.map((x) => (
+                    <option key={x} value={x}>{x}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm">
+                <div className="text-gray-400 mb-1">Symbol</div>
+                <input
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value.trim().toUpperCase())}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                  placeholder="BTCUSDT"
+                />
+              </label>
+
+              <label className="text-sm">
+                <div className="text-gray-400 mb-1">Market</div>
+                <select
+                  value={market}
+                  onChange={(e) => setMarket(e.target.value as Market)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                >
+                  {ENABLED_MARKETS.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm">
+                <div className="text-gray-400 mb-1">Interval</div>
+                <select
+                  value={interval}
+                  onChange={(e) => setInterval(e.target.value as Interval)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                >
+                  {ENABLED_INTERVALS.map((i) => (
+                    <option key={i} value={i}>{i}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <PriceDisplay price={currentPrice} size="lg" />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => requestOrderbook()}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded px-3 py-2 text-sm"
+                >
+                  Request Orderbook
+                </button>
+                <button
+                  onClick={() => requestHistorical(interval, 2000)}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded px-3 py-2 text-sm"
+                >
+                  Request Historical
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-2 text-xs text-gray-400">
+              Live candles: {candles.length} • Historical: {historical.length} • Trades: {trades.length}
+            </div>
+          </div>
+
+          {/* Minimal: candle merge preview (keine Chart-Library hier eingebaut) */}
+          <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <div className="font-semibold mb-2">Candles (Preview)</div>
+            <div className="text-xs text-gray-400 mb-3">
+              Wenn du Lightweight-Charts einhängen willst: mach es als Page-Component, aber lane bleibt identisch.
+            </div>
+            <div className="max-h-[420px] overflow-auto pr-1 text-xs font-mono">
+              {[...historical, ...candles]
+                .reduce((m, c) => (m.set(c.t, c), m), new Map<number, any>())
+                .forEach}
+              {Array.from(
+                [...historical, ...candles].reduce((m, c) => (m.set(c.t, c), m), new Map<number, any>()).values()
+              )
+                .sort((a, b) => a.t - b.t)
+                .slice(-120)
+                .map((c) => (
+                  <div key={c.t} className="border-b border-gray-800 py-1">
+                    t={c.t} o={c.o} h={c.h} l={c.l} c={c.c} v={c.v}
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right */}
+        <div className="space-y-4">
+          <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold">Orderbook</div>
+              <div className="text-xs text-gray-400">{currentPrice ? currentPrice.toFixed(2) : "—"}</div>
+            </div>
+
+            {!orderbook ? (
+              <div className="text-sm text-gray-400">Kein Orderbook (Backend muss type="orderbook" liefern).</div>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  {orderbook.asks.slice(0, 12).map((a, i) => (
+                    <div key={`a-${i}`} className="flex justify-between text-sm text-red-400">
+                      <span>{a[0].toFixed(2)}</span>
+                      <span>{a[1].toFixed(6)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="py-2 text-center text-xs text-gray-500 border-y border-gray-800 my-2">
+                  Spread: {orderbook.spread.toFixed(2)}
+                </div>
+
+                <div className="space-y-1">
+                  {orderbook.bids.slice(0, 12).map((b, i) => (
+                    <div key={`b-${i}`} className="flex justify-between text-sm text-green-400">
+                      <span>{b[0].toFixed(2)}</span>
+                      <span>{b[1].toFixed(6)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold">Trades</div>
+              <div className="text-xs text-gray-400">{trades.length}</div>
+            </div>
+            <div className="space-y-2 max-h-[520px] overflow-auto pr-1">
+              {trades.slice(-120).reverse().map((t, i) => (
+                <div key={`${t.ts ?? "x"}-${i}`} className="flex justify-between text-sm border-b border-gray-800 pb-2">
+                  <span className={t.side === "buy" ? "text-green-400" : "text-red-400"}>
+                    {t.price.toFixed(2)}
+                  </span>
+                  <span className="text-gray-400">{t.size.toFixed(6)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </RootLayout>
+  );
+}
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useWsLane(
+  exchange: string,
+  symbol: string,
+  market: string,
+  interval: string,
+  opts?: { maxTrades?: number; maxCandles?: number }
+) {
+  const maxTrades = opts?.maxTrades ?? 500;
+  const maxCandles = opts?.maxCandles ?? 2000;
+
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+  }, [exchange, symbol, market, interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              return next.length <= maxTrades ? next : next.slice(next.length - maxTrades);
+            });
+          });
+        }
+
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const tSec = toNum(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw
+</file>
+
+<file path="frontend/src/shared/components/PriceDisplay.tsx">
+// frontend/src/shared/components/PriceDisplay.tsx
+type Props = {
+  price: number;
+  changePct?: number;
+  prefix?: string;
+  size?: "sm" | "md" | "lg";
+};
+
+const sizeCls: Record<NonNullable<Props["size"]>, string> = {
+  sm: "text-lg",
+  md: "text-2xl",
+  lg: "text-4xl",
+};
+
+export function PriceDisplay({ price, changePct = 0, prefix = "$", size = "md" }: Props) {
+  const ok = Number.isFinite(price);
+  const isPos = changePct >= 0;
+
+  return (
+    <div className="flex flex-col">
+      <span className={`font-bold ${sizeCls[size]}`}>
+        {prefix}
+        {ok ? price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00"}
+      </span>
+      {changePct !== 0 && (
+        <span className={`text-sm ${isPos ? "text-green-400" : "text-red-400"}`}>
+          {isPos ? "↑" : "↓"} {Math.abs(changePct).toFixed(2)}%
+        </span>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/shared/layout/Navigation.tsx">
+// frontend/src/shared/layout/Navigation.tsx
+import { Link, useLocation } from "react-router-dom";
+
+const navItems = [
+  { path: "/trading", label: "Trading" },
+  { path: "/coinmonitor", label: "Coin Monitor" },
+];
+
+export function Navigation() {
+  const { pathname } = useLocation();
+
+  return (
+    <nav className="bg-gray-900 border-b border-gray-800">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          <Link to="/trading" className="font-bold text-xl tracking-tight">
+            DarkMa
+          </Link>
+          <div className="flex gap-6">
+            {navItems.map((it) => {
+              const active = pathname === it.path;
+              return (
+                <Link
+                  key={it.path}
+                  to={it.path}
+                  className={active ? "text-white font-medium" : "text-gray-400 hover:text-white"}
+                >
+                  {it.label}
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </nav>
+  );
+}
+</file>
+
+<file path="frontend/src/shared/layout/RootLayout.tsx">
+// frontend/src/shared/layout/RootLayout.tsx
+import { ReactNode } from "react";
+import { Navigation } from "./Navigation";
+
+type Props = { children: ReactNode; title?: string; subtitle?: string };
+
+export function RootLayout({ children, title, subtitle }: Props) {
+  return (
+    <div className="min-h-screen bg-gray-950 text-white">
+      <Navigation />
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
+        {(title || subtitle) && (
+          <header className="mb-6 border-b border-gray-800 pb-4">
+            {title && <h1 className="text-2xl font-bold">{title}</h1>}
+            {subtitle && <p className="text-gray-400 mt-1">{subtitle}</p>}
+          </header>
+        )}
+        {children}
+      </main>
+    </div>
+  );
+}
 </file>
 
 <file path="frontend/package.json">
@@ -185484,572 +187312,95 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="frontend/src/contexts/TradingContext.tsx">
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { MarketType } from '../config/exchangeSupport';
-import { getDefaultExchange, getDefaultMarketType } from '../../src/services/config';
+<file path="frontend/src/services/config.ts">
+// frontend/src/services/config.ts
+/**
+ * Config Service (ENV-only)
+ * - Kein REST
+ * - Kein Polling
+ * - Single Source of Truth: VITE_* ENV im Frontend Build (Backup/Override)
+ */
 
-interface TradingContextType {
-  selectedExchange: string;
-  selectedMarket: MarketType;
-  setSelectedExchange: (exchange: string) => void;
-  setSelectedMarket: (market: MarketType) => void;
-}
-
-// ✅ Temporäre Defaults aus ENV (bis Backend geladen ist)
-const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance';
-const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || 'spot';
-
-const TradingContext = createContext<TradingContextType>({
-  selectedExchange: TEMP_DEFAULT_EXCHANGE,
-  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
-  setSelectedExchange: () => {},
-  setSelectedMarket: () => {},
-});
-
-interface TradingProviderProps {
-  children: ReactNode;
-}
-
-export const TradingProvider = ({ children }: TradingProviderProps) => {
-  const [selectedExchange, setSelectedExchange] = useState(TEMP_DEFAULT_EXCHANGE);
-  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // ✅ Lade Defaults vom Backend beim Start
-  useEffect(() => {
-    const loadDefaults = async () => {
-      try {
-        const [exchange, market] = await Promise.all([
-          getDefaultExchange(),
-          getDefaultMarketType()
-        ]);
-        setSelectedExchange(exchange);
-        setSelectedMarket(market as MarketType);
-        console.log(`[TradingContext] Loaded defaults from backend: ${exchange} / ${market}`);
-      } catch (error) {
-        console.error('[TradingContext] Failed to load defaults, using fallbacks:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadDefaults();
-  }, []);
-
-  if (isLoading) {
-    // Optional: Loading-Spinner hier rendern
-    return <>{children}</>; // oder ein Loading-Wrapper
-  }
-
-  return (
-    <TradingContext.Provider
-      value={{
-        selectedExchange,
-        selectedMarket,
-        setSelectedExchange,
-        setSelectedMarket,
-      }}
-    >
-      {children}
-    </TradingContext.Provider>
-  );
+type ExchangeConfig = {
+  exchanges: string[];
+  default: string;
+  count: number;
 };
 
-export const useTradingContext = () => {
-  const context = useContext(TradingContext);
-  if (!context) {
-    throw new Error('useTradingContext must be used within a TradingProvider');
-  }
-  return context;
+type MarketTypeConfig = {
+  market_types: string[];
+  default: string;
+  count: number;
 };
 
-export { TradingContext };
-</file>
-
-<file path="frontend/src/features/trading/components/SystemStatus.tsx">
-import React from 'react';
-
-const SystemStatus: React.FC = () => {
-  // Simplified: Just show a basic status indicator
-  const backendStatus = 'online'; // TODO: Add real health check later
-  const healthStatus = 'unknown';
-
-  return (
-    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
-      <div className="flex items-center gap-1">
-        <div className="w-2 h-2 rounded-full bg-[hsl(var(--status-success))]"></div>
-        <span className="text-[hsl(var(--status-success))] font-medium">
-          System {backendStatus}
-        </span>
-        <span className="text-muted-foreground ml-2">
-          | Status: <span className="text-[hsl(var(--status-warning))]">{healthStatus}</span>
-        </span>
-      </div>
-    </div>
-  );
-};
-
-export default SystemStatus;
-</file>
-
-<file path="frontend/src/pages/BTCUSDTMonitor.tsx">
-import React, { useMemo } from "react";
-import { useLiveTrades } from "../hooks/useLiveTrades";
-import { useLiveCandles } from "../hooks/useLiveCandles";
-
-const SYMBOL = "BTCUSDT";
-const MARKET = "spot";
-const INTERVAL = "1s";
-
-// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
-// aber erst mal: harte Liste, damit es deterministisch läuft.
-const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
-
-function fmt(n: number | undefined, digits = 2) {
-  if (n === undefined || !Number.isFinite(n)) return "-";
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+function parseList(v: any, fallback: string[]): string[] {
+  const s = String(v ?? "").trim();
+  if (!s) return fallback;
+  return s
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
-export default function BTCUSDTMonitor() {
-  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
-
-  return (
-    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
-      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
-        BTCUSDT Live Monitor (Hooks-only)
-      </h1>
-
-      <div style={{ marginBottom: 12, opacity: 0.85 }}>
-        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
-      </div>
-
-      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
-              <th style={{ padding: 10 }}>Exchange</th>
-              <th style={{ padding: 10 }}>WS</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
-              <th style={{ padding: 10 }}>Side</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((ex) => (
-              <Row key={ex} exchange={ex} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
-        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
-          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
-          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
-        </ul>
-      </div>
-    </div>
-  );
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr));
 }
 
-function Row({ exchange }: { exchange: string }) {
-  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
-  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
+const DEFAULT_EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"];
+const DEFAULT_MARKETS = ["spot", "futures", "margin"];
 
-  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
-  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
-
-  return (
-    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
-      <td style={{ padding: 10 }}>{status}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
-      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
-      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
-        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
-      </td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
-    </tr>
-  );
-}
-</file>
-
-<file path="frontend/src/pages/TradingPage.tsx">
-import { useState, useMemo } from "react";
-import {
-  PriceDisplay,
-  CoinSelector,
-  TradingTerminal
-} from "../features/trading";
-import TimeButtons from "../features/trading/components/TimeButtons";
-import ChartSection from "../features/trading/components/ChartSection";
-import SystemStatus from "../features/trading/components/SystemStatus";
-import { useTradingContext } from "../contexts/TradingContext";
-import { getMarketFilter } from '../config/exchangeSupport';
-
-const TradingPage = () => {
-  const { selectedExchange, selectedMarket } = useTradingContext();
-  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
-  const [selectedInterval, setSelectedInterval] = useState("1m");
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-
-  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
-
-  const currentCoinData = useMemo(() => ({
-    id: selectedCoin,
-    symbol: selectedCoin,
-    market: marketFilter,
-    price: "0.00",
-    change: "0.00",
-    changePercent: 0,
-    isFavorite: false,
-    liveStatus: "green" as const,
-    histStatus: "green" as const
-  }), [selectedCoin, marketFilter]);
-
-  const marketData = {
-    price: 0,
-    change24h: "0.00",
-    changePercent: 0,
-    high24h: "0.00",
-    low24h: "0.00",
-    volume24h: "0.00",
-    turnover24h: "0.00",
-
-  };
-
-  return (
-    <div className="px-6 py-5">
-      {/* Market & Price Section */}
-      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
-        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
-          <CoinSelector
-            selectedSymbol={selectedCoin}
-            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
-            exchange={selectedExchange}
-            selectedMarket={selectedMarket}
-          />
-        </div>
-
-        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
-          <PriceDisplay
-            currentCoinData={currentCoinData}
-            marketData={marketData}
-            tradingMode={selectedMarket}
-          />
-        </div>
-      </div>
-
-      {/* Time Buttons */}
-      <TimeButtons 
-        onIntervalChange={setSelectedInterval}
-        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
-          prev.includes(indicator) ? prev : [...prev, indicator]
-        )}
-      />
-
-      {/* Main Content: Multi-Chart + Orderbook */}
-      <ChartSection 
-        selectedCoin={selectedCoin}
-        selectedMarket={marketFilter}
-        selectedInterval={selectedInterval}
-        selectedIndicators={selectedIndicators}
-        selectedExchange={selectedExchange}
-        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
-          prev.filter(i => i !== indicator)
-        )}
-      />
-
-      {/* Trading Terminal */}
-      <div className="mt-4 space-y-2">
-        <TradingTerminal />
-      </div>
-
-      {/* System Status */}
-      <SystemStatus />
-    </div>
-  );
-};
-
-export default TradingPage;
-</file>
-
-<file path="frontend/src/services/ws/WebSocketPool.ts">
-// src/services/ws/WebSocketPool.ts
-export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
-
-export type WsMsg =
-  | {
-      type: "trade";
-      exchange: string;
-      symbol: string;
-      market?: string;
-      price?: number | string;
-      size?: number | string;
-      side?: string;
-      ts?: number | string;
-      [k: string]: any;
-    }
-  | {
-      type: "candle";
-      exchange: string;
-      symbol: string;
-      market?: string;
-      interval?: string;
-      t?: number | string;
-      o?: number | string;
-      h?: number | string;
-      l?: number | string;
-      c?: number | string;
-      v?: number | string;
-      [k: string]: any;
-    }
-  | { type: string; exchange?: string; symbol?: string; market?: string; [k: string]: any };
-
-type Listener = (msg: WsMsg) => void;
-type StatusListener = (status: WsStatus) => void;
-
-type ConnKey = string; // `${exchange}:${symbol}:${market}`
-type Conn = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  url: string;
-  ws: WebSocket | null;
-  status: WsStatus;
-
-  listeners: Set<Listener>;
-  statusListeners: Set<StatusListener>;
-
-  refCount: number;
-  reconnectAttempt: number;
-  reconnectTimer: number | null;
-  manuallyClosed: boolean;
-};
-
-function mkKey(exchange: string, symbol: string, market: string): ConnKey {
-  return `${exchange}:${symbol}:${market}`;
+function env<T = any>(key: string): T | undefined {
+  return (import.meta as any)?.env?.[key];
 }
 
-// SAME-ORIGIN WS: ws(s)://{current-host}/ws/...
-function wsUrlFor(exchange: string, symbol: string, market: string) {
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(
-    symbol
-  )}/${encodeURIComponent(market)}`;
+export async function loadExchangeConfig(): Promise<ExchangeConfig> {
+  const exchanges = uniq(parseList(env("VITE_ENABLED_EXCHANGES"), DEFAULT_EXCHANGES));
+  const def = String(env("VITE_DEFAULT_EXCHANGE") ?? exchanges[0] ?? "binance").trim();
+  const defOk = exchanges.includes(def) ? def : (exchanges[0] ?? "binance");
+  return { exchanges, default: defOk, count: exchanges.length };
 }
 
-function safeJsonParse(s: string): any | null {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
+export async function loadMarketTypeConfig(): Promise<MarketTypeConfig> {
+  const market_types = uniq(parseList(env("VITE_ENABLED_MARKET_TYPES"), DEFAULT_MARKETS));
+  const def = String(env("VITE_DEFAULT_MARKET_TYPE") ?? market_types[0] ?? "spot").trim();
+  const defOk = market_types.includes(def) ? def : (market_types[0] ?? "spot");
+  return { market_types, default: defOk, count: market_types.length };
 }
 
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
+export async function getDefaultExchange(): Promise<string> {
+  const cfg = await loadExchangeConfig();
+  return cfg.default;
 }
 
-export class WebSocketPool {
-  private static _instance: WebSocketPool | null = null;
-  static get instance(): WebSocketPool {
-    if (!this._instance) this._instance = new WebSocketPool();
-    return this._instance;
-  }
-
-  private conns = new Map<ConnKey, Conn>();
-
-  acquire(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    let c = this.conns.get(key);
-    if (!c) {
-      c = {
-        exchange,
-        symbol,
-        market,
-        url: wsUrlFor(exchange, symbol, market),
-        ws: null,
-        status: "INIT",
-        listeners: new Set(),
-        statusListeners: new Set(),
-        refCount: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        manuallyClosed: false,
-      };
-      this.conns.set(key, c);
-    }
-    c.refCount += 1;
-
-    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
-      this.open(c);
-    }
-    return key;
-  }
-
-  release(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    const c = this.conns.get(key);
-    if (!c) return;
-
-    c.refCount = Math.max(0, c.refCount - 1);
-    if (c.refCount === 0) {
-      this.close(c);
-      this.conns.delete(key);
-    }
-  }
-
-  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
-    const key = this.acquire(exchange, symbol, market);
-    const c = this.conns.get(key)!;
-    c.listeners.add(cb);
-    return () => {
-      c.listeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
-    const key = this.acquire(exchange, symbol, market);
-    const c = this.conns.get(key)!;
-    c.statusListeners.add(cb);
-    cb(c.status);
-    return () => {
-      c.statusListeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  getStatus(exchange: string, symbol: string, market: string) {
-    const key = mkKey(exchange, symbol, market);
-    return this.conns.get(key)?.status ?? "INIT";
-  }
-
-  private setStatus(c: Conn, st: WsStatus) {
-    c.status = st;
-    for (const fn of c.statusListeners) fn(st);
-  }
-
-  private open(c: Conn) {
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    // Avoid duplicate open if already connecting/open
-    if (c.ws && (c.status === "CONNECTING" || c.status === "OPEN")) return;
-
-    c.manuallyClosed = false;
-    this.setStatus(c, "CONNECTING");
-
-    const ws = new WebSocket(c.url);
-    c.ws = ws;
-
-    ws.onopen = () => {
-      c.reconnectAttempt = 0;
-      this.setStatus(c, "OPEN");
-    };
-
-    ws.onclose = () => {
-      c.ws = null;
-      this.setStatus(c, "CLOSED");
-      if (!c.manuallyClosed && c.refCount > 0) {
-        this.scheduleReconnect(c);
-      }
-    };
-
-    // IMPORTANT: ensure reconnect even if browser does not emit close reliably after error
-    ws.onerror = () => {
-      this.setStatus(c, "ERROR");
-      try {
-        ws.close();
-      } catch {
-        // If close fails, still schedule reconnect
-        if (!c.manuallyClosed && c.refCount > 0) this.scheduleReconnect(c);
-      }
-    };
-
-    ws.onmessage = (ev) => {
-      const obj = safeJsonParse(ev.data);
-      if (!obj) return;
-
-      const msg: WsMsg = obj;
-
-      if (!msg.exchange) msg.exchange = c.exchange;
-      if (!msg.symbol) msg.symbol = c.symbol;
-      if (!msg.market) msg.market = c.market;
-
-      for (const fn of c.listeners) fn(msg);
-    };
-  }
-
-  private scheduleReconnect(c: Conn) {
-    const attempt = c.reconnectAttempt + 1;
-    c.reconnectAttempt = attempt;
-
-    const base = 500 * Math.pow(2, attempt - 1);
-    const delay = clamp(base, 500, 10_000);
-
-    c.reconnectTimer = window.setTimeout(() => {
-      c.reconnectTimer = null;
-      if (c.refCount > 0 && !c.manuallyClosed) {
-        this.open(c);
-      }
-    }, delay);
-  }
-
-  private close(c: Conn) {
-    c.manuallyClosed = true;
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-    try {
-      c.ws?.close();
-    } catch {}
-    c.ws = null;
-    this.setStatus(c, "CLOSED");
-  }
-}
-</file>
-
-<file path="frontend/src/shared/layout/AppLayout.tsx">
-import React from 'react';
-import { Outlet } from 'react-router-dom';
-import GlobalNav from './GlobalNav';
-
-export const AppLayout: React.FC = () => {
-  return (
-    <div className="min-h-screen bg-background text-foreground transition-colors">
-      <div style={{ fontFamily: "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'" }}>
-        <GlobalNav />
-        <main>
-          <Outlet />
-        </main>
-      </div>
-    </div>
-  );
-};
-</file>
-
-<file path="frontend/src/shared/state/SettingsProvider.tsx">
-import React from "react";
-
-export interface SettingsProviderProps {
-  children: React.ReactNode;
+export async function getDefaultMarketType(): Promise<string> {
+  const cfg = await loadMarketTypeConfig();
+  return cfg.default;
 }
 
-export function SettingsProvider({ children }: SettingsProviderProps) {
-  return <>{children}</>;
+export async function getAvailableExchanges(): Promise<string[]> {
+  const cfg = await loadExchangeConfig();
+  return cfg.exchanges;
+}
+
+export async function getAvailableMarketTypes(): Promise<string[]> {
+  const cfg = await loadMarketTypeConfig();
+  return cfg.market_types;
+}
+
+export function isExchangeAvailable(exchange: string, exchanges: string[]): boolean {
+  return exchanges.includes(exchange);
+}
+
+export function isMarketTypeAvailable(market: string, markets: string[]): boolean {
+  return markets.includes(market);
+}
+
+export function resetExchangeConfig() {
+  // ENV-only: nichts zu resetten
+}
+
+export function resetMarketTypeConfig() {
+  // ENV-only: nichts zu resetten
 }
 </file>
 
@@ -191516,30 +192867,227 @@ WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
-<file path="frontend/src/main.tsx">
-import { createRoot } from "react-dom/client";
-import App from "./App";
-import "./index.css";
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+// frontend/src/services/ws/WebSocketPool.ts
+import { WS_BASE_URL } from "../../config/env";
 
-import { ErrorBoundary } from "./shared/error/ErrorBoundary";
-import { SettingsProvider } from "./shared/state/SettingsProvider";
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
 
-import { loadExchangeConfig, loadMarketTypeConfig } from "./services/config";
+export type WsMsg =
+  | { type: "connection"; [k: string]: any }
+  | { type: "trade"; exchange: string; symbol: string; market: string; price?: any; size?: any; side?: any; ts?: any; [k: string]: any }
+  | { type: "candle"; exchange: string; symbol: string; market: string; interval?: string; t?: any; o?: any; h?: any; l?: any; c?: any; v?: any; [k: string]: any }
+  | { type: "orderbook"; exchange: string; symbol: string; market: string; bids?: any[]; asks?: any[]; spread?: any; ts?: any; [k: string]: any }
+  | { type: "historical"; exchange: string; symbol: string; market: string; interval?: string; candles?: any[]; [k: string]: any }
+  | { type: string; [k: string]: any };
 
-try {
-  loadExchangeConfig?.();
-  loadMarketTypeConfig?.();
-} catch {
-  // bewusst still: build/boot darf nicht wegen optionaler Config scheitern
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (s: WsStatus) => void;
+
+type Key = string; // exchange:symbol:market
+
+type Conn = {
+  key: Key;
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+
+  ws: WebSocket | null;
+  status: WsStatus;
+
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
+
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
+
+function mkKey(exchange: string, symbol: string, market: string): Key {
+  return `${exchange}:${symbol}:${market}`;
 }
 
-createRoot(document.getElementById("root")!).render(
-  <ErrorBoundary>
-    <SettingsProvider>
-      <App />
-    </SettingsProvider>
-  </ErrorBoundary>
-);
+function wsUrl(exchange: string, symbol: string, market: string) {
+  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
+
+  // Prefer explicit base if set, else same-origin
+  if (WS_BASE_URL) {
+    const base = WS_BASE_URL.replace(/\/+$/, "");
+    return `${base}${path}`;
+  }
+
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}${path}`;
+}
+
+function safeJson(s: string): any | null {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _i: WebSocketPool | null = null;
+  static get instance() {
+    if (!this._i) this._i = new WebSocketPool();
+    return this._i;
+  }
+
+  private conns = new Map<Key, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot"): Key {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+
+    if (!c) {
+      c = {
+        key,
+        exchange,
+        symbol,
+        market,
+        url: wsUrl(exchange, symbol, market),
+
+        ws: null,
+        status: "INIT",
+
+        listeners: new Set(),
+        statusListeners: new Set(),
+
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+    }
+
+    c.refCount += 1;
+
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount === 0) {
+      this.close(c);
+      this.conns.delete(key);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
+    const c = this.conns.get(mkKey(exchange, symbol, market));
+    if (!c || !c.ws || c.status !== "OPEN") return false;
+
+    try {
+      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private setStatus(c: Conn, s: WsStatus) {
+    c.status = s;
+    for (const l of c.statusListeners) l(s);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") return;
+      const parsed = safeJson(ev.data);
+      if (!parsed || typeof parsed !== "object") return;
+      const msg = parsed as WsMsg;
+      for (const l of c.listeners) l(msg);
+    };
+
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+      this.scheduleReconnect(c);
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed) this.scheduleReconnect(c);
+    };
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    try { c.ws?.close(); } catch { /* ignore */ }
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+
+  private scheduleReconnect(c: Conn) {
+    if (c.manuallyClosed) return;
+    if (c.refCount <= 0) return;
+
+    c.reconnectAttempt += 1;
+    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
+
+    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
+    c.reconnectTimer = window.setTimeout(() => {
+      if (c.refCount <= 0 || c.manuallyClosed) return;
+      this.open(c);
+    }, delay);
+  }
+}
 </file>
 
 <file path="start-health.sh">
@@ -192939,217 +194487,6 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
-<file path="frontend/src/App.tsx">
-import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Suspense, lazy } from "react";
-
-import { AppLayout } from "./shared/layout/AppLayout";
-import ThemeProvider from "./shared/ui/theme-provider";
-import { TradingProvider } from "./contexts/TradingContext";
-import { queryClient } from "./lib/react-query";
-import { SettingsProvider } from "./shared/state/SettingsProvider";
-
-/* =========================================================
-   1) OPTIONAL: Toggle Lazy Routes
-   - Set USE_LAZY_ROUTES = true  -> Code-Splitting (lazy)
-   - Set USE_LAZY_ROUTES = false -> Direct imports (no lazy)
-   ========================================================= */
-const USE_LAZY_ROUTES = true;
-
-/* =========================================================
-   2) PAGE IMPORTS (NO LAZY)  <-- easy to comment in/out
-   ========================================================= */
-// import TradingPage from "./pages/TradingPage";
-// import QuantumPage from "./pages/QuantumPage";
-// import BotPage from "./pages/BotPage";
-// import MLPage from "./pages/MLPage";
-// import DatabasePage from "./pages/DatabasePage";
-// import WhalesPage from "./pages/WhalesPage";
-// import NewsPage from "./pages/NewsPage";
-// import APIPage from "./pages/APIPage";
-// import SettingsPage from "./pages/SettingsPage";
-// import BTCUSDTMonitor from "./pages/BTCUSDTMonitor";
-
-// Logs Feature (no lazy)
-// import { LogsPage, DiagnosticsPage } from "./features/logs";
-
-/* =========================================================
-   3) PAGE IMPORTS (LAZY)  <-- easy to comment in/out
-   ========================================================= */
-// const TradingPage = lazy(() => import("./pages/TradingPage"));
-// const QuantumPage = lazy(() => import("./pages/QuantumPage"));
-// const BotPage = lazy(() => import("./pages/BotPage"));
-// const MLPage = lazy(() => import("./pages/MLPage"));
-// const DatabasePage = lazy(() => import("./pages/DatabasePage"));
-// const WhalesPage = lazy(() => import("./pages/WhalesPage"));
-// const NewsPage = lazy(() => import("./pages/NewsPage"));
-// const APIPage = lazy(() => import("./pages/APIPage"));
-// const SettingsPage = lazy(() => import("./pages/SettingsPage"));
-// const BTCUSDTMonitor = lazy(() => import("./pages/BTCUSDTMonitor"));
-
-// Logs Feature (lazy named exports)
-/// const LogsPage = lazy(() =>
-///   import("./features/logs").then((m) => ({ default: m.LogsPage }))
-/// );
-/// const DiagnosticsPage = lazy(() =>
-///   import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
-/// );
-
-/* =========================================================
-   4) ACTIVE ROUTE COMPONENTS (single place to switch)
-   ========================================================= */
-const TradingPage = USE_LAZY_ROUTES
-  ? lazy(() => import("./pages/TradingPage")): 
-    (null as any);
-
-/* ==== COMMENTED OUT: all other lazy route components ==== */
-
-// const QuantumPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/QuantumPage"))
-//   : (null as any);
-
-// const BotPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/BotPage"))
-//   : (null as any);
-
-// const MLPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/MLPage"))
-//   : (null as any);
-
-// const DatabasePage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/DatabasePage"))
-//   : (null as any);
-
-// const WhalesPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/WhalesPage"))
-//   : (null as any);
-
-// const NewsPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/NewsPage"))
-//   : (null as any);
-
-// const APIPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/APIPage"))
-//   : (null as any);
-
-// const SettingsPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/SettingsPage"))
-//   : (null as any);
-
-// const BTCUSDTMonitor = USE_LAZY_ROUTES
-//   ? lazy(() => import("./pages/BTCUSDTMonitor"))
-//   : (null as any);
-
-// const LogsPage = USE_LAZY_ROUTES
-//   ? lazy(() => import("./features/logs").then((m) => ({ default: m.LogsPage })))
-//   : (null as any);
-
-// const DiagnosticsPage = USE_LAZY_ROUTES
-//   ? lazy(() =>
-//       import("./features/logs").then((m) => ({ default: m.DiagnosticsPage }))
-//     )
-//   : (null as any);
-
-/* =========================================================
-   5) NO-LAZY RESOLVER (only used when USE_LAZY_ROUTES=false)
-   - IMPORTANT: You MUST uncomment the direct imports above
-     and then paste them here (see instructions below).
-   ========================================================= */
-type AnyComp = React.ComponentType<any>;
-
-function assertComponent<T extends AnyComp | null>(
-  c: T,
-  name: string
-): asserts c is Exclude<T, null> {
-  if (!c) throw new Error(`Route component not set: ${name}`);
-}
-
-/* =========================================================
-   6) Loading Fallback
-   ========================================================= */
-const PageLoader = () => (
-  <div className="flex items-center justify-center h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-  </div>
-);
-
-/* =========================================================
-   7) APP
-   ========================================================= */
-const App = () => {
-  // If you turn off lazy, you MUST provide the direct imports.
-  if (!USE_LAZY_ROUTES) {
-    // 1) Uncomment the "NO LAZY" imports section (2)
-    // 2) Then replace these nulls by the imported symbols.
-    //
-    // Example:
-    // assertComponent(TradingPage, "TradingPage");  // not needed if you rewire below
-    //
-    // The clean approach is: DO NOT use this mixed-mode block.
-    // Instead, when USE_LAZY_ROUTES=false:
-    // - Comment section (4)
-    // - Uncomment section (2)
-    // - Use Routes directly with the imported components.
-    //
-    // Kept here only to force an explicit error if you forget.
-    assertComponent(TradingPage as any, "TradingPage");
-    // assertComponent(QuantumPage as any, "QuantumPage");
-    // assertComponent(BotPage as any, "BotPage");
-    // assertComponent(MLPage as any, "MLPage");
-    // assertComponent(DatabasePage as any, "DatabasePage");
-    // assertComponent(WhalesPage as any, "WhalesPage");
-    // assertComponent(NewsPage as any, "NewsPage");
-    // assertComponent(APIPage as any, "APIPage");
-    // assertComponent(SettingsPage as any, "SettingsPage");
-    // assertComponent(BTCUSDTMonitor as any, "BTCUSDTMonitor");
-    // assertComponent(LogsPage as any, "LogsPage");
-    // assertComponent(DiagnosticsPage as any, "DiagnosticsPage");
-  }
-
-  return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <TradingProvider>
-          <SettingsProvider>
-            <BrowserRouter>
-              <Suspense fallback={<PageLoader />}>
-                <Routes>
-                  <Route path="/" element={<AppLayout />}>
-                    <Route index element={<Navigate to="/trading" replace />} />
-
-                    <Route path="trading" element={<TradingPage />} />
-
-                    {/* ==== COMMENTED OUT: all other routes ==== */}
-                    {/*
-                    <Route path="quantum" element={<QuantumPage />} />
-                    <Route path="bot" element={<BotPage />} />
-                    <Route path="ml" element={<MLPage />} />
-                    <Route path="database" element={<DatabasePage />} />
-                    <Route path="whales" element={<WhalesPage />} />
-                    <Route path="news" element={<NewsPage />} />
-                    <Route path="api" element={<APIPage />} />
-                    <Route path="settings" element={<SettingsPage />} />
-
-                    <Route path="diagnostics" element={<DiagnosticsPage />} />
-                    <Route path="logs/:exchange" element={<LogsPage />} />
-
-                    <Route path="btcusdt" element={<BTCUSDTMonitor />} />
-                    */}
-                  </Route>
-                </Routes>
-              </Suspense>
-            </BrowserRouter>
-          </SettingsProvider>
-        </TradingProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
-  );
-};
-
-export default App;
-</file>
-
 <file path="readme/000_backfill_2_build.md">
 # AUTO-BACKFILL SYSTEM V2 - ENTERPRISE SERVICE LAYER PATTERN
 
@@ -194428,6 +195765,602 @@ EXPOSE 8100
 
 # Start der App
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import TradingPage from "./pages/TradingPage";
+import CoinMonitor from "./pages/CoinMonitor";
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/trading" element={<TradingPage />} />
+        <Route path="/coinmonitor" element={<CoinMonitor />} />
+        <Route path="/" element={<Navigate to="/trading" replace />} />
+        <Route path="*" element={<Navigate to="/trading" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+</file>
+
+<file path="backend/websocket/ws_message_parsers.py">
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+
+class BaseMessageParser:
+    """Base Class für Exchange Message Parser"""
+    
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Trade Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
+        """
+        raise NotImplementedError
+
+class BinanceMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm) - default: "spot"
+        """
+        try:
+            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
+            
+            # Binance Trade Message Format
+            if "e" in data and data["e"] == "trade":
+                trade = {
+                    "exchange": "binance",
+                    "symbol": data["s"],
+                    "trade_id": data["t"],
+                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
+                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
+                    "side": "buy" if data["m"] == False else "sell",
+                    "timestamp": data["T"],
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
+                return trade
+            else:
+                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BitgetMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
+            
+            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
+                # instId ist in "arg", nicht in "data"!
+                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                for trade in data.get("data", []):
+                    trade_obj = {
+                        "exchange": "bitget",
+                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GateIOMessageParser(BaseMessageParser):
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
+            
+            # Check for trade update event
+            if data.get("event") == "update" and data.get("channel") == "spot.trades":
+                result = data.get("result")
+                
+                if not result:
+                    logger.warning(f"⚠️ GATE.IO No result in trade update")
+                    return None
+                
+                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
+                if isinstance(result, dict):
+                    # Single trade as dict
+                    trade = result
+                elif isinstance(result, list) and len(result) > 0:
+                    # Array of trades
+                    trade = result[0]
+                else:
+                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
+                    return None
+                
+                trade_obj = {
+                    "exchange": "gateio",
+                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
+                    "trade_id": str(trade["id"]),
+                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                    "side": trade["side"],
+                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                return trade_obj
+            
+            # Subscription confirmation
+            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
+                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
+                return None
+            else:
+                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class HTXMessageParser(BaseMessageParser):
+    """
+    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
+    
+    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
+    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
+    """
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ DEBUG: Log message type und erste Bytes
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
+            else:
+                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
+            
+            # ✅ GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                # Check für GZIP Magic Bytes (0x1f 0x8b)
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    logger.info(f"✅ HTX GZIP detected, decompressing...")
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
+                else:
+                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
+                    raw_message = raw_message.decode('utf-8')
+            
+            # JSON Parse
+            data = json.loads(raw_message)
+            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
+            
+            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
+            if "ping" in data:
+                # Ping-Message erkannt, muss mit Pong beantwortet werden
+                # Wird vom WebSocket Handler verarbeitet
+                return {
+                    "type": "ping",
+                    "pong": data["ping"],
+                    "exchange": "htx"
+                }
+            
+            # ✅ Trade-Daten Parsing
+            if "tick" in data and "data" in data["tick"]:
+                trades = []
+                for trade in data["tick"]["data"]:
+                    trades.append({
+                        "exchange": "htx",
+                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
+                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                        "side": "buy" if trade["direction"] == "buy" else "sell",
+                        "timestamp": trade["ts"],
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    })
+                
+                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
+                return trades[0] if trades else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"HTX message parsing error: {e}")
+            return None
+
+class MEXCMessageParser(BaseMessageParser):
+    """
+    MEXC Message Parser mit Protocol Buffers Support
+    
+    MEXC sendet TWO Arten von Messages:
+    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
+    2. Binary: Protocol Buffers Trade-Daten
+    
+    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
+    Proto: https://github.com/mexcdevelop/websocket-proto
+    """
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
+                return await self._parse_protobuf_trade(raw_message, market)
+            else:
+                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
+                return await self._parse_json_message(raw_message, market)
+                
+        except Exception as e:
+            logger.error(f"MEXC message parsing error: {e}")
+            return None
+    
+    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON Messages (Subscription Responses)"""
+        try:
+            data = json.loads(raw_message)
+            
+            # Subscription Response
+            if "code" in data and "msg" in data:
+                if data["code"] == 0:
+                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
+                else:
+                    logger.error(f"❌ MEXC subscription error: {data}")
+                return None
+            
+            # Legacy JSON Trade Format (falls noch verwendet)
+            if "d" in data and "deals" in data.get("d", {}):
+                for trade in data["d"]["deals"]:
+                    return {
+                        "exchange": "mexc",
+                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
+                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
+                        "price": str(trade["p"]),
+                        "size": str(trade["v"]),
+                        "side": "buy" if trade.get("S") == 1 else "sell",
+                        "timestamp": int(trade["t"]),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"MEXC JSON parsing error: {e}")
+        return None
+    
+    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Protocol Buffers Trade-Daten
+        
+        Struktur (von MEXC Doku):
+        {
+          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
+          "publicdeals": {
+            "dealsList": [{
+              "price": "93220.00",
+              "quantity": "0.04438243",
+              "tradetype": 2,  // 1=Buy, 2=Sell
+              "time": 1736409765051
+            }]
+          },
+          "symbol": "BTCUSDT",
+          "sendtime": 1736409765052
+        }
+        """
+        try:
+            # ✅ Einfacher Protobuf Wire Format Parser
+            # Format: Tag-Length-Value (TLV)
+            
+            symbol = None
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            i = 0
+            while i < len(raw_message):
+                # Read Tag (field number + wire type)
+                if i >= len(raw_message):
+                    break
+                    
+                tag = raw_message[i]
+                i += 1
+                
+                wire_type = tag & 0x07
+                field_num = tag >> 3
+                
+                # Wire Type 2: Length-delimited (strings, embedded messages)
+                if wire_type == 2:
+                    # Read length
+                    length = raw_message[i]
+                    i += 1
+                    
+                    # Read value
+                    value = raw_message[i:i+length]
+                    i += length
+                    
+                    # Decode basierend auf Field Position
+                    try:
+                        decoded = value.decode('utf-8', errors='ignore')
+                        
+                        # Channel (field 1) - enthält Symbol
+                        if field_num == 1 and '@' in decoded:
+                            parts = decoded.split('@')
+                            if len(parts) >= 5:
+                                symbol = parts[-1]  # BTCUSDT am Ende
+                        
+                        # Symbol field (field 3)
+                        elif field_num == 3:
+                            symbol = decoded
+                        
+                        # Embedded message (dealsList)
+                        elif b'\n' in value or b'\x12' in value:
+                            # Parse nested trade data
+                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
+                            
+                    except:
+                        pass
+                
+                # Wire Type 0: Varint (int, enum)
+                elif wire_type == 0:
+                    # Skip varint
+                    while i < len(raw_message) and (raw_message[i] & 0x80):
+                        i += 1
+                    i += 1
+                
+                else:
+                    # Skip unknown wire types
+                    i += 1
+            
+            # ✅ Build Trade Object
+            if symbol and price and quantity:
+                return {
+                    "exchange": "mexc",
+                    "symbol": normalize_to_unified(symbol, "mexc"),
+                    "trade_id": str(timestamp or datetime.now().timestamp()),
+                    "price": str(price),
+                    "size": str(quantity),
+                    "side": "buy" if tradetype == 1 else "sell",
+                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
+                    "market": market
+                }
+            
+            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"MEXC protobuf parsing error: {e}")
+            return None
+    
+    def _parse_deal_data(self, data: bytes) -> tuple:
+        """Parse nested dealsList data"""
+        try:
+            # Suche nach String-Patterns für price und quantity
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            # Simple pattern matching für Decimal strings
+            text = data.decode('utf-8', errors='ignore')
+            
+            # Price ist meist die erste Decimal-Zahl
+            import re
+            decimals = re.findall(r'\d+\.\d+', text)
+            if len(decimals) >= 2:
+                price = decimals[0]
+                quantity = decimals[1]
+            
+            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
+            if b'\x18\x01' in data:
+                tradetype = 1  # Buy
+            elif b'\x18\x02' in data:
+                tradetype = 2  # Sell
+            
+            # Timestamp - varint nach trade type
+            # Simplified: extract any large number
+            for i in range(len(data) - 8):
+                if data[i] == 0x20:  # Tag for timestamp
+                    # Try to read varint
+                    timestamp = 0
+                    shift = 0
+                    for j in range(i+1, min(i+10, len(data))):
+                        b = data[j]
+                        timestamp |= (b & 0x7F) << shift
+                        if not (b & 0x80):
+                            break
+                        shift += 7
+                    if timestamp > 1000000000000:  # Reasonable timestamp
+                        break
+            
+            return price, quantity, tradetype, timestamp
+            
+        except Exception as e:
+            logger.error(f"Deal data parsing error: {e}")
+            return None, None, None, None
+
+class OKXMessageParser(BaseMessageParser):
+    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
+            
+            # OKX Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "okx",
+                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BybitMessageParser(BaseMessageParser):
+    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
+            
+            # Bybit Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "bybit",
+                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
+                        "trade_id": trade["i"],
+                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["S"].lower(),  # Buy -> buy
+                        "timestamp": int(trade["T"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class CoinbaseMessageParser(BaseMessageParser):
+    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
+            
+            # Coinbase Trade Message Format
+            if "events" in data:
+                for event in data["events"]:
+                    if "trades" in event:
+                        for trade in event["trades"]:
+                            trade_obj = {
+                                "exchange": "coinbase",
+                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
+                                "trade_id": trade["trade_id"],
+                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                                "side": trade["side"],
+                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
+                                "market": market  # ✅ Von Parameter, nicht hardcoded!
+                            }
+                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                            return trade_obj
+            else:
+                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GenericMessageParser(BaseMessageParser):
+    """Fallback Parser für unbekannte Exchanges"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw_message)
+            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
+            return None  # Kein generisches Format möglich
+        except Exception as e:
+            logger.error(f"{self.exchange} message parsing error: {e}")
+        return None
+
+# Exchange-spezifische Parser Registry
+MESSAGE_PARSERS = {
+    "binance": BinanceMessageParser,
+    "bitget": BitgetMessageParser,
+    "gateio": GateIOMessageParser,
+    "bybit": BybitMessageParser,     # ✅ Bybit Parser
+    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
+    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
+    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
+    "okx": OKXMessageParser,          # ✅ OKX Parser
+}
+
+def get_ws_message_parser(exchange: str) -> BaseMessageParser:
+    """Hole Message Parser für Exchange"""
+    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
+    return parser_class(exchange)
 </file>
 
 <file path="readme/000_live_backfill_data_build.md">
@@ -197057,582 +198990,6 @@ class BackfillLoopService:
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
-<file path="backend/websocket/ws_message_parsers.py">
-import json
-import gzip
-import logging
-from typing import Dict, Any, Optional, Union
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-
-class BaseMessageParser:
-    """Base Class für Exchange Message Parser"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Trade Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
-        """
-        raise NotImplementedError
-
-class BinanceMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm) - default: "spot"
-        """
-        try:
-            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
-            
-            # Binance Trade Message Format
-            if "e" in data and data["e"] == "trade":
-                trade = {
-                    "exchange": "binance",
-                    "symbol": data["s"],
-                    "trade_id": data["t"],
-                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
-                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
-                    "side": "buy" if data["m"] == False else "sell",
-                    "timestamp": data["T"],
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
-                return trade
-            else:
-                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BitgetMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
-            
-            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
-                # instId ist in "arg", nicht in "data"!
-                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
-                for trade in data.get("data", []):
-                    trade_obj = {
-                        "exchange": "bitget",
-                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GateIOMessageParser(BaseMessageParser):
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
-            
-            # Check for trade update event
-            if data.get("event") == "update" and data.get("channel") == "spot.trades":
-                result = data.get("result")
-                
-                if not result:
-                    logger.warning(f"⚠️ GATE.IO No result in trade update")
-                    return None
-                
-                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
-                if isinstance(result, dict):
-                    # Single trade as dict
-                    trade = result
-                elif isinstance(result, list) and len(result) > 0:
-                    # Array of trades
-                    trade = result[0]
-                else:
-                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
-                    return None
-                
-                trade_obj = {
-                    "exchange": "gateio",
-                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
-                    "trade_id": str(trade["id"]),
-                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                    "side": trade["side"],
-                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                return trade_obj
-            
-            # Subscription confirmation
-            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
-                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
-                return None
-            else:
-                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class HTXMessageParser(BaseMessageParser):
-    """
-    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
-    
-    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
-    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
-    """
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ DEBUG: Log message type und erste Bytes
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
-            else:
-                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
-            
-            # ✅ GZIP Decompression wenn binäre Daten
-            if isinstance(raw_message, bytes):
-                # Check für GZIP Magic Bytes (0x1f 0x8b)
-                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
-                    logger.info(f"✅ HTX GZIP detected, decompressing...")
-                    decompressed = gzip.decompress(raw_message)
-                    raw_message = decompressed.decode('utf-8')
-                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
-                else:
-                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
-                    raw_message = raw_message.decode('utf-8')
-            
-            # JSON Parse
-            data = json.loads(raw_message)
-            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
-            
-            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
-            if "ping" in data:
-                # Ping-Message erkannt, muss mit Pong beantwortet werden
-                # Wird vom WebSocket Handler verarbeitet
-                return {
-                    "type": "ping",
-                    "pong": data["ping"],
-                    "exchange": "htx"
-                }
-            
-            # ✅ Trade-Daten Parsing
-            if "tick" in data and "data" in data["tick"]:
-                trades = []
-                for trade in data["tick"]["data"]:
-                    trades.append({
-                        "exchange": "htx",
-                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
-                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                        "side": "buy" if trade["direction"] == "buy" else "sell",
-                        "timestamp": trade["ts"],
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    })
-                
-                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
-                return trades[0] if trades else None
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"HTX message parsing error: {e}")
-            return None
-
-class MEXCMessageParser(BaseMessageParser):
-    """
-    MEXC Message Parser mit Protocol Buffers Support
-    
-    MEXC sendet TWO Arten von Messages:
-    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
-    2. Binary: Protocol Buffers Trade-Daten
-    
-    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
-    Proto: https://github.com/mexcdevelop/websocket-proto
-    """
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
-                return await self._parse_protobuf_trade(raw_message, market)
-            else:
-                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
-                return await self._parse_json_message(raw_message, market)
-                
-        except Exception as e:
-            logger.error(f"MEXC message parsing error: {e}")
-            return None
-    
-    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON Messages (Subscription Responses)"""
-        try:
-            data = json.loads(raw_message)
-            
-            # Subscription Response
-            if "code" in data and "msg" in data:
-                if data["code"] == 0:
-                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
-                else:
-                    logger.error(f"❌ MEXC subscription error: {data}")
-                return None
-            
-            # Legacy JSON Trade Format (falls noch verwendet)
-            if "d" in data and "deals" in data.get("d", {}):
-                for trade in data["d"]["deals"]:
-                    return {
-                        "exchange": "mexc",
-                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
-                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
-                        "price": str(trade["p"]),
-                        "size": str(trade["v"]),
-                        "side": "buy" if trade.get("S") == 1 else "sell",
-                        "timestamp": int(trade["t"]),
-                        "market": market
-                    }
-        except Exception as e:
-            logger.error(f"MEXC JSON parsing error: {e}")
-        return None
-    
-    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse Protocol Buffers Trade-Daten
-        
-        Struktur (von MEXC Doku):
-        {
-          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
-          "publicdeals": {
-            "dealsList": [{
-              "price": "93220.00",
-              "quantity": "0.04438243",
-              "tradetype": 2,  // 1=Buy, 2=Sell
-              "time": 1736409765051
-            }]
-          },
-          "symbol": "BTCUSDT",
-          "sendtime": 1736409765052
-        }
-        """
-        try:
-            # ✅ Einfacher Protobuf Wire Format Parser
-            # Format: Tag-Length-Value (TLV)
-            
-            symbol = None
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            i = 0
-            while i < len(raw_message):
-                # Read Tag (field number + wire type)
-                if i >= len(raw_message):
-                    break
-                    
-                tag = raw_message[i]
-                i += 1
-                
-                wire_type = tag & 0x07
-                field_num = tag >> 3
-                
-                # Wire Type 2: Length-delimited (strings, embedded messages)
-                if wire_type == 2:
-                    # Read length
-                    length = raw_message[i]
-                    i += 1
-                    
-                    # Read value
-                    value = raw_message[i:i+length]
-                    i += length
-                    
-                    # Decode basierend auf Field Position
-                    try:
-                        decoded = value.decode('utf-8', errors='ignore')
-                        
-                        # Channel (field 1) - enthält Symbol
-                        if field_num == 1 and '@' in decoded:
-                            parts = decoded.split('@')
-                            if len(parts) >= 5:
-                                symbol = parts[-1]  # BTCUSDT am Ende
-                        
-                        # Symbol field (field 3)
-                        elif field_num == 3:
-                            symbol = decoded
-                        
-                        # Embedded message (dealsList)
-                        elif b'\n' in value or b'\x12' in value:
-                            # Parse nested trade data
-                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
-                            
-                    except:
-                        pass
-                
-                # Wire Type 0: Varint (int, enum)
-                elif wire_type == 0:
-                    # Skip varint
-                    while i < len(raw_message) and (raw_message[i] & 0x80):
-                        i += 1
-                    i += 1
-                
-                else:
-                    # Skip unknown wire types
-                    i += 1
-            
-            # ✅ Build Trade Object
-            if symbol and price and quantity:
-                return {
-                    "exchange": "mexc",
-                    "symbol": normalize_to_unified(symbol, "mexc"),
-                    "trade_id": str(timestamp or datetime.now().timestamp()),
-                    "price": str(price),
-                    "size": str(quantity),
-                    "side": "buy" if tradetype == 1 else "sell",
-                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
-                    "market": market
-                }
-            
-            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"MEXC protobuf parsing error: {e}")
-            return None
-    
-    def _parse_deal_data(self, data: bytes) -> tuple:
-        """Parse nested dealsList data"""
-        try:
-            # Suche nach String-Patterns für price und quantity
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            # Simple pattern matching für Decimal strings
-            text = data.decode('utf-8', errors='ignore')
-            
-            # Price ist meist die erste Decimal-Zahl
-            import re
-            decimals = re.findall(r'\d+\.\d+', text)
-            if len(decimals) >= 2:
-                price = decimals[0]
-                quantity = decimals[1]
-            
-            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
-            if b'\x18\x01' in data:
-                tradetype = 1  # Buy
-            elif b'\x18\x02' in data:
-                tradetype = 2  # Sell
-            
-            # Timestamp - varint nach trade type
-            # Simplified: extract any large number
-            for i in range(len(data) - 8):
-                if data[i] == 0x20:  # Tag for timestamp
-                    # Try to read varint
-                    timestamp = 0
-                    shift = 0
-                    for j in range(i+1, min(i+10, len(data))):
-                        b = data[j]
-                        timestamp |= (b & 0x7F) << shift
-                        if not (b & 0x80):
-                            break
-                        shift += 7
-                    if timestamp > 1000000000000:  # Reasonable timestamp
-                        break
-            
-            return price, quantity, tradetype, timestamp
-            
-        except Exception as e:
-            logger.error(f"Deal data parsing error: {e}")
-            return None, None, None, None
-
-class OKXMessageParser(BaseMessageParser):
-    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
-            
-            # OKX Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "okx",
-                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BybitMessageParser(BaseMessageParser):
-    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
-            
-            # Bybit Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "bybit",
-                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
-                        "trade_id": trade["i"],
-                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["S"].lower(),  # Buy -> buy
-                        "timestamp": int(trade["T"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class CoinbaseMessageParser(BaseMessageParser):
-    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
-            
-            # Coinbase Trade Message Format
-            if "events" in data:
-                for event in data["events"]:
-                    if "trades" in event:
-                        for trade in event["trades"]:
-                            trade_obj = {
-                                "exchange": "coinbase",
-                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
-                                "trade_id": trade["trade_id"],
-                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                                "side": trade["side"],
-                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
-                                "market": market  # ✅ Von Parameter, nicht hardcoded!
-                            }
-                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                            return trade_obj
-            else:
-                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GenericMessageParser(BaseMessageParser):
-    """Fallback Parser für unbekannte Exchanges"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(raw_message)
-            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
-            return None  # Kein generisches Format möglich
-        except Exception as e:
-            logger.error(f"{self.exchange} message parsing error: {e}")
-        return None
-
-# Exchange-spezifische Parser Registry
-MESSAGE_PARSERS = {
-    "binance": BinanceMessageParser,
-    "bitget": BitgetMessageParser,
-    "gateio": GateIOMessageParser,
-    "bybit": BybitMessageParser,     # ✅ Bybit Parser
-    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
-    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
-    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
-    "okx": OKXMessageParser,          # ✅ OKX Parser
-}
-
-def get_ws_message_parser(exchange: str) -> BaseMessageParser:
-    """Hole Message Parser für Exchange"""
-    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
-    return parser_class(exchange)
-</file>
-
 <file path="backend/api/routers/ro_historical.py">
 # backend/api/routers/ro_historical.py
 """
@@ -198819,6 +200176,427 @@ def get_available_backfill_services():
     }
 </file>
 
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                if not trade_data:
+                    return  # Keine Trade-Daten in Message
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
+                from backend.database.redis import unified_rs_service
+                
+                # Nutze rs_ Lane System für Redis Operations
+                success = await unified_rs_service.add_trade(
+                    exchange, symbol, trade_data, market
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                
+                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
+                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
+                await self.broadcast_to_frontend(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    message_type="trade_data",
+                    data=trade_data
+                )
+                
+                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
+</file>
+
 <file path="monitor-system.sh">
 #!/usr/bin/env bash
 # =============================================================================
@@ -199797,427 +201575,6 @@ async def run_unified_aggregator():
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
-                await self.broadcast_to_frontend(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    message_type="trade_data",
-                    data=trade_data
-                )
-                
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
 </file>
 
 <file path="start-system.sh">
