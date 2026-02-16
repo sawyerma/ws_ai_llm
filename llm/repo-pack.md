@@ -396,6 +396,8 @@ frontend/
   src/
     config/
       exchangeSupport.ts
+    contexts/
+      TradingContext.tsx
     pages/
       CoinMonitor/
         components/
@@ -407,8 +409,13 @@ frontend/
       TradingPage/
         components/
           ChartSection.tsx
+          CoinSelector.tsx
           OrderbookPanel.tsx
+          PriceDisplay.tsx
+          SystemStatus.tsx
+          TimeButtons.tsx
           TradesPanel.tsx
+          TradingTerminal.tsx
         index.tsx
         TradingPage.tsx
     services/
@@ -423,6 +430,7 @@ frontend/
         Navigation.tsx
         RootLayout.tsx
     App.tsx
+    main.tsx
   vite/
     client
   @react-refresh
@@ -74143,6 +74151,557 @@ chmod +x tests/test_coin_mapper_v1.sh
 **🚀 SYSTEM IST JETZT PRODUKTIONSBEREIT!**
 </file>
 
+<file path="readme/000_exchange_heal.md">
+# 🔧 EXCHANGE HEALING - COINMAPPER INTEGRATION
+**CoinMapper Integration für generische Symbol-Konvertierung**
+
+Beseitigung aller Hardcoding-Verstöße in WebSocket-System für 8 Exchanges
+
+---
+
+## ⚠️ ENTWICKLUNGSREGELN - ABSOLUT PFLICHT!
+
+**DIESE REGELN MÜSSEN BEI JEDEM FIX BEFOLGT WERDEN:**
+
+### 🚫 VERBOTEN - NIEMALS MACHEN:
+
+1. **NIEMALS HARDCODED**
+   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
+   - ❌ KEINE hardcoded Symbols, URLs, Parameter
+   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"` für Symbol-Konvertierung
+   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
+
+2. **NIEMALS MOCK DATEN**
+   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
+   - ❌ KEINE Test-Stubs in Production-Code
+   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
+
+3. **NIEMALS LEGACY CODE**
+   - ❌ KEINE veralteten Patterns, deprecated Funktionen
+   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
+   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
+
+4. **NIEMALS EXCHANGE-SPEZIFISCH**
+   - ❌ KEINE If-Bedingungen für Exchange-spezifische Symbol-Formate
+   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
+   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
+
+5. **NIEMALS NEUE DATEIEN OHNE NOT**
+   - ❌ KEINE neuen Dateien erstellen wenn bestehende erweitert werden können
+   - ❌ KEINE Duplikation von Funktionalität
+   - ✅ IMMER bestehende Struktur prüfen und erweitern
+
+---
+
+## 📋 EXECUTIVE SUMMARY
+
+**Problem:** 5/8 Exchanges funktionieren nicht wegen Hardcoding in Symbol-Konvertierungen
+
+**Root Causes:**
+1. ❌ Gate.io: Double-Underscore Bug (`BTC__USDT` statt `BTC_USDT`)
+2. ❌ OKX: Nicht-generische Symbol-Konvertierung
+3. ❌ Parser: Manuelle String-Operationen statt CoinMapper-Nutzung
+
+**Lösung:** CoinMapper-Integration für generische, wartbare Symbol-Konvertierung
+
+---
+
+## 🎯 ANPASSUNGEN AN REALE PROJEKT-PFADE
+
+### **KRITISCH - Import-Pfade:**
+
+✅ **KORREKT** (für dieses Projekt):
+```python
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+```
+
+### **Symbol-Definition:**
+- Im aktuellen System ist `symbol` bereits das **native Symbol** (z.B. `BTC_USDT` für Gate.io)
+- `native_symbol` im Catalog = Symbol wie Exchange es erwartet
+- Unified Symbol = normalisierte Form für interne Verarbeitung (`BTCUSDT`)
+
+---
+
+## 📋 IMPLEMENTATION TASKS - VOLLSTÄNDIGE CHECKLISTE
+
+### PHASE 1: VORBEREITUNG & ANALYSE (1-5)
+- [ ] **1.** Bestehende Dateien analysieren: `backend/websocket/ws_manager.py`
+- [ ] **2.** Bestehende Dateien analysieren: `backend/websocket/ws_message_parsers.py`
+- [ ] **3.** CoinMapper prüfen: `backend/services/domain/unified_symbol_registry.py`
+- [ ] **4.** Keys Model prüfen: `backend/api/models/keys.py`
+- [ ] **5.** Hardcoding-Stellen identifizieren ✅ **CHECKPOINT: Keine neuen Dateien!**
+
+### PHASE 2: WS_MANAGER.PY ERWEITERN (6-12) 
+- [ ] **6.** `backend/websocket/ws_manager.py` öffnen
+- [ ] **7.** Imports am Anfang hinzufügen (KORREKTE Pfade):
+  ```python
+  from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+  from backend.api.models.keys import Market
+  import time
+  ```
+- [ ] **8.** Funktion `get_native_symbol_from_mapper()` in ws_manager.py erstellen
+- [ ] **9.** `get_subscribe_message()` Funktion erweitern mit CoinMapper-Logik
+- [ ] **10.** Gate.io Hardcoding entfernen: `.replace("USDT", "_USDT")`
+- [ ] **11.** OKX Hardcoding entfernen: `.replace("USDT", "-USDT")`
+- [ ] **12.** Subscribe-Messages nutzen generierte native Symbole ✅ **CHECKPOINT: ws_manager.py erweitert!**
+
+### PHASE 3: WS_MESSAGE_PARSERS.PY ERWEITERN (13-18)
+- [ ] **13.** `backend/websocket/ws_message_parsers.py` öffnen
+- [ ] **14.** Funktion `normalize_to_unified()` am Anfang der Datei hinzufügen
+- [ ] **15.** `GateIOMessageParser` anpassen: Symbol-Feld nutzt `normalize_to_unified()`
+- [ ] **16.** `OKXMessageParser` anpassen: Symbol-Feld nutzt `normalize_to_unified()`
+- [ ] **17.** Hardcoding entfernen: `.replace("-", "")` in OKX Parser
+- [ ] **18.** Alle Parser prüfen auf konsistente Normalisierung ✅ **CHECKPOINT: Parser normalisiert!**
+
+### PHASE 4: TESTING & VALIDATION (19-28)
+- [ ] **19.** System stoppen: `./stop-system.sh`
+- [ ] **20.** System starten: `./start-system.sh`
+- [ ] **21.** Logs prüfen: Keine ImportErrors
+- [ ] **22.** WebSocket-Verbindungen prüfen: Alle 8 Exchanges connected
+- [ ] **23.** Subscribe-Messages prüfen: Korrektes natives Symbol
+  - Gate.io: `BTC_USDT` (NICHT `BTC__USDT`)
+  - OKX: `BTC-USDT`
+  - HTX: `btcusdt` (lowercase)
+- [ ] **24.** Redis Streams prüfen: `redis-cli -p 6380 XLEN gateio:trade:spot:BTCUSDT`
+- [ ] **25.** Gate.io: Stream > 0 Trades (vorher: 0) ✅
+- [ ] **26.** OKX: Stream > 0 Trades (vorher: 0) ✅
+- [ ] **27.** Health Check: `curl http://localhost:8100/health/ready`
+- [ ] **28.** 5-Minuten Monitoring: Alle Exchanges stabil ✅ **CHECKPOINT: System funktioniert!**
+
+### PHASE 5: CLEANUP & DOKUMENTATION (29-32)
+- [ ] **29.** Alte Kommentare mit Hardcoding-Hinweisen entfernen
+- [ ] **30.** Code-Kommentare hinzufügen: "✅ CoinMapper-Integration"
+- [ ] **31.** EXCHANGE_STATUS_REPORT.md updaten: 8/8 HEALTHY
+- [ ] **32.** Diese README finalisieren mit Erfolgs-Status ✅ **CHECKPOINT: Dokumentation vollständig!**
+
+---
+
+## 🔧 IMPLEMENTIERUNGS-REIHENFOLGE:
+1. **Analyse zuerst** (Tasks 1-5) - Keine neuen Dateien!
+2. **ws_manager.py erweitern** (Tasks 6-12) - Bestehende Datei
+3. **Parser erweitern** (Tasks 13-18) - Bestehende Datei
+4. **Ausgiebig testen** (Tasks 19-28)
+5. **Cleanup am Ende** (Tasks 29-32)
+
+---
+
+## 📁 DATEI-STRUKTUR (BESTEHENDE DATEIEN ERWEITERN)
+
+### Zu erweiternde Dateien:
+```
+backend/websocket/ws_manager.py
+└── + Funktion get_native_symbol_from_mapper() hinzufügen
+└── + get_subscribe_message() erweitern mit CoinMapper
+└── + Hardcoding entfernen (Gate.io, OKX)
+
+backend/websocket/ws_message_parsers.py
+└── + Funktion normalize_to_unified() hinzufügen
+└── + GateIOMessageParser erweitern
+└── + OKXMessageParser erweitern
+└── + Hardcoding entfernen
+
+= NUR 2 DATEIEN ZU ERWEITERN (KEINE NEUEN DATEIEN!)
+```
+
+### Bestehende CoinMapper-Infrastruktur (NUTZEN):
+```
+backend/services/domain/unified_symbol_registry.py  ✅ Existiert
+backend/api/models/keys.py                          ✅ Existiert
+backend/services/adapter/exchange_factory.py        ✅ Existiert
+```
+
+---
+
+## 🚨 IDENTIFIZIERTE HARDCODING-VERSTÖSSE
+
+### **1. ws_manager.py - Zeile ~48-50 (Gate.io)**
+```python
+# ❌ VERBOTEN: HARDCODED Symbol-Konvertierung
+if exchange == "gateio":
+    gate_symbol = symbol.replace("USDT", "_USDT").replace("USD", "_USD")
+    # Problem: BTC_USDT → BTC__USDT (double underscore!)
+```
+
+**Root Cause:** String-Replacement ohne Prüfung ob Underscore bereits existiert
+
+---
+
+### **2. ws_manager.py - Zeile ~73-75 (OKX)**
+```python
+# ❌ VERBOTEN: HARDCODED Symbol-Konvertierung
+if exchange == "okx":
+    okx_symbol = symbol.replace("USDT", "-USDT").replace("USD", "-USD")
+    # Problem: Nur für USDT/USD, nicht generisch
+```
+
+**Root Cause:** Nicht-generische Symbol-Konvertierung
+
+---
+
+### **3. ws_message_parsers.py - Zeile ~160 (OKX Parser)**
+```python
+# ❌ VERBOTEN: HARDCODED Symbol-Zurück-Konvertierung
+"symbol": trade["instId"].replace("-", ""),  # BTC-USDT -> BTCUSDT
+```
+
+**Root Cause:** Parser macht manuelle String-Konvertierung
+
+---
+
+### **4. ws_message_parsers.py - Zeile ~84 (Gate.io Parser)**
+```python
+# ❌ SEMI-HARDCODED: Behält natives Format
+"symbol": trade["currency_pair"],  # BTC_USDT bleibt so!
+```
+
+**Root Cause:** Symbol wird nicht normalisiert
+
+---
+
+## 💡 LÖSUNG: COINMAPPER INTEGRATION
+
+### **Schritt 1: get_native_symbol_from_mapper() in ws_manager.py**
+
+**Funktionen am Anfang von ws_manager.py einfügen (nach den Imports):**
+
+```python
+import logging
+from typing import Optional, Tuple
+
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market as MarketEnum
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> MarketEnum:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return MarketEnum.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return MarketEnum.USDTM
+    if m in ("coinm", "inverse"):
+        return MarketEnum.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return MarketEnum.USDCM
+    # Fallback – sicher auf SPOT
+    return MarketEnum.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+```
+
+---
+
+### **Schritt 2: get_subscribe_message() erweitern**
+
+**ERSETZE bestehende Hardcoding-Blöcke:**
+
+```python
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        channel = f"{market}@public.deals.v3.api@{native_symbol}"
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io - ❌ ALTE HARDCODING-LOGIK ENTFERNT!
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX - ❌ ALTE HARDCODING-LOGIK ENTFERNT!
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: URL-basiert
+    if exchange == "htx":
+        return None
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+```
+
+---
+
+### **Schritt 3: normalize_to_unified() in ws_message_parsers.py**
+
+**Am Anfang der Datei nach Imports hinzufügen:**
+
+```python
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+```
+
+---
+
+### **Schritt 4: Parser anpassen**
+
+**GateIOMessageParser:**
+```python
+# Vorher:
+"symbol": trade["currency_pair"],
+
+# Nachher:
+"symbol": normalize_to_unified(trade["currency_pair"], "gateio"),
+```
+
+**OKXMessageParser:**
+```python
+# Vorher:
+"symbol": trade["instId"].replace("-", ""),
+
+# Nachher:
+"symbol": normalize_to_unified(trade["instId"], "okx"),
+```
+
+---
+
+## 📊 SUCCESS METRICS
+
+### **Vorher (Status Quo):**
+```
+✅ HEALTHY: 3/8 (Binance, Bitget, Bybit)
+❌ FAILED:  5/8 (Gate.io, OKX, HTX, MEXC, Coinbase)
+
+Trades/Min: ~300 (nur von 3 Exchanges)
+```
+
+### **Nachher (Ziel):**
+```
+✅ HEALTHY: 8/8 (Alle Exchanges)
+❌ FAILED:  0/8
+
+Trades/Min: ~1500+ (von allen 8 Exchanges)
+```
+
+### **Code-Quality:**
+```
+Vorher:
+- ❌ 4 Hardcoding-Stellen in ws_manager.py
+- ❌ 2 Hardcoding-Stellen in ws_message_parsers.py
+- ❌ Nicht-generische Symbol-Konvertierung
+
+Nachher:
+- ✅ 0 Hardcoding-Stellen
+- ✅ CoinMapper-Integration
+- ✅ Wartbar und erweiterbar
+```
+
+---
+
+## 🎯 FINAL VALIDATION CHECKLIST
+
+### **Architektur:**
+- [ ] ✅ ws_manager.py nutzt CoinMapper (KEINE neuen Dateien!)
+- [ ] ✅ ws_message_parsers.py normalisiert Symbole
+- [ ] ✅ Keine Hardcoding-Verstöße mehr
+- [ ] ✅ Imports nutzen korrekte Pfade
+
+### **Funktionalität:**
+- [ ] ✅ Alle 8 Exchanges: WebSocket connected
+- [ ] ✅ Alle 8 Exchanges: Subscribe erfolgreich
+- [ ] ✅ Alle 8 Exchanges: Trades in Redis
+- [ ] ✅ Symbole sind korrekt normalisiert
+
+### **Performance:**
+- [ ] ✅ Keine Reconnections
+- [ ] ✅ Keine Parser-Errors
+- [ ] ✅ Trade-Counts steigen kontinuierlich
+- [ ] ✅ Health Status: "healthy"
+
+---
+
+## 🚀 DEPLOYMENT
+
+```bash
+# 1. System stoppen
+./stop-system.sh
+
+# 2. System starten
+./start-system.sh
+
+# 3. Health-Check
+curl http://localhost:8100/health/ready
+
+# 4. WebSocket-Metrics
+curl http://localhost:8100/ws/metrics/ | jq
+
+# 5. Monitor für 5 Minuten
+watch -n 10 'curl -s http://localhost:8100/ws/metrics/ | jq ".exchanges"'
+```
+
+---
+
+## 📚 REFERENZEN
+
+**System-Dokumentation:**
+- `readme/000_websocket_build.md` - WebSocket-System
+- `readme/000_coin_mapper_build.md` - CoinMapper-Architektur
+- `readme/EXCHANGE_STATUS_REPORT.md` - Detaillierte Fehleranalyse
+
+**Code-Locations:**
+- `backend/websocket/ws_manager.py` - zu erweitern
+- `backend/websocket/ws_message_parsers.py` - zu erweitern
+- `backend/services/domain/unified_symbol_registry.py` - existiert
+- `backend/api/models/keys.py` - existiert
+
+**Exchange-Dokumentationen:**
+- Gate.io: https://www.gate.io/docs/developers/apiv4/ws/en/
+- OKX: https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel
+
+---
+
+**STATUS:** 🔴 Ready for Implementation  
+**NEXT:** Starte mit Task 1 (Analyse bestehender Dateien)
+</file>
+
 <file path="readme/000_graceful_start_system_build.md">
 # GRACEFUL START SYSTEM - ENTERPRISE RESILIENT ARCHITECTURE
 
@@ -90001,28 +90560,6 @@ echo "✅ VERIFICATION COMPLETE"
 echo "=================================================="
 </file>
 
-<file path="frontend/src/config/exchangeSupport.ts">
-// frontend/src/config/exchangeSupport.ts
-
-export type MarketType = "spot" | "futures" | "margin";
-
-/**
- * Normalisiert alles was aus UI/Context kommen kann auf Backend-Route MarketType.
- * Wenn du später Labels wie "Spot" / "Futures" nutzt -> hier mappen.
- */
-export function getMarketFilter(market: string): MarketType {
-  const m = String(market || "").toLowerCase().trim();
-  if (m === "spot") return "spot";
-  if (m === "futures") return "futures";
-  if (m === "margin") return "margin";
-
-  // tolerante Aliases
-  if (m.includes("future")) return "futures";
-  if (m.includes("marg")) return "margin";
-  return "spot";
-}
-</file>
-
 <file path="frontend/src/pages/CoinMonitor/components/AlertPanel.tsx">
 // frontend/src/pages/Monitor/components/AlertPanel.tsx
 import { useState } from "react";
@@ -90164,120 +90701,409 @@ export function usePriceAlerts(currentPrice: number) {
 export { default } from "./CoinMonitor";
 </file>
 
-<file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
-// frontend/src/pages/TradingPage/components/ChartSection.tsx
-import { useEffect, useMemo, useRef } from "react";
-import type { LiveCandle } from "../hooks/useWsLane";
+<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, RefreshCw, Settings } from 'lucide-react';
 
-declare global {
-  interface Window {
-    LightweightCharts?: any;
-  }
+// ✅ DYNAMISCH: Types inline (kein Legacy Import)
+interface CoinSetting {
+  symbol: string;
+  exchange: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until: string;
+  favorite: boolean;
+  chart_resolution: string;
+  db_resolutions: string[];
 }
 
-type Props = {
-  candlesLive: LiveCandle[];
-  candlesHist: LiveCandle[];
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange?: string;
+  selectedMarket?: string;
+}
+
+// ✅ DYNAMISCH: API Calls direkt (kein Mock)
+const getSettings = async (exchange: string): Promise<CoinSetting[]> => {
+  try {
+    const response = await fetch(`/api/settings/coins?exchange=${exchange}`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('Failed to load settings:', error);
+    return [];
+  }
 };
 
-function toSeries(c: LiveCandle) {
-  return {
-    time: c.t, // seconds
-    open: c.o,
-    high: c.h,
-    low: c.l,
-    close: c.c,
-  };
-}
+const saveSettings = async (settings: CoinSetting[]): Promise<void> => {
+  try {
+    await fetch('/api/settings/coins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+  }
+};
 
-export function ChartSection({ candlesLive, candlesHist }: Props) {
-  const elRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<any | null>(null);
-  const seriesRef = useRef<any | null>(null);
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange = "bitget",
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<CoinSetting[]>([]);
+  const [symbols, setSymbols] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
-  const merged = useMemo(() => {
-    // Historie + Live in eine Timeline (keine zweite Lane)
-    const map = new Map<number, LiveCandle>();
-    for (const c of candlesHist) map.set(c.t, c);
-    for (const c of candlesLive) map.set(c.t, c);
-
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
-  }, [candlesHist, candlesLive]);
+  const safeSettings = Array.isArray(settings) ? settings : [];
 
   useEffect(() => {
-    const root = elRef.current;
-    if (!root) return;
-
-    const L = window.LightweightCharts;
-    if (!L) return;
-
-    const chart = L.createChart(root, {
-      layout: { background: { type: "solid", color: "#030712" }, textColor: "#e5e7eb" },
-      grid: { vertLines: { color: "#111827" }, horzLines: { color: "#111827" } },
-      timeScale: { timeVisible: true, secondsVisible: true },
-      rightPriceScale: { borderColor: "#1f2937" },
-      crosshair: { mode: 1 },
-      width: root.clientWidth,
-      height: 520,
-    });
-
-    // UMD: addSeries(window.LightweightCharts.CandlestickSeries)
-    const series = chart.addSeries(L.CandlestickSeries, {
-      priceLineVisible: true,
-      lastValueVisible: true,
-    });
-
-    chartRef.current = chart;
-    seriesRef.current = series;
-
-    const ro = new ResizeObserver(() => {
-      if (!chartRef.current || !elRef.current) return;
-      chartRef.current.applyOptions({ width: elRef.current.clientWidth });
-    });
-    ro.observe(root);
-
-    return () => {
-      ro.disconnect();
-      try {
-        chart.remove();
-      } catch {
-        // ignore
-      }
-      chartRef.current = null;
-      seriesRef.current = null;
+    const loadSettings = async () => {
+      const data = await getSettings(exchange);
+      setSettings(data);
     };
-  }, []);
+    loadSettings();
+  }, [exchange]);
+
+  const loadSymbols = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/market/symbols?exchange=${exchange}`);
+      const data = await response.json();
+      setSymbols(data.symbols || []);
+    } catch (err) {
+      console.error('Failed to load symbols:', err);
+      setLocalError('Failed to load symbols');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const L = window.LightweightCharts;
-    if (!L) return;
-    const series = seriesRef.current;
-    if (!series) return;
+    loadSymbols();
+  }, [exchange, selectedMarket]);
 
-    const data = merged.map(toSeries);
-    series.setData(data);
+  const toggleFavorite = (symbol: string) => {
+    setFavorites(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(symbol)) {
+        newSet.delete(symbol);
+      } else {
+        newSet.add(symbol);
+      }
+      return newSet;
+    });
+  };
 
-    if (data.length > 5 && chartRef.current) {
-      chartRef.current.timeScale().fitContent();
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    filtered = filtered.filter((symbol: any, index: number, self: any[]) => 
+      index === self.findIndex((s: any) => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    if (searchTerm) {
+      filtered = filtered.filter((symbol: any) =>
+        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
+      );
     }
-  }, [merged]);
 
-  const hasLib = !!window.LightweightCharts;
+    return filtered.sort((a: any, b: any) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
+
+  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleFavorite(symbol);
+  };
+
+  const handleLiveClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, store_live: !s.store_live } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: true,
+        load_history: false,
+        history_until: '',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const handleHistoricalClick = async (coin: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const coinExchange = coin.exchange || exchange;
+    const existingSetting = safeSettings.find(s => 
+      s.symbol === coin.symbol && 
+      s.exchange === coinExchange &&
+      s.market === coin.market_type
+    );
+    
+    let updated;
+    if (existingSetting) {
+      updated = safeSettings.map(s => 
+        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
+          ? { ...s, load_history: !s.load_history } : s
+      );
+    } else {
+      const newSetting: CoinSetting = {
+        symbol: coin.symbol,
+        exchange: coinExchange,
+        market: coin.market_type,
+        store_live: false,
+        load_history: true,
+        history_until: '2020-01-01',
+        favorite: false,
+        chart_resolution: '1m',
+        db_resolutions: []
+      };
+      updated = [...safeSettings, newSetting];
+    }
+    
+    await saveSettings(updated);
+    const freshData = await getSettings(exchange);
+    setSettings(freshData);
+  };
+
+  const isLiveEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.store_live || false;
+  };
+
+  const isHistoricalEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
+    const setting = safeSettings.find(s => 
+      s.symbol === symbol && 
+      s.exchange === coinExchange && 
+      s.market === market
+    );
+    return setting?.load_history || false;
+  };
+
+  const handleSymbolSelect = (coin: any) => {
+    onSymbolSelect(coin.symbol);
+    setIsOpen(false);
+  };
+
+  const displaySymbol = selectedSymbol;
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-800 p-3">
-      <div className="flex items-center justify-between px-2 py-2">
-        <div className="font-semibold">Chart</div>
-        {!hasLib && (
-          <div className="text-xs text-red-400">
-            LightweightCharts nicht geladen (window.LightweightCharts fehlt)
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {displaySymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
           </div>
-        )}
-      </div>
-      <div ref={elRef} className="w-full" />
+
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          <div className="max-h-[300px] overflow-y-auto">
+            {loading ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin: any) => {
+                const uniqueKey = (coin as any).instrument_uid 
+                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === displaySymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => handleSymbolSelect(coin)}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleLiveClick(coin, e)}
+                        title={isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Live data ACTIVE for ${coin.symbol}` 
+                          : `Enable Live data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                    <div className="w-[12px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleHistoricalClick(coin, e)}
+                        title={isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
+                          ? `Historical data ACTIVE for ${coin.symbol}` 
+                          : `Enable Historical data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loading}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
     </div>
   );
-}
+};
+
+export default CoinSelector;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/OrderbookPanel.tsx">
@@ -90333,6 +91159,585 @@ export function OrderbookPanel({ orderbook, currentPrice }: Props) {
     </div>
   );
 }
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/PriceDisplay.tsx">
+import { useState, useEffect } from "react";
+
+// ✅ DYNAMISCH: Types inline (kein Import aus alten Strukturen)
+interface CoinData {
+  id: string;
+  symbol: string;
+  market: string;
+  price: string | number;
+  change: string | number;
+  changePercent: number;
+  isFavorite: boolean;
+  liveStatus: string;
+  histStatus: string;
+}
+
+interface MarketData {
+  change24h?: string | number;
+  high24h?: string | number;
+  low24h?: string | number;
+  volume24h?: string | number;
+  turnover24h?: string | number;
+  category?: string;
+}
+
+interface PriceDisplayProps {
+  currentCoinData: CoinData;
+  marketData?: MarketData;
+  tradingMode?: string;
+}
+
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim().replace("%", "").replace(",", ".");
+    const n = Number.parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function toNumberFromPrice(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim().replace(/\s+/g, "").replace(",", ".");
+    const n = Number.parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function getDelta24hColor(change24h: unknown): string {
+  const n = toNumber(change24h);
+  if (n === null) return "text-muted-foreground";
+  if (n > 0) return "text-green-500";
+  if (n < 0) return "text-red-500";
+  return "text-muted-foreground";
+}
+
+function fmtChange24h(v: unknown): string {
+  const n = toNumber(v);
+  if (n === null) return "-";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function fmtPrice(v: unknown, digits = 2): string {
+  const n = toNumberFromPrice(v);
+  if (n === null) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+const PriceDisplay = ({
+  currentCoinData,
+  marketData,
+  tradingMode = "Spot",
+}: PriceDisplayProps) => {
+  const data: MarketData = marketData || {
+    change24h: currentCoinData.change || "0.00",
+    high24h: "0.00",
+    low24h: "0.00",
+    volume24h: "0.00",
+    turnover24h: "0.00",
+  };
+
+  const [previousPrice, setPreviousPrice] = useState<number | null>(
+    toNumberFromPrice(currentCoinData.price),
+  );
+  const [priceColor, setPriceColor] = useState<string>("text-foreground");
+
+  useEffect(() => {
+    const currentPriceNum = toNumberFromPrice(currentCoinData.price);
+    
+    if (currentPriceNum !== null && previousPrice !== null) {
+      if (currentPriceNum > previousPrice) {
+        setPriceColor("text-green-600");
+      } else if (currentPriceNum < previousPrice) {
+        setPriceColor("text-red-600");
+      } else {
+        setPriceColor("text-foreground");
+      }
+    }
+
+    setPreviousPrice(currentPriceNum);
+  }, [currentCoinData.price, previousPrice]);
+
+
+  return (
+    <div className="flex items-start gap-8 mb-1" data-testid="price-display">
+      {/* Price + Type */}
+      <div className="flex flex-col items-start min-w-[170px]">
+        <span
+          className={`text-[1.65rem] font-bold ${priceColor} leading-tight tracking-wider`}
+        >
+          {fmtPrice(currentCoinData.price, 8)}
+        </span>
+        <span className="text-sm text-muted-foreground tracking-wider mt-0">
+          {tradingMode}
+        </span>
+      </div>
+
+      {/* Market Data - All in one line */}
+      <div className="flex items-center gap-x-6 text-[0.8rem] mt-2 font-sans whitespace-nowrap text-muted-foreground">
+        <span>
+          Δ 24h:{" "}
+          <span className={`font-bold ${getDelta24hColor(data.change24h)}`}>
+            {fmtChange24h(data.change24h)}
+          </span>
+        </span>
+        <span>
+          24h Hoch: <b>{data.high24h}</b>
+        </span>
+        <span>
+          24h Tief: <b>{data.low24h}</b>
+        </span>
+        <span>
+          24h Vol: <b>{data.volume24h}</b>
+        </span>
+        <span>
+          24h Umsatz: <b>{data.turnover24h}</b>
+        </span>
+        {data.category && (
+          <span>
+            Kategorie: <span className="font-bold">{data.category}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default PriceDisplay;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/SystemStatus.tsx">
+import React from 'react';
+
+const SystemStatus: React.FC = () => {
+  // ✅ DYNAMISCH: Später mit echtem Health Check erweitern
+  const backendStatus = 'online';
+  const healthStatus = 'unknown';
+
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-3 text-xs font-mono">
+      <div className="flex items-center gap-1">
+        <div className="w-2 h-2 rounded-full bg-green-500"></div>
+        <span className="text-green-500 font-medium">
+          System {backendStatus}
+        </span>
+        <span className="text-muted-foreground ml-2">
+          | Status: <span className="text-yellow-500">{healthStatus}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
+export default SystemStatus;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
+import { useState } from "react";
+
+interface TimeButtonsProps {
+  onIntervalChange?: (interval: string) => void;
+  onIndicatorSelect?: (indicator: string) => void;
+}
+
+const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
+  const [activeTime, setActiveTime] = useState("1m");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIntervals, setSelectedIntervals] = useState(
+    new Set(["1s", "5s", "15s", "1m", "1h"]),
+  );
+  const [isGridView, setIsGridView] = useState(false);
+
+  const displayIntervals = Array.from(selectedIntervals);
+
+  const allIntervals = [
+    { label: "1s", value: "1s" },
+    { label: "5s", value: "5s" },
+    { label: "10s", value: "10s" },
+    { label: "15s", value: "15s" },
+    { label: "30s", value: "30s" },
+    { label: "1m", value: "1m" },
+    { label: "2m", value: "2m" },
+    { label: "5m", value: "5m" },
+    { label: "10m", value: "10m" },
+    { label: "15m", value: "15m" },
+    { label: "30m", value: "30m" },
+    { label: "1h", value: "1h" },
+    { label: "2h", value: "2h" },
+    { label: "4h", value: "4h" },
+    { label: "6h", value: "6h" },
+    { label: "12h", value: "12h" },
+    { label: "1d", value: "1d" },
+    { label: "1w", value: "1w" },
+    { label: "1M", value: "1M" },
+    { label: "6M", value: "6M" },
+  ];
+
+  const handleTimeSelect = (interval: string) => {
+    setActiveTime(interval);
+    setIsDropdownOpen(false);
+    
+    if (onIntervalChange) {
+      onIntervalChange(interval);
+    }
+  };
+
+  const handleEditToggle = () => {
+    setIsEditMode(!isEditMode);
+  };
+
+  const handleIntervalToggle = (interval: string) => {
+    const newSelected = new Set(selectedIntervals);
+    if (newSelected.has(interval)) {
+      newSelected.delete(interval);
+    } else {
+      newSelected.add(interval);
+    }
+    setSelectedIntervals(newSelected);
+  };
+
+  const handleSave = () => {
+    setIsEditMode(false);
+  };
+
+  const handleIndicatorSelect = (indicator: string) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3 my-3 text-sm">
+      <label className="font-medium text-muted-foreground mr-2">
+        Zeit
+      </label>
+
+      {/* Display Buttons */}
+      {displayIntervals.map((interval) => (
+        <div
+          key={interval}
+          className={`cursor-pointer select-none ${
+            activeTime === interval
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-foreground hover:bg-muted/80"
+          }`}
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => handleTimeSelect(interval)}
+        >
+          {interval}
+        </div>
+      ))}
+
+      {/* Dropdown Button */}
+      <div className="relative">
+        <div
+          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+        >
+          ▽
+        </div>
+
+        {/* Dropdown Menu */}
+        {isDropdownOpen && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900 dark:text-white">
+                  Intervall auswählen
+                </h3>
+                <button
+                  className="text-blue-500 text-sm font-medium"
+                  onClick={isEditMode ? handleSave : handleEditToggle}
+                >
+                  {isEditMode ? "Speichern" : "Bearbeiten"}
+                </button>
+              </div>
+
+              {/* Grid of time intervals */}
+              <div className="grid grid-cols-4 gap-2">
+                {allIntervals.map((interval) => (
+                  <div
+                    key={interval.value}
+                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
+                      activeTime === interval.value && !isEditMode
+                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                    onClick={() =>
+                      isEditMode
+                        ? handleIntervalToggle(interval.value)
+                        : handleTimeSelect(interval.value)
+                    }
+                  >
+                    {interval.label}
+
+                    {/* Checkbox in edit mode */}
+                    {isEditMode && (
+                      <div className="absolute top-1 right-1">
+                        <div
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
+                            selectedIntervals.has(interval.value)
+                              ? "bg-blue-500 text-white"
+                              : "bg-gray-300 text-gray-600"
+                          }`}
+                        >
+                          {selectedIntervals.has(interval.value) ? "✓" : ""}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Overlay to close dropdown */}
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsDropdownOpen(false)}
+          />
+        )}
+      </div>
+
+      {/* Separator */}
+      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+
+      {/* Indicators Button - Simplified (kein Modal Import) */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => console.log("Indicators clicked")}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M2 12L5 9L8 11L12 7"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M12 4V7H9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Indikatoren</span>
+      </div>
+
+      {/* Grid View Button */}
+      <div
+        className={`cursor-pointer select-none flex items-center justify-center ${
+          isGridView
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-foreground hover:bg-muted/80"
+        }`}
+        style={{
+          padding: "4px 8px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+          width: "28px",
+          height: "24px",
+        }}
+        onClick={() => setIsGridView(!isGridView)}
+        title="Grid View"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <rect
+            x="1"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="1"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="1"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <rect
+            x="8"
+            y="8"
+            width="5"
+            height="5"
+            rx="1"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      {/* Alarm Button */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => {
+          console.log("Alarm clicked");
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 14 14"
+          fill="none"
+          className="opacity-80"
+        >
+          <path
+            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <path
+            d="M7 4V7L9 9"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+          />
+        </svg>
+        Alarm
+      </div>
+    </div>
+  );
+};
+
+export default TimeButtons;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/TradingTerminal.tsx">
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
+
+interface TradingTerminalProps {
+  className?: string;
+}
+
+const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!isExpanded) {
+    return (
+      <div className={className}>
+        <button
+          onClick={() => setIsExpanded(true)}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Trading Terminal Component
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`bg-card border border-border rounded-lg overflow-hidden ${className}`}>
+      <div className="flex items-center justify-between bg-muted px-4 py-2 border-b border-border">
+        <button
+          onClick={() => setIsExpanded(false)}
+          className="flex items-center gap-2 text-foreground hover:text-primary transition-colors"
+        >
+          <ChevronDown size={16} />
+          <span className="font-medium">Trading Terminal</span>
+        </button>
+      </div>
+      <div className="h-96 p-4">
+        <div className="text-muted-foreground text-sm">
+          Terminal content will be implemented here. This is a placeholder to ensure the layout is correct.
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TradingTerminal;
 </file>
 
 <file path="frontend/src/pages/TradingPage/index.tsx">
@@ -91462,557 +92867,6 @@ Ein **flexibles, ENV-basiertes Auto-Backfill System** das Standard-Coins automat
 - **Collector System:** `readme/000_system_start_2.md`
 - **Services Architecture:** `readme/000_services.md`
 - **Database Tables:** `readme/000_table.md`
-</file>
-
-<file path="readme/000_exchange_heal.md">
-# 🔧 EXCHANGE HEALING - COINMAPPER INTEGRATION
-**CoinMapper Integration für generische Symbol-Konvertierung**
-
-Beseitigung aller Hardcoding-Verstöße in WebSocket-System für 8 Exchanges
-
----
-
-## ⚠️ ENTWICKLUNGSREGELN - ABSOLUT PFLICHT!
-
-**DIESE REGELN MÜSSEN BEI JEDEM FIX BEFOLGT WERDEN:**
-
-### 🚫 VERBOTEN - NIEMALS MACHEN:
-
-1. **NIEMALS HARDCODED**
-   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
-   - ❌ KEINE hardcoded Symbols, URLs, Parameter
-   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"` für Symbol-Konvertierung
-   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
-
-2. **NIEMALS MOCK DATEN**
-   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
-   - ❌ KEINE Test-Stubs in Production-Code
-   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
-
-3. **NIEMALS LEGACY CODE**
-   - ❌ KEINE veralteten Patterns, deprecated Funktionen
-   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
-   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
-
-4. **NIEMALS EXCHANGE-SPEZIFISCH**
-   - ❌ KEINE If-Bedingungen für Exchange-spezifische Symbol-Formate
-   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
-   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
-
-5. **NIEMALS NEUE DATEIEN OHNE NOT**
-   - ❌ KEINE neuen Dateien erstellen wenn bestehende erweitert werden können
-   - ❌ KEINE Duplikation von Funktionalität
-   - ✅ IMMER bestehende Struktur prüfen und erweitern
-
----
-
-## 📋 EXECUTIVE SUMMARY
-
-**Problem:** 5/8 Exchanges funktionieren nicht wegen Hardcoding in Symbol-Konvertierungen
-
-**Root Causes:**
-1. ❌ Gate.io: Double-Underscore Bug (`BTC__USDT` statt `BTC_USDT`)
-2. ❌ OKX: Nicht-generische Symbol-Konvertierung
-3. ❌ Parser: Manuelle String-Operationen statt CoinMapper-Nutzung
-
-**Lösung:** CoinMapper-Integration für generische, wartbare Symbol-Konvertierung
-
----
-
-## 🎯 ANPASSUNGEN AN REALE PROJEKT-PFADE
-
-### **KRITISCH - Import-Pfade:**
-
-✅ **KORREKT** (für dieses Projekt):
-```python
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-```
-
-### **Symbol-Definition:**
-- Im aktuellen System ist `symbol` bereits das **native Symbol** (z.B. `BTC_USDT` für Gate.io)
-- `native_symbol` im Catalog = Symbol wie Exchange es erwartet
-- Unified Symbol = normalisierte Form für interne Verarbeitung (`BTCUSDT`)
-
----
-
-## 📋 IMPLEMENTATION TASKS - VOLLSTÄNDIGE CHECKLISTE
-
-### PHASE 1: VORBEREITUNG & ANALYSE (1-5)
-- [ ] **1.** Bestehende Dateien analysieren: `backend/websocket/ws_manager.py`
-- [ ] **2.** Bestehende Dateien analysieren: `backend/websocket/ws_message_parsers.py`
-- [ ] **3.** CoinMapper prüfen: `backend/services/domain/unified_symbol_registry.py`
-- [ ] **4.** Keys Model prüfen: `backend/api/models/keys.py`
-- [ ] **5.** Hardcoding-Stellen identifizieren ✅ **CHECKPOINT: Keine neuen Dateien!**
-
-### PHASE 2: WS_MANAGER.PY ERWEITERN (6-12) 
-- [ ] **6.** `backend/websocket/ws_manager.py` öffnen
-- [ ] **7.** Imports am Anfang hinzufügen (KORREKTE Pfade):
-  ```python
-  from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-  from backend.api.models.keys import Market
-  import time
-  ```
-- [ ] **8.** Funktion `get_native_symbol_from_mapper()` in ws_manager.py erstellen
-- [ ] **9.** `get_subscribe_message()` Funktion erweitern mit CoinMapper-Logik
-- [ ] **10.** Gate.io Hardcoding entfernen: `.replace("USDT", "_USDT")`
-- [ ] **11.** OKX Hardcoding entfernen: `.replace("USDT", "-USDT")`
-- [ ] **12.** Subscribe-Messages nutzen generierte native Symbole ✅ **CHECKPOINT: ws_manager.py erweitert!**
-
-### PHASE 3: WS_MESSAGE_PARSERS.PY ERWEITERN (13-18)
-- [ ] **13.** `backend/websocket/ws_message_parsers.py` öffnen
-- [ ] **14.** Funktion `normalize_to_unified()` am Anfang der Datei hinzufügen
-- [ ] **15.** `GateIOMessageParser` anpassen: Symbol-Feld nutzt `normalize_to_unified()`
-- [ ] **16.** `OKXMessageParser` anpassen: Symbol-Feld nutzt `normalize_to_unified()`
-- [ ] **17.** Hardcoding entfernen: `.replace("-", "")` in OKX Parser
-- [ ] **18.** Alle Parser prüfen auf konsistente Normalisierung ✅ **CHECKPOINT: Parser normalisiert!**
-
-### PHASE 4: TESTING & VALIDATION (19-28)
-- [ ] **19.** System stoppen: `./stop-system.sh`
-- [ ] **20.** System starten: `./start-system.sh`
-- [ ] **21.** Logs prüfen: Keine ImportErrors
-- [ ] **22.** WebSocket-Verbindungen prüfen: Alle 8 Exchanges connected
-- [ ] **23.** Subscribe-Messages prüfen: Korrektes natives Symbol
-  - Gate.io: `BTC_USDT` (NICHT `BTC__USDT`)
-  - OKX: `BTC-USDT`
-  - HTX: `btcusdt` (lowercase)
-- [ ] **24.** Redis Streams prüfen: `redis-cli -p 6380 XLEN gateio:trade:spot:BTCUSDT`
-- [ ] **25.** Gate.io: Stream > 0 Trades (vorher: 0) ✅
-- [ ] **26.** OKX: Stream > 0 Trades (vorher: 0) ✅
-- [ ] **27.** Health Check: `curl http://localhost:8100/health/ready`
-- [ ] **28.** 5-Minuten Monitoring: Alle Exchanges stabil ✅ **CHECKPOINT: System funktioniert!**
-
-### PHASE 5: CLEANUP & DOKUMENTATION (29-32)
-- [ ] **29.** Alte Kommentare mit Hardcoding-Hinweisen entfernen
-- [ ] **30.** Code-Kommentare hinzufügen: "✅ CoinMapper-Integration"
-- [ ] **31.** EXCHANGE_STATUS_REPORT.md updaten: 8/8 HEALTHY
-- [ ] **32.** Diese README finalisieren mit Erfolgs-Status ✅ **CHECKPOINT: Dokumentation vollständig!**
-
----
-
-## 🔧 IMPLEMENTIERUNGS-REIHENFOLGE:
-1. **Analyse zuerst** (Tasks 1-5) - Keine neuen Dateien!
-2. **ws_manager.py erweitern** (Tasks 6-12) - Bestehende Datei
-3. **Parser erweitern** (Tasks 13-18) - Bestehende Datei
-4. **Ausgiebig testen** (Tasks 19-28)
-5. **Cleanup am Ende** (Tasks 29-32)
-
----
-
-## 📁 DATEI-STRUKTUR (BESTEHENDE DATEIEN ERWEITERN)
-
-### Zu erweiternde Dateien:
-```
-backend/websocket/ws_manager.py
-└── + Funktion get_native_symbol_from_mapper() hinzufügen
-└── + get_subscribe_message() erweitern mit CoinMapper
-└── + Hardcoding entfernen (Gate.io, OKX)
-
-backend/websocket/ws_message_parsers.py
-└── + Funktion normalize_to_unified() hinzufügen
-└── + GateIOMessageParser erweitern
-└── + OKXMessageParser erweitern
-└── + Hardcoding entfernen
-
-= NUR 2 DATEIEN ZU ERWEITERN (KEINE NEUEN DATEIEN!)
-```
-
-### Bestehende CoinMapper-Infrastruktur (NUTZEN):
-```
-backend/services/domain/unified_symbol_registry.py  ✅ Existiert
-backend/api/models/keys.py                          ✅ Existiert
-backend/services/adapter/exchange_factory.py        ✅ Existiert
-```
-
----
-
-## 🚨 IDENTIFIZIERTE HARDCODING-VERSTÖSSE
-
-### **1. ws_manager.py - Zeile ~48-50 (Gate.io)**
-```python
-# ❌ VERBOTEN: HARDCODED Symbol-Konvertierung
-if exchange == "gateio":
-    gate_symbol = symbol.replace("USDT", "_USDT").replace("USD", "_USD")
-    # Problem: BTC_USDT → BTC__USDT (double underscore!)
-```
-
-**Root Cause:** String-Replacement ohne Prüfung ob Underscore bereits existiert
-
----
-
-### **2. ws_manager.py - Zeile ~73-75 (OKX)**
-```python
-# ❌ VERBOTEN: HARDCODED Symbol-Konvertierung
-if exchange == "okx":
-    okx_symbol = symbol.replace("USDT", "-USDT").replace("USD", "-USD")
-    # Problem: Nur für USDT/USD, nicht generisch
-```
-
-**Root Cause:** Nicht-generische Symbol-Konvertierung
-
----
-
-### **3. ws_message_parsers.py - Zeile ~160 (OKX Parser)**
-```python
-# ❌ VERBOTEN: HARDCODED Symbol-Zurück-Konvertierung
-"symbol": trade["instId"].replace("-", ""),  # BTC-USDT -> BTCUSDT
-```
-
-**Root Cause:** Parser macht manuelle String-Konvertierung
-
----
-
-### **4. ws_message_parsers.py - Zeile ~84 (Gate.io Parser)**
-```python
-# ❌ SEMI-HARDCODED: Behält natives Format
-"symbol": trade["currency_pair"],  # BTC_USDT bleibt so!
-```
-
-**Root Cause:** Symbol wird nicht normalisiert
-
----
-
-## 💡 LÖSUNG: COINMAPPER INTEGRATION
-
-### **Schritt 1: get_native_symbol_from_mapper() in ws_manager.py**
-
-**Funktionen am Anfang von ws_manager.py einfügen (nach den Imports):**
-
-```python
-import logging
-from typing import Optional, Tuple
-
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market as MarketEnum
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> MarketEnum:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return MarketEnum.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return MarketEnum.USDTM
-    if m in ("coinm", "inverse"):
-        return MarketEnum.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return MarketEnum.USDCM
-    # Fallback – sicher auf SPOT
-    return MarketEnum.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-```
-
----
-
-### **Schritt 2: get_subscribe_message() erweitern**
-
-**ERSETZE bestehende Hardcoding-Blöcke:**
-
-```python
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        channel = f"{market}@public.deals.v3.api@{native_symbol}"
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io - ❌ ALTE HARDCODING-LOGIK ENTFERNT!
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX - ❌ ALTE HARDCODING-LOGIK ENTFERNT!
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: URL-basiert
-    if exchange == "htx":
-        return None
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-```
-
----
-
-### **Schritt 3: normalize_to_unified() in ws_message_parsers.py**
-
-**Am Anfang der Datei nach Imports hinzufügen:**
-
-```python
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-```
-
----
-
-### **Schritt 4: Parser anpassen**
-
-**GateIOMessageParser:**
-```python
-# Vorher:
-"symbol": trade["currency_pair"],
-
-# Nachher:
-"symbol": normalize_to_unified(trade["currency_pair"], "gateio"),
-```
-
-**OKXMessageParser:**
-```python
-# Vorher:
-"symbol": trade["instId"].replace("-", ""),
-
-# Nachher:
-"symbol": normalize_to_unified(trade["instId"], "okx"),
-```
-
----
-
-## 📊 SUCCESS METRICS
-
-### **Vorher (Status Quo):**
-```
-✅ HEALTHY: 3/8 (Binance, Bitget, Bybit)
-❌ FAILED:  5/8 (Gate.io, OKX, HTX, MEXC, Coinbase)
-
-Trades/Min: ~300 (nur von 3 Exchanges)
-```
-
-### **Nachher (Ziel):**
-```
-✅ HEALTHY: 8/8 (Alle Exchanges)
-❌ FAILED:  0/8
-
-Trades/Min: ~1500+ (von allen 8 Exchanges)
-```
-
-### **Code-Quality:**
-```
-Vorher:
-- ❌ 4 Hardcoding-Stellen in ws_manager.py
-- ❌ 2 Hardcoding-Stellen in ws_message_parsers.py
-- ❌ Nicht-generische Symbol-Konvertierung
-
-Nachher:
-- ✅ 0 Hardcoding-Stellen
-- ✅ CoinMapper-Integration
-- ✅ Wartbar und erweiterbar
-```
-
----
-
-## 🎯 FINAL VALIDATION CHECKLIST
-
-### **Architektur:**
-- [ ] ✅ ws_manager.py nutzt CoinMapper (KEINE neuen Dateien!)
-- [ ] ✅ ws_message_parsers.py normalisiert Symbole
-- [ ] ✅ Keine Hardcoding-Verstöße mehr
-- [ ] ✅ Imports nutzen korrekte Pfade
-
-### **Funktionalität:**
-- [ ] ✅ Alle 8 Exchanges: WebSocket connected
-- [ ] ✅ Alle 8 Exchanges: Subscribe erfolgreich
-- [ ] ✅ Alle 8 Exchanges: Trades in Redis
-- [ ] ✅ Symbole sind korrekt normalisiert
-
-### **Performance:**
-- [ ] ✅ Keine Reconnections
-- [ ] ✅ Keine Parser-Errors
-- [ ] ✅ Trade-Counts steigen kontinuierlich
-- [ ] ✅ Health Status: "healthy"
-
----
-
-## 🚀 DEPLOYMENT
-
-```bash
-# 1. System stoppen
-./stop-system.sh
-
-# 2. System starten
-./start-system.sh
-
-# 3. Health-Check
-curl http://localhost:8100/health/ready
-
-# 4. WebSocket-Metrics
-curl http://localhost:8100/ws/metrics/ | jq
-
-# 5. Monitor für 5 Minuten
-watch -n 10 'curl -s http://localhost:8100/ws/metrics/ | jq ".exchanges"'
-```
-
----
-
-## 📚 REFERENZEN
-
-**System-Dokumentation:**
-- `readme/000_websocket_build.md` - WebSocket-System
-- `readme/000_coin_mapper_build.md` - CoinMapper-Architektur
-- `readme/EXCHANGE_STATUS_REPORT.md` - Detaillierte Fehleranalyse
-
-**Code-Locations:**
-- `backend/websocket/ws_manager.py` - zu erweitern
-- `backend/websocket/ws_message_parsers.py` - zu erweitern
-- `backend/services/domain/unified_symbol_registry.py` - existiert
-- `backend/api/models/keys.py` - existiert
-
-**Exchange-Dokumentationen:**
-- Gate.io: https://www.gate.io/docs/developers/apiv4/ws/en/
-- OKX: https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel
-
----
-
-**STATUS:** 🔴 Ready for Implementation  
-**NEXT:** Starte mit Task 1 (Analyse bestehender Dateien)
 </file>
 
 <file path="readme/000_hardcoded_change.md">
@@ -187033,99 +187887,163 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
-import React, { useMemo } from "react";
-import { useLiveTrades } from "../hooks/useLiveTrades";
-import { useLiveCandles } from "../hooks/useLiveCandles";
+<file path="frontend/src/config/exchangeSupport.ts">
+// ✅ DYNAMISCHE Exchange & Market Configuration
+// Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
 
-const SYMBOL = "BTCUSDT";
-const MARKET = "spot";
-const INTERVAL = "1s";
+import { getAvailableExchanges, getAvailableMarketTypes } from '../services/config';
 
-// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
-// aber erst mal: harte Liste, damit es deterministisch läuft.
-const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+export type MarketType = string; // Dynamisch vom Backend
+export type ExchangeId = string; // Dynamisch vom Backend
 
-function fmt(n: number | undefined, digits = 2) {
-  if (n === undefined || !Number.isFinite(n)) return "-";
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+// ✅ Exchange Interface
+export interface Exchange {
+  id: string;
+  name: string;
 }
 
-export default function BTCUSDTMonitor() {
-  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+// ✅ Market Option Interface
+export interface MarketOption {
+  name: string;
+  description: string;
+  icon: string;
+}
 
+// ✅ Dynamische Exchange-Liste (wird beim Start geladen)
+let cachedExchanges: Exchange[] = [];
+let cachedMarkets: MarketOption[] = [];
+
+// ✅ Exchanges vom Backend laden
+export async function loadExchanges(): Promise<Exchange[]> {
+  if (cachedExchanges.length > 0) return cachedExchanges;
+  
+  try {
+    const exchanges = await getAvailableExchanges();
+    cachedExchanges = exchanges.map(id => ({
+      id,
+      name: id.charAt(0).toUpperCase() + id.slice(1) // Capitalize
+    }));
+    return cachedExchanges;
+  } catch (error) {
+    console.error('[exchangeSupport] Failed to load exchanges:', error);
+    // Fallback
+    return [{ id: 'binance', name: 'Binance' }];
+  }
+}
+
+// ✅ Markets vom Backend laden
+export async function loadMarkets(): Promise<MarketOption[]> {
+  if (cachedMarkets.length > 0) return cachedMarkets;
+  
+  try {
+    const markets = await getAvailableMarketTypes();
+    cachedMarkets = markets.map(name => ({
+      name,
+      description: getMarketDescription(name),
+      icon: getMarketIcon(name)
+    }));
+    return cachedMarkets;
+  } catch (error) {
+    console.error('[exchangeSupport] Failed to load markets:', error);
+    // Fallback
+    return [{ name: 'spot', description: 'Spot Trading', icon: '💱' }];
+  }
+}
+
+// ✅ Helper: Market Description (generisch)
+function getMarketDescription(market: string): string {
+  const descriptions: Record<string, string> = {
+    'spot': 'Spot-Trading mit sofortiger Abwicklung',
+    'futures': 'Futures-Trading',
+    'usdtm': 'USDT-Margined Futures',
+    'coinm': 'Coin-Margined Futures',
+    'margin': 'Margin Trading'
+  };
+  return descriptions[market.toLowerCase()] || `${market} Trading`;
+}
+
+// ✅ Helper: Market Icon (generisch)
+function getMarketIcon(market: string): string {
+  const icons: Record<string, string> = {
+    'spot': '💱',
+    'futures': '💰',
+    'usdtm': '💰',
+    'coinm': '⚡',
+    'margin': '📊'
+  };
+  return icons[market.toLowerCase()] || '📈';
+}
+
+// ✅ Cached Getter (synchron, nach Load)
+export const EXCHANGES = (): Exchange[] => cachedExchanges;
+export const MARKET_OPTIONS = (): MarketOption[] => cachedMarkets;
+
+// ✅ Helper: Check if market is supported (generisch - alle sind supported)
+export const isMarketSupported = (exchange: string, market?: string): boolean => {
+  // Dynamisch: Wenn Backend es liefert, ist es supported
+  return true;
+};
+
+// ✅ Helper: Map market name to API filter (generisch)
+export const getMarketFilter = (selectedMarket?: string): string | null => {
+  if (!selectedMarket) return null;
+  
+  // Normalisiere zu lowercase für Backend
+  const normalized = selectedMarket.toLowerCase();
+  
+  // Futures-Varianten → "futures"
+  if (normalized.includes('futures') || normalized.includes('perpetual')) {
+    return 'futures';
+  }
+  
+  // Spot bleibt spot
+  if (normalized === 'spot') return 'spot';
+  
+  // Alles andere: as-is
+  return normalized;
+};
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
+import React from "react";
+
+interface ChartSectionProps {
+  selectedCoin?: string;
+  selectedMarket?: string;
+  selectedInterval?: string;
+  selectedIndicators?: string[];
+  selectedExchange?: string;
+  onIndicatorRemove?: (indicator: string) => void;
+}
+
+const ChartSection = ({
+  selectedCoin = "BTC/USDT",
+  selectedMarket = "spot",
+  selectedInterval = "1m",
+  selectedIndicators = [],
+  selectedExchange = "bitget",
+  onIndicatorRemove,
+}: ChartSectionProps) => {
   return (
-    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
-      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
-        BTCUSDT Live Monitor (Hooks-only)
-      </h1>
-
-      <div style={{ marginBottom: 12, opacity: 0.85 }}>
-        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
-      </div>
-
-      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
-              <th style={{ padding: 10 }}>Exchange</th>
-              <th style={{ padding: 10 }}>WS</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
-              <th style={{ padding: 10 }}>Side</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((ex) => (
-              <Row key={ex} exchange={ex} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
-        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
-          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
-          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
-        </ul>
+    <div className="mt-1 space-y-4">
+      <div className="h-[500px] border rounded-lg bg-card p-4">
+        <div className="text-muted-foreground text-sm">
+          Chart Placeholder für {selectedCoin} ({selectedExchange} - {selectedMarket})
+        </div>
+        <div className="text-xs text-muted-foreground mt-2">
+          Interval: {selectedInterval}
+        </div>
+        {selectedIndicators && selectedIndicators.length > 0 && (
+          <div className="text-xs text-muted-foreground mt-2">
+            Indicators: {selectedIndicators.join(", ")}
+          </div>
+        )}
       </div>
     </div>
   );
-}
+};
 
-function Row({ exchange }: { exchange: string }) {
-  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
-  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
-
-  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
-  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
-
-  return (
-    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
-      <td style={{ padding: 10 }}>{status}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
-      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
-      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
-        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
-      </td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
-    </tr>
-  );
-}
-
-        </div>
-      </td>
-    </tr>
-  );
-}
+export default ChartSection;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
@@ -187160,106 +188078,6 @@ export function TradesPanel({ trades }: Props) {
     </div>
   );
 }
-</file>
-
-<file path="frontend/src/pages/TradingPage/TradingPage.tsx">
-import { useState, useMemo } from "react";
-import {
-  PriceDisplay,
-  CoinSelector,
-  TradingTerminal
-} from "../features/trading";
-import TimeButtons from "../features/trading/components/TimeButtons";
-import ChartSection from "../features/trading/components/ChartSection";
-import SystemStatus from "../features/trading/components/SystemStatus";
-import { useTradingContext } from "../contexts/TradingContext";
-import { getMarketFilter } from '../config/exchangeSupport';
-
-const TradingPage = () => {
-  const { selectedExchange, selectedMarket } = useTradingContext();
-  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
-  const [selectedInterval, setSelectedInterval] = useState("1m");
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-
-  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
-
-  const currentCoinData = useMemo(() => ({
-    id: selectedCoin,
-    symbol: selectedCoin,
-    market: marketFilter,
-    price: "0.00",
-    change: "0.00",
-    changePercent: 0,
-    isFavorite: false,
-    liveStatus: "green" as const,
-    histStatus: "green" as const
-  }), [selectedCoin, marketFilter]);
-
-  const marketData = {
-    price: 0,
-    change24h: "0.00",
-    changePercent: 0,
-    high24h: "0.00",
-    low24h: "0.00",
-    volume24h: "0.00",
-    turnover24h: "0.00",
-
-  };
-
-  return (
-    <div className="px-6 py-5">
-      {/* Market & Price Section */}
-      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
-        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
-          <CoinSelector
-            selectedSymbol={selectedCoin}
-            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
-            exchange={selectedExchange}
-            selectedMarket={selectedMarket}
-          />
-        </div>
-
-        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
-          <PriceDisplay
-            currentCoinData={currentCoinData}
-            marketData={marketData}
-            tradingMode={selectedMarket}
-          />
-        </div>
-      </div>
-
-      {/* Time Buttons */}
-      <TimeButtons 
-        onIntervalChange={setSelectedInterval}
-        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
-          prev.includes(indicator) ? prev : [...prev, indicator]
-        )}
-      />
-
-      {/* Main Content: Multi-Chart + Orderbook */}
-      <ChartSection 
-        selectedCoin={selectedCoin}
-        selectedMarket={marketFilter}
-        selectedInterval={selectedInterval}
-        selectedIndicators={selectedIndicators}
-        selectedExchange={selectedExchange}
-        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
-          prev.filter(i => i !== indicator)
-        )}
-      />
-
-      {/* Trading Terminal */}
-      <div className="mt-4 space-y-2">
-        <TradingTerminal />
-      </div>
-
-      {/* System Status */}
-      <SystemStatus />
-    </div>
-  );
-};
-
-export default TradingPage;
 </file>
 
 <file path="frontend/src/services/config.ts">
@@ -192732,6 +193550,276 @@ class MultiResCandleAgg:
         return finished
 </file>
 
+<file path="frontend/src/contexts/TradingContext.tsx">
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { MarketType } from '../config/exchangeSupport';
+import { getDefaultExchange, getDefaultMarketType } from '../services/config';
+
+interface TradingContextType {
+  selectedExchange: string;
+  selectedMarket: MarketType;
+  setSelectedExchange: (exchange: string) => void;
+  setSelectedMarket: (market: MarketType) => void;
+}
+
+// ✅ Temporäre Defaults aus ENV (bis Backend geladen ist)
+const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance';
+const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || 'spot';
+
+const TradingContext = createContext<TradingContextType>({
+  selectedExchange: TEMP_DEFAULT_EXCHANGE,
+  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
+  setSelectedExchange: () => {},
+  setSelectedMarket: () => {},
+});
+
+interface TradingProviderProps {
+  children: ReactNode;
+}
+
+export const TradingProvider = ({ children }: TradingProviderProps) => {
+  const [selectedExchange, setSelectedExchange] = useState(TEMP_DEFAULT_EXCHANGE);
+  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // ✅ Lade Defaults vom Backend beim Start
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        const [exchange, market] = await Promise.all([
+          getDefaultExchange(),
+          getDefaultMarketType()
+        ]);
+        setSelectedExchange(exchange);
+        setSelectedMarket(market as MarketType);
+        console.log(`[TradingContext] Loaded defaults from backend: ${exchange} / ${market}`);
+      } catch (error) {
+        console.error('[TradingContext] Failed to load defaults, using fallbacks:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadDefaults();
+  }, []);
+
+  if (isLoading) {
+    // Optional: Loading-Spinner hier rendern
+    return <>{children}</>; // oder ein Loading-Wrapper
+  }
+
+  return (
+    <TradingContext.Provider
+      value={{
+        selectedExchange,
+        selectedMarket,
+        setSelectedExchange,
+        setSelectedMarket,
+      }}
+    >
+      {children}
+    </TradingContext.Provider>
+  );
+};
+
+export const useTradingContext = () => {
+  const context = useContext(TradingContext);
+  if (!context) {
+    throw new Error('useTradingContext must be used within a TradingProvider');
+  }
+  return context;
+};
+
+export { TradingContext };
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
+import React, { useMemo } from "react";
+import { useLiveTrades } from "../../services/hooks/useLiveTrades";
+import { useLiveCandles } from "../../services/hooks/useLiveCandles";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1s";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
+      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
+        BTCUSDT Live Monitor (Hooks-only)
+      </h1>
+
+      <div style={{ marginBottom: 12, opacity: 0.85 }}>
+        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+      </div>
+
+      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
+          <thead>
+            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
+              <th style={{ padding: 10 }}>Exchange</th>
+              <th style={{ padding: 10 }}>WS</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
+              <th style={{ padding: 10 }}>Side</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
+        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
+          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
+  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
+
+  return (
+    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
+      <td style={{ padding: 10 }}>{status}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
+      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
+      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
+        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
+      </td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
+    </tr>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/TradingPage/TradingPage.tsx">
+import { useState, useMemo } from "react";
+import PriceDisplay from "./components/PriceDisplay";
+import CoinSelector from "./components/CoinSelector";
+import TradingTerminal from "./components/TradingTerminal";
+import TimeButtons from "./components/TimeButtons";
+import ChartSection from "./components/ChartSection";
+import SystemStatus from "./components/SystemStatus";
+import { useTradingContext } from "../../contexts/TradingContext";
+import { getMarketFilter } from '../../config/exchangeSupport';
+
+const TradingPage = () => {
+  const { selectedExchange, selectedMarket } = useTradingContext();
+  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
+  const [selectedInterval, setSelectedInterval] = useState("1m");
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+
+  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
+
+  const currentCoinData = useMemo(() => ({
+    id: selectedCoin,
+    symbol: selectedCoin,
+    market: marketFilter,
+    price: "0.00",
+    change: "0.00",
+    changePercent: 0,
+    isFavorite: false,
+    liveStatus: "green" as const,
+    histStatus: "green" as const
+  }), [selectedCoin, marketFilter]);
+
+  const marketData = {
+    price: 0,
+    change24h: "0.00",
+    changePercent: 0,
+    high24h: "0.00",
+    low24h: "0.00",
+    volume24h: "0.00",
+    turnover24h: "0.00",
+
+  };
+
+  return (
+    <div className="px-6 py-5">
+      {/* Market & Price Section */}
+      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
+        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
+          <CoinSelector
+            selectedSymbol={selectedCoin}
+            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
+            exchange={selectedExchange}
+            selectedMarket={selectedMarket}
+          />
+        </div>
+
+        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
+          <PriceDisplay
+            currentCoinData={currentCoinData}
+            marketData={marketData}
+            tradingMode={selectedMarket}
+          />
+        </div>
+      </div>
+
+      {/* Time Buttons */}
+      <TimeButtons 
+        onIntervalChange={setSelectedInterval}
+        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
+          prev.includes(indicator) ? prev : [...prev, indicator]
+        )}
+      />
+
+      {/* Main Content: Multi-Chart + Orderbook */}
+      <ChartSection 
+        selectedCoin={selectedCoin}
+        selectedMarket={marketFilter}
+        selectedInterval={selectedInterval}
+        selectedIndicators={selectedIndicators}
+        selectedExchange={selectedExchange}
+        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
+          prev.filter(i => i !== indicator)
+        )}
+      />
+
+      {/* Trading Terminal */}
+      <div className="mt-4 space-y-2">
+        <TradingTerminal />
+      </div>
+
+      {/* System Status */}
+      <SystemStatus />
+    </div>
+  );
+};
+
+export default TradingPage;
+</file>
+
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 // frontend/src/services/ws/WebSocketPool.ts
 import { WS_BASE_URL } from "../../config/env";
@@ -194352,6 +195440,21 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import { TradingProvider } from './contexts/TradingContext';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <TradingProvider>
+      <App />
+    </TradingProvider>
+  </StrictMode>,
+);
+</file>
+
 <file path="readme/000_backfill_2_build.md">
 # AUTO-BACKFILL SYSTEM V2 - ENTERPRISE SERVICE LAYER PATTERN
 
@@ -195632,24 +196735,425 @@ EXPOSE 8100
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
-<file path="frontend/src/App.tsx">
-// frontend/src/App.tsx
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import TradingPage from "./pages/TradingPage";
-import CoinMonitor from "./pages/CoinMonitor";
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
 
-export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/trading" element={<TradingPage />} />
-        <Route path="/coinmonitor" element={<CoinMonitor />} />
-        <Route path="/" element={<Navigate to="/trading" replace />} />
-        <Route path="*" element={<Navigate to="/trading" replace />} />
-      </Routes>
-    </BrowserRouter>
-  );
-}
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                if not trade_data:
+                    return  # Keine Trade-Daten in Message
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
+                from backend.database.redis import unified_rs_service
+                
+                # Nutze rs_ Lane System für Redis Operations
+                success = await unified_rs_service.add_trade(
+                    exchange, symbol, trade_data, market
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                
+                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
+                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
+                await self.broadcast_to_frontend(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    message_type="trade_data",
+                    data=trade_data
+                )
+                
+                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
 </file>
 
 <file path="backend/websocket/ws_message_parsers.py">
@@ -196226,6 +197730,26 @@ def get_ws_message_parser(exchange: str) -> BaseMessageParser:
     """Hole Message Parser für Exchange"""
     parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
     return parser_class(exchange)
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import TradingPage from "./pages/TradingPage/TradingPage";
+import CoinMonitor from "./pages/CoinMonitor/CoinMonitor";
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/trading" element={<TradingPage />} />
+        <Route path="/coinmonitor" element={<CoinMonitor />} />
+        <Route path="/" element={<Navigate to="/trading" replace />} />
+        <Route path="*" element={<Navigate to="/trading" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
 </file>
 
 <file path="readme/000_live_backfill_data_build.md">
@@ -198853,427 +200377,6 @@ class BackfillLoopService:
         finally:
             self._running = False
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
-</file>
-
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                # ✅ CRITICAL: Pass market from lane to parser - NO HARDCODING!
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                if not trade_data:
-                    return  # Keine Trade-Daten in Message
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ BESTEHENDER DATENFLUSS: Redis Stream über rs_ Lane System (MIGRIERT!)
-                from backend.database.redis import unified_rs_service
-                
-                # Nutze rs_ Lane System für Redis Operations
-                success = await unified_rs_service.add_trade(
-                    exchange, symbol, trade_data, market
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                
-                # 3. ✅ BESTEHENDER DATENFLUSS: Frontend WebSocket (UNVERÄNDERT!)
-                # ✅ REPARIERT: Direct WebSocket Broadcasting mit market aus Lane
-                await self.broadcast_to_frontend(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    message_type="trade_data",
-                    data=trade_data
-                )
-                
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
 </file>
 
 <file path="backend/api/routers/ro_historical.py">
