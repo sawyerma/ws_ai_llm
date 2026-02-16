@@ -211,6 +211,7 @@ backend/
       services/
         __init__.py
         binance_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -220,6 +221,7 @@ backend/
       services/
         __init__.py
         bitget_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -229,6 +231,7 @@ backend/
       services/
         __init__.py
         bybit_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -238,6 +241,7 @@ backend/
       services/
         __init__.py
         coinbase_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -247,6 +251,7 @@ backend/
       services/
         __init__.py
         gateio_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -256,6 +261,7 @@ backend/
       services/
         __init__.py
         htx_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -265,6 +271,7 @@ backend/
       services/
         __init__.py
         mexc_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -274,6 +281,7 @@ backend/
       services/
         __init__.py
         okx_client.py
+        orderbook.py
         rest_api.py
         symbol_discovery.py
         symbol_manager.py
@@ -395,6 +403,7 @@ frontend/
     robots.txt
   src/
     config/
+      env.ts
       exchangeSupport.ts
     contexts/
       TradingContext.tsx
@@ -87657,6 +87666,126 @@ if __name__ == "__main__":
         sys.exit(1)
 </file>
 
+<file path="backend/exchanges/binance/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+Binance WebSocket Orderbook Service
+====================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für Binance
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class BinanceOrderbookService:
+    """WebSocket Orderbook Parsing Service für Binance"""
+    
+    def __init__(self):
+        self.exchange = "binance"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse Binance WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format:
+            {
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+                "timestamp": int,
+                "symbol": str,
+                "market": str
+            }
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            # Binance depthUpdate Format
+            if "e" in data and data["e"] == "depthUpdate":
+                return {
+                    "bids": [[str(b[0]), str(b[1])] for b in data.get("b", [])],
+                    "asks": [[str(a[0]), str(a[1])] for a in data.get("a", [])],
+                    "timestamp": data.get("E"),
+                    "symbol": data.get("s"),
+                    "market": market
+                }
+        except Exception as e:
+            logger.error(f"Binance orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/bitget/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+Bitget WebSocket Orderbook Service
+===================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für Bitget
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format"""
+    if not native_symbol:
+        return ""
+    return str(native_symbol).strip().upper()
+
+
+class BitgetOrderbookService:
+    """WebSocket Orderbook Parsing Service für Bitget"""
+    
+    def __init__(self):
+        self.exchange = "bitget"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse Bitget WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            if "action" in data and data["action"] in ("snapshot", "update"):
+                if data.get("arg", {}).get("channel") == "books":
+                    symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                    for book in data.get("data", []):
+                        return {
+                            "bids": [[str(b[0]), str(b[1])] for b in book.get("bids", [])[:20]],
+                            "asks": [[str(a[0]), str(a[1])] for a in book.get("asks", [])[:20]],
+                            "timestamp": int(book.get("ts", 0)),
+                            "symbol": normalize_to_unified(symbol, self.exchange),
+                            "market": market
+                        }
+        except Exception as e:
+            logger.error(f"Bitget orderbook parsing error: {e}")
+        
+        return None
+</file>
+
 <file path="backend/exchanges/bitget/config.py">
 """
 🔄 MINIMIERTE BITGET CONFIG - 85% weniger Duplikate!
@@ -87758,6 +87887,412 @@ class BitgetConfig:
 
 # Konfigurationsinstanzen
 bitget_config = BitgetConfig()
+</file>
+
+<file path="backend/exchanges/bybit/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+Bybit WebSocket Orderbook Service
+==================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für Bybit
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format"""
+    if not native_symbol:
+        return ""
+    return str(native_symbol).strip().upper()
+
+
+class BybitOrderbookService:
+    """WebSocket Orderbook Parsing Service für Bybit"""
+    
+    def __init__(self):
+        self.exchange = "bybit"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse Bybit WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            if "topic" in data and "orderbook" in data["topic"]:
+                book_data = data.get("data", {})
+                return {
+                    "bids": [[str(b[0]), str(b[1])] for b in book_data.get("b", [])[:20]],
+                    "asks": [[str(a[0]), str(a[1])] for a in book_data.get("a", [])[:20]],
+                    "timestamp": data.get("ts", 0),
+                    "symbol": normalize_to_unified(book_data.get("s", ""), self.exchange),
+                    "market": market
+                }
+        except Exception as e:
+            logger.error(f"Bybit orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/coinbase/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+Coinbase WebSocket Orderbook Service
+=====================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für Coinbase
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format (BTC-USD bleibt BTC-USD)"""
+    if not native_symbol:
+        return ""
+    s = str(native_symbol).strip()
+    if exchange == "coinbase":
+        return s.upper()
+    return s.upper()
+
+
+class CoinbaseOrderbookService:
+    """WebSocket Orderbook Parsing Service für Coinbase"""
+    
+    def __init__(self):
+        self.exchange = "coinbase"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse Coinbase WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            # Coinbase level2 channel format
+            if "events" in data:
+                for event in data["events"]:
+                    if "updates" in event:
+                        # Level2 updates format
+                        bids = []
+                        asks = []
+                        timestamp = 0
+                        symbol = ""
+                        
+                        for update in event["updates"]:
+                            if "product_id" in update:
+                                symbol = update["product_id"]
+                            if "event_time" in update:
+                                timestamp = int(datetime.fromisoformat(update["event_time"].replace("Z", "+00:00")).timestamp() * 1000)
+                            
+                            if update.get("side") == "bid":
+                                bids.append([str(update["price_level"]), str(update["new_quantity"])])
+                            elif update.get("side") == "offer":
+                                asks.append([str(update["price_level"]), str(update["new_quantity"])])
+                        
+                        if bids or asks:
+                            return {
+                                "bids": bids[:20],
+                                "asks": asks[:20],
+                                "timestamp": timestamp,
+                                "symbol": normalize_to_unified(symbol, self.exchange),
+                                "market": market
+                            }
+        except Exception as e:
+            logger.error(f"Coinbase orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/gateio/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+Gate.io WebSocket Orderbook Service
+====================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für Gate.io
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format (BTC_USDT → BTCUSDT)"""
+    if not native_symbol:
+        return ""
+    s = str(native_symbol).strip()
+    if exchange == "gateio":
+        return s.replace("_", "").upper()
+    return s.upper()
+
+
+class GateIOOrderbookService:
+    """WebSocket Orderbook Parsing Service für Gate.io"""
+    
+    def __init__(self):
+        self.exchange = "gateio"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse Gate.io WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            # Gate.io spot.order_book channel format
+            if data.get("event") == "update" and data.get("channel") == "spot.order_book":
+                result = data.get("result")
+                if result:
+                    return {
+                        "bids": [[str(b[0]), str(b[1])] for b in result.get("bids", [])[:20]],
+                        "asks": [[str(a[0]), str(a[1])] for a in result.get("asks", [])[:20]],
+                        "timestamp": int(result.get("t", 0)),
+                        "symbol": normalize_to_unified(result.get("s", ""), self.exchange),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"Gate.io orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/htx/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+HTX WebSocket Orderbook Service
+================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für HTX (Huobi)
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+Inkludiert GZIP-Decompression Support
+"""
+
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format (btcusdt → BTCUSDT)"""
+    if not native_symbol:
+        return ""
+    s = str(native_symbol).strip()
+    if exchange == "htx":
+        return s.upper()
+    return s.upper()
+
+
+class HTXOrderbookService:
+    """WebSocket Orderbook Parsing Service für HTX mit GZIP Support"""
+    
+    def __init__(self):
+        self.exchange = "htx"
+    
+    async def parse_ws_orderbook(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse HTX WebSocket Orderbook Message mit GZIP-Decompression
+        
+        Args:
+            raw_message: Raw WebSocket message (kann GZIP-komprimiert sein)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            # GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                else:
+                    raw_message = raw_message.decode('utf-8')
+            
+            data = json.loads(raw_message)
+            
+            # HTX depth channel format: market.{symbol}.depth.{type}
+            if "tick" in data and "bids" in data["tick"] and "asks" in data["tick"]:
+                # Extract symbol from channel name (e.g., "market.btcusdt.depth.step0")
+                symbol = data.get("ch", "").split(".")[1] if "ch" in data else ""
+                return {
+                    "bids": [[str(b[0]), str(b[1])] for b in data["tick"].get("bids", [])[:20]],
+                    "asks": [[str(a[0]), str(a[1])] for a in data["tick"].get("asks", [])[:20]],
+                    "timestamp": data["tick"].get("ts", 0),
+                    "symbol": normalize_to_unified(symbol, self.exchange),
+                    "market": market
+                }
+        except Exception as e:
+            logger.error(f"HTX orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/mexc/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+MEXC WebSocket Orderbook Service
+=================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für MEXC
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional, Union
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format"""
+    if not native_symbol:
+        return ""
+    return str(native_symbol).strip().upper()
+
+
+class MEXCOrderbookService:
+    """WebSocket Orderbook Parsing Service für MEXC"""
+    
+    def __init__(self):
+        self.exchange = "mexc"
+    
+    async def parse_ws_orderbook(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse MEXC WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string oder bytes)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            # MEXC orderbook ist meist JSON (nicht Protobuf)
+            if isinstance(raw_message, bytes):
+                raw_message = raw_message.decode('utf-8')
+            
+            data = json.loads(raw_message)
+            
+            # MEXC depth channel format
+            if "d" in data and "asks" in data["d"] and "bids" in data["d"]:
+                return {
+                    "bids": [[str(b["p"]), str(b["v"])] for b in data["d"].get("bids", [])[:20]],
+                    "asks": [[str(a["p"]), str(a["v"])] for a in data["d"].get("asks", [])[:20]],
+                    "timestamp": int(data.get("t", 0)),
+                    "symbol": normalize_to_unified(data.get("s", ""), self.exchange),
+                    "market": market
+                }
+        except Exception as e:
+            logger.error(f"MEXC orderbook parsing error: {e}")
+        
+        return None
+</file>
+
+<file path="backend/exchanges/okx/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+OKX WebSocket Orderbook Service
+================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für OKX
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format (BTC-USDT → BTCUSDT)"""
+    if not native_symbol:
+        return ""
+    s = str(native_symbol).strip()
+    if exchange == "okx":
+        return s.replace("-", "").upper()
+    return s.upper()
+
+
+class OKXOrderbookService:
+    """WebSocket Orderbook Parsing Service für OKX"""
+    
+    def __init__(self):
+        self.exchange = "okx"
+    
+    async def parse_ws_orderbook(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse OKX WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            data = json.loads(raw_message)
+            
+            # OKX books channel format
+            if "arg" in data and "channel" in data["arg"] and data["arg"]["channel"] == "books":
+                for book in data.get("data", []):
+                    return {
+                        "bids": [[str(b[0]), str(b[1])] for b in book.get("bids", [])[:20]],
+                        "asks": [[str(a[0]), str(a[1])] for a in book.get("asks", [])[:20]],
+                        "timestamp": int(book.get("ts", 0)),
+                        "symbol": normalize_to_unified(data["arg"].get("instId", ""), self.exchange),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"OKX orderbook parsing error: {e}")
+        
+        return None
 </file>
 
 <file path="backend/exchanges/shared/http_defaults.py">
@@ -89424,64 +89959,6 @@ async def discover_trade_streams(
     return streams_final, active_symbols, existing_streams
 </file>
 
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-        })
-
-        # keep-alive
-        while True:
-            msg = await websocket.receive_text()
-            if msg == "ping":
-                await websocket.send_text("pong")
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="diag_py/deep_analysis.sh">
 #!/bin/bash
 
@@ -90558,6 +91035,11 @@ echo ""
 echo "=================================================="
 echo "✅ VERIFICATION COMPLETE"
 echo "=================================================="
+</file>
+
+<file path="frontend/src/config/env.ts">
+// frontend/src/config/env.ts
+export const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || "";
 </file>
 
 <file path="frontend/src/pages/CoinMonitor/components/AlertPanel.tsx">
@@ -91743,195 +92225,6 @@ export default TradingTerminal;
 <file path="frontend/src/pages/TradingPage/index.tsx">
 // frontend/src/pages/TradingPage/index.tsx
 export { default } from "./TradingPage";
-</file>
-
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string,
-  opts?: { maxTrades?: number; maxCandles?: number }
-) {
-  const maxTrades = opts?.maxTrades ?? 500;
-  const maxCandles = opts?.maxCandles ?? 2000;
-
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-  }, [exchange, symbol, market, interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              return next.length <= maxTrades ? next : next.slice(next.length - maxTrades);
-            });
-          });
-        }
-
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const tSec = toNum(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            return next.length <= maxCandles ? next : next.slice(next.length - maxCandles);
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw
 </file>
 
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
@@ -186660,202 +186953,6 @@ echo "🔗 Check: https://github.com/sawyerma/ws_ai_llm"
 </html>
 </file>
 
-<file path="backend/core/config.py">
-# backend/core/config.py
-
-import os
-from typing import Dict, Any, List
-import yaml
-from pathlib import Path
-import logging
-import urllib.parse
-
-logger = logging.getLogger(__name__)
-
-# ===== HELPER FUNCTIONS (P0.3) =====
-def _parse_csv_env(name: str) -> List[str]:
-    """Parse comma-separated ENV variable"""
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return []
-    return [x.strip() for x in raw.split(",") if x.strip()]
-
-def _discover_exchanges_from_fs() -> List[str]:
-    """
-    Discover exchanges from filesystem (no circular imports)
-    Scans backend/exchanges/* directories
-    """
-    ex_root = Path(__file__).resolve().parents[1] / "exchanges"
-    if not ex_root.exists():
-        logger.warning(f"Exchanges directory not found: {ex_root}")
-        return []
-    
-    out: List[str] = []
-    for p in sorted(ex_root.iterdir()):
-        if p.is_dir() and not p.name.startswith((".", "_")) and p.name != "__pycache__":
-            # Validate: must have services/rest_api.py
-            rest_api = p / "services" / "rest_api.py"
-            if rest_api.exists():
-                out.append(p.name)
-    
-    return out
-
-class Config:
-    """Lädt und verwaltet alle Systemkonfigurationen"""
-    
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
-            cls._instance._load_config()
-        return cls._instance
-    
-    def _load_config(self):
-        """Lädt alle Konfigurationsdateien"""
-        # ✅ P2.2: Konsistent zu main.py: backend/config
-        config_path = Path(__file__).resolve().parents[1] / "config"
-        
-        # ENTFERNT: Tier-Konfigurationen (jetzt in ai/shared/)
-        # ENTFERNT: AI System Konfiguration (jetzt in ai/shared/)
-        # ENTFERNT: Telegram Konfiguration (jetzt in ai/shared/)
-        
-        # Umgebungsvariablen für Datenbanken und Dienste
-        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
-        
-        # ClickHouse-Verbindung aus Umgebungsvariablen oder Standardwerten
-        self.clickhouse_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
-        self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
-        self.clickhouse_user = os.getenv("CLICKHOUSE_USER", "admin")
-        self.clickhouse_password = os.getenv("CLICKHOUSE_PASSWORD", "admin")
-        self.clickhouse_database = os.getenv("CLICKHOUSE_DATABASE", "trading")
-        
-        # Aliases für Rückwärtskompatibilität (Großgeschrieben)
-        self.REDIS_URL = self.redis_url
-        self.CLICKHOUSE_HOST = self.clickhouse_host
-        self.CLICKHOUSE_PORT = self.clickhouse_port
-        self.CLICKHOUSE_USER = self.clickhouse_user
-        self.CLICKHOUSE_PASSWORD = self.clickhouse_password
-        self.CLICKHOUSE_DATABASE = self.clickhouse_database
-        
-        # ✅ P0.3: Exchanges - ENV oder Filesystem-Discovery
-        env_ex = _parse_csv_env("EXCHANGES")
-        self.exchanges = env_ex if env_ex else _discover_exchanges_from_fs()
-        
-        if not self.exchanges:
-            logger.warning("⚠️ No exchanges discovered! Check EXCHANGES env or filesystem")
-        
-        # Dynamisch alle Exchange API Keys laden
-        for exchange in self.exchanges:
-            exchange_upper = exchange.upper()
-            setattr(self, f"{exchange}_api_key", os.getenv(f"{exchange_upper}_API_KEY"))
-            setattr(self, f"{exchange}_api_secret", os.getenv(f"{exchange_upper}_API_SECRET"))
-            
-            # Backwards compatibility - auch die UPPERCASE Attribute setzen
-            setattr(self, f"{exchange_upper}_API_KEY", os.getenv(f"{exchange_upper}_API_KEY"))
-            setattr(self, f"{exchange_upper}_API_SECRET", os.getenv(f"{exchange_upper}_API_SECRET"))
-        
-        # ✅ P0.3: Symbols - ENV (kein Hardcoding-Default)
-        self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS")
-        
-        if not self.SYMBOLS:
-            logger.warning("⚠️ No trading symbols configured! Set TRADING_SYMBOLS env")
-    
-    def _load_yaml(self, file_path: Path) -> Dict[str, Any]:
-        """Lädt eine YAML Konfigurationsdatei"""
-        if file_path.exists():
-            with open(file_path, 'r') as f:
-                return yaml.safe_load(f)
-        return {}
-    
-    # ENTFERNT: get_tier_config() - jetzt in ai/shared/
-    # ENTFERNT: get_ai_config() - jetzt in ai/shared/
-    # ENTFERNT: _get_default_ai_config() - jetzt in ai/shared/
-
-
-# Globale Konfigurationsinstanz, die im gesamten System verwendet wird
-try:
-    config = Config()
-    settings = config  # Alias für Kompatibilität
-except Exception as e:
-    logger.critical(f"FATAL: Could not initialize Config. Error: {e}")
-    # Fallback to a minimal config object to prevent further crashes
-    class MinimalConfig:
-        def __init__(self):
-            # ENTFERNT: AI/Tier configs
-            self.redis_url = "redis://redis:6379"
-            self.clickhouse_host = "clickhouse"
-            self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-            self.clickhouse_user = "admin"
-            self.clickhouse_password = "admin"
-            self.clickhouse_database = "trading"
-            
-            # Aliases für Rückwärtskompatibilität (Großgeschrieben)
-            self.REDIS_URL = self.redis_url
-            self.CLICKHOUSE_HOST = self.clickhouse_host
-            self.CLICKHOUSE_PORT = self.clickhouse_port
-            self.CLICKHOUSE_USER = self.clickhouse_user
-            self.CLICKHOUSE_PASSWORD = self.clickhouse_password
-            self.CLICKHOUSE_DATABASE = self.clickhouse_database
-            
-            # ✅ DYNAMISCH aus ENV (wie Haupt-Config) - nur 1 Exchange als Fallback
-            self.exchanges = _parse_csv_env("ENABLED_EXCHANGES") or ["binance"]
-            self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS") or []
-            
-            # Dynamisch alle Exchange API Keys auf None setzen
-            for exchange in self.exchanges:
-                setattr(self, f"{exchange}_api_key", None)
-                setattr(self, f"{exchange}_api_secret", None)
-                # Backwards compatibility - auch UPPERCASE
-                setattr(self, f"{exchange.upper()}_API_KEY", None)
-                setattr(self, f"{exchange.upper()}_API_SECRET", None)
-    config = MinimalConfig()
-    settings = config  # Alias für Kompatibilität
-
-
-# ===== BACKWARDS COMPATIBILITY ALIASES =====
-# Für bestehende Imports die diese Namen erwarten
-core_config = config          # Legacy alias
-
-# ===== CONVENIENCE FUNCTIONS =====
-def get_core_config() -> Config:
-    """Gibt die globale Core Config Instanz zurück"""
-    return config
-
-def get_system_redis_config() -> Dict[str, Any]:
-    """Convenience function für Redis Config"""
-    # ✅ P0.1: Parse Redis URL korrekt
-    parsed = urllib.parse.urlparse(config.redis_url)
-    
-    return {
-        "url": config.redis_url,
-        "host": parsed.hostname or "redis",
-        "port": parsed.port or 6379
-    }
-
-def get_system_clickhouse_config() -> Dict[str, Any]:
-    """Convenience function für ClickHouse Config"""
-    return {
-        "host": config.clickhouse_host,
-        "port": config.clickhouse_port,
-        "user": config.clickhouse_user,
-        "password": config.clickhouse_password,
-        "database": config.clickhouse_database
-    }
-
-# ===== EXPORTS =====
-__all__ = [
-    "Config",
-    "config",           # Main instance
-    "settings",         # Alias
-    "core_config",      # Legacy
-    "get_core_config",
-    "get_system_redis_config", 
-    "get_system_clickhouse_config"
-]
-</file>
-
 <file path="backend/database/clickhouse/__init__.py">
 # ClickHouse Lane System - Unified Export Module
 # Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
@@ -187887,6 +187984,141 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, m
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.registry.symbol_registry import SYMBOL_REGISTRY
+                    from backend.core.models.market_enum import MarketEnum
+                    
+                    market_enum = MarketEnum.SPOT if market == "spot" else MarketEnum.USDTM
+                    catalog = SYMBOL_REGISTRY.catalog(exchange, market_enum)
+                    
+                    symbols = [entry["symbol"] for entry in catalog]
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": market,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ⚠️ Orderbook Request: "orderbook" - TODO: Implement via WS-Lane
+            # Currently not implemented - requires orderbook subscription in ws_manager
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Orderbook not yet implemented via WS. Use REST endpoint or implement orderbook lane."
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
 <file path="frontend/src/config/exchangeSupport.ts">
 // ✅ DYNAMISCHE Exchange & Market Configuration
 // Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
@@ -188077,6 +188309,243 @@ export function TradesPanel({ trades }: Props) {
       </div>
     </div>
   );
+}
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useWsLane(
+  exchange: string,
+  symbol: string,
+  market: string,
+  interval: string
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+
+  // ✅ Backend-defined limits (from connection message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+  }, [exchange, symbol, market, interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // ✅ Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const tSec = toNum(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length ? bids[0][0] : 0;
+        const bestAsk = asks.length ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw.map((raw: any) => ({
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: (msg as any).market || market,
+          interval: (msg as any).interval || interval,
+          t: Math.floor(toNum(raw.time) / 1000),
+          o: toNum(raw.open),
+          h: toNum(raw.high),
+          l: toNum(raw.low),
+          c: toNum(raw.close),
+          v: toNum(raw.volume),
+        }));
+        setHistorical(hist);
+        return;
+      }
+    });
+
+    return () => {
+      offStatus();
+      offMsg();
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  return { status, trades, candles, orderbook, historical };
 }
 </file>
 
@@ -192822,6 +193291,206 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
+<file path="backend/core/config.py">
+# backend/core/config.py
+
+import os
+from typing import Dict, Any, List
+import yaml
+from pathlib import Path
+import logging
+import urllib.parse
+
+logger = logging.getLogger(__name__)
+
+# ===== HELPER FUNCTIONS (P0.3) =====
+def _parse_csv_env(name: str) -> List[str]:
+    """Parse comma-separated ENV variable"""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+def _discover_exchanges_from_fs() -> List[str]:
+    """
+    Discover exchanges from filesystem (no circular imports)
+    Scans backend/exchanges/* directories
+    """
+    ex_root = Path(__file__).resolve().parents[1] / "exchanges"
+    if not ex_root.exists():
+        logger.warning(f"Exchanges directory not found: {ex_root}")
+        return []
+    
+    out: List[str] = []
+    for p in sorted(ex_root.iterdir()):
+        if p.is_dir() and not p.name.startswith((".", "_")) and p.name != "__pycache__":
+            # Validate: must have services/rest_api.py
+            rest_api = p / "services" / "rest_api.py"
+            if rest_api.exists():
+                out.append(p.name)
+    
+    return out
+
+class Config:
+    """Lädt und verwaltet alle Systemkonfigurationen"""
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance._load_config()
+        return cls._instance
+    
+    def _load_config(self):
+        """Lädt alle Konfigurationsdateien"""
+        # ✅ P2.2: Konsistent zu main.py: backend/config
+        config_path = Path(__file__).resolve().parents[1] / "config"
+        
+        # ENTFERNT: Tier-Konfigurationen (jetzt in ai/shared/)
+        # ENTFERNT: AI System Konfiguration (jetzt in ai/shared/)
+        # ENTFERNT: Telegram Konfiguration (jetzt in ai/shared/)
+        
+        # Umgebungsvariablen für Datenbanken und Dienste
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        
+        # ClickHouse-Verbindung aus Umgebungsvariablen oder Standardwerten
+        self.clickhouse_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+        self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+        self.clickhouse_user = os.getenv("CLICKHOUSE_USER", "admin")
+        self.clickhouse_password = os.getenv("CLICKHOUSE_PASSWORD", "admin")
+        self.clickhouse_database = os.getenv("CLICKHOUSE_DATABASE", "trading")
+        
+        # Aliases für Rückwärtskompatibilität (Großgeschrieben)
+        self.REDIS_URL = self.redis_url
+        self.CLICKHOUSE_HOST = self.clickhouse_host
+        self.CLICKHOUSE_PORT = self.clickhouse_port
+        self.CLICKHOUSE_USER = self.clickhouse_user
+        self.CLICKHOUSE_PASSWORD = self.clickhouse_password
+        self.CLICKHOUSE_DATABASE = self.clickhouse_database
+        
+        # ✅ P0.3: Exchanges - ENV oder Filesystem-Discovery
+        env_ex = _parse_csv_env("EXCHANGES")
+        self.exchanges = env_ex if env_ex else _discover_exchanges_from_fs()
+        
+        if not self.exchanges:
+            logger.warning("⚠️ No exchanges discovered! Check EXCHANGES env or filesystem")
+        
+        # Dynamisch alle Exchange API Keys laden
+        for exchange in self.exchanges:
+            exchange_upper = exchange.upper()
+            setattr(self, f"{exchange}_api_key", os.getenv(f"{exchange_upper}_API_KEY"))
+            setattr(self, f"{exchange}_api_secret", os.getenv(f"{exchange_upper}_API_SECRET"))
+            
+            # Backwards compatibility - auch die UPPERCASE Attribute setzen
+            setattr(self, f"{exchange_upper}_API_KEY", os.getenv(f"{exchange_upper}_API_KEY"))
+            setattr(self, f"{exchange_upper}_API_SECRET", os.getenv(f"{exchange_upper}_API_SECRET"))
+        
+        # ✅ P0.3: Symbols - ENV (kein Hardcoding-Default)
+        self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS")
+        
+        if not self.SYMBOLS:
+            logger.warning("⚠️ No trading symbols configured! Set TRADING_SYMBOLS env")
+        
+        # ✅ WebSocket Data Limits - ENV
+        self.ws_max_trades = int(os.getenv("WS_MAX_TRADES", "500"))
+        self.ws_max_candles = int(os.getenv("WS_MAX_CANDLES", "2000"))
+    
+    def _load_yaml(self, file_path: Path) -> Dict[str, Any]:
+        """Lädt eine YAML Konfigurationsdatei"""
+        if file_path.exists():
+            with open(file_path, 'r') as f:
+                return yaml.safe_load(f)
+        return {}
+    
+    # ENTFERNT: get_tier_config() - jetzt in ai/shared/
+    # ENTFERNT: get_ai_config() - jetzt in ai/shared/
+    # ENTFERNT: _get_default_ai_config() - jetzt in ai/shared/
+
+
+# Globale Konfigurationsinstanz, die im gesamten System verwendet wird
+try:
+    config = Config()
+    settings = config  # Alias für Kompatibilität
+except Exception as e:
+    logger.critical(f"FATAL: Could not initialize Config. Error: {e}")
+    # Fallback to a minimal config object to prevent further crashes
+    class MinimalConfig:
+        def __init__(self):
+            # ENTFERNT: AI/Tier configs
+            self.redis_url = "redis://redis:6379"
+            self.clickhouse_host = "clickhouse"
+            self.clickhouse_port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
+            self.clickhouse_user = "admin"
+            self.clickhouse_password = "admin"
+            self.clickhouse_database = "trading"
+            
+            # Aliases für Rückwärtskompatibilität (Großgeschrieben)
+            self.REDIS_URL = self.redis_url
+            self.CLICKHOUSE_HOST = self.clickhouse_host
+            self.CLICKHOUSE_PORT = self.clickhouse_port
+            self.CLICKHOUSE_USER = self.clickhouse_user
+            self.CLICKHOUSE_PASSWORD = self.clickhouse_password
+            self.CLICKHOUSE_DATABASE = self.clickhouse_database
+            
+            # ✅ DYNAMISCH aus ENV (wie Haupt-Config) - nur 1 Exchange als Fallback
+            self.exchanges = _parse_csv_env("ENABLED_EXCHANGES") or ["binance"]
+            self.SYMBOLS = _parse_csv_env("TRADING_SYMBOLS") or []
+            
+            # Dynamisch alle Exchange API Keys auf None setzen
+            for exchange in self.exchanges:
+                setattr(self, f"{exchange}_api_key", None)
+                setattr(self, f"{exchange}_api_secret", None)
+                # Backwards compatibility - auch UPPERCASE
+                setattr(self, f"{exchange.upper()}_API_KEY", None)
+                setattr(self, f"{exchange.upper()}_API_SECRET", None)
+    config = MinimalConfig()
+    settings = config  # Alias für Kompatibilität
+
+
+# ===== BACKWARDS COMPATIBILITY ALIASES =====
+# Für bestehende Imports die diese Namen erwarten
+core_config = config          # Legacy alias
+
+# ===== CONVENIENCE FUNCTIONS =====
+def get_core_config() -> Config:
+    """Gibt die globale Core Config Instanz zurück"""
+    return config
+
+def get_system_redis_config() -> Dict[str, Any]:
+    """Convenience function für Redis Config"""
+    # ✅ P0.1: Parse Redis URL korrekt
+    parsed = urllib.parse.urlparse(config.redis_url)
+    
+    return {
+        "url": config.redis_url,
+        "host": parsed.hostname or "redis",
+        "port": parsed.port or 6379
+    }
+
+def get_system_clickhouse_config() -> Dict[str, Any]:
+    """Convenience function für ClickHouse Config"""
+    return {
+        "host": config.clickhouse_host,
+        "port": config.clickhouse_port,
+        "user": config.clickhouse_user,
+        "password": config.clickhouse_password,
+        "database": config.clickhouse_database
+    }
+
+# ===== EXPORTS =====
+__all__ = [
+    "Config",
+    "config",           # Main instance
+    "settings",         # Alias
+    "core_config",      # Legacy
+    "get_core_config",
+    "get_system_redis_config", 
+    "get_system_clickhouse_config"
+]
+</file>
+
 <file path="backend/database/clickhouse/cl_message_handlers.py">
 import asyncio
 import logging
@@ -193631,95 +194300,6 @@ export const useTradingContext = () => {
 };
 
 export { TradingContext };
-</file>
-
-<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
-import React, { useMemo } from "react";
-import { useLiveTrades } from "../../services/hooks/useLiveTrades";
-import { useLiveCandles } from "../../services/hooks/useLiveCandles";
-
-const SYMBOL = "BTCUSDT";
-const MARKET = "spot";
-const INTERVAL = "1s";
-
-// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
-// aber erst mal: harte Liste, damit es deterministisch läuft.
-const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
-
-function fmt(n: number | undefined, digits = 2) {
-  if (n === undefined || !Number.isFinite(n)) return "-";
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
-
-export default function BTCUSDTMonitor() {
-  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
-
-  return (
-    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
-      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
-        BTCUSDT Live Monitor (Hooks-only)
-      </h1>
-
-      <div style={{ marginBottom: 12, opacity: 0.85 }}>
-        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
-      </div>
-
-      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
-              <th style={{ padding: 10 }}>Exchange</th>
-              <th style={{ padding: 10 }}>WS</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
-              <th style={{ padding: 10 }}>Side</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((ex) => (
-              <Row key={ex} exchange={ex} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
-        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
-          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
-          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function Row({ exchange }: { exchange: string }) {
-  const { status, trades } = useLiveTrades(exchange, SYMBOL, MARKET, 500);
-  const { candles } = useLiveCandles(exchange, SYMBOL, MARKET, INTERVAL, 500);
-
-  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
-  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
-
-  return (
-    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
-      <td style={{ padding: 10 }}>{status}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
-      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
-      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
-        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
-      </td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
-    </tr>
-  );
-}
 </file>
 
 <file path="frontend/src/pages/TradingPage/TradingPage.tsx">
@@ -195440,6 +196020,93 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
+<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
+import React, { useMemo } from "react";
+import { useWsLane } from "../../services/ws/useWsLane";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1s";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
+      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
+        BTCUSDT Live Monitor (Hooks-only)
+      </h1>
+
+      <div style={{ marginBottom: 12, opacity: 0.85 }}>
+        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+      </div>
+
+      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
+          <thead>
+            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
+              <th style={{ padding: 10 }}>Exchange</th>
+              <th style={{ padding: 10 }}>WS</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
+              <th style={{ padding: 10 }}>Side</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
+              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
+        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
+          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades, candles } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
+
+  return (
+    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
+      <td style={{ padding: 10 }}>{status}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
+      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
+      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
+        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
+      </td>
+      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
+    </tr>
+  );
+}
+</file>
+
 <file path="frontend/src/main.tsx">
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -196969,7 +197636,32 @@ class CentralizedWsManager:
                     data=trade_data
                 )
                 
-                # 4. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # 4. ✅ NEU: Candle Aggregation + Broadcast
+                from backend.services.adapter.stream_aggregator import MultiResCandleAgg
+                
+                # Aggregator pro Lane erstellen (einmalig)
+                if not hasattr(lane, 'candle_agg'):
+                    lane.candle_agg = MultiResCandleAgg(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        resolutions=["1s", "5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+                    )
+                
+                # Trade zu Candles aggregieren
+                finished_candles = lane.candle_agg.on_trade(trade_data)
+                
+                # Finished Candles broadcasten
+                for candle in finished_candles:
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="candle_data",
+                        data=candle
+                    )
+                
+                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
                 # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
                 
                 # 5. Health + Metrics Tracking
@@ -197217,8 +197909,31 @@ class BaseMessageParser:
             market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
         """
         raise NotImplementedError
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Orderbook Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.)
+            
+        Returns:
+            {
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+                "timestamp": int
+            }
+        """
+        return None  # Default: kein Orderbook-Parsing
 
 class BinanceMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Binance Orderbook Service"""
+        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
+        service = BinanceOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         """
         ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
@@ -197254,6 +197969,12 @@ class BinanceMessageParser(BaseMessageParser):
         return None
 
 class BitgetMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bitget Orderbook Service"""
+        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
+        service = BitgetOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
             logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
@@ -197284,6 +198005,12 @@ class BitgetMessageParser(BaseMessageParser):
         return None
 
 class GateIOMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Gate.io Orderbook Service"""
+        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
+        service = GateIOOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
             logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
@@ -197341,6 +198068,12 @@ class HTXMessageParser(BaseMessageParser):
     HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
     Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
     """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an HTX Orderbook Service"""
+        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
+        service = HTXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
     
     async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
@@ -197411,6 +198144,12 @@ class MEXCMessageParser(BaseMessageParser):
     Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
     Proto: https://github.com/mexcdevelop/websocket-proto
     """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an MEXC Orderbook Service"""
+        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
+        service = MEXCOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
     
     async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
@@ -197610,6 +198349,12 @@ class MEXCMessageParser(BaseMessageParser):
 class OKXMessageParser(BaseMessageParser):
     """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
     
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an OKX Orderbook Service"""
+        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
+        service = OKXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
             logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
@@ -197641,6 +198386,12 @@ class OKXMessageParser(BaseMessageParser):
 class BybitMessageParser(BaseMessageParser):
     """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
     
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bybit Orderbook Service"""
+        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
+        service = BybitOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
             logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
@@ -197671,6 +198422,12 @@ class BybitMessageParser(BaseMessageParser):
 
 class CoinbaseMessageParser(BaseMessageParser):
     """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Coinbase Orderbook Service"""
+        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
+        service = CoinbaseOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
     
     async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
         try:
