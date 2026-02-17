@@ -10973,215 +10973,6 @@ async def gw_health():
         raise HTTPException(status_code=500, detail=f"Gateway health error: {e}")
 </file>
 
-<file path="backend/api/routers/ro_user_settings.py">
-# backend/api/routers/ro_user_settings.py
-"""
-ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
-
-Aufgaben:
-- Vollständiges User-Settings-JSON lesen/schreiben
-- Partielle Updates (PATCH)
-- Optionale Teilbereiche: z. B. watchlists, layout, indicators, preferences
-
-Abhängigkeiten:
-- backend.services.config_manager.get_user_settings_service
-"""
-
-import logging
-from typing import Any, Dict, Optional
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
-from pydantic import BaseModel, Field
-
-from backend.services.domain.config_manager import get_user_settings_service
-
-logger = logging.getLogger("ro-user-settings")
-
-user_settings_router = APIRouter(
-    prefix="/api/user/settings",
-    tags=["user-settings"],
-)
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class UserSettingsPayload(BaseModel):
-    """
-    Generisches Container-Modell für User-Settings.
-    Inhalt ist frei strukturierbar; wird 1:1 im Store abgelegt.
-    """
-    data: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Beliebiges Settings-Objekt (JSON).",
-    )
-
-
-class UserSettingsPatch(BaseModel):
-    """
-    PATCH-Modell: partieller Update-Body (wird deep-merged).
-    """
-    patch: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Teil-Settings, die in bestehende Settings gemerged werden.",
-    )
-
-
-# ============================================================
-# HELPER
-# ============================================================
-
-async def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
-    if not x_client_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing X-Client-ID header",
-        )
-    return x_client_id
-
-
-async def _load_user_settings(user_id: str) -> Dict[str, Any]:
-    svc = get_user_settings_service()
-    try:
-        settings = await svc.get(user_id)
-        if not isinstance(settings, dict):
-            logger.warning(f"UserSettingsService.get({user_id}) returned non-dict, coercing to empty dict")
-            return {}
-        return settings
-    except Exception as e:
-        logger.error(f"Failed to load settings for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to load user settings")
-
-
-async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
-    svc = get_user_settings_service()
-    try:
-        ok = await svc.put(user_id, settings)
-        if not ok:
-            raise RuntimeError("UserSettingsService.put returned False")
-    except Exception as e:
-        logger.error(f"Failed to save settings for user {user_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to save user settings")
-
-
-def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Rekursive Deep-Merge-Funktion ohne Mutation von base.
-    """
-    result = dict(base)
-    for k, v in updates.items():
-        if isinstance(v, dict) and isinstance(result.get(k), dict):
-            result[k] = _deep_merge(result[k], v)
-        else:
-            result[k] = v
-    return result
-
-
-# ============================================================
-# ENDPOINTS – GENERIC SETTINGS
-# ============================================================
-
-@user_settings_router.get("", response_model=UserSettingsPayload)
-async def get_user_settings(
-    user_id: str = Depends(get_client_id),
-    scope: Optional[str] = Query(
-        None,
-        description="Optional: nur einen Teilbaum der Settings zurückgeben, z. B. 'layout' oder 'watchlists[0]' (simple dot notation).",
-    ),
-):
-    """
-    Liefert die kompletten User-Settings oder einen Teilbereich (scope).
-    """
-    settings = await _load_user_settings(user_id)
-    data: Any = settings
-
-    if scope:
-        # Simple dot-path-Auswertung: "layout.main" → settings['layout']['main']
-        parts = [p for p in scope.replace("[", ".").replace("]", "").split(".") if p]
-        try:
-            for p in parts:
-                if p.isdigit() and isinstance(data, list):
-                    idx = int(p)
-                    data = data[idx]
-                elif isinstance(data, dict):
-                    data = data[p]
-                else:
-                    raise KeyError(p)
-        except Exception:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Scope '{scope}' not found in settings",
-            )
-
-    logger.info(f"GET /api/user/settings user={user_id} scope={scope!r}")
-    return UserSettingsPayload(data=data if isinstance(data, dict) else {"value": data})
-
-
-@user_settings_router.put("", response_model=UserSettingsPayload)
-async def put_user_settings(
-    payload: UserSettingsPayload = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Ersetzt die kompletten User-Settings durch das übergebene Objekt.
-    """
-    await _save_user_settings(user_id, payload.data)
-    logger.info(f"PUT /api/user/settings user={user_id} (override)")
-    return payload
-
-
-@user_settings_router.patch("", response_model=UserSettingsPayload)
-async def patch_user_settings(
-    patch: UserSettingsPatch = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Führt einen Deep-Merge der übergebenen Teil-Settings mit den bestehenden Settings durch.
-    """
-    current = await _load_user_settings(user_id)
-    merged = _deep_merge(current, patch.patch)
-    await _save_user_settings(user_id, merged)
-
-    logger.info(f"PATCH /api/user/settings user={user_id} (deep-merge)")
-    return UserSettingsPayload(data=merged)
-
-
-# ============================================================
-# BEISPIEL-SPEZIAL-ENDEPOINTS (OPTIONAL)
-# ============================================================
-
-@user_settings_router.get("/watchlists", response_model=UserSettingsPayload)
-async def get_watchlists(
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Liefert nur den Bereich 'watchlists' aus den Settings.
-    """
-    settings = await _load_user_settings(user_id)
-    wl = settings.get("watchlists") or []
-    logger.debug(f"GET /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
-
-
-@user_settings_router.put("/watchlists", response_model=UserSettingsPayload)
-async def put_watchlists(
-    payload: UserSettingsPayload = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Ersetzt den Bereich 'watchlists' in den Settings.
-    Erwartet im Body: { "data": { "watchlists": [...] } }
-    """
-    settings = await _load_user_settings(user_id)
-    wl = payload.data.get("watchlists") or []
-    settings["watchlists"] = wl
-    await _save_user_settings(user_id, settings)
-
-    logger.info(f"PUT /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
-</file>
-
 <file path="backend/api/routers/ro_whales.py">
 from __future__ import annotations
 
@@ -130953,6 +130744,266 @@ async def update_exchange_api_endpoints(
         raise HTTPException(status_code=500, detail=str(e))
 </file>
 
+<file path="backend/api/routers/ro_user_settings.py">
+# backend/api/routers/ro_user_settings.py
+"""
+ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
+
+Aufgaben:
+- Vollständiges User-Settings-JSON lesen/schreiben
+- Partielle Updates (PATCH)
+- Optionale Teilbereiche: z. B. watchlists, layout, indicators, preferences
+
+Abhängigkeiten:
+- backend.services.config_manager.get_user_settings_service
+"""
+
+import logging
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
+from pydantic import BaseModel, Field
+
+from backend.services.domain.config_manager import get_user_settings_service
+
+logger = logging.getLogger("ro-user-settings")
+
+user_settings_router = APIRouter(
+    prefix="/api/user/settings",
+    tags=["user-settings"],
+)
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+class UserSettingsPayload(BaseModel):
+    """
+    Generisches Container-Modell für User-Settings.
+    Inhalt ist frei strukturierbar; wird 1:1 im Store abgelegt.
+    """
+    data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Beliebiges Settings-Objekt (JSON).",
+    )
+
+
+class UserSettingsPatch(BaseModel):
+    """
+    PATCH-Modell: partieller Update-Body (wird deep-merged).
+    """
+    patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Teil-Settings, die in bestehende Settings gemerged werden.",
+    )
+
+
+# ============================================================
+# HELPER
+# ============================================================
+
+async def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
+    if not x_client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing X-Client-ID header",
+        )
+    return x_client_id
+
+
+async def _load_user_settings(user_id: str) -> Dict[str, Any]:
+    svc = get_user_settings_service()
+    try:
+        settings = await svc.get(user_id)
+        if not isinstance(settings, dict):
+            logger.warning(f"UserSettingsService.get({user_id}) returned non-dict, coercing to empty dict")
+            return {}
+        return settings
+    except Exception as e:
+        logger.error(f"Failed to load settings for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load user settings")
+
+
+async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
+    svc = get_user_settings_service()
+    try:
+        ok = await svc.put(user_id, settings)
+        if not ok:
+            raise RuntimeError("UserSettingsService.put returned False")
+    except Exception as e:
+        logger.error(f"Failed to save settings for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save user settings")
+
+
+def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Rekursive Deep-Merge-Funktion ohne Mutation von base.
+    """
+    result = dict(base)
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+# ============================================================
+# ENDPOINTS – GENERIC SETTINGS
+# ============================================================
+
+@user_settings_router.get("", response_model=UserSettingsPayload)
+async def get_user_settings(
+    user_id: str = Depends(get_client_id),
+    scope: Optional[str] = Query(
+        None,
+        description="Optional: nur einen Teilbaum der Settings zurückgeben, z. B. 'layout' oder 'watchlists[0]' (simple dot notation).",
+    ),
+):
+    """
+    Liefert die kompletten User-Settings oder einen Teilbereich (scope).
+    """
+    settings = await _load_user_settings(user_id)
+    data: Any = settings
+
+    if scope:
+        # Simple dot-path-Auswertung: "layout.main" → settings['layout']['main']
+        parts = [p for p in scope.replace("[", ".").replace("]", "").split(".") if p]
+        try:
+            for p in parts:
+                if p.isdigit() and isinstance(data, list):
+                    idx = int(p)
+                    data = data[idx]
+                elif isinstance(data, dict):
+                    data = data[p]
+                else:
+                    raise KeyError(p)
+        except Exception:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scope '{scope}' not found in settings",
+            )
+
+    logger.info(f"GET /api/user/settings user={user_id} scope={scope!r}")
+    return UserSettingsPayload(data=data if isinstance(data, dict) else {"value": data})
+
+
+@user_settings_router.put("", response_model=UserSettingsPayload)
+async def put_user_settings(
+    payload: UserSettingsPayload = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Ersetzt die kompletten User-Settings durch das übergebene Objekt.
+    """
+    await _save_user_settings(user_id, payload.data)
+    logger.info(f"PUT /api/user/settings user={user_id} (override)")
+    return payload
+
+
+@user_settings_router.patch("", response_model=UserSettingsPayload)
+async def patch_user_settings(
+    patch: UserSettingsPatch = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Führt einen Deep-Merge der übergebenen Teil-Settings mit den bestehenden Settings durch.
+    """
+    current = await _load_user_settings(user_id)
+    merged = _deep_merge(current, patch.patch)
+    await _save_user_settings(user_id, merged)
+
+    logger.info(f"PATCH /api/user/settings user={user_id} (deep-merge)")
+    return UserSettingsPayload(data=merged)
+
+
+# ============================================================
+# BEISPIEL-SPEZIAL-ENDEPOINTS (OPTIONAL)
+# ============================================================
+
+@user_settings_router.get("/watchlists", response_model=UserSettingsPayload)
+async def get_watchlists(
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Liefert nur den Bereich 'watchlists' aus den Settings.
+    """
+    settings = await _load_user_settings(user_id)
+    wl = settings.get("watchlists") or []
+    logger.debug(f"GET /api/user/settings/watchlists user={user_id} count={len(wl)}")
+    return UserSettingsPayload(data={"watchlists": wl})
+
+
+@user_settings_router.put("/watchlists", response_model=UserSettingsPayload)
+async def put_watchlists(
+    payload: UserSettingsPayload = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Ersetzt den Bereich 'watchlists' in den Settings.
+    Erwartet im Body: { "data": { "watchlists": [...] } }
+    """
+    settings = await _load_user_settings(user_id)
+    wl = payload.data.get("watchlists") or []
+    settings["watchlists"] = wl
+    await _save_user_settings(user_id, settings)
+
+    logger.info(f"PUT /api/user/settings/watchlists user={user_id} count={len(wl)}")
+    return UserSettingsPayload(data={"watchlists": wl})
+
+
+# ============================================================
+# COIN SETTINGS ENDPOINTS
+# ============================================================
+
+class CoinSetting(BaseModel):
+    """Model für Coin-spezifische Einstellungen"""
+    symbol: str
+    exchange: str
+    market: str
+    store_live: bool = False
+    load_history: bool = False
+    history_until: str = ""
+    favorite: bool = False
+    chart_resolution: str = "1m"
+    db_resolutions: list[str] = Field(default_factory=list)
+
+
+@user_settings_router.get("/coins", response_model=list[CoinSetting])
+async def get_coin_settings(
+    exchange: Optional[str] = Query(None, description="Filter by exchange"),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Liefert die Coin-Settings für einen User, optional gefiltert nach Exchange.
+    """
+    settings = await _load_user_settings(user_id)
+    coins = settings.get("coins", [])
+    
+    if exchange:
+        coins = [c for c in coins if c.get("exchange") == exchange]
+    
+    logger.info(f"GET /api/settings/coins user={user_id} exchange={exchange} count={len(coins)}")
+    return coins
+
+
+@user_settings_router.post("/coins", response_model=list[CoinSetting])
+async def save_coin_settings(
+    coins: list[CoinSetting] = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Speichert die Coin-Settings für einen User.
+    """
+    settings = await _load_user_settings(user_id)
+    settings["coins"] = [c.model_dump() for c in coins]
+    await _save_user_settings(user_id, settings)
+    
+    logger.info(f"POST /api/settings/coins user={user_id} count={len(coins)}")
+    return coins
+</file>
+
 <file path="backend/api/endpoint_mapper.py">
 """
 ZENTRALER ENDPOINT-MAPPER - Enterprise Grade
@@ -154238,6 +154289,647 @@ async def get_ohlc_from_ch(
     return []
 </file>
 
+<file path="backend/websocket/ws_message_parsers.py">
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+
+class BaseMessageParser:
+    """Base Class für Exchange Message Parser"""
+    
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Trade Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
+        """
+        raise NotImplementedError
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Orderbook Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.)
+            
+        Returns:
+            {
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+                "timestamp": int
+            }
+        """
+        return None  # Default: kein Orderbook-Parsing
+
+class BinanceMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Binance Orderbook Service"""
+        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
+        service = BinanceOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm) - default: "spot"
+        """
+        try:
+            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
+            
+            # Binance Trade Message Format
+            if "e" in data and data["e"] == "trade":
+                trade = {
+                    "exchange": "binance",
+                    "symbol": data["s"],
+                    "trade_id": data["t"],
+                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
+                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
+                    "side": "buy" if data["m"] == False else "sell",
+                    "timestamp": data["T"],
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
+                return trade
+            else:
+                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BitgetMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bitget Orderbook Service"""
+        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
+        service = BitgetOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
+            
+            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
+                # instId ist in "arg", nicht in "data"!
+                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                for trade in data.get("data", []):
+                    trade_obj = {
+                        "exchange": "bitget",
+                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GateIOMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Gate.io Orderbook Service"""
+        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
+        service = GateIOOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
+            
+            # Check for trade update event
+            if data.get("event") == "update" and data.get("channel") == "spot.trades":
+                result = data.get("result")
+                
+                if not result:
+                    logger.warning(f"⚠️ GATE.IO No result in trade update")
+                    return None
+                
+                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
+                if isinstance(result, dict):
+                    # Single trade as dict
+                    trade = result
+                elif isinstance(result, list) and len(result) > 0:
+                    # Array of trades
+                    trade = result[0]
+                else:
+                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
+                    return None
+                
+                trade_obj = {
+                    "exchange": "gateio",
+                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
+                    "trade_id": str(trade["id"]),
+                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                    "side": trade["side"],
+                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                return trade_obj
+            
+            # Subscription confirmation
+            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
+                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
+                return None
+            else:
+                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class HTXMessageParser(BaseMessageParser):
+    """
+    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
+    
+    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
+    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an HTX Orderbook Service"""
+        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
+        service = HTXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ DEBUG: Log message type und erste Bytes
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
+            else:
+                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
+            
+            # ✅ GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                # Check für GZIP Magic Bytes (0x1f 0x8b)
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    logger.info(f"✅ HTX GZIP detected, decompressing...")
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
+                else:
+                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
+                    raw_message = raw_message.decode('utf-8')
+            
+            # JSON Parse
+            data = json.loads(raw_message)
+            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
+            
+            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
+            if "ping" in data:
+                # Ping-Message erkannt, muss mit Pong beantwortet werden
+                # Wird vom WebSocket Handler verarbeitet
+                return {
+                    "type": "ping",
+                    "pong": data["ping"],
+                    "exchange": "htx"
+                }
+            
+            # ✅ Trade-Daten Parsing
+            if "tick" in data and "data" in data["tick"]:
+                trades = []
+                for trade in data["tick"]["data"]:
+                    trades.append({
+                        "exchange": "htx",
+                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
+                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                        "side": "buy" if trade["direction"] == "buy" else "sell",
+                        "timestamp": trade["ts"],
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    })
+                
+                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
+                return trades[0] if trades else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"HTX message parsing error: {e}")
+            return None
+
+class MEXCMessageParser(BaseMessageParser):
+    """
+    MEXC Message Parser mit Protocol Buffers Support
+    
+    MEXC sendet TWO Arten von Messages:
+    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
+    2. Binary: Protocol Buffers Trade-Daten
+    
+    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
+    Proto: https://github.com/mexcdevelop/websocket-proto
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an MEXC Orderbook Service"""
+        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
+        service = MEXCOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
+                return await self._parse_protobuf_trade(raw_message, market)
+            else:
+                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
+                return await self._parse_json_message(raw_message, market)
+                
+        except Exception as e:
+            logger.error(f"MEXC message parsing error: {e}")
+            return None
+    
+    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON Messages (Subscription Responses)"""
+        try:
+            data = json.loads(raw_message)
+            
+            # Subscription Response
+            if "code" in data and "msg" in data:
+                if data["code"] == 0:
+                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
+                else:
+                    logger.error(f"❌ MEXC subscription error: {data}")
+                return None
+            
+            # Legacy JSON Trade Format (falls noch verwendet)
+            if "d" in data and "deals" in data.get("d", {}):
+                for trade in data["d"]["deals"]:
+                    return {
+                        "exchange": "mexc",
+                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
+                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
+                        "price": str(trade["p"]),
+                        "size": str(trade["v"]),
+                        "side": "buy" if trade.get("S") == 1 else "sell",
+                        "timestamp": int(trade["t"]),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"MEXC JSON parsing error: {e}")
+        return None
+    
+    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Protocol Buffers Trade-Daten
+        
+        Struktur (von MEXC Doku):
+        {
+          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
+          "publicdeals": {
+            "dealsList": [{
+              "price": "93220.00",
+              "quantity": "0.04438243",
+              "tradetype": 2,  // 1=Buy, 2=Sell
+              "time": 1736409765051
+            }]
+          },
+          "symbol": "BTCUSDT",
+          "sendtime": 1736409765052
+        }
+        """
+        try:
+            # ✅ Einfacher Protobuf Wire Format Parser
+            # Format: Tag-Length-Value (TLV)
+            
+            symbol = None
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            i = 0
+            while i < len(raw_message):
+                # Read Tag (field number + wire type)
+                if i >= len(raw_message):
+                    break
+                    
+                tag = raw_message[i]
+                i += 1
+                
+                wire_type = tag & 0x07
+                field_num = tag >> 3
+                
+                # Wire Type 2: Length-delimited (strings, embedded messages)
+                if wire_type == 2:
+                    # Read length
+                    length = raw_message[i]
+                    i += 1
+                    
+                    # Read value
+                    value = raw_message[i:i+length]
+                    i += length
+                    
+                    # Decode basierend auf Field Position
+                    try:
+                        decoded = value.decode('utf-8', errors='ignore')
+                        
+                        # Channel (field 1) - enthält Symbol
+                        if field_num == 1 and '@' in decoded:
+                            parts = decoded.split('@')
+                            if len(parts) >= 5:
+                                symbol = parts[-1]  # BTCUSDT am Ende
+                        
+                        # Symbol field (field 3)
+                        elif field_num == 3:
+                            symbol = decoded
+                        
+                        # Embedded message (dealsList)
+                        elif b'\n' in value or b'\x12' in value:
+                            # Parse nested trade data
+                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
+                            
+                    except:
+                        pass
+                
+                # Wire Type 0: Varint (int, enum)
+                elif wire_type == 0:
+                    # Skip varint
+                    while i < len(raw_message) and (raw_message[i] & 0x80):
+                        i += 1
+                    i += 1
+                
+                else:
+                    # Skip unknown wire types
+                    i += 1
+            
+            # ✅ Build Trade Object
+            if symbol and price and quantity:
+                return {
+                    "exchange": "mexc",
+                    "symbol": normalize_to_unified(symbol, "mexc"),
+                    "trade_id": str(timestamp or datetime.now().timestamp()),
+                    "price": str(price),
+                    "size": str(quantity),
+                    "side": "buy" if tradetype == 1 else "sell",
+                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
+                    "market": market
+                }
+            
+            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"MEXC protobuf parsing error: {e}")
+            return None
+    
+    def _parse_deal_data(self, data: bytes) -> tuple:
+        """Parse nested dealsList data"""
+        try:
+            # Suche nach String-Patterns für price und quantity
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            # Simple pattern matching für Decimal strings
+            text = data.decode('utf-8', errors='ignore')
+            
+            # Price ist meist die erste Decimal-Zahl
+            import re
+            decimals = re.findall(r'\d+\.\d+', text)
+            if len(decimals) >= 2:
+                price = decimals[0]
+                quantity = decimals[1]
+            
+            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
+            if b'\x18\x01' in data:
+                tradetype = 1  # Buy
+            elif b'\x18\x02' in data:
+                tradetype = 2  # Sell
+            
+            # Timestamp - varint nach trade type
+            # Simplified: extract any large number
+            for i in range(len(data) - 8):
+                if data[i] == 0x20:  # Tag for timestamp
+                    # Try to read varint
+                    timestamp = 0
+                    shift = 0
+                    for j in range(i+1, min(i+10, len(data))):
+                        b = data[j]
+                        timestamp |= (b & 0x7F) << shift
+                        if not (b & 0x80):
+                            break
+                        shift += 7
+                    if timestamp > 1000000000000:  # Reasonable timestamp
+                        break
+            
+            return price, quantity, tradetype, timestamp
+            
+        except Exception as e:
+            logger.error(f"Deal data parsing error: {e}")
+            return None, None, None, None
+
+class OKXMessageParser(BaseMessageParser):
+    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an OKX Orderbook Service"""
+        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
+        service = OKXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
+            
+            # OKX Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "okx",
+                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BybitMessageParser(BaseMessageParser):
+    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bybit Orderbook Service"""
+        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
+        service = BybitOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
+            
+            # Bybit Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "bybit",
+                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
+                        "trade_id": trade["i"],
+                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["S"].lower(),  # Buy -> buy
+                        "timestamp": int(trade["T"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class CoinbaseMessageParser(BaseMessageParser):
+    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Coinbase Orderbook Service"""
+        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
+        service = CoinbaseOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
+            
+            # Coinbase Trade Message Format
+            if "events" in data:
+                for event in data["events"]:
+                    if "trades" in event:
+                        for trade in event["trades"]:
+                            trade_obj = {
+                                "exchange": "coinbase",
+                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
+                                "trade_id": trade["trade_id"],
+                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                                "side": trade["side"],
+                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
+                                "market": market  # ✅ Von Parameter, nicht hardcoded!
+                            }
+                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                            return trade_obj
+            else:
+                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GenericMessageParser(BaseMessageParser):
+    """Fallback Parser für unbekannte Exchanges"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw_message)
+            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
+            return None  # Kein generisches Format möglich
+        except Exception as e:
+            logger.error(f"{self.exchange} message parsing error: {e}")
+        return None
+
+# Exchange-spezifische Parser Registry
+MESSAGE_PARSERS = {
+    "binance": BinanceMessageParser,
+    "bitget": BitgetMessageParser,
+    "gateio": GateIOMessageParser,
+    "bybit": BybitMessageParser,     # ✅ Bybit Parser
+    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
+    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
+    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
+    "okx": OKXMessageParser,          # ✅ OKX Parser
+}
+
+def get_ws_message_parser(exchange: str) -> BaseMessageParser:
+    """Hole Message Parser für Exchange"""
+    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
+    return parser_class(exchange)
+</file>
+
 <file path="backend/websocket/ws_router.py">
 from fastapi import APIRouter, WebSocket
 from datetime import datetime
@@ -161186,647 +161878,6 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: d
         "server_iso": datetime.utcnow().isoformat(),
     }
     await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
-<file path="backend/websocket/ws_message_parsers.py">
-import json
-import gzip
-import logging
-from typing import Dict, Any, Optional, Union
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-
-class BaseMessageParser:
-    """Base Class für Exchange Message Parser"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Trade Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
-        """
-        raise NotImplementedError
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Orderbook Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.)
-            
-        Returns:
-            {
-                "bids": [[price, size], ...],
-                "asks": [[price, size], ...],
-                "timestamp": int
-            }
-        """
-        return None  # Default: kein Orderbook-Parsing
-
-class BinanceMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Binance Orderbook Service"""
-        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
-        service = BinanceOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm) - default: "spot"
-        """
-        try:
-            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
-            
-            # Binance Trade Message Format
-            if "e" in data and data["e"] == "trade":
-                trade = {
-                    "exchange": "binance",
-                    "symbol": data["s"],
-                    "trade_id": data["t"],
-                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
-                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
-                    "side": "buy" if data["m"] == False else "sell",
-                    "timestamp": data["T"],
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
-                return trade
-            else:
-                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BitgetMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bitget Orderbook Service"""
-        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
-        service = BitgetOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
-            
-            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
-                # instId ist in "arg", nicht in "data"!
-                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
-                for trade in data.get("data", []):
-                    trade_obj = {
-                        "exchange": "bitget",
-                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GateIOMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Gate.io Orderbook Service"""
-        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
-        service = GateIOOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
-            
-            # Check for trade update event
-            if data.get("event") == "update" and data.get("channel") == "spot.trades":
-                result = data.get("result")
-                
-                if not result:
-                    logger.warning(f"⚠️ GATE.IO No result in trade update")
-                    return None
-                
-                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
-                if isinstance(result, dict):
-                    # Single trade as dict
-                    trade = result
-                elif isinstance(result, list) and len(result) > 0:
-                    # Array of trades
-                    trade = result[0]
-                else:
-                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
-                    return None
-                
-                trade_obj = {
-                    "exchange": "gateio",
-                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
-                    "trade_id": str(trade["id"]),
-                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                    "side": trade["side"],
-                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                return trade_obj
-            
-            # Subscription confirmation
-            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
-                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
-                return None
-            else:
-                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class HTXMessageParser(BaseMessageParser):
-    """
-    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
-    
-    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
-    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an HTX Orderbook Service"""
-        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
-        service = HTXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ DEBUG: Log message type und erste Bytes
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
-            else:
-                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
-            
-            # ✅ GZIP Decompression wenn binäre Daten
-            if isinstance(raw_message, bytes):
-                # Check für GZIP Magic Bytes (0x1f 0x8b)
-                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
-                    logger.info(f"✅ HTX GZIP detected, decompressing...")
-                    decompressed = gzip.decompress(raw_message)
-                    raw_message = decompressed.decode('utf-8')
-                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
-                else:
-                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
-                    raw_message = raw_message.decode('utf-8')
-            
-            # JSON Parse
-            data = json.loads(raw_message)
-            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
-            
-            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
-            if "ping" in data:
-                # Ping-Message erkannt, muss mit Pong beantwortet werden
-                # Wird vom WebSocket Handler verarbeitet
-                return {
-                    "type": "ping",
-                    "pong": data["ping"],
-                    "exchange": "htx"
-                }
-            
-            # ✅ Trade-Daten Parsing
-            if "tick" in data and "data" in data["tick"]:
-                trades = []
-                for trade in data["tick"]["data"]:
-                    trades.append({
-                        "exchange": "htx",
-                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
-                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                        "side": "buy" if trade["direction"] == "buy" else "sell",
-                        "timestamp": trade["ts"],
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    })
-                
-                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
-                return trades[0] if trades else None
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"HTX message parsing error: {e}")
-            return None
-
-class MEXCMessageParser(BaseMessageParser):
-    """
-    MEXC Message Parser mit Protocol Buffers Support
-    
-    MEXC sendet TWO Arten von Messages:
-    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
-    2. Binary: Protocol Buffers Trade-Daten
-    
-    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
-    Proto: https://github.com/mexcdevelop/websocket-proto
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an MEXC Orderbook Service"""
-        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
-        service = MEXCOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
-                return await self._parse_protobuf_trade(raw_message, market)
-            else:
-                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
-                return await self._parse_json_message(raw_message, market)
-                
-        except Exception as e:
-            logger.error(f"MEXC message parsing error: {e}")
-            return None
-    
-    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON Messages (Subscription Responses)"""
-        try:
-            data = json.loads(raw_message)
-            
-            # Subscription Response
-            if "code" in data and "msg" in data:
-                if data["code"] == 0:
-                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
-                else:
-                    logger.error(f"❌ MEXC subscription error: {data}")
-                return None
-            
-            # Legacy JSON Trade Format (falls noch verwendet)
-            if "d" in data and "deals" in data.get("d", {}):
-                for trade in data["d"]["deals"]:
-                    return {
-                        "exchange": "mexc",
-                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
-                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
-                        "price": str(trade["p"]),
-                        "size": str(trade["v"]),
-                        "side": "buy" if trade.get("S") == 1 else "sell",
-                        "timestamp": int(trade["t"]),
-                        "market": market
-                    }
-        except Exception as e:
-            logger.error(f"MEXC JSON parsing error: {e}")
-        return None
-    
-    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse Protocol Buffers Trade-Daten
-        
-        Struktur (von MEXC Doku):
-        {
-          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
-          "publicdeals": {
-            "dealsList": [{
-              "price": "93220.00",
-              "quantity": "0.04438243",
-              "tradetype": 2,  // 1=Buy, 2=Sell
-              "time": 1736409765051
-            }]
-          },
-          "symbol": "BTCUSDT",
-          "sendtime": 1736409765052
-        }
-        """
-        try:
-            # ✅ Einfacher Protobuf Wire Format Parser
-            # Format: Tag-Length-Value (TLV)
-            
-            symbol = None
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            i = 0
-            while i < len(raw_message):
-                # Read Tag (field number + wire type)
-                if i >= len(raw_message):
-                    break
-                    
-                tag = raw_message[i]
-                i += 1
-                
-                wire_type = tag & 0x07
-                field_num = tag >> 3
-                
-                # Wire Type 2: Length-delimited (strings, embedded messages)
-                if wire_type == 2:
-                    # Read length
-                    length = raw_message[i]
-                    i += 1
-                    
-                    # Read value
-                    value = raw_message[i:i+length]
-                    i += length
-                    
-                    # Decode basierend auf Field Position
-                    try:
-                        decoded = value.decode('utf-8', errors='ignore')
-                        
-                        # Channel (field 1) - enthält Symbol
-                        if field_num == 1 and '@' in decoded:
-                            parts = decoded.split('@')
-                            if len(parts) >= 5:
-                                symbol = parts[-1]  # BTCUSDT am Ende
-                        
-                        # Symbol field (field 3)
-                        elif field_num == 3:
-                            symbol = decoded
-                        
-                        # Embedded message (dealsList)
-                        elif b'\n' in value or b'\x12' in value:
-                            # Parse nested trade data
-                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
-                            
-                    except:
-                        pass
-                
-                # Wire Type 0: Varint (int, enum)
-                elif wire_type == 0:
-                    # Skip varint
-                    while i < len(raw_message) and (raw_message[i] & 0x80):
-                        i += 1
-                    i += 1
-                
-                else:
-                    # Skip unknown wire types
-                    i += 1
-            
-            # ✅ Build Trade Object
-            if symbol and price and quantity:
-                return {
-                    "exchange": "mexc",
-                    "symbol": normalize_to_unified(symbol, "mexc"),
-                    "trade_id": str(timestamp or datetime.now().timestamp()),
-                    "price": str(price),
-                    "size": str(quantity),
-                    "side": "buy" if tradetype == 1 else "sell",
-                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
-                    "market": market
-                }
-            
-            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"MEXC protobuf parsing error: {e}")
-            return None
-    
-    def _parse_deal_data(self, data: bytes) -> tuple:
-        """Parse nested dealsList data"""
-        try:
-            # Suche nach String-Patterns für price und quantity
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            # Simple pattern matching für Decimal strings
-            text = data.decode('utf-8', errors='ignore')
-            
-            # Price ist meist die erste Decimal-Zahl
-            import re
-            decimals = re.findall(r'\d+\.\d+', text)
-            if len(decimals) >= 2:
-                price = decimals[0]
-                quantity = decimals[1]
-            
-            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
-            if b'\x18\x01' in data:
-                tradetype = 1  # Buy
-            elif b'\x18\x02' in data:
-                tradetype = 2  # Sell
-            
-            # Timestamp - varint nach trade type
-            # Simplified: extract any large number
-            for i in range(len(data) - 8):
-                if data[i] == 0x20:  # Tag for timestamp
-                    # Try to read varint
-                    timestamp = 0
-                    shift = 0
-                    for j in range(i+1, min(i+10, len(data))):
-                        b = data[j]
-                        timestamp |= (b & 0x7F) << shift
-                        if not (b & 0x80):
-                            break
-                        shift += 7
-                    if timestamp > 1000000000000:  # Reasonable timestamp
-                        break
-            
-            return price, quantity, tradetype, timestamp
-            
-        except Exception as e:
-            logger.error(f"Deal data parsing error: {e}")
-            return None, None, None, None
-
-class OKXMessageParser(BaseMessageParser):
-    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an OKX Orderbook Service"""
-        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
-        service = OKXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
-            
-            # OKX Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "okx",
-                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BybitMessageParser(BaseMessageParser):
-    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bybit Orderbook Service"""
-        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
-        service = BybitOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
-            
-            # Bybit Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "bybit",
-                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
-                        "trade_id": trade["i"],
-                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["S"].lower(),  # Buy -> buy
-                        "timestamp": int(trade["T"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class CoinbaseMessageParser(BaseMessageParser):
-    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Coinbase Orderbook Service"""
-        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
-        service = CoinbaseOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
-            
-            # Coinbase Trade Message Format
-            if "events" in data:
-                for event in data["events"]:
-                    if "trades" in event:
-                        for trade in event["trades"]:
-                            trade_obj = {
-                                "exchange": "coinbase",
-                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
-                                "trade_id": trade["trade_id"],
-                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                                "side": trade["side"],
-                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
-                                "market": market  # ✅ Von Parameter, nicht hardcoded!
-                            }
-                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                            return trade_obj
-            else:
-                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GenericMessageParser(BaseMessageParser):
-    """Fallback Parser für unbekannte Exchanges"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(raw_message)
-            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
-            return None  # Kein generisches Format möglich
-        except Exception as e:
-            logger.error(f"{self.exchange} message parsing error: {e}")
-        return None
-
-# Exchange-spezifische Parser Registry
-MESSAGE_PARSERS = {
-    "binance": BinanceMessageParser,
-    "bitget": BitgetMessageParser,
-    "gateio": GateIOMessageParser,
-    "bybit": BybitMessageParser,     # ✅ Bybit Parser
-    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
-    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
-    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
-    "okx": OKXMessageParser,          # ✅ OKX Parser
-}
-
-def get_ws_message_parser(exchange: str) -> BaseMessageParser:
-    """Hole Message Parser für Exchange"""
-    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
-    return parser_class(exchange)
 </file>
 
 <file path="frontend/src/config/exchangeSupport.ts">
