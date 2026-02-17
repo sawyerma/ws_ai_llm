@@ -138875,177 +138875,6 @@ export function useDebouncedCallback<T extends (...args: any[]) => any>(
 }
 </file>
 
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-import { useState } from "react";
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useTradingContext } from "../../contexts/TradingContext";
-import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
-import ThemeToggle from "../ui/theme-toggle";
-
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
-  
-  const [activeTab, setActiveTab] = useState(() => {
-    // Set active tab based on current route
-    const path = location.pathname;
-    if (path === '/trading' || path === '/') return "Market";
-    if (path === '/quantum') return "Quantum";
-    if (path === '/database') return "Database";
-    if (path === '/whales') return "Whales";
-    if (path === '/news') return "News";
-    if (path === '/bot') return "Trading Bot";
-    if (path === '/api') return "API";
-    if (path === '/ml') return "ML";
-    if (path === '/settings') return "Settings";
-    return "Market";
-  });
-  
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-  
-  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
-  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Binance";
-
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
-
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else if (itemName === "Settings") {
-      setIsDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    } else {
-      setActiveTab(itemName);
-      setIsDropdownOpen(false);
-      if (itemPath) navigate(itemPath);
-    }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    // ✅ FIX: Exchange-Auswahl zu Context propagieren
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
-                {MARKET_OPTIONS.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-          >
-            {exchangeDisplayName} ▽
-          </button>
-          
-          {/* Exchange Dropdown Menu */}
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {EXCHANGES.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
-</file>
-
 <file path="frontend/src/shared/layout/Navigation.tsx">
 // frontend/src/shared/layout/Navigation.tsx
 import { Link, useLocation } from "react-router-dom";
@@ -155502,6 +155331,177 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
+<file path="frontend/src/shared/layout/GlobalNav.tsx">
+import { useState } from "react";
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTradingContext } from "../../contexts/TradingContext";
+import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
+  
+  const [activeTab, setActiveTab] = useState(() => {
+    // Set active tab based on current route
+    const path = location.pathname;
+    if (path === '/trading' || path === '/') return "Market";
+    if (path === '/quantum') return "Quantum";
+    if (path === '/database') return "Database";
+    if (path === '/whales') return "Whales";
+    if (path === '/news') return "News";
+    if (path === '/bot') return "Trading Bot";
+    if (path === '/api') return "API";
+    if (path === '/ml') return "ML";
+    if (path === '/settings') return "Settings";
+    return "Market";
+  });
+  
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+  
+  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
+  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else if (itemName === "Settings") {
+      setIsDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    } else {
+      setActiveTab(itemName);
+      setIsDropdownOpen(false);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    // ✅ FIX: Exchange-Auswahl zu Context propagieren
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-card rounded-lg shadow-xl border border-border">
+                {MARKET_OPTIONS.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-muted cursor-pointer border-b border-border last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-foreground text-background rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-foreground text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+          >
+            {exchangeDisplayName} ▽
+          </button>
+          
+          {/* Exchange Dropdown Menu */}
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {EXCHANGES.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
+</file>
+
 <file path="readme/000_backfill_loop.md">
 # BACKFILL LOOP SYSTEM - ENTERPRISE GAP-FILLING & CONTINUOUS LOADING
 
@@ -161188,6 +161188,647 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: d
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="backend/websocket/ws_message_parsers.py">
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+
+class BaseMessageParser:
+    """Base Class für Exchange Message Parser"""
+    
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Trade Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
+        """
+        raise NotImplementedError
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Orderbook Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.)
+            
+        Returns:
+            {
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+                "timestamp": int
+            }
+        """
+        return None  # Default: kein Orderbook-Parsing
+
+class BinanceMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Binance Orderbook Service"""
+        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
+        service = BinanceOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm) - default: "spot"
+        """
+        try:
+            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
+            
+            # Binance Trade Message Format
+            if "e" in data and data["e"] == "trade":
+                trade = {
+                    "exchange": "binance",
+                    "symbol": data["s"],
+                    "trade_id": data["t"],
+                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
+                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
+                    "side": "buy" if data["m"] == False else "sell",
+                    "timestamp": data["T"],
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
+                return trade
+            else:
+                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BitgetMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bitget Orderbook Service"""
+        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
+        service = BitgetOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
+            
+            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
+                # instId ist in "arg", nicht in "data"!
+                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                for trade in data.get("data", []):
+                    trade_obj = {
+                        "exchange": "bitget",
+                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GateIOMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Gate.io Orderbook Service"""
+        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
+        service = GateIOOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
+            
+            # Check for trade update event
+            if data.get("event") == "update" and data.get("channel") == "spot.trades":
+                result = data.get("result")
+                
+                if not result:
+                    logger.warning(f"⚠️ GATE.IO No result in trade update")
+                    return None
+                
+                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
+                if isinstance(result, dict):
+                    # Single trade as dict
+                    trade = result
+                elif isinstance(result, list) and len(result) > 0:
+                    # Array of trades
+                    trade = result[0]
+                else:
+                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
+                    return None
+                
+                trade_obj = {
+                    "exchange": "gateio",
+                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
+                    "trade_id": str(trade["id"]),
+                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                    "side": trade["side"],
+                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                return trade_obj
+            
+            # Subscription confirmation
+            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
+                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
+                return None
+            else:
+                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class HTXMessageParser(BaseMessageParser):
+    """
+    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
+    
+    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
+    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an HTX Orderbook Service"""
+        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
+        service = HTXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ DEBUG: Log message type und erste Bytes
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
+            else:
+                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
+            
+            # ✅ GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                # Check für GZIP Magic Bytes (0x1f 0x8b)
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    logger.info(f"✅ HTX GZIP detected, decompressing...")
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
+                else:
+                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
+                    raw_message = raw_message.decode('utf-8')
+            
+            # JSON Parse
+            data = json.loads(raw_message)
+            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
+            
+            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
+            if "ping" in data:
+                # Ping-Message erkannt, muss mit Pong beantwortet werden
+                # Wird vom WebSocket Handler verarbeitet
+                return {
+                    "type": "ping",
+                    "pong": data["ping"],
+                    "exchange": "htx"
+                }
+            
+            # ✅ Trade-Daten Parsing
+            if "tick" in data and "data" in data["tick"]:
+                trades = []
+                for trade in data["tick"]["data"]:
+                    trades.append({
+                        "exchange": "htx",
+                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
+                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                        "side": "buy" if trade["direction"] == "buy" else "sell",
+                        "timestamp": trade["ts"],
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    })
+                
+                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
+                return trades[0] if trades else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"HTX message parsing error: {e}")
+            return None
+
+class MEXCMessageParser(BaseMessageParser):
+    """
+    MEXC Message Parser mit Protocol Buffers Support
+    
+    MEXC sendet TWO Arten von Messages:
+    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
+    2. Binary: Protocol Buffers Trade-Daten
+    
+    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
+    Proto: https://github.com/mexcdevelop/websocket-proto
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an MEXC Orderbook Service"""
+        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
+        service = MEXCOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
+                return await self._parse_protobuf_trade(raw_message, market)
+            else:
+                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
+                return await self._parse_json_message(raw_message, market)
+                
+        except Exception as e:
+            logger.error(f"MEXC message parsing error: {e}")
+            return None
+    
+    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON Messages (Subscription Responses)"""
+        try:
+            data = json.loads(raw_message)
+            
+            # Subscription Response
+            if "code" in data and "msg" in data:
+                if data["code"] == 0:
+                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
+                else:
+                    logger.error(f"❌ MEXC subscription error: {data}")
+                return None
+            
+            # Legacy JSON Trade Format (falls noch verwendet)
+            if "d" in data and "deals" in data.get("d", {}):
+                for trade in data["d"]["deals"]:
+                    return {
+                        "exchange": "mexc",
+                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
+                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
+                        "price": str(trade["p"]),
+                        "size": str(trade["v"]),
+                        "side": "buy" if trade.get("S") == 1 else "sell",
+                        "timestamp": int(trade["t"]),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"MEXC JSON parsing error: {e}")
+        return None
+    
+    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Protocol Buffers Trade-Daten
+        
+        Struktur (von MEXC Doku):
+        {
+          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
+          "publicdeals": {
+            "dealsList": [{
+              "price": "93220.00",
+              "quantity": "0.04438243",
+              "tradetype": 2,  // 1=Buy, 2=Sell
+              "time": 1736409765051
+            }]
+          },
+          "symbol": "BTCUSDT",
+          "sendtime": 1736409765052
+        }
+        """
+        try:
+            # ✅ Einfacher Protobuf Wire Format Parser
+            # Format: Tag-Length-Value (TLV)
+            
+            symbol = None
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            i = 0
+            while i < len(raw_message):
+                # Read Tag (field number + wire type)
+                if i >= len(raw_message):
+                    break
+                    
+                tag = raw_message[i]
+                i += 1
+                
+                wire_type = tag & 0x07
+                field_num = tag >> 3
+                
+                # Wire Type 2: Length-delimited (strings, embedded messages)
+                if wire_type == 2:
+                    # Read length
+                    length = raw_message[i]
+                    i += 1
+                    
+                    # Read value
+                    value = raw_message[i:i+length]
+                    i += length
+                    
+                    # Decode basierend auf Field Position
+                    try:
+                        decoded = value.decode('utf-8', errors='ignore')
+                        
+                        # Channel (field 1) - enthält Symbol
+                        if field_num == 1 and '@' in decoded:
+                            parts = decoded.split('@')
+                            if len(parts) >= 5:
+                                symbol = parts[-1]  # BTCUSDT am Ende
+                        
+                        # Symbol field (field 3)
+                        elif field_num == 3:
+                            symbol = decoded
+                        
+                        # Embedded message (dealsList)
+                        elif b'\n' in value or b'\x12' in value:
+                            # Parse nested trade data
+                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
+                            
+                    except:
+                        pass
+                
+                # Wire Type 0: Varint (int, enum)
+                elif wire_type == 0:
+                    # Skip varint
+                    while i < len(raw_message) and (raw_message[i] & 0x80):
+                        i += 1
+                    i += 1
+                
+                else:
+                    # Skip unknown wire types
+                    i += 1
+            
+            # ✅ Build Trade Object
+            if symbol and price and quantity:
+                return {
+                    "exchange": "mexc",
+                    "symbol": normalize_to_unified(symbol, "mexc"),
+                    "trade_id": str(timestamp or datetime.now().timestamp()),
+                    "price": str(price),
+                    "size": str(quantity),
+                    "side": "buy" if tradetype == 1 else "sell",
+                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
+                    "market": market
+                }
+            
+            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"MEXC protobuf parsing error: {e}")
+            return None
+    
+    def _parse_deal_data(self, data: bytes) -> tuple:
+        """Parse nested dealsList data"""
+        try:
+            # Suche nach String-Patterns für price und quantity
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            # Simple pattern matching für Decimal strings
+            text = data.decode('utf-8', errors='ignore')
+            
+            # Price ist meist die erste Decimal-Zahl
+            import re
+            decimals = re.findall(r'\d+\.\d+', text)
+            if len(decimals) >= 2:
+                price = decimals[0]
+                quantity = decimals[1]
+            
+            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
+            if b'\x18\x01' in data:
+                tradetype = 1  # Buy
+            elif b'\x18\x02' in data:
+                tradetype = 2  # Sell
+            
+            # Timestamp - varint nach trade type
+            # Simplified: extract any large number
+            for i in range(len(data) - 8):
+                if data[i] == 0x20:  # Tag for timestamp
+                    # Try to read varint
+                    timestamp = 0
+                    shift = 0
+                    for j in range(i+1, min(i+10, len(data))):
+                        b = data[j]
+                        timestamp |= (b & 0x7F) << shift
+                        if not (b & 0x80):
+                            break
+                        shift += 7
+                    if timestamp > 1000000000000:  # Reasonable timestamp
+                        break
+            
+            return price, quantity, tradetype, timestamp
+            
+        except Exception as e:
+            logger.error(f"Deal data parsing error: {e}")
+            return None, None, None, None
+
+class OKXMessageParser(BaseMessageParser):
+    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an OKX Orderbook Service"""
+        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
+        service = OKXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
+            
+            # OKX Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "okx",
+                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BybitMessageParser(BaseMessageParser):
+    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bybit Orderbook Service"""
+        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
+        service = BybitOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
+            
+            # Bybit Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "bybit",
+                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
+                        "trade_id": trade["i"],
+                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["S"].lower(),  # Buy -> buy
+                        "timestamp": int(trade["T"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class CoinbaseMessageParser(BaseMessageParser):
+    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Coinbase Orderbook Service"""
+        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
+        service = CoinbaseOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
+            
+            # Coinbase Trade Message Format
+            if "events" in data:
+                for event in data["events"]:
+                    if "trades" in event:
+                        for trade in event["trades"]:
+                            trade_obj = {
+                                "exchange": "coinbase",
+                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
+                                "trade_id": trade["trade_id"],
+                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                                "side": trade["side"],
+                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
+                                "market": market  # ✅ Von Parameter, nicht hardcoded!
+                            }
+                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                            return trade_obj
+            else:
+                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GenericMessageParser(BaseMessageParser):
+    """Fallback Parser für unbekannte Exchanges"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw_message)
+            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
+            return None  # Kein generisches Format möglich
+        except Exception as e:
+            logger.error(f"{self.exchange} message parsing error: {e}")
+        return None
+
+# Exchange-spezifische Parser Registry
+MESSAGE_PARSERS = {
+    "binance": BinanceMessageParser,
+    "bitget": BitgetMessageParser,
+    "gateio": GateIOMessageParser,
+    "bybit": BybitMessageParser,     # ✅ Bybit Parser
+    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
+    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
+    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
+    "okx": OKXMessageParser,          # ✅ OKX Parser
+}
+
+def get_ws_message_parser(exchange: str) -> BaseMessageParser:
+    """Hole Message Parser für Exchange"""
+    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
+    return parser_class(exchange)
+</file>
+
 <file path="frontend/src/config/exchangeSupport.ts">
 // ✅ DYNAMISCHE Exchange & Market Configuration
 // Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
@@ -161390,175 +162031,6 @@ export const useTradingContext = () => {
 };
 
 export { TradingContext };
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
-import React from "react";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "../../../shared/ui/resizable";
-import OrderBook from "./OrderBook";
-import ChartView from "./ChartView";
-
-interface ChartSectionProps {
-  selectedCoin?: string;
-  selectedMarket?: string;
-  selectedInterval?: string;
-  selectedIndicators?: string[];
-  selectedExchange?: string;
-  onIndicatorRemove?: (indicator: string) => void;
-}
-
-const ChartSection = ({
-  selectedCoin = "BTC/USDT",
-  selectedMarket = "spot",
-  selectedInterval = "1m",
-  selectedIndicators = [],
-  selectedExchange = "bitget",
-  onIndicatorRemove,
-}: ChartSectionProps) => {
-  return (
-    <div className="mt-1 space-y-4">
-      <div className="h-[500px]">
-        <ResizablePanelGroup
-          direction="horizontal"
-          className="min-h-[500px] rounded-lg border"
-        >
-          {/* Chart Panel */}
-          <ResizablePanel defaultSize={75} minSize={50}>
-            <div className="h-full">
-              <ChartView
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                interval={selectedInterval}
-              />
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          {/* Right Panel - OrderBook with Tabs (like original) */}
-          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
-            <div className="h-full">
-              <OrderBook 
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                currentPrice={0}
-                onTabChange={(tab) => {
-                  console.log("Tab changed:", tab);
-                }}
-              />
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </div>
-    </div>
-  );
-};
-
-export default ChartSection;
-</file>
-
-<file path="frontend/src/pages/TradingPage/TradingPage.tsx">
-import { useState, useMemo } from "react";
-import PriceDisplay from "./components/PriceDisplay";
-import CoinSelector from "./components/CoinSelector";
-import TradingTerminal from "./components/TradingTerminal";
-import TimeButtons from "./components/TimeButtons";
-import ChartSection from "./components/ChartSection";
-import SystemStatus from "./components/SystemStatus";
-import { useTradingContext } from "../../contexts/TradingContext";
-import { getMarketFilter } from '../../config/exchangeSupport';
-
-const TradingPage = () => {
-  const { selectedExchange, selectedMarket } = useTradingContext();
-  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
-  const [selectedInterval, setSelectedInterval] = useState("1m");
-  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-
-  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
-
-  const currentCoinData = useMemo(() => ({
-    id: selectedCoin,
-    symbol: selectedCoin,
-    market: marketFilter,
-    price: "0.00",
-    change: "0.00",
-    changePercent: 0,
-    isFavorite: false,
-    liveStatus: "green" as const,
-    histStatus: "green" as const
-  }), [selectedCoin, marketFilter]);
-
-  const marketData = {
-    price: 0,
-    change24h: "0.00",
-    changePercent: 0,
-    high24h: "0.00",
-    low24h: "0.00",
-    volume24h: "0.00",
-    turnover24h: "0.00",
-
-  };
-
-  return (
-    <div className="px-6 py-5">
-      {/* Market & Price Section */}
-      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
-        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
-          <CoinSelector
-            selectedSymbol={selectedCoin}
-            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
-            exchange={selectedExchange}
-            selectedMarket={selectedMarket}
-          />
-        </div>
-
-        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
-          <PriceDisplay
-            currentCoinData={currentCoinData}
-            marketData={marketData}
-            tradingMode={selectedMarket}
-          />
-        </div>
-      </div>
-
-      {/* Time Buttons */}
-      <TimeButtons 
-        onIntervalChange={setSelectedInterval}
-        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
-          prev.includes(indicator) ? prev : [...prev, indicator]
-        )}
-      />
-
-      {/* Main Content: Multi-Chart + Orderbook */}
-      <ChartSection 
-        selectedCoin={selectedCoin}
-        selectedMarket={marketFilter}
-        selectedInterval={selectedInterval}
-        selectedIndicators={selectedIndicators}
-        selectedExchange={selectedExchange}
-        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
-          prev.filter(i => i !== indicator)
-        )}
-      />
-
-      {/* Trading Terminal */}
-      <div className="mt-4 space-y-2">
-        <TradingTerminal />
-      </div>
-
-      {/* System Status */}
-      <SystemStatus />
-    </div>
-  );
-};
-
-export default TradingPage;
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -163693,647 +164165,6 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
-<file path="backend/websocket/ws_message_parsers.py">
-import json
-import gzip
-import logging
-from typing import Dict, Any, Optional, Union
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-
-class BaseMessageParser:
-    """Base Class für Exchange Message Parser"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Trade Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
-        """
-        raise NotImplementedError
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Orderbook Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.)
-            
-        Returns:
-            {
-                "bids": [[price, size], ...],
-                "asks": [[price, size], ...],
-                "timestamp": int
-            }
-        """
-        return None  # Default: kein Orderbook-Parsing
-
-class BinanceMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Binance Orderbook Service"""
-        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
-        service = BinanceOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm) - default: "spot"
-        """
-        try:
-            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
-            
-            # Binance Trade Message Format
-            if "e" in data and data["e"] == "trade":
-                trade = {
-                    "exchange": "binance",
-                    "symbol": data["s"],
-                    "trade_id": data["t"],
-                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
-                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
-                    "side": "buy" if data["m"] == False else "sell",
-                    "timestamp": data["T"],
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
-                return trade
-            else:
-                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BitgetMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bitget Orderbook Service"""
-        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
-        service = BitgetOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
-            
-            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
-                # instId ist in "arg", nicht in "data"!
-                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
-                for trade in data.get("data", []):
-                    trade_obj = {
-                        "exchange": "bitget",
-                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GateIOMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Gate.io Orderbook Service"""
-        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
-        service = GateIOOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
-            
-            # Check for trade update event
-            if data.get("event") == "update" and data.get("channel") == "spot.trades":
-                result = data.get("result")
-                
-                if not result:
-                    logger.warning(f"⚠️ GATE.IO No result in trade update")
-                    return None
-                
-                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
-                if isinstance(result, dict):
-                    # Single trade as dict
-                    trade = result
-                elif isinstance(result, list) and len(result) > 0:
-                    # Array of trades
-                    trade = result[0]
-                else:
-                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
-                    return None
-                
-                trade_obj = {
-                    "exchange": "gateio",
-                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
-                    "trade_id": str(trade["id"]),
-                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                    "side": trade["side"],
-                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                return trade_obj
-            
-            # Subscription confirmation
-            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
-                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
-                return None
-            else:
-                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class HTXMessageParser(BaseMessageParser):
-    """
-    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
-    
-    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
-    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an HTX Orderbook Service"""
-        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
-        service = HTXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ DEBUG: Log message type und erste Bytes
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
-            else:
-                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
-            
-            # ✅ GZIP Decompression wenn binäre Daten
-            if isinstance(raw_message, bytes):
-                # Check für GZIP Magic Bytes (0x1f 0x8b)
-                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
-                    logger.info(f"✅ HTX GZIP detected, decompressing...")
-                    decompressed = gzip.decompress(raw_message)
-                    raw_message = decompressed.decode('utf-8')
-                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
-                else:
-                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
-                    raw_message = raw_message.decode('utf-8')
-            
-            # JSON Parse
-            data = json.loads(raw_message)
-            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
-            
-            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
-            if "ping" in data:
-                # Ping-Message erkannt, muss mit Pong beantwortet werden
-                # Wird vom WebSocket Handler verarbeitet
-                return {
-                    "type": "ping",
-                    "pong": data["ping"],
-                    "exchange": "htx"
-                }
-            
-            # ✅ Trade-Daten Parsing
-            if "tick" in data and "data" in data["tick"]:
-                trades = []
-                for trade in data["tick"]["data"]:
-                    trades.append({
-                        "exchange": "htx",
-                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
-                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                        "side": "buy" if trade["direction"] == "buy" else "sell",
-                        "timestamp": trade["ts"],
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    })
-                
-                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
-                return trades[0] if trades else None
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"HTX message parsing error: {e}")
-            return None
-
-class MEXCMessageParser(BaseMessageParser):
-    """
-    MEXC Message Parser mit Protocol Buffers Support
-    
-    MEXC sendet TWO Arten von Messages:
-    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
-    2. Binary: Protocol Buffers Trade-Daten
-    
-    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
-    Proto: https://github.com/mexcdevelop/websocket-proto
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an MEXC Orderbook Service"""
-        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
-        service = MEXCOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
-                return await self._parse_protobuf_trade(raw_message, market)
-            else:
-                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
-                return await self._parse_json_message(raw_message, market)
-                
-        except Exception as e:
-            logger.error(f"MEXC message parsing error: {e}")
-            return None
-    
-    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON Messages (Subscription Responses)"""
-        try:
-            data = json.loads(raw_message)
-            
-            # Subscription Response
-            if "code" in data and "msg" in data:
-                if data["code"] == 0:
-                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
-                else:
-                    logger.error(f"❌ MEXC subscription error: {data}")
-                return None
-            
-            # Legacy JSON Trade Format (falls noch verwendet)
-            if "d" in data and "deals" in data.get("d", {}):
-                for trade in data["d"]["deals"]:
-                    return {
-                        "exchange": "mexc",
-                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
-                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
-                        "price": str(trade["p"]),
-                        "size": str(trade["v"]),
-                        "side": "buy" if trade.get("S") == 1 else "sell",
-                        "timestamp": int(trade["t"]),
-                        "market": market
-                    }
-        except Exception as e:
-            logger.error(f"MEXC JSON parsing error: {e}")
-        return None
-    
-    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse Protocol Buffers Trade-Daten
-        
-        Struktur (von MEXC Doku):
-        {
-          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
-          "publicdeals": {
-            "dealsList": [{
-              "price": "93220.00",
-              "quantity": "0.04438243",
-              "tradetype": 2,  // 1=Buy, 2=Sell
-              "time": 1736409765051
-            }]
-          },
-          "symbol": "BTCUSDT",
-          "sendtime": 1736409765052
-        }
-        """
-        try:
-            # ✅ Einfacher Protobuf Wire Format Parser
-            # Format: Tag-Length-Value (TLV)
-            
-            symbol = None
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            i = 0
-            while i < len(raw_message):
-                # Read Tag (field number + wire type)
-                if i >= len(raw_message):
-                    break
-                    
-                tag = raw_message[i]
-                i += 1
-                
-                wire_type = tag & 0x07
-                field_num = tag >> 3
-                
-                # Wire Type 2: Length-delimited (strings, embedded messages)
-                if wire_type == 2:
-                    # Read length
-                    length = raw_message[i]
-                    i += 1
-                    
-                    # Read value
-                    value = raw_message[i:i+length]
-                    i += length
-                    
-                    # Decode basierend auf Field Position
-                    try:
-                        decoded = value.decode('utf-8', errors='ignore')
-                        
-                        # Channel (field 1) - enthält Symbol
-                        if field_num == 1 and '@' in decoded:
-                            parts = decoded.split('@')
-                            if len(parts) >= 5:
-                                symbol = parts[-1]  # BTCUSDT am Ende
-                        
-                        # Symbol field (field 3)
-                        elif field_num == 3:
-                            symbol = decoded
-                        
-                        # Embedded message (dealsList)
-                        elif b'\n' in value or b'\x12' in value:
-                            # Parse nested trade data
-                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
-                            
-                    except:
-                        pass
-                
-                # Wire Type 0: Varint (int, enum)
-                elif wire_type == 0:
-                    # Skip varint
-                    while i < len(raw_message) and (raw_message[i] & 0x80):
-                        i += 1
-                    i += 1
-                
-                else:
-                    # Skip unknown wire types
-                    i += 1
-            
-            # ✅ Build Trade Object
-            if symbol and price and quantity:
-                return {
-                    "exchange": "mexc",
-                    "symbol": normalize_to_unified(symbol, "mexc"),
-                    "trade_id": str(timestamp or datetime.now().timestamp()),
-                    "price": str(price),
-                    "size": str(quantity),
-                    "side": "buy" if tradetype == 1 else "sell",
-                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
-                    "market": market
-                }
-            
-            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"MEXC protobuf parsing error: {e}")
-            return None
-    
-    def _parse_deal_data(self, data: bytes) -> tuple:
-        """Parse nested dealsList data"""
-        try:
-            # Suche nach String-Patterns für price und quantity
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            # Simple pattern matching für Decimal strings
-            text = data.decode('utf-8', errors='ignore')
-            
-            # Price ist meist die erste Decimal-Zahl
-            import re
-            decimals = re.findall(r'\d+\.\d+', text)
-            if len(decimals) >= 2:
-                price = decimals[0]
-                quantity = decimals[1]
-            
-            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
-            if b'\x18\x01' in data:
-                tradetype = 1  # Buy
-            elif b'\x18\x02' in data:
-                tradetype = 2  # Sell
-            
-            # Timestamp - varint nach trade type
-            # Simplified: extract any large number
-            for i in range(len(data) - 8):
-                if data[i] == 0x20:  # Tag for timestamp
-                    # Try to read varint
-                    timestamp = 0
-                    shift = 0
-                    for j in range(i+1, min(i+10, len(data))):
-                        b = data[j]
-                        timestamp |= (b & 0x7F) << shift
-                        if not (b & 0x80):
-                            break
-                        shift += 7
-                    if timestamp > 1000000000000:  # Reasonable timestamp
-                        break
-            
-            return price, quantity, tradetype, timestamp
-            
-        except Exception as e:
-            logger.error(f"Deal data parsing error: {e}")
-            return None, None, None, None
-
-class OKXMessageParser(BaseMessageParser):
-    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an OKX Orderbook Service"""
-        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
-        service = OKXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
-            
-            # OKX Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "okx",
-                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BybitMessageParser(BaseMessageParser):
-    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bybit Orderbook Service"""
-        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
-        service = BybitOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
-            
-            # Bybit Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "bybit",
-                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
-                        "trade_id": trade["i"],
-                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["S"].lower(),  # Buy -> buy
-                        "timestamp": int(trade["T"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class CoinbaseMessageParser(BaseMessageParser):
-    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Coinbase Orderbook Service"""
-        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
-        service = CoinbaseOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
-            
-            # Coinbase Trade Message Format
-            if "events" in data:
-                for event in data["events"]:
-                    if "trades" in event:
-                        for trade in event["trades"]:
-                            trade_obj = {
-                                "exchange": "coinbase",
-                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
-                                "trade_id": trade["trade_id"],
-                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                                "side": trade["side"],
-                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
-                                "market": market  # ✅ Von Parameter, nicht hardcoded!
-                            }
-                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                            return trade_obj
-            else:
-                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GenericMessageParser(BaseMessageParser):
-    """Fallback Parser für unbekannte Exchanges"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(raw_message)
-            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
-            return None  # Kein generisches Format möglich
-        except Exception as e:
-            logger.error(f"{self.exchange} message parsing error: {e}")
-        return None
-
-# Exchange-spezifische Parser Registry
-MESSAGE_PARSERS = {
-    "binance": BinanceMessageParser,
-    "bitget": BitgetMessageParser,
-    "gateio": GateIOMessageParser,
-    "bybit": BybitMessageParser,     # ✅ Bybit Parser
-    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
-    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
-    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
-    "okx": OKXMessageParser,          # ✅ OKX Parser
-}
-
-def get_ws_message_parser(exchange: str) -> BaseMessageParser:
-    """Hole Message Parser für Exchange"""
-    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
-    return parser_class(exchange)
-</file>
-
 <file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
 import React, { useMemo } from "react";
 import { useWsLane } from "../../services/ws/useWsLane";
@@ -164419,6 +164250,172 @@ function Row({ exchange }: { exchange: string }) {
     </tr>
   );
 }
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
+import React, { useMemo } from "react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "../../../shared/ui/resizable";
+import OrderBook from "./OrderBook";
+import ChartView from "./ChartView";
+import { useTicker } from "../hooks/useMarketData";
+
+interface ChartSectionProps {
+  selectedCoin: string;
+  selectedMarket: string;
+  selectedInterval: string;
+  selectedIndicators?: string[];
+  selectedExchange: string;
+  onIndicatorRemove?: (indicator: string) => void;
+}
+
+const ChartSection = ({
+  selectedCoin,
+  selectedMarket,
+  selectedInterval,
+  selectedIndicators = [],
+  selectedExchange,
+  onIndicatorRemove,
+}: ChartSectionProps) => {
+  // ✅ DYNAMISCH: Hole aktuellen Preis via WebSocket Hook
+  const { marketData } = useTicker(selectedExchange, selectedCoin, selectedMarket);
+  
+  // Nutze aktuellen Preis aus marketData, fallback auf 0
+  const currentPrice = useMemo(() => {
+    return marketData?.price || 0;
+  }, [marketData]);
+  return (
+    <div className="mt-1 space-y-4">
+      <div className="h-[500px]">
+        <ResizablePanelGroup
+          direction="horizontal"
+          className="min-h-[500px] rounded-lg border"
+        >
+          {/* Chart Panel */}
+          <ResizablePanel defaultSize={75} minSize={50}>
+            <div className="h-full">
+              <ChartView
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                interval={selectedInterval}
+              />
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Right Panel - OrderBook with Tabs (like original) */}
+          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
+            <div className="h-full">
+              <OrderBook 
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                currentPrice={currentPrice}
+                onTabChange={(tab) => {
+                  console.log("Tab changed:", tab);
+                }}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
+    </div>
+  );
+};
+
+export default ChartSection;
+</file>
+
+<file path="frontend/src/pages/TradingPage/TradingPage.tsx">
+import { useState, useMemo } from "react";
+import PriceDisplay from "./components/PriceDisplay";
+import CoinSelector from "./components/CoinSelector";
+import TradingTerminal from "./components/TradingTerminal";
+import TimeButtons from "./components/TimeButtons";
+import ChartSection from "./components/ChartSection";
+import { useTradingContext } from "../../contexts/TradingContext";
+import { useTicker } from './hooks/useMarketData';
+import { getMarketFilter } from '../../config/exchangeSupport';
+
+const TradingPage = () => {
+  const { selectedExchange, selectedMarket } = useTradingContext();
+  const [selectedCoin, setSelectedCoin] = useState("BTCUSDT");
+  const [selectedInterval, setSelectedInterval] = useState("1m");
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
+
+  // ✅ SINGLE SOURCE OF TRUTH: Alle Daten vom Hook
+  const marketFilter = getMarketFilter(selectedMarket) || 'spot';
+  const { marketData } = useTicker(selectedExchange, selectedCoin, marketFilter);
+
+  // ✅ Performance: useMemo für currentCoinData
+  const currentCoinData = useMemo(() => ({
+    id: selectedCoin,
+    symbol: selectedCoin,
+    market: marketFilter,
+    price: marketData.price,
+    change: marketData.change24h,
+    changePercent: marketData.changePercent,
+    isFavorite: false,
+    liveStatus: "green" as const,
+    histStatus: "green" as const
+  }), [selectedCoin, marketFilter, marketData.price, marketData.change24h, marketData.changePercent]);
+
+  return (
+    <div className="px-6 py-5">
+      {/* Market & Price Section */}
+      <div className="flex gap-5 max-lg:flex-col max-lg:gap-0">
+        <div className="flex flex-col w-[17%] max-lg:w-full max-lg:ml-0">
+          <CoinSelector
+            selectedSymbol={selectedCoin}
+            onSymbolSelect={(symbol) => setSelectedCoin(symbol)}
+            exchange={selectedExchange}
+            selectedMarket={selectedMarket}
+          />
+        </div>
+
+        <div className="flex flex-col w-[83%] ml-5 max-lg:w-full max-lg:ml-0">
+          <PriceDisplay
+            currentCoinData={currentCoinData}
+            marketData={marketData}
+            tradingMode={selectedMarket}
+          />
+        </div>
+      </div>
+
+      {/* Time Buttons */}
+      <TimeButtons 
+        onIntervalChange={setSelectedInterval}
+        onIndicatorSelect={(indicator) => setSelectedIndicators(prev => 
+          prev.includes(indicator) ? prev : [...prev, indicator]
+        )}
+      />
+
+      {/* Main Content: Multi-Chart + Orderbook */}
+      <ChartSection 
+        selectedCoin={selectedCoin}
+        selectedMarket={marketFilter}
+        selectedInterval={selectedInterval}
+        selectedIndicators={selectedIndicators}
+        selectedExchange={selectedExchange}
+        onIndicatorRemove={(indicator) => setSelectedIndicators(prev => 
+          prev.filter(i => i !== indicator)
+        )}
+      />
+
+      {/* Trading Terminal */}
+      <div className="mt-4 space-y-2">
+        <TradingTerminal />
+      </div>
+    </div>
+  );
+};
+
+export default TradingPage;
 </file>
 
 <file path="readme/000_backfill_2_build.md">
