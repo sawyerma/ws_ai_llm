@@ -679,6 +679,7 @@ frontend/
     App.tsx
     index.css
     main.tsx
+    vite-env.d.ts
   vite/
     client
   @react-refresh
@@ -111185,82 +111186,6 @@ export { useQuantumNL } from './hooks/useQuantumNL';
 export * from './types/quantum';
 </file>
 
-<file path="alte_gui/frontend/src/features/trading/components/ChartSection.tsx">
-import React from "react";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/shared/ui/resizable";
-import OrderBook from "./OrderBook";
-import ChartView from "./ChartView";
-import { MarketTrades } from "./MarketTrades";
-
-interface ChartSectionProps {
-  selectedCoin?: string;
-  selectedMarket?: string;
-  selectedInterval?: string;
-  selectedIndicators?: string[];
-  selectedExchange?: string;
-  onIndicatorRemove?: (indicator: string) => void;
-}
-
-const ChartSection = ({
-  selectedCoin = "BTC/USDT",
-  selectedMarket = "spot",
-  selectedInterval = "1m",
-  selectedIndicators = [],
-  selectedExchange = "bitget",
-  onIndicatorRemove,
-}: ChartSectionProps) => {
-  return (
-    <div className="mt-1 space-y-4">
-      <div className="h-[500px]">
-        <ResizablePanelGroup
-          direction="horizontal"
-          className="min-h-[500px] rounded-lg border"
-        >
-          {/* Chart Panel */}
-          <ResizablePanel defaultSize={75} minSize={50}>
-            <div className="h-full">
-              <ChartView
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                interval={selectedInterval}
-              />
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          {/* Right Panel - OrderBook with Tabs (like original) */}
-          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
-            <div className="h-full">
-              <OrderBook 
-                selectedCoin={selectedCoin}
-                symbol={selectedCoin}
-                market={selectedMarket}
-                exchange={selectedExchange}
-                currentPrice={104534.14}
-                onDataUpdate={(data) => {
-                  console.log("Orderbook data updated:", data);
-                }}
-                onTabChange={(tab) => {
-                  console.log("Tab changed:", tab);
-                }}
-              />
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </div>
-    </div>
-  );
-};
-
-export default ChartSection;
-</file>
-
 <file path="alte_gui/frontend/src/features/trading/components/ChartView.tsx">
 /**
  * ChartView Component
@@ -137761,11 +137686,6 @@ export async function getDefaultSelectedIntervals(): Promise<Set<string>> {
 }
 </file>
 
-<file path="frontend/src/config/env.ts">
-// frontend/src/config/env.ts
-export const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || "";
-</file>
-
 <file path="frontend/src/lib/chartLazyLoader.ts">
 /**
  * Lightweight Charts Lazy Loader
@@ -139721,6 +139641,22 @@ export function VirtualizedList<T>({
   body {
     @apply bg-background text-foreground;
   }
+}
+</file>
+
+<file path="frontend/src/vite-env.d.ts">
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_WS_BASE_URL: string;
+  readonly VITE_API_BASE_URL: string;
+  readonly VITE_BACKEND_WS_URL: string;
+  readonly VITE_BACKEND_BASE: string;
+  readonly VITE_DEV_PORT: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
 }
 </file>
 
@@ -153582,6 +153518,77 @@ echo "🔗 Check: https://github.com/sawyerma/ws_ai_llm"
 </html>
 </file>
 
+<file path="alte_gui/frontend/src/features/trading/components/ChartSection.tsx">
+import React from "react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/shared/ui/resizable";
+import OrderBook from "./OrderBook";
+import ChartView from "./ChartView";
+import { MarketTrades } from "./MarketTrades";
+
+interface ChartSectionProps {
+  selectedCoin: string;
+  selectedMarket: string;
+  selectedInterval: string;
+  selectedExchange: string;
+  selectedIndicators?: string[];
+  onIndicatorRemove?: (indicator: string) => void;
+}
+
+const ChartSection: React.FC<ChartSectionProps> = ({
+  selectedCoin,
+  selectedMarket,
+  selectedInterval,
+  selectedExchange,
+  selectedIndicators = [],
+  onIndicatorRemove,
+}) => {
+  return (
+    <div className="mt-1 space-y-4">
+      <div className="h-[500px]">
+        <ResizablePanelGroup
+          direction="horizontal"
+          className="min-h-[500px] rounded-lg border"
+        >
+          {/* Chart Panel */}
+          <ResizablePanel defaultSize={75} minSize={50}>
+            <div className="h-full">
+              <ChartView
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                interval={selectedInterval}
+              />
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Right Panel - OrderBook with Tabs */}
+          <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
+            <div className="h-full">
+              <OrderBook 
+                symbol={selectedCoin}
+                market={selectedMarket}
+                exchange={selectedExchange}
+                onTabChange={(tab) => {
+                  console.log("Tab changed:", tab);
+                }}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
+    </div>
+  );
+};
+
+export default ChartSection;
+</file>
+
 <file path="backend/api/routers/ro_config.py">
 """
 Config Router - System Configuration API
@@ -154523,6 +154530,11 @@ async def get_ohlc_from_ch(
     # 🚨 NO MOCK DATA - Return empty array when no real data available
     print(f"No real trading data found for {exchange}:{symbol}, returning empty array")
     return []
+</file>
+
+<file path="frontend/src/config/env.ts">
+// frontend/src/config/env.ts
+export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
@@ -155650,243 +155662,6 @@ export function useOrderBook(
     loading, 
     error
   };
-}
-</file>
-
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string
-) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-
-  // ✅ Backend-defined limits (from connection message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-  }, [exchange, symbol, market, interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // ✅ Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const tSec = toNum(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length ? bids[0][0] : 0;
-        const bestAsk = asks.length ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw.map((raw: any) => ({
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: (msg as any).market || market,
-          interval: (msg as any).interval || interval,
-          t: Math.floor(toNum(raw.time) / 1000),
-          o: toNum(raw.open),
-          h: toNum(raw.high),
-          l: toNum(raw.low),
-          c: toNum(raw.close),
-          v: toNum(raw.volume),
-        }));
-        setHistorical(hist);
-        return;
-      }
-    });
-
-    return () => {
-      offStatus();
-      offMsg();
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  return { status, trades, candles, orderbook, historical };
 }
 </file>
 
@@ -162648,6 +162423,243 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useWsLane(
+  exchange: string,
+  symbol: string,
+  market: string,
+  interval: string
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+
+  // ✅ Backend-defined limits (from connection message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+  }, [exchange, symbol, market, interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // ✅ Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const tSec = toNum(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
+        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw.map((raw: any) => ({
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: (msg as any).market || market,
+          interval: (msg as any).interval || interval,
+          t: Math.floor(toNum(raw.time) / 1000),
+          o: toNum(raw.open),
+          h: toNum(raw.high),
+          l: toNum(raw.low),
+          c: toNum(raw.close),
+          v: toNum(raw.volume),
+        }));
+        setHistorical(hist);
+        return;
+      }
+    });
+
+    return () => {
+      offStatus();
+      offMsg();
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  return { status, trades, candles, orderbook, historical };
+}
+</file>
+
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 // frontend/src/services/ws/WebSocketPool.ts
 import { WS_BASE_URL } from "../../config/env";
@@ -165865,6 +165877,543 @@ createRoot(document.getElementById('root')!).render(
 );
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+# Load .env file before any other imports that depend on env vars
+env_path = Path(__file__).parent.parent / "config" / ".env"
+load_dotenv(env_path)
+logger_env = logging.getLogger("main.env")
+logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="readme/000_live_backfill_data_build.md">
 # LIVE = BACKFILL DATA FORMAT - RAW TRADES ONLY
 
@@ -167588,543 +168137,6 @@ curl -s "http://localhost:8100/api/historical/backfill/status?exchange=binance&s
 **ETA:** 2-3 Stunden für kompletten Umbau + Testing
 
 ---
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-# Load .env file before any other imports that depend on env vars
-env_path = Path(__file__).parent.parent / "config" / ".env"
-load_dotenv(env_path)
-logger_env = logging.getLogger("main.env")
-logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
