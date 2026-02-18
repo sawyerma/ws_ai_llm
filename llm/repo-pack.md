@@ -735,6 +735,7 @@ __init__.py
 .deps_installed
 .repomixignore
 DATENFLUSS_LIVE_CHART.md
+DIAGNOSE_BERICHT_ENV.md
 docker-compose.yml
 Dockerfile
 FEHLER_ANALYSE.md
@@ -153368,6 +153369,169 @@ npm run dev
 **DU HAST ES GESCHAFFT!** 🎉
 </file>
 
+<file path="DIAGNOSE_BERICHT_ENV.md">
+# 🔍 DIAGNOSE-BERICHT: Backend gibt nur 1 Exchange statt 8 zurück
+
+**Datum:** 18.02.2026, 22:08 Uhr  
+**Problem:** Backend API `/api/config/exchanges` gibt nur `["binance"]` zurück, obwohl `.env` alle 8 Exchanges enthält
+
+---
+
+## ✅ VERIFIZIERTE FAKTEN
+
+### 1. `.env` Datei ist KORREKT
+```bash
+# Zeile 44 in .env:
+ENABLED_EXCHANGES=binance,bitget,mexc,gateio,bybit,okx,htx,coinbase
+
+# Zeile 46 in .env:
+ENABLED_MARKET_TYPES=spot,usdtm,futures
+```
+
+### 2. Python dotenv lädt KORREKT (Host-System)
+```bash
+$ python3 -c "import os; from dotenv import load_dotenv; from pathlib import Path; env_path = Path('.env'); load_dotenv(env_path); print('ENABLED_EXCHANGES:', os.getenv('ENABLED_EXCHANGES'))"
+
+Output:
+ENABLED_EXCHANGES: binance,bitget,mexc,gateio,bybit,okx,htx,coinbase
+ENABLED_MARKET_TYPES: spot,usdtm,futures
+```
+✅ **Host-System kann .env korrekt lesen!**
+
+### 3. Backend Code ist KORREKT
+
+**`backend/core/main.py` (Zeile 30-33):**
+```python
+env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+load_dotenv(env_path)
+logger_env = logging.getLogger("main.env")
+logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+```
+✅ **Backend lädt .env aus korrektem Pfad!**
+
+**`backend/api/routers/ro_config.py` (Zeile 20-22):**
+```python
+exchanges_str = os.getenv("ENABLED_EXCHANGES", "binance")
+exchanges = [e.strip() for e in exchanges_str.split(",")]
+```
+✅ **ro_config.py liest ENV-Variable korrekt!**
+
+### 4. Backend API gibt FALSCHE Daten zurück
+```bash
+$ curl http://localhost:8100/api/config/exchanges
+{"exchanges":["binance"],"default":"binance","count":1}
+
+$ curl http://localhost:8100/api/config/market-types
+{"market_types":["spot"],"default":"spot","count":1}
+```
+❌ **Backend gibt nur 1 Exchange/Market zurück!**
+
+---
+
+## 🔴 ROOT CAUSE IDENTIFIZIERT
+
+### Problem: Docker Container hat KEINE Umgebungsvariablen aus `.env`
+
+**Test im Docker Container:**
+```bash
+$ docker exec 0_ws_ai-backend-1 printenv | grep -E "ENABLED_EXCHANGES|ENABLED_MARKET_TYPES"
+(KEINE OUTPUT - Variablen existieren NICHT im Container!)
+```
+
+**Analyse `docker-compose.yml`:**
+```yaml
+backend:
+  build: .
+  ports:
+    - "${BACKEND_PORT}:${BACKEND_PORT}"
+  environment:
+    - REDIS_URL=redis://redis:${REDIS_PORT}
+    - REDIS_HOST=redis
+    - REDIS_PORT=${REDIS_PORT}
+    - CLICKHOUSE_HOST=clickhouse
+    - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+    - CLICKHOUSE_USER=admin
+    - CLICKHOUSE_PASSWORD=admin
+  volumes:
+    - ./backend:/app/backend
+    - ./diag_py:/app/diag_py
+    - ./logs:/app/logs
+    - ./data/user_settings:/app/data/user_settings
+```
+
+❌ **FEHLER:** 
+- `.env` Datei wird NICHT als Volume gemountet
+- `ENABLED_EXCHANGES` und `ENABLED_MARKET_TYPES` werden NICHT in `environment:` Section übergeben
+- `load_dotenv()` im Container findet die `.env` Datei NICHT (sie existiert nicht im Container!)
+
+---
+
+## 🎯 LÖSUNG
+
+### Option 1: `.env` als Volume mounten (EMPFOHLEN)
+```yaml
+backend:
+  volumes:
+    - ./.env:/app/.env:ro  # Read-only mount
+```
+
+### Option 2: ENV-Variablen explizit übergeben
+```yaml
+backend:
+  environment:
+    - ENABLED_EXCHANGES=${ENABLED_EXCHANGES}
+    - ENABLED_MARKET_TYPES=${ENABLED_MARKET_TYPES}
+    - DEFAULT_EXCHANGE=${DEFAULT_EXCHANGE:-binance}
+    - DEFAULT_MARKET_TYPE=${DEFAULT_MARKET_TYPE:-spot}
+```
+
+### Option 3: `env_file` Direktive nutzen (BESTE LÖSUNG)
+```yaml
+backend:
+  env_file:
+    - .env
+```
+
+---
+
+## 📊 WARUM FUNKTIONIERT ES AUF DEM HOST?
+
+Wenn Backend NICHT in Docker läuft (z.B. `python -m uvicorn backend.core.main:app`):
+- ✅ `load_dotenv()` findet `.env` im Projektroot
+- ✅ Alle ENV-Variablen werden korrekt geladen
+- ✅ API gibt alle 8 Exchanges zurück
+
+**Aber in Docker:**
+- ❌ `.env` existiert nicht im Container-Filesystem
+- ❌ `load_dotenv()` findet nichts → verwendet Fallback `"binance"`
+- ❌ API gibt nur 1 Exchange zurück
+
+---
+
+## 🚀 NÄCHSTE SCHRITTE
+
+1. **docker-compose.yml anpassen** (eine der 3 Optionen oben)
+2. **Container neu starten:** `docker compose down && docker compose up -d`
+3. **Verifizieren:** `curl http://localhost:8100/api/config/exchanges`
+4. **Erwartetes Ergebnis:** `{"exchanges":["binance","bitget","mexc","gateio","bybit","okx","htx","coinbase"],"default":"binance","count":8}`
+
+---
+
+## 📝 ZUSAMMENFASSUNG
+
+| Komponente | Status | Details |
+|------------|--------|---------|
+| `.env` Datei | ✅ KORREKT | Enthält alle 8 Exchanges |
+| Host Python dotenv | ✅ KORREKT | Lädt alle 8 Exchanges |
+| Backend Code | ✅ KORREKT | `load_dotenv()` und `os.getenv()` korrekt |
+| Docker Container ENV | ❌ FEHLT | `.env` nicht gemountet, Variablen nicht übergeben |
+| Backend API Response | ❌ FALSCH | Gibt nur 1 Exchange zurück (Fallback) |
+
+**ROOT CAUSE:** Docker Container hat keinen Zugriff auf `.env` Datei → `load_dotenv()` findet nichts → Fallback zu `"binance"`
+
+**FIX:** `.env` als Volume mounten ODER `env_file: .env` in `docker-compose.yml` hinzufügen
+</file>
+
 <file path="FEHLER_ANALYSE.md">
 # Fehleranalyse - CoinSelector & Backend Issues
 
@@ -155272,6 +155436,391 @@ final_path = "/api/historical" + "" + "/backfill/start"
 5. **Daten verifizieren:** ClickHouse Query für BTCUSDT 1m candles
 
 **Ende der Analyse** 🎉
+</file>
+
+<file path="start-health.sh">
+#!/bin/bash
+
+# =============================================================================
+# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
+# =============================================================================
+# Wird automatisch von start-system.sh bei Fehlern aufgerufen
+# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
+
+set +e  # Don't exit on errors, we want to collect all diagnostics
+
+# Create monitoring directory
+mkdir -p monitoring
+
+# JSON output file with timestamp
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
+JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
+JSON_LATEST="monitoring/health_diagnostic_latest.json"
+
+echo "=================================================="
+echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
+echo "=================================================="
+echo ""
+echo "⏰ Start Time: $(date)"
+echo "📄 Output: $JSON_FILE"
+echo "📄 Latest: $JSON_LATEST"
+echo ""
+
+# Initialize JSON structure
+jq -n \
+  --arg ts "$TIMESTAMP" \
+  '{
+    timestamp: $ts,
+    diagnostic_type: "automatic_health_check",
+    trigger: "system_error_or_manual",
+    sections: {}
+  }' > "$JSON_FILE"
+
+# Helper function to add section to JSON
+add_json_section() {
+  local section_name="$1"
+  local section_data="$2"
+  
+  # Update JSON file with new section
+  jq --arg name "$section_name" --argjson data "$section_data" \
+    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
+    mv "${JSON_FILE}.tmp" "$JSON_FILE"
+}
+
+# =============================================================================
+# 1. HEALTH ENDPOINT CHECKS
+# =============================================================================
+echo "==================================================
+1️⃣  HEALTH ENDPOINT CHECKS"
+echo "=================================================="
+echo ""
+
+HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
+HEALTH_READY_CODE=$?
+HEALTH_READY_WORKS="false"
+if [[ $HEALTH_READY_CODE -eq 0 ]]; then
+  echo "✅ /health/ready → WORKS"
+  HEALTH_READY_WORKS="true"
+else
+  echo "❌ /health/ready → FAILED"
+fi
+
+HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
+HEALTH_DOUBLE_CODE=$?
+HEALTH_DOUBLE_BUG="false"
+if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
+  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
+  HEALTH_DOUBLE_BUG="true"
+else
+  echo "✅ /health/health/ready → 404 (correct)"
+fi
+
+HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
+HEALTH_BASE_WORKS="false"
+[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
+
+HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
+
+# Build JSON for section 1
+SECTION1_JSON=$(jq -n \
+  --arg ready_works "$HEALTH_READY_WORKS" \
+  --arg ready_response "$HEALTH_READY_RESPONSE" \
+  --arg double_bug "$HEALTH_DOUBLE_BUG" \
+  --arg base_works "$HEALTH_BASE_WORKS" \
+  --arg base_response "$HEALTH_BASE" \
+  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
+  '{
+    health_ready: {
+      works: ($ready_works == "true"),
+      response: $ready_response
+    },
+    double_prefix_bug: ($double_bug == "true"),
+    health_base: {
+      works: ($base_works == "true"),
+      response: $base_response
+    },
+    health_detailed: $detailed
+  }')
+
+add_json_section "health_endpoints" "$SECTION1_JSON"
+echo ""
+
+# =============================================================================
+# 2. EXCHANGE TRADE FLOW CHECK
+# =============================================================================
+echo "=================================================="
+echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
+echo "=================================================="
+echo ""
+
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+EXCHANGE_JSON="{"
+
+for exchange in "${EXCHANGES[@]}"; do
+  echo "🔍 Checking $exchange..."
+  
+  if [[ "$exchange" == "coinbase" ]]; then
+    symbol="BTC-USD"
+  else
+    symbol="BTCUSDT"
+  fi
+  
+  # Check orderbook
+  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
+  orderbook_works="false"
+  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
+    echo "  ✅ $exchange - Orderbook working"
+    orderbook_works="true"
+  else
+    echo "  ❌ $exchange - Orderbook failed"
+  fi
+  
+  # Check trades
+  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
+  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
+  trades_flowing="false"
+  if [[ "$trade_count" -gt 0 ]]; then
+    echo "  ✅ $exchange - Trades flowing"
+    trades_flowing="true"
+  else
+    echo "  ❌ $exchange - No trades"
+  fi
+  
+  # Add to JSON
+  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
+done
+
+# Remove trailing comma and close JSON
+EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
+
+add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
+echo ""
+
+# =============================================================================
+# 3. DOCKER CONTAINER STATUS
+# =============================================================================
+echo "=================================================="
+echo "3️⃣  DOCKER CONTAINER STATUS"
+echo "=================================================="
+echo ""
+
+CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
+echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
+
+BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
+BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
+
+echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
+
+SECTION3_JSON=$(jq -n \
+  --argjson containers "$CONTAINERS" \
+  --arg backend_status "$BACKEND_STATUS" \
+  --arg backend_started "$BACKEND_STARTED" \
+  '{
+    containers: $containers,
+    backend: {
+      status: $backend_status,
+      started_at: $backend_started
+    }
+  }')
+
+add_json_section "docker_containers" "$SECTION3_JSON"
+echo ""
+
+# =============================================================================
+# 4. DATABASE CONNECTIVITY
+# =============================================================================
+echo "=================================================="
+echo "4️⃣  DATABASE CONNECTIVITY"
+echo "=================================================="
+echo ""
+
+REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
+REDIS_WORKS="false"
+if [[ "$REDIS_PING" == "PONG" ]]; then
+  echo "✅ Redis: PONG"
+  REDIS_WORKS="true"
+else
+  echo "❌ Redis: Failed"
+fi
+
+CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
+CLICKHOUSE_WORKS="false"
+if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
+  echo "✅ ClickHouse: Responding"
+  CLICKHOUSE_WORKS="true"
+else
+  echo "❌ ClickHouse: Not responding"
+fi
+
+SECTION4_JSON=$(jq -n \
+  --arg redis_works "$REDIS_WORKS" \
+  --arg redis_ping "$REDIS_PING" \
+  --arg ch_works "$CLICKHOUSE_WORKS" \
+  '{
+    redis: {
+      works: ($redis_works == "true"),
+      ping_response: $redis_ping
+    },
+    clickhouse: {
+      works: ($ch_works == "true")
+    }
+  }')
+
+add_json_section "database_connectivity" "$SECTION4_JSON"
+echo ""
+
+# =============================================================================
+# 5. BACKEND LOGS SNAPSHOT
+# =============================================================================
+echo "=================================================="
+echo "5️⃣  BACKEND LOGS (Last 50 lines)"
+echo "=================================================="
+echo ""
+
+BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
+echo "$BACKEND_LOGS" | head -10
+echo "..."
+echo "(Full logs in JSON)"
+
+# Count errors in logs
+ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
+WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
+
+echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
+
+SECTION5_JSON=$(jq -n \
+  --arg logs "$BACKEND_LOGS" \
+  --arg errors "$ERROR_COUNT" \
+  --arg warnings "$WARNING_COUNT" \
+  '{
+    last_50_lines: $logs,
+    error_count: ($errors | tonumber),
+    warning_count: ($warnings | tonumber)
+  }')
+
+add_json_section "backend_logs" "$SECTION5_JSON"
+echo ""
+
+# =============================================================================
+# 6. WEBSOCKET STATUS
+# =============================================================================
+echo "=================================================="
+echo "6️⃣  WEBSOCKET STATUS"
+echo "=================================================="
+echo ""
+
+WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
+WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
+
+echo "Recent trades: $WS_TRADE_COUNT"
+echo "$WS_TRADES" | head -5
+
+SECTION6_JSON=$(jq -n \
+  --arg recent_trades "$WS_TRADES" \
+  --arg count "$WS_TRADE_COUNT" \
+  '{
+    recent_trade_logs: $recent_trades,
+    recent_trade_count: ($count | tonumber)
+  }')
+
+add_json_section "websocket_status" "$SECTION6_JSON"
+echo ""
+
+# =============================================================================
+# 7. HEALTH ROUTER VERIFICATION
+# =============================================================================
+echo "=================================================="
+echo "7️⃣  HEALTH ROUTER VERIFICATION"
+echo "=================================================="
+echo ""
+
+# Check if health_router in container has prefix
+CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
+echo "Container router: $CONTAINER_ROUTER"
+
+# Check main.py registration
+MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
+echo "Main.py registration:"
+echo "$MAIN_ROUTER"
+
+SECTION7_JSON=$(jq -n \
+  --arg container_router "$CONTAINER_ROUTER" \
+  --arg main_registration "$MAIN_ROUTER" \
+  '{
+    container_health_router: $container_router,
+    main_py_registration: $main_registration
+  }')
+
+add_json_section "health_router_verification" "$SECTION7_JSON"
+echo ""
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+echo "=================================================="
+echo "📋 DIAGNOSTIC SUMMARY"
+echo "=================================================="
+echo ""
+
+END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Count issues
+TOTAL_CHECKS=0
+FAILED_CHECKS=0
+
+[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
+
+SUMMARY_JSON=$(jq -n \
+  --arg end_ts "$END_TIMESTAMP" \
+  --arg total "$TOTAL_CHECKS" \
+  --arg passed "$PASSED_CHECKS" \
+  --arg failed "$FAILED_CHECKS" \
+  '{
+    end_timestamp: $end_ts,
+    total_checks: ($total | tonumber),
+    passed_checks: ($passed | tonumber),
+    failed_checks: ($failed | tonumber),
+    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
+  }')
+
+add_json_section "summary" "$SUMMARY_JSON"
+
+# Copy to latest
+cp "$JSON_FILE" "$JSON_LATEST"
+
+echo "⏰ End Time: $(date)"
+echo ""
+echo "📊 Results:"
+echo "   Total Checks: $TOTAL_CHECKS"
+echo "   Passed: $PASSED_CHECKS"
+echo "   Failed: $FAILED_CHECKS"
+echo ""
+echo "📄 Full diagnostic report:"
+echo "   $JSON_FILE"
+echo "   $JSON_LATEST"
+echo ""
+echo "💡 Next Steps:"
+echo "   1. Review JSON file: jq '.' $JSON_LATEST"
+echo "   2. Check failed sections"
+echo "   3. Fix issues and restart system"
+echo ""
+echo "=================================================="
+echo "🏁 DIAGNOSTIC COMPLETE"
+echo "=================================================="
 </file>
 
 <file path="TEST_LLM_UPDATE.md">
@@ -160397,391 +160946,6 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
-<file path="start-health.sh">
-#!/bin/bash
-
-# =============================================================================
-# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
-# =============================================================================
-# Wird automatisch von start-system.sh bei Fehlern aufgerufen
-# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
-
-set +e  # Don't exit on errors, we want to collect all diagnostics
-
-# Create monitoring directory
-mkdir -p monitoring
-
-# JSON output file with timestamp
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
-JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
-JSON_LATEST="monitoring/health_diagnostic_latest.json"
-
-echo "=================================================="
-echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
-echo "=================================================="
-echo ""
-echo "⏰ Start Time: $(date)"
-echo "📄 Output: $JSON_FILE"
-echo "📄 Latest: $JSON_LATEST"
-echo ""
-
-# Initialize JSON structure
-jq -n \
-  --arg ts "$TIMESTAMP" \
-  '{
-    timestamp: $ts,
-    diagnostic_type: "automatic_health_check",
-    trigger: "system_error_or_manual",
-    sections: {}
-  }' > "$JSON_FILE"
-
-# Helper function to add section to JSON
-add_json_section() {
-  local section_name="$1"
-  local section_data="$2"
-  
-  # Update JSON file with new section
-  jq --arg name "$section_name" --argjson data "$section_data" \
-    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
-    mv "${JSON_FILE}.tmp" "$JSON_FILE"
-}
-
-# =============================================================================
-# 1. HEALTH ENDPOINT CHECKS
-# =============================================================================
-echo "==================================================
-1️⃣  HEALTH ENDPOINT CHECKS"
-echo "=================================================="
-echo ""
-
-HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
-HEALTH_READY_CODE=$?
-HEALTH_READY_WORKS="false"
-if [[ $HEALTH_READY_CODE -eq 0 ]]; then
-  echo "✅ /health/ready → WORKS"
-  HEALTH_READY_WORKS="true"
-else
-  echo "❌ /health/ready → FAILED"
-fi
-
-HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
-HEALTH_DOUBLE_CODE=$?
-HEALTH_DOUBLE_BUG="false"
-if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
-  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
-  HEALTH_DOUBLE_BUG="true"
-else
-  echo "✅ /health/health/ready → 404 (correct)"
-fi
-
-HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
-HEALTH_BASE_WORKS="false"
-[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
-
-HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
-
-# Build JSON for section 1
-SECTION1_JSON=$(jq -n \
-  --arg ready_works "$HEALTH_READY_WORKS" \
-  --arg ready_response "$HEALTH_READY_RESPONSE" \
-  --arg double_bug "$HEALTH_DOUBLE_BUG" \
-  --arg base_works "$HEALTH_BASE_WORKS" \
-  --arg base_response "$HEALTH_BASE" \
-  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
-  '{
-    health_ready: {
-      works: ($ready_works == "true"),
-      response: $ready_response
-    },
-    double_prefix_bug: ($double_bug == "true"),
-    health_base: {
-      works: ($base_works == "true"),
-      response: $base_response
-    },
-    health_detailed: $detailed
-  }')
-
-add_json_section "health_endpoints" "$SECTION1_JSON"
-echo ""
-
-# =============================================================================
-# 2. EXCHANGE TRADE FLOW CHECK
-# =============================================================================
-echo "=================================================="
-echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
-echo "=================================================="
-echo ""
-
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-EXCHANGE_JSON="{"
-
-for exchange in "${EXCHANGES[@]}"; do
-  echo "🔍 Checking $exchange..."
-  
-  if [[ "$exchange" == "coinbase" ]]; then
-    symbol="BTC-USD"
-  else
-    symbol="BTCUSDT"
-  fi
-  
-  # Check orderbook
-  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
-  orderbook_works="false"
-  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
-    echo "  ✅ $exchange - Orderbook working"
-    orderbook_works="true"
-  else
-    echo "  ❌ $exchange - Orderbook failed"
-  fi
-  
-  # Check trades
-  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
-  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
-  trades_flowing="false"
-  if [[ "$trade_count" -gt 0 ]]; then
-    echo "  ✅ $exchange - Trades flowing"
-    trades_flowing="true"
-  else
-    echo "  ❌ $exchange - No trades"
-  fi
-  
-  # Add to JSON
-  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
-done
-
-# Remove trailing comma and close JSON
-EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
-
-add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
-echo ""
-
-# =============================================================================
-# 3. DOCKER CONTAINER STATUS
-# =============================================================================
-echo "=================================================="
-echo "3️⃣  DOCKER CONTAINER STATUS"
-echo "=================================================="
-echo ""
-
-CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
-echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
-
-BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
-BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
-
-echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
-
-SECTION3_JSON=$(jq -n \
-  --argjson containers "$CONTAINERS" \
-  --arg backend_status "$BACKEND_STATUS" \
-  --arg backend_started "$BACKEND_STARTED" \
-  '{
-    containers: $containers,
-    backend: {
-      status: $backend_status,
-      started_at: $backend_started
-    }
-  }')
-
-add_json_section "docker_containers" "$SECTION3_JSON"
-echo ""
-
-# =============================================================================
-# 4. DATABASE CONNECTIVITY
-# =============================================================================
-echo "=================================================="
-echo "4️⃣  DATABASE CONNECTIVITY"
-echo "=================================================="
-echo ""
-
-REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
-REDIS_WORKS="false"
-if [[ "$REDIS_PING" == "PONG" ]]; then
-  echo "✅ Redis: PONG"
-  REDIS_WORKS="true"
-else
-  echo "❌ Redis: Failed"
-fi
-
-CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
-CLICKHOUSE_WORKS="false"
-if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
-  echo "✅ ClickHouse: Responding"
-  CLICKHOUSE_WORKS="true"
-else
-  echo "❌ ClickHouse: Not responding"
-fi
-
-SECTION4_JSON=$(jq -n \
-  --arg redis_works "$REDIS_WORKS" \
-  --arg redis_ping "$REDIS_PING" \
-  --arg ch_works "$CLICKHOUSE_WORKS" \
-  '{
-    redis: {
-      works: ($redis_works == "true"),
-      ping_response: $redis_ping
-    },
-    clickhouse: {
-      works: ($ch_works == "true")
-    }
-  }')
-
-add_json_section "database_connectivity" "$SECTION4_JSON"
-echo ""
-
-# =============================================================================
-# 5. BACKEND LOGS SNAPSHOT
-# =============================================================================
-echo "=================================================="
-echo "5️⃣  BACKEND LOGS (Last 50 lines)"
-echo "=================================================="
-echo ""
-
-BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
-echo "$BACKEND_LOGS" | head -10
-echo "..."
-echo "(Full logs in JSON)"
-
-# Count errors in logs
-ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
-WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
-
-echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
-
-SECTION5_JSON=$(jq -n \
-  --arg logs "$BACKEND_LOGS" \
-  --arg errors "$ERROR_COUNT" \
-  --arg warnings "$WARNING_COUNT" \
-  '{
-    last_50_lines: $logs,
-    error_count: ($errors | tonumber),
-    warning_count: ($warnings | tonumber)
-  }')
-
-add_json_section "backend_logs" "$SECTION5_JSON"
-echo ""
-
-# =============================================================================
-# 6. WEBSOCKET STATUS
-# =============================================================================
-echo "=================================================="
-echo "6️⃣  WEBSOCKET STATUS"
-echo "=================================================="
-echo ""
-
-WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
-WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
-
-echo "Recent trades: $WS_TRADE_COUNT"
-echo "$WS_TRADES" | head -5
-
-SECTION6_JSON=$(jq -n \
-  --arg recent_trades "$WS_TRADES" \
-  --arg count "$WS_TRADE_COUNT" \
-  '{
-    recent_trade_logs: $recent_trades,
-    recent_trade_count: ($count | tonumber)
-  }')
-
-add_json_section "websocket_status" "$SECTION6_JSON"
-echo ""
-
-# =============================================================================
-# 7. HEALTH ROUTER VERIFICATION
-# =============================================================================
-echo "=================================================="
-echo "7️⃣  HEALTH ROUTER VERIFICATION"
-echo "=================================================="
-echo ""
-
-# Check if health_router in container has prefix
-CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
-echo "Container router: $CONTAINER_ROUTER"
-
-# Check main.py registration
-MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
-echo "Main.py registration:"
-echo "$MAIN_ROUTER"
-
-SECTION7_JSON=$(jq -n \
-  --arg container_router "$CONTAINER_ROUTER" \
-  --arg main_registration "$MAIN_ROUTER" \
-  '{
-    container_health_router: $container_router,
-    main_py_registration: $main_registration
-  }')
-
-add_json_section "health_router_verification" "$SECTION7_JSON"
-echo ""
-
-# =============================================================================
-# FINAL SUMMARY
-# =============================================================================
-echo "=================================================="
-echo "📋 DIAGNOSTIC SUMMARY"
-echo "=================================================="
-echo ""
-
-END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-# Count issues
-TOTAL_CHECKS=0
-FAILED_CHECKS=0
-
-[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
-
-SUMMARY_JSON=$(jq -n \
-  --arg end_ts "$END_TIMESTAMP" \
-  --arg total "$TOTAL_CHECKS" \
-  --arg passed "$PASSED_CHECKS" \
-  --arg failed "$FAILED_CHECKS" \
-  '{
-    end_timestamp: $end_ts,
-    total_checks: ($total | tonumber),
-    passed_checks: ($passed | tonumber),
-    failed_checks: ($failed | tonumber),
-    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
-  }')
-
-add_json_section "summary" "$SUMMARY_JSON"
-
-# Copy to latest
-cp "$JSON_FILE" "$JSON_LATEST"
-
-echo "⏰ End Time: $(date)"
-echo ""
-echo "📊 Results:"
-echo "   Total Checks: $TOTAL_CHECKS"
-echo "   Passed: $PASSED_CHECKS"
-echo "   Failed: $FAILED_CHECKS"
-echo ""
-echo "📄 Full diagnostic report:"
-echo "   $JSON_FILE"
-echo "   $JSON_LATEST"
-echo ""
-echo "💡 Next Steps:"
-echo "   1. Review JSON file: jq '.' $JSON_LATEST"
-echo "   2. Check failed sections"
-echo "   3. Fix issues and restart system"
-echo ""
-echo "=================================================="
-echo "🏁 DIAGNOSTIC COMPLETE"
-echo "=================================================="
-</file>
-
 <file path="backend/database/clickhouse/cl_message_handlers.py">
 import asyncio
 import logging
@@ -162283,210 +162447,6 @@ class CentralizedWsManager:
 
 # Global instance
 ws_manager = CentralizedWsManager()
-</file>
-
-<file path="frontend/src/config/exchangeSupport.ts">
-// ✅ DYNAMISCHE Exchange & Market Configuration
-// Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
-
-import { getAvailableExchanges, getAvailableMarketTypes } from '../services/config';
-
-export type MarketType = string; // Dynamisch vom Backend
-export type ExchangeId = string; // Dynamisch vom Backend
-
-// ✅ Exchange Interface
-export interface Exchange {
-  id: string;
-  name: string;
-}
-
-// ✅ Market Option Interface
-export interface MarketOption {
-  name: string;
-  description: string;
-  icon: string;
-}
-
-// ✅ Dynamische Exchange-Liste (wird beim Start geladen)
-let cachedExchanges: Exchange[] = [];
-let cachedMarkets: MarketOption[] = [];
-
-// ✅ Exchanges vom Backend laden
-export async function loadExchanges(): Promise<Exchange[]> {
-  if (cachedExchanges.length > 0) return cachedExchanges;
-  
-  try {
-    const exchanges = await getAvailableExchanges();
-    cachedExchanges = exchanges.map(id => ({
-      id,
-      name: id.charAt(0).toUpperCase() + id.slice(1) // Capitalize
-    }));
-    return cachedExchanges;
-  } catch (error) {
-    console.error('[exchangeSupport] Failed to load exchanges:', error);
-    // Fallback
-    return [{ id: 'binance', name: 'Binance' }];
-  }
-}
-
-// ✅ Markets vom Backend laden
-export async function loadMarkets(): Promise<MarketOption[]> {
-  if (cachedMarkets.length > 0) return cachedMarkets;
-  
-  try {
-    const markets = await getAvailableMarketTypes();
-    cachedMarkets = markets.map(name => ({
-      name,
-      description: getMarketDescription(name),
-      icon: getMarketIcon(name)
-    }));
-    return cachedMarkets;
-  } catch (error) {
-    console.error('[exchangeSupport] Failed to load markets:', error);
-    // Fallback
-    return [{ name: 'spot', description: 'Spot Trading', icon: '💱' }];
-  }
-}
-
-// ✅ Helper: Market Description (generisch)
-function getMarketDescription(market: string): string {
-  const descriptions: Record<string, string> = {
-    'spot': 'Spot-Trading mit sofortiger Abwicklung',
-    'futures': 'Futures-Trading',
-    'usdtm': 'USDT-Margined Futures',
-    'coinm': 'Coin-Margined Futures',
-    'margin': 'Margin Trading'
-  };
-  return descriptions[market.toLowerCase()] || `${market} Trading`;
-}
-
-// ✅ Helper: Market Icon (generisch)
-function getMarketIcon(market: string): string {
-  const icons: Record<string, string> = {
-    'spot': '💱',
-    'futures': '💰',
-    'usdtm': '💰',
-    'coinm': '⚡',
-    'margin': '📊'
-  };
-  return icons[market.toLowerCase()] || '📈';
-}
-
-// ✅ Cached Getter (synchron, nach Load)
-export const EXCHANGES = cachedExchanges;
-export const MARKET_OPTIONS = cachedMarkets;
-
-// ✅ Getter Functions (für dynamischen Zugriff)
-export const getExchanges = (): Exchange[] => cachedExchanges;
-export const getMarketOptions = (): MarketOption[] => cachedMarkets;
-
-// ✅ Helper: Check if market is supported (generisch - alle sind supported)
-export const isMarketSupported = (exchange: string, market?: string): boolean => {
-  // Dynamisch: Wenn Backend es liefert, ist es supported
-  return true;
-};
-
-// ✅ Helper: Map market name to API filter (generisch)
-export const getMarketFilter = (selectedMarket?: string): string | null => {
-  if (!selectedMarket) return null;
-  
-  // Normalisiere zu lowercase für Backend
-  const normalized = selectedMarket.toLowerCase();
-  
-  // Futures-Varianten → "futures"
-  if (normalized.includes('futures') || normalized.includes('perpetual')) {
-    return 'futures';
-  }
-  
-  // Spot bleibt spot
-  if (normalized === 'spot') return 'spot';
-  
-  // Alles andere: as-is
-  return normalized;
-};
-</file>
-
-<file path="frontend/src/contexts/TradingContext.tsx">
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { MarketType } from '../config/exchangeSupport';
-import { getDefaultExchange, getDefaultMarketType } from '../services/config';
-
-interface TradingContextType {
-  selectedExchange: string;
-  selectedMarket: MarketType;
-  setSelectedExchange: (exchange: string) => void;
-  setSelectedMarket: (market: MarketType) => void;
-}
-
-// ✅ Temporäre Defaults aus ENV (bis Backend geladen ist)
-const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || 'binance';
-const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || 'spot';
-
-const TradingContext = createContext<TradingContextType>({
-  selectedExchange: TEMP_DEFAULT_EXCHANGE,
-  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
-  setSelectedExchange: () => {},
-  setSelectedMarket: () => {},
-});
-
-interface TradingProviderProps {
-  children: ReactNode;
-}
-
-export const TradingProvider = ({ children }: TradingProviderProps) => {
-  const [selectedExchange, setSelectedExchange] = useState(TEMP_DEFAULT_EXCHANGE);
-  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // ✅ Lade Defaults vom Backend beim Start
-  useEffect(() => {
-    const loadDefaults = async () => {
-      try {
-        const [exchange, market] = await Promise.all([
-          getDefaultExchange(),
-          getDefaultMarketType()
-        ]);
-        setSelectedExchange(exchange);
-        setSelectedMarket(market as MarketType);
-        console.log(`[TradingContext] Loaded defaults from backend: ${exchange} / ${market}`);
-      } catch (error) {
-        console.error('[TradingContext] Failed to load defaults, using fallbacks:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadDefaults();
-  }, []);
-
-  if (isLoading) {
-    // Optional: Loading-Spinner hier rendern
-    return <>{children}</>; // oder ein Loading-Wrapper
-  }
-
-  return (
-    <TradingContext.Provider
-      value={{
-        selectedExchange,
-        selectedMarket,
-        setSelectedExchange,
-        setSelectedMarket,
-      }}
-    >
-      {children}
-    </TradingContext.Provider>
-  );
-};
-
-export const useTradingContext = () => {
-  const context = useContext(TradingContext);
-  if (!context) {
-    throw new Error('useTradingContext must be used within a TradingProvider');
-  }
-  return context;
-};
-
-export { TradingContext };
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -164113,6 +164073,251 @@ async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, mar
             pass
 </file>
 
+<file path="frontend/src/config/exchangeSupport.ts">
+// frontend/src/config/exchangeSupport.ts
+
+export type MarketType = string;   // dynamisch vom Backend
+export type ExchangeId = string;   // dynamisch vom Backend
+
+export interface Exchange {
+  id: string;
+  name: string;
+}
+
+export interface MarketOption {
+  name: string;
+  description: string;
+  icon: string;
+}
+
+let cachedExchanges: Exchange[] = [];
+let cachedMarkets: MarketOption[] = [];
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return (await res.json()) as T;
+}
+
+// Robust: akzeptiert mehrere Backend-Formate (alt/neu)
+async function getAvailableExchanges(): Promise<string[]> {
+  // 1) Alt: /api/config/exchanges  -> { exchanges: [...] }
+  try {
+    const r = await fetchJson<{ exchanges: string[] }>("/api/config/exchanges");
+    if (Array.isArray(r.exchanges)) return r.exchanges;
+  } catch {}
+
+  // 2) Unified Orderbook: /api/orderbook/exchanges oder /exchanges je nach Registry
+  // (Antwort kann { supported_exchanges: [...] } sein)
+  try {
+    const r = await fetchJson<{ supported_exchanges: string[] }>("/api/orderbook/exchanges");
+    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
+  } catch {}
+
+  try {
+    const r = await fetchJson<{ supported_exchanges: string[] }>("/exchanges");
+    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
+  } catch {}
+
+  return [];
+}
+
+async function getAvailableMarketTypes(): Promise<string[]> {
+  // 1) Alt: /api/config/market-types -> { market_types: [...] }
+  try {
+    const r = await fetchJson<{ market_types: string[] }>("/api/config/market-types");
+    if (Array.isArray(r.market_types)) return r.market_types;
+  } catch {}
+
+  // 2) Falls es später ein /api/config/markets o.ä. gibt: hier ergänzen.
+  return [];
+}
+
+function getMarketDescription(market: string): string {
+  const m = (market || "").toLowerCase();
+  const descriptions: Record<string, string> = {
+    spot: "Spot-Trading mit sofortiger Abwicklung",
+    futures: "Futures-Trading",
+    usdtm: "USDT-Margined Futures",
+    usdcm: "USDC-Margined Futures",
+    coinm: "Coin-Margined Futures",
+    margin: "Margin Trading",
+  };
+  return descriptions[m] || `${market} Trading`;
+}
+
+function getMarketIcon(market: string): string {
+  const m = (market || "").toLowerCase();
+  const icons: Record<string, string> = {
+    spot: "💱",
+    futures: "💰",
+    usdtm: "💰",
+    usdcm: "💰",
+    coinm: "⚡",
+    margin: "📊",
+  };
+  return icons[m] || "📈";
+}
+
+// Loader: liefert Arrays, aber UI muss über STATE re-rendern (macht TradingContext)
+export async function loadExchanges(force = false): Promise<Exchange[]> {
+  if (!force && cachedExchanges.length > 0) return cachedExchanges;
+
+  const ids = await getAvailableExchanges();
+  cachedExchanges = ids.map((id) => ({
+    id,
+    name: id ? id.charAt(0).toUpperCase() + id.slice(1) : id,
+  }));
+  return cachedExchanges;
+}
+
+export async function loadMarkets(force = false): Promise<MarketOption[]> {
+  if (!force && cachedMarkets.length > 0) return cachedMarkets;
+
+  const markets = await getAvailableMarketTypes();
+  cachedMarkets = markets.map((name) => ({
+    name,
+    description: getMarketDescription(name),
+    icon: getMarketIcon(name),
+  }));
+  return cachedMarkets;
+}
+
+// Getter (nur read-only)
+export const getExchanges = (): Exchange[] => cachedExchanges;
+export const getMarketOptions = (): MarketOption[] => cachedMarkets;
+
+// Alle gelieferten Markets gelten als supported
+export const isMarketSupported = (): boolean => true;
+
+// Helper: Map market name to API filter (generisch)
+export const getMarketFilter = (selectedMarket?: string): string | null => {
+  if (!selectedMarket) return null;
+
+  // Normalisiere zu lowercase für Backend
+  const normalized = selectedMarket.toLowerCase();
+
+  // Futures-Varianten → "futures"
+  if (normalized.includes("futures") || normalized.includes("perpetual")) {
+    return "futures";
+  }
+
+  // Spot bleibt spot
+  if (normalized === "spot") return "spot";
+
+  // Alles andere: as-is
+  return normalized;
+};
+</file>
+
+<file path="frontend/src/contexts/TradingContext.tsx">
+// frontend/src/contexts/TradingContext.tsx
+
+import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
+import type { Exchange, MarketOption, MarketType } from "../config/exchangeSupport";
+import { loadExchanges, loadMarkets } from "../config/exchangeSupport";
+import { getDefaultExchange, getDefaultMarketType } from "../services/config";
+
+interface TradingContextType {
+  selectedExchange: string;
+  selectedMarket: MarketType;
+  setSelectedExchange: (exchange: string) => void;
+  setSelectedMarket: (market: MarketType) => void;
+
+  // ✅ neu: dynamische Listen für GlobalNav Dropdowns
+  exchanges: Exchange[];
+  markets: MarketOption[];
+  supportLoading: boolean;
+  reloadSupport: (force?: boolean) => Promise<void>;
+}
+
+// ✅ KEIN Hardcode-Default: nur ENV, sonst leer
+const TEMP_DEFAULT_EXCHANGE = (import.meta as any).env?.VITE_DEFAULT_EXCHANGE || "";
+const TEMP_DEFAULT_MARKET = (import.meta as any).env?.VITE_DEFAULT_MARKET_TYPE || "";
+
+const TradingContext = createContext<TradingContextType>({
+  selectedExchange: TEMP_DEFAULT_EXCHANGE,
+  selectedMarket: TEMP_DEFAULT_MARKET as MarketType,
+  setSelectedExchange: () => {},
+  setSelectedMarket: () => {},
+
+  exchanges: [],
+  markets: [],
+  supportLoading: true,
+  reloadSupport: async () => {},
+});
+
+export const TradingProvider = ({ children }: { children: ReactNode }) => {
+  const [selectedExchange, setSelectedExchange] = useState<string>(TEMP_DEFAULT_EXCHANGE);
+  const [selectedMarket, setSelectedMarket] = useState<MarketType>(TEMP_DEFAULT_MARKET as MarketType);
+
+  const [exchanges, setExchanges] = useState<Exchange[]>([]);
+  const [markets, setMarkets] = useState<MarketOption[]>([]);
+  const [supportLoading, setSupportLoading] = useState(true);
+
+  const reloadSupport = async (force = false) => {
+    setSupportLoading(true);
+    try {
+      const [ex, mk] = await Promise.all([loadExchanges(force), loadMarkets(force)]);
+      setExchanges(ex);
+      setMarkets(mk);
+
+      // Wenn noch nichts gewählt ist: nimm erstes verfügbares (kein Hardcode)
+      if (!selectedExchange && ex.length > 0 && ex[0]) setSelectedExchange(ex[0].id);
+      if (!selectedMarket && mk.length > 0 && mk[0]) setSelectedMarket(mk[0].name as MarketType);
+    } catch (e) {
+      console.error("[TradingContext] load exchanges/markets failed:", e);
+      setExchanges([]);
+      setMarkets([]);
+    } finally {
+      setSupportLoading(false);
+    }
+  };
+
+  // ✅ Lade Defaults vom Backend (wie bisher), dann Support-Listen
+  useEffect(() => {
+    const boot = async () => {
+      try {
+        const [exchange, market] = await Promise.all([getDefaultExchange(), getDefaultMarketType()]);
+        if (exchange) setSelectedExchange(exchange);
+        if (market) setSelectedMarket(market as MarketType);
+        console.log(`[TradingContext] Loaded defaults: ${exchange} / ${market}`);
+      } catch (e) {
+        console.error("[TradingContext] Failed to load defaults:", e);
+      } finally {
+        await reloadSupport(false);
+      }
+    };
+    void boot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      selectedExchange,
+      selectedMarket,
+      setSelectedExchange,
+      setSelectedMarket,
+      exchanges,
+      markets,
+      supportLoading,
+      reloadSupport,
+    }),
+    [selectedExchange, selectedMarket, exchanges, markets, supportLoading]
+  );
+
+  return <TradingContext.Provider value={value}>{children}</TradingContext.Provider>;
+};
+
+export const useTradingContext = () => {
+  const ctx = useContext(TradingContext);
+  if (!ctx) throw new Error("useTradingContext must be used within a TradingProvider");
+  return ctx;
+};
+
+export { TradingContext };
+</file>
+
 <file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
 import React, { useMemo } from "react";
 import { useWsLane } from "../../services/ws/useWsLane";
@@ -164605,177 +164810,6 @@ export function useWsLane(
 
   return { status, trades, candles, orderbook, historical };
 }
-</file>
-
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-import { useState } from "react";
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useTradingContext } from "../../contexts/TradingContext";
-import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
-import ThemeToggle from "../ui/theme-toggle";
-
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
-  
-  const [activeTab, setActiveTab] = useState(() => {
-    // Set active tab based on current route
-    const path = location.pathname;
-    if (path === '/trading' || path === '/') return "Market";
-    if (path === '/quantum') return "Quantum";
-    if (path === '/database') return "Database";
-    if (path === '/whales') return "Whales";
-    if (path === '/news') return "News";
-    if (path === '/bot') return "Trading Bot";
-    if (path === '/api') return "API";
-    if (path === '/ml') return "ML";
-    if (path === '/settings') return "Settings";
-    return "Market";
-  });
-  
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-  
-  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
-  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
-
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
-
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else if (itemName === "Settings") {
-      setIsDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    } else {
-      setActiveTab(itemName);
-      setIsDropdownOpen(false);
-      if (itemPath) navigate(itemPath);
-    }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    // ✅ FIX: Exchange-Auswahl zu Context propagieren
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
-                {MARKET_OPTIONS.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-          >
-            {exchangeDisplayName} ▽
-          </button>
-          
-          {/* Exchange Dropdown Menu */}
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {EXCHANGES.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-30"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
 </file>
 
 <file path="readme/000_backfill_2_build.md">
@@ -165912,630 +165946,6 @@ Nach Binance-Fix funktioniert:
 **SO MACHEN ES PROFIS!** 🏆
 </file>
 
-<file path="docker-compose.yml">
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:${REDIS_PORT}"
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8124:${CLICKHOUSE_PORT}" # HTTP
-      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
-    environment:
-      CLICKHOUSE_DB: trading
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    volumes:
-      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - clickhouse-data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    build: .
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
-    environment:
-      - REDIS_URL=redis://redis:${REDIS_PORT}
-      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
-      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
-      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
-      - CLICKHOUSE_USER=admin
-      - CLICKHOUSE_PASSWORD=admin
-    volumes:
-      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
-      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
-      - ./logs:/app/logs               # ✅ Mount logs directory
-      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  trade-router:
-    build: .
-    command: python -m backend.services.adapter.trade_router_entrypoint
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-    depends_on:
-      - redis
-
-  unified-aggregator:
-    build: .
-    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-      CLICKHOUSE_HOST: "clickhouse"
-      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-volumes:
-  clickhouse-data:
-  redis-data:
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-# Load .env file before any other imports that depend on env vars
-env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
-load_dotenv(env_path)
-logger_env = logging.getLogger("main.env")
-logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
 // frontend/src/pages/TradingPage/components/CoinSelector.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -167147,20 +166557,840 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 export default CoinSelector;
 </file>
 
+<file path="frontend/src/shared/layout/GlobalNav.tsx">
+// frontend/src/shared/layout/GlobalNav.tsx
+
+import { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useTradingContext } from "../../contexts/TradingContext";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const {
+    selectedExchange,
+    setSelectedExchange,
+    setSelectedMarket,
+    exchanges,
+    markets,
+    supportLoading,
+  } = useTradingContext();
+
+  const [activeTab, setActiveTab] = useState(() => {
+    const path = location.pathname;
+    if (path === "/trading" || path === "/") return "Market";
+    if (path === "/quantum") return "Quantum";
+    if (path === "/database") return "Database";
+    if (path === "/whales") return "Whales";
+    if (path === "/news") return "News";
+    if (path === "/bot") return "Trading Bot";
+    if (path === "/api") return "API";
+    if (path === "/ml") return "ML";
+    if (path === "/settings") return "Settings";
+    return "Market";
+  });
+
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+
+  // ✅ Display name: aus dynamischem State
+  const exchangeDisplayName =
+    exchanges.find((e) => e.id === selectedExchange)?.name || selectedExchange || "—";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else {
+      setIsDropdownOpen(false);
+      setIsExchangeDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+              type="button"
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
+                {markets.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Optional: sichtbares Debug wenn leer */}
+                {!supportLoading && markets.length === 0 && (
+                  <div className="p-3 text-xs text-gray-500">No market options loaded</div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+            type="button"
+          >
+            {exchangeDisplayName} ▽
+          </button>
+
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {exchanges.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+
+              {!supportLoading && exchanges.length === 0 && (
+                <div className="p-2 text-xs text-muted-foreground">No exchanges loaded</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
+</file>
+
+<file path="docker-compose.yml">
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:${REDIS_PORT}"
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:${CLICKHOUSE_PORT}" # HTTP
+      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
+    environment:
+      CLICKHOUSE_DB: trading
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    env_file:
+      - .env
+    build: .
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    environment:
+      - ENVIRONMENT=docker
+      - REDIS_URL=redis://redis:${REDIS_PORT}
+      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
+      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
+      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=admin
+    volumes:
+      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
+      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
+      - ./logs:/app/logs               # ✅ Mount logs directory
+      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  trade-router:
+    build: .
+    command: python -m backend.services.adapter.trade_router_entrypoint
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+    depends_on:
+      - redis
+
+  unified-aggregator:
+    build: .
+    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+      CLICKHOUSE_HOST: "clickhouse"
+      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
+  redis-data:
+</file>
+
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+logger_env = logging.getLogger("main.env")
+
+# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
+# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
+if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
+    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+    else:
+        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
+else:
+    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="frontend/src/main.tsx">
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App';
-import { TradingProvider } from './contexts/TradingContext';
 import ThemeProvider from './shared/ui/theme-provider';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>
-      <TradingProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <App />
-      </TradingProvider>
+      </BrowserRouter>
     </ThemeProvider>
   </StrictMode>,
 );
@@ -170952,37 +171182,6 @@ def get_available_backfill_services():
     }
 </file>
 
-<file path="frontend/src/App.tsx">
-// frontend/src/App.tsx
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AppLayout } from "./shared/layout/AppLayout";
-import TradingPage from "./pages/TradingPage/TradingPage";
-import CoinMonitor from "./pages/CoinMonitor/CoinMonitor";
-import { useEffect } from "react";
-import { loadExchanges, loadMarkets } from "./config/exchangeSupport";
-
-export default function App() {
-  // Load dynamic config on app start
-  useEffect(() => {
-    loadExchanges();
-    loadMarkets();
-  }, []);
-
-  return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route path="/trading" element={<TradingPage />} />
-          <Route path="/coinmonitor" element={<CoinMonitor />} />
-          <Route path="/" element={<Navigate to="/trading" replace />} />
-          <Route path="*" element={<Navigate to="/trading" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
-}
-</file>
-
 <file path="monitor-system.sh">
 #!/usr/bin/env bash
 # =============================================================================
@@ -173037,6 +173236,52 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+
+import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { TradingProvider } from "./contexts/TradingContext";
+import { AppLayout } from "./shared/layout/AppLayout";
+
+// Falls du Seiten bereits hast: hier importieren.
+// Wenn nicht: die Platzhalter unten lassen (keine Styling-Änderungen erzwingen).
+import TradingPage from "./pages/TradingPage/TradingPage";
+import CoinMonitor from "./pages/CoinMonitor/CoinMonitor";
+
+function Placeholder({ title }: { title: string }) {
+  return <div className="p-4 text-sm">{title}</div>;
+}
+
+export default function App() {
+  return (
+    <TradingProvider>
+      <Routes>
+        <Route element={<AppLayout />}>
+          {/* EXISTIERENDE */}
+          <Route path="/market" element={<TradingPage />} />
+          <Route path="/monitor/btcusdt" element={<CoinMonitor />} />
+
+          {/* NAV-ZIELE (wenn echte Pages später kommen, nur element austauschen) */}
+          <Route path="/trading-bot" element={<Placeholder title="Trading Bot" />} />
+          <Route path="/quantum" element={<Placeholder title="Quantum" />} />
+          <Route path="/ml" element={<Placeholder title="ML" />} />
+          <Route path="/database" element={<Placeholder title="Database" />} />
+          <Route path="/whales" element={<Placeholder title="Whales" />} />
+          <Route path="/news" element={<Placeholder title="News" />} />
+          <Route path="/api" element={<Placeholder title="API" />} />
+          <Route path="/settings" element={<Placeholder title="Settings" />} />
+
+          {/* Default */}
+          <Route path="/" element={<Navigate to="/market" replace />} />
+          <Route path="*" element={<Navigate to="/market" replace />} />
+        </Route>
+      </Routes>
+    </TradingProvider>
+  );
+}
 </file>
 
 <file path="backend/services/adapter/collector_starter.py">
