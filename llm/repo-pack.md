@@ -737,6 +737,7 @@ __init__.py
 DATENFLUSS_LIVE_CHART.md
 docker-compose.yml
 Dockerfile
+FIX_PLAN_FINAL.md
 FRONTEND_ARCHITEKTUR_KOMPLETT.md
 monitor-system.sh
 package.json
@@ -139493,40 +139494,6 @@ interface ImportMeta {
 }
 </file>
 
-<file path="frontend/tsconfig.app.json">
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-
-    /* Bundler mode */
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
-    "noEmit": true,
-    "jsx": "react-jsx",
-
-    /* Linting */
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noImplicitAny": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  },
-  "include": ["src", "delete/config", "delete/contexts", "delete/shared", "delete/lib/zod-transforms.ts", "delete/lib/utils.ts", "delete/lib/ultraFastParsing.ts", "delete/lib/react-query.ts", "delete/lib/metrics.ts", "delete/lib/logger.ts", "delete/lib/directDOMUpdater.ts", "delete/lib/chartLazyLoader.ts"]
-}
-</file>
-
 <file path="readme/000_backfill_build.md">
 # AUTO-BACKFILL SYSTEM - ENV-BASED HISTORICAL DATA LOADING
 
@@ -151043,6 +151010,706 @@ PY
 Wenn das passt und der Aggregator läuft, ist alles integriert.
 </file>
 
+<file path="readme/000_system_start_1.md">
+# INTELLIGENT SYSTEM STARTUP - EVENT-DRIVEN READINESS
+
+**Problem:** Hardcoded Timeouts & serielles Warten im start-system.sh  
+**Lösung:** Event-basiertes Readiness System nutzt bestehendes Health System für intelligente, parallele Startup-Validierung
+
+---
+
+## 🚨 IMPLEMENTIERUNGS-REGELN
+
+### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
+
+#### 🚫 VERBOTEN:
+
+1. **NIEMALS HARDCODED**
+   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
+   - ❌ KEINE hardcoded Symbols, URLs, Parameter
+   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
+
+2. **NIEMALS MOCK DATEN**
+   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
+   - ❌ KEINE Test-Stubs in Production-Code
+   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
+
+3. **NIEMALS LEGACY CODE**
+   - ❌ KEINE veralteten Patterns, deprecated Funktionen
+   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
+   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
+
+4. **NIEMALS EXCHANGE-SPEZIFISCH**
+   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
+   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
+   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
+
+#### ✅ PFLICHT:
+
+1. **IMMER GENERISCH**
+   - Alle Funktionen müssen für ALLE Exchanges funktionieren
+   - Parameter statt hardcoding
+
+2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
+
+3. **IMMER DOKUMENTATION LESEN**
+
+---
+
+## 📋 IMPLEMENTATION TASKS
+
+### **Phase 1: Backend Ready Signal**
+- [ ] **TASK 1.1:** Implementiere `_write_ready_signal()` Funktion in `backend/core/main.py`
+- [ ] **TASK 1.2:** Integriere Ready Signal in `@app.on_event("startup")`
+- [ ] **TASK 1.3:** Test: Prüfe dass `/tmp/backend_ready` File erstellt wird
+- [ ] **TASK 1.4:** Test: Validiere JSON Format des Ready Signals
+
+### **Phase 2: Smart Wait Functions (Bash)**
+- [ ] **TASK 2.1:** Implementiere `wait_for_service_smart()` mit Exponential Backoff
+- [ ] **TASK 2.2:** Implementiere `wait_for_all_services_parallel()` für parallele Checks
+- [ ] **TASK 2.3:** Implementiere `wait_for_backend_ready()` für Event-driven Check
+- [ ] **TASK 2.4:** Test: Validiere Exponential Backoff Timing
+
+### **Phase 3: Update wait_for_backend Function**
+- [ ] **TASK 3.1:** Ersetze alte `wait_for_backend()` mit neuer Implementierung
+- [ ] **TASK 3.2:** Integriere parallel service checks
+- [ ] **TASK 3.3:** Integriere event-driven ready check
+- [ ] **TASK 3.4:** Implementiere non-blocking exchange warm-up
+
+### **Phase 4: Konfigurierbare Env Vars**
+- [ ] **TASK 4.1:** Füge konfigurierbare Timeouts hinzu (MAX_RETRIES, INITIAL_DELAY, etc.)
+- [ ] **TASK 4.2:** Füge Feature Flags hinzu (USE_PARALLEL_CHECKS, USE_EVENT_DRIVEN_READY, etc.)
+- [ ] **TASK 4.3:** Implementiere Verbose Logging (STARTUP_VERBOSE)
+- [ ] **TASK 4.4:** Dokumentiere alle Env Vars
+
+### **Phase 5: Testing & Validation**
+- [ ] **TASK 5.1:** Test: Fast Startup (System ready in 5-15s)
+- [ ] **TASK 5.2:** Test: Slow Startup mit artificial delay
+- [ ] **TASK 5.3:** Test: Degraded Mode (ein Service down)
+- [ ] **TASK 5.4:** Test: Feature Flags (disable new features)
+- [ ] **TASK 5.5:** Validiere Success Metrics (Startup < 20s, Parallel Checks, etc.)
+
+---
+
+## 🎯 PROBLEM: PRIMITIVE STARTUP LOGIC
+
+### **Aktuelles System (start-system.sh):**
+
+```bash
+# ❌ HARDCODED WARTEN - Zeile ~180
+wait_for_backend() {
+  for i in {1..60}; do
+    curl -s http://localhost:8100/health && exit 0
+    sleep 1
+  done
+}
+
+# ❌ SERIELL - Einer nach dem anderen
+wait_for_service "Redis" localhost 6380      # Wartet bis timeout
+wait_for_service "ClickHouse" localhost 8124 # Dann dieser
+wait_for_service "Backend" localhost 8100    # Dann dieser
+
+# ❌ DUMB POLLING - Keine Intelligenz
+# Wartet immer 60s, auch wenn Backend nach 5s bereit ist
+```
+
+**Probleme:**
+1. ❌ **Feste Timeouts** - 60s, 30s, 15s hardcoded
+2. ❌ **Serielles Warten** - Verschwendet Zeit
+3. ❌ **Kein Event-System** - Dummes Polling
+4. ❌ **Keine Retry-Logic** - Keine Exponential Backoff
+5. ❌ **False Positives** - "Failed" obwohl Backend healthy ist
+
+---
+
+## ✅ LÖSUNG: NUTZE BESTEHENDES HEALTH SYSTEM
+
+### **Was wir BEREITS haben:**
+
+```python
+# backend/health/health_registry.py
+class HealthRegistry:
+    def is_system_ready_resilient(self) -> bool:
+        """Resilient readiness - system ready if ANY exchanges work"""
+        # Bereits implementiert!
+
+# backend/health/health_router.py
+@router.get("/health/ready-resilient")
+async def readiness_check_resilient():
+    """Kubernetes-style readiness - NUTZT HEALTH SYSTEM"""
+    ready, message = health_registry.get_system_readiness_resilient()
+    return {
+        "ready": ready,
+        "message": message,
+        # ... component details ...
+    }
+```
+
+**Das Health System macht bereits:**
+- ✅ **Component Tracking** (via HealthLane)
+- ✅ **Background Monitoring** (via HealthChecker)
+- ✅ **Graceful Degradation** (resilient mode)
+- ✅ **Detailed Status** (per-component health)
+
+**Wir müssen es nur NUTZEN statt ignorieren!**
+
+---
+
+## 🏗️ ARCHITEKTUR: EVENT-DRIVEN READINESS
+
+### **FLOW:**
+
+```
+1. Docker Compose startet Container
+   ↓
+2. Backend (main.py) startup event läuft:
+   - Initialisiert Redis
+   - Initialisiert ClickHouse  
+   - Startet WebSockets
+   - Startet Collectors
+   - Registriert Health Components
+   ↓
+3. Backend schreibt Ready Signal
+   - Option A: /tmp/backend_ready file
+   - Option B: Redis PubSub event
+   - Option C: Health endpoint = 200
+   ↓
+4. start-system.sh wartet intelligent:
+   - Parallel: Alle Services gleichzeitig prüfen
+   - Exponential Backoff: 1s, 2s, 4s, 8s, 16s
+   - Event-driven: Nutzt /health/ready-resilient
+   ↓
+5. System ready in 5-15s (statt hardcoded 60s!)
+```
+
+---
+
+## 📋 IMPLEMENTATION DETAILS
+
+### **TASK 1: Backend Ready Signal (Python)**
+
+**File:** `backend/core/main.py`
+
+**Änderung in `@app.on_event("startup")`:**
+
+```python
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+    
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+    
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+    
+    # ✅ EXISTING: ExchangeFactory, WebSockets, Collectors...
+    # (behalte bestehenden Code)
+    
+    # ✅ NEW: Write Ready Signal
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🚀 WS_AI Backend fully started")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+```
+
+**Warum 3 Methoden?**
+- **File:** Schnell, einfach, funktioniert immer
+- **Redis:** Event-driven, elegant, wenn verfügbar
+- **Logs:** Debugging & Observability
+
+---
+
+### **TASK 2: Smart Wait Functions (Bash)**
+
+**File:** `start-system.sh`
+
+**Neue Functions hinzufügen (vor wait_for_backend):**
+
+```bash
+# =============================================================================
+# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
+# =============================================================================
+
+# ✅ Konfigurierbare Timeouts (via env vars)
+MAX_RETRIES="${MAX_RETRIES:-5}"
+INITIAL_DELAY="${INITIAL_DELAY:-1}"
+BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"
+SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"
+
+# ✅ Exponential Backoff Retry Logic
+wait_for_service_smart() {
+    local service_name=$1
+    local check_cmd=$2
+    local max_retries=${3:-$MAX_RETRIES}
+    local initial_delay=${4:-$INITIAL_DELAY}
+    
+    local retry=0
+    local delay=$initial_delay
+    
+    echo "⏳ Waiting for $service_name..."
+    
+    while (( retry < max_retries )); do
+        if eval "$check_cmd" >/dev/null 2>&1; then
+            echo "✅ $service_name ready after $retry retries"
+            return 0
+        fi
+        
+        if (( retry < max_retries - 1 )); then
+            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
+            sleep "$delay"
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            delay=$((delay * 2))
+        fi
+        
+        retry=$((retry + 1))
+    done
+    
+    echo "❌ $service_name failed after $max_retries retries"
+    return 1
+}
+
+# ✅ Parallele Service Checks
+wait_for_all_services_parallel() {
+    local services=("redis:6380" "clickhouse:8124" "backend:8100")
+    local pids=()
+    local temp_dir=$(mktemp -d)
+    
+    echo "🔄 Starting parallel service checks..."
+    
+    # Starte alle Checks parallel
+    for service in "${services[@]}"; do
+        IFS=':' read -r name port <<< "$service"
+        (
+            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
+                echo "0" > "$temp_dir/check_${name}.status"
+            else
+                echo "1" > "$temp_dir/check_${name}.status"
+            fi
+        ) &
+        pids+=($!)
+    done
+    
+    # Warte auf alle (mit Gesamttimeout)
+    local timeout=$SERVICE_CHECK_TIMEOUT
+    local elapsed=0
+    local all_done=false
+    
+    while (( elapsed < timeout )); do
+        all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        
+        [[ "$all_done" == "true" ]] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    # Kill stragglers
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+    done
+    
+    # Prüfe Ergebnisse
+    local failed=0
+    for service in "${services[@]}"; do
+        IFS=':' read -r name _ <<< "$service"
+        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
+        if [[ "$status" != "0" ]]; then
+            echo "❌ $name check failed"
+            failed=$((failed + 1))
+        else
+            echo "✅ $name check passed"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    return $failed
+}
+
+# ✅ Event-driven Backend Ready Check
+wait_for_backend_ready() {
+    local ready_file="/tmp/backend_ready"
+    local timeout=$BACKEND_READY_TIMEOUT
+    local elapsed=0
+    
+    echo "⏳ Waiting for backend ready signal..."
+    
+    # Method 1: File-based (primary)
+    while (( elapsed < timeout )); do
+        if [[ -f "$ready_file" ]]; then
+            local ready_status=$(jq -r '.ready // false' "$ready_file" 2>/dev/null || echo "false")
+            
+            if [[ "$ready_status" == "true" ]]; then
+                echo "✅ Backend ready signal received (file)"
+                cat "$ready_file" | jq '.' 2>/dev/null || cat "$ready_file"
+                return 0
+            else
+                echo "⚠️ Backend started with errors - check $ready_file"
+                return 1
+            fi
+        fi
+        
+        # Fallback: Check health endpoint every 5s
+        if (( elapsed % 5 == 0 )) && (( elapsed > 0 )); then
+            if curl -sf --max-time 2 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+                echo "✅ Backend ready (health endpoint)"
+                return 0
+            fi
+        fi
+        
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    echo "❌ Backend ready timeout after ${timeout}s"
+    return 1
+}
+```
+
+---
+
+### **TASK 3: Update wait_for_backend Function**
+
+**File:** `start-system.sh` (ersetze bestehende wait_for_backend)
+
+```bash
+wait_for_backend() {
+  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
+  if wait_for_all_services_parallel; then
+    echo "✅ All services responding"
+  else
+    echo "⚠️ Some services failed - continuing with resilient mode"
+  fi
+  
+  echo ""
+  
+  # ✅ STEP 2: Event-driven backend ready check
+  if wait_for_backend_ready; then
+    echo "✅ Backend fully initialized"
+  else
+    echo "⚠️ Backend timeout - checking resilient health"
+    
+    # Fallback: Check resilient health endpoint
+    if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+      echo "✅ Backend operational in degraded mode"
+    else
+      echo "❌ Backend not responding"
+      return 1
+    fi
+  fi
+  
+  echo ""
+  echo "🚀 Backend startup complete"
+  echo ""
+  
+  # ✅ STEP 3: Warm-up exchanges (non-blocking)
+  echo "🔄 Warming up exchanges (background)..."
+  for exchange in "${EXCHANGES[@]}"; do
+    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
+  done
+  
+  # Give exchanges a moment to respond, but don't block
+  sleep 3
+  
+  return 0
+}
+```
+
+---
+
+### **TASK 4: Konfigurierbare Env Vars**
+
+**File:** `start-system.sh` (am Anfang bei Konfiguration hinzufügen)
+
+```bash
+# =============================================================================
+# INTELLIGENT STARTUP CONFIGURATION
+# =============================================================================
+
+# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
+export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
+export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
+export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
+export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
+
+# ✅ Feature Flags (enable/disable new behavior)
+export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
+export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
+export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
+
+# ✅ Observability
+export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
+
+# Log configuration
+if [[ "$STARTUP_VERBOSE" == "1" ]]; then
+  echo "🔧 Startup Configuration:"
+  echo "   MAX_RETRIES=$MAX_RETRIES"
+  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
+  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
+  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
+  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
+  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
+  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
+  echo ""
+fi
+```
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+### **TEST 1: Fast Startup**
+
+```bash
+# Clean state
+./stop-system.sh
+rm -f /tmp/backend_ready
+
+# Start with defaults
+./start-system.sh
+
+# Expected: System ready in 5-15s (nicht 60s!)
+# Logs should show:
+# - ✅ All services responding (parallel checks)
+# - ✅ Backend ready signal received
+# - ✅ Backend fully initialized
+```
+
+### **TEST 2: Slow Startup (simulate delay)**
+
+```bash
+# Add artificial delay to backend
+export BACKEND_READY_TIMEOUT=120
+
+./start-system.sh
+
+# Expected: Exponential backoff visible in logs
+# - Retry 1/5 in 1s
+# - Retry 2/5 in 2s
+# - Retry 3/5 in 4s
+# ...
+```
+
+### **TEST 3: Degraded Mode**
+
+```bash
+# Simulate one service failure (e.g. Redis down)
+docker stop 0_ws_ai-redis-1
+
+./start-system.sh
+
+# Expected: 
+# - ⚠️ Redis check failed
+# - ✅ Backend operational in degraded mode
+# - System continues (resilient!)
+```
+
+### **TEST 4: Feature Flags**
+
+```bash
+# Disable new features, use old behavior
+export USE_PARALLEL_CHECKS=0
+export USE_EVENT_DRIVEN_READY=0
+
+./start-system.sh
+
+# Expected: Falls back to serial checks and polling
+```
+
+---
+
+## 📊 SUCCESS METRICS
+
+### **Performance:**
+- ✅ **Startup Time:** 5-15s (statt 60s hardcoded)
+- ✅ **Parallel Checks:** 3 services gleichzeitig (statt seriell)
+- ✅ **Event-Driven:** Reagiert sofort wenn ready (nicht nach timeout)
+
+### **Reliability:**
+- ✅ **Retry Logic:** Exponential backoff (1s → 16s)
+- ✅ **Resilient Mode:** System startet auch bei Teil-Failures
+- ✅ **Multiple Methods:** File + Redis PubSub + Health endpoint
+
+### **Observability:**
+- ✅ **Konfigurierbar:** Alle Timeouts via env vars
+- ✅ **Feature Flags:** Neue Features an/aus schaltbar
+- ✅ **Verbose Mode:** Detailliertes Logging wenn gewünscht
+
+---
+
+## 🚀 DEPLOYMENT STRATEGY
+
+### **Phase 1: Backend Signal (Low Risk)**
+- Implementiere `_write_ready_signal()` in main.py
+- Backend schreibt Signal, aber start-system.sh ignoriert es noch
+- Test: Prüfe dass /tmp/backend_ready erstellt wird
+
+### **Phase 2: Parallel Checks (Medium Risk)**  
+- Implementiere parallel service checks
+- Feature Flag: `USE_PARALLEL_CHECKS=1` (default)
+- Rollback: `USE_PARALLEL_CHECKS=0` falls Probleme
+
+### **Phase 3: Event-Driven (Medium Risk)**
+- Implementiere `wait_for_backend_ready()`
+- Feature Flag: `USE_EVENT_DRIVEN_READY=1` (default)
+- Fallback zu old behavior wenn Signal fehlt
+
+### **Phase 4: Full Rollout (Low Risk)**
+- Alle Features enabled
+- Monitor startup times
+- Fine-tune timeouts basierend auf Metrics
+
+---
+
+## 🎯 BENEFITS
+
+### **Entwickler:**
+- **Schneller Local Development:** 5-15s Startup (nicht 60s)
+- **Besseres Debugging:** Sieht genau wo es hängt
+- **Flexibler:** Kann Timeouts anpassen per env var
+
+### **Operations:**
+- **Production-Ready:** Kubernetes-style Readiness
+- **Resilient:** Partial failures ok
+- **Observable:** Klare Status & Logs
+
+### **Business:**
+- **Faster Deployments:** Schnellere Iteration
+- **Higher Uptime:** Graceful degradation
+- **Better UX:** System reagiert schneller
+
+---
+
+## 🔄 FUTURE ENHANCEMENTS
+
+### **Optional (Post-MVP):**
+
+1. **Redis PubSub Subscriber**
+   ```bash
+   # start-system.sh subscribes to Redis channel
+   redis-cli -p 6380 subscribe system:backend:ready
+   ```
+
+2. **Prometheus Metrics**
+   ```python
+   startup_duration_seconds.observe(duration)
+   startup_failures_total.inc()
+   ```
+
+3. **Distributed Tracing**
+   ```python
+   with tracer.start_span("backend.startup"):
+       await initialize_services()
+   ```
+
+4. **Health History**
+   ```python
+   # Track startup times over time
+   await unified_rs_service.zadd(
+       "startup:history",
+       {datetime.now().isoformat(): duration}
+   )
+   ```
+
+---
+
+## 🏆 SUMMARY
+
+**Was wir ändern:**
+- ✅ Backend signalisiert Readiness (Python)
+- ✅ Smart wait functions (Bash)
+- ✅ Parallele Checks (Bash)
+- ✅ Event-driven statt Polling (Bash)
+- ✅ Konfigurierbare Timeouts (Env vars)
+
+**Was wir NICHT ändern:**
+- ❌ Health System (perfekt wie es ist!)
+- ❌ Docker Compose (funktioniert)
+- ❌ Collectors & WebSockets (robust)
+
+**Result:**
+Ein **intelligentes, event-basiertes Startup System** das das bestehende Health System **nutzt** statt zu ignorieren!
+
+**Startup Zeit:** 5-15s statt hardcoded 60s  
+**Resilience:** Partial failures ok  
+**Observability:** Klare Status & Metrics  
+**Maintainability:** Konfigurierbar & erweiterbar  
+
+---
+
+## 📚 REFERENCES
+
+- **Health System:** `readme/000_healthy.md`
+- **Graceful Startup:** `readme/000_graceful_start_system_build.md`
+- **Market Build:** `readme/000_market_build.md`
+- **Services:** `readme/000_services.md`
+</file>
+
 <file path="readme/000_system_start_2.md">
 # ENTERPRISE COLLECTOR STARTUP - PARALLEL & BACKGROUND EXECUTION
 
@@ -152630,6 +153297,555 @@ npm run dev
 **DU HAST ES GESCHAFFT!** 🎉
 </file>
 
+<file path="FIX_PLAN_FINAL.md">
+# 🎯 FINALER WASSERDICHTER FIX-PLAN - VERIFIZIERT
+
+**Datum:** 18.02.2026, 20:07 Uhr  
+**Status:** ✅ Imports verifiziert, 404 Router-Problem bestätigt
+
+---
+
+## 📊 CURL TEST ERGEBNISSE
+
+### ✅ TEST 1: Backend Imports
+```bash
+python3 -c "from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY; from backend.api.models.keys import Market; print('✅ Import OK')"
+```
+**Ergebnis:** ✅ Import OK
+
+### ❌ TEST 2: Router Endpoint (Single /api)
+```bash
+curl -i "http://localhost:8100/api/user/settings/coins?exchange=binance" -H "X-Client-ID: test-client-001"
+```
+**Ergebnis:** 
+```
+HTTP/1.1 404 Not Found
+{"detail":"Not Found"}
+```
+
+### ✅ TEST 3: Router Endpoint (Double /api/api) - BEWEIS!
+```bash
+curl -i "http://localhost:8100/api/api/user/settings/coins?exchange=binance" -H "X-Client-ID: test"
+```
+**Ergebnis:** 
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[]
+```
+
+**🔴 DIAGNOSE BESTÄTIGT:** Router ist unter `/api/api/user/settings/coins` erreichbar!  
+**Ursache:** Doppelter `/api` Prefix (Router + EndpointMapper)
+
+### ✅ TEST 4: FastAPI Routes Dump
+```bash
+python3 - <<'PY'
+from backend.core.main import app
+paths = sorted([r.path for r in app.routes])
+for p in paths:
+    if "settings" in p.lower():
+        print(p)
+PY
+```
+
+**Ergebnis (Auszug):**
+```
+/api/api/user/settings
+/api/api/user/settings/coins
+/api/api/user/settings/watchlists
+/api/settings/api_keys
+/api/settings/coin-settings
+...
+```
+
+**Beobachtung:** 
+- ✅ `ro_user_settings` Router: `/api/api/user/settings/*` (DOPPELT!)
+- ✅ `ro_settings` Router: `/api/settings/*` (KORREKT!)
+
+### ✅ TEST 5: EndpointMapper Initialize Check
+```bash
+grep -n "_mapper.initialize()" backend/core/main.py
+```
+**Ergebnis:** 
+```
+483:_mapper.initialize()  # ✅ KRITISCH: Router müssen initialisiert werden!
+```
+
+**Status:** ✅ `initialize()` wird aufgerufen (Zeile 483)
+
+---
+
+## 🔧 FIXES (4 DATEIEN)
+
+### **FIX 1: Backend WebSocket Router** 🔴 KRITISCH
+
+**Datei:** `backend/websocket/ws_router.py`  
+**Zeilen:** 85-110 (symbols request handler)
+
+**Problem:** 
+- Import `backend.services.registry.symbol_registry` existiert nicht
+- Falscher Enum-Import
+
+**Lösung (wasserdicht mit Fallbacks):**
+
+```python
+# ❌ ALT (Zeile 85-95):
+if msg == "symbols":
+    try:
+        from backend.services.registry.symbol_registry import SYMBOL_REGISTRY
+        from backend.core.models.market_enum import MarketEnum
+        
+        market_enum = MarketEnum.SPOT if market == "spot" else MarketEnum.USDTM
+        catalog = SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        symbols = [entry["symbol"] for entry in catalog]
+
+# ✅ NEU (wasserdicht):
+if msg == "symbols":
+    try:
+        from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+        from backend.api.models.keys import Market
+
+        mk = (market or "spot").lower()
+
+        # Robust mapping (keine Annahmen über extra Enum-Members)
+        if mk == "spot":
+            market_enum = Market.SPOT
+        elif mk in ("usdtm", "usdt", "futures"):
+            market_enum = Market.USDTM
+        else:
+            market_enum = Market.SPOT
+
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+        # Tolerantes Field-Mapping (native_symbol ODER symbol)
+        symbols = []
+        for entry in (catalog or []):
+            if not isinstance(entry, dict):
+                continue
+            sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+            if isinstance(sym, str) and sym.strip():
+                symbols.append(sym.strip())
+
+        await websocket.send_json({
+            "type": "symbols",
+            "exchange": exchange,
+            "market": mk,
+            "symbols": symbols,
+            "count": len(symbols)
+        })
+        continue
+
+    except Exception as e:
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Symbols request failed: {e}",
+        })
+        continue
+```
+
+**Änderungen:**
+1. ✅ Import: `unified_symbol_registry` + `Market` (verifiziert!)
+2. ✅ `await` hinzugefügt (catalog ist async)
+3. ✅ Robustes Market-Mapping (kein Crash bei fehlenden Enums)
+4. ✅ Tolerantes Field-Mapping (native_symbol ODER symbol)
+5. ✅ Type-Safety (isinstance checks)
+
+---
+
+### **FIX 2: Router Registration Problem** 🔴 KRITISCH
+
+**Problem:** 404 auf `/api/user/settings/coins` → Router nicht erreichbar
+
+**Mögliche Ursachen:**
+1. `EndpointMapper.initialize()` wird nicht aufgerufen
+2. Prefix-Konflikt zwischen Router und EndpointMapper
+3. Router wird nach anderen Routen registriert (Reihenfolge!)
+
+**Diagnose-Schritte:**
+
+**A) Prüfe main.py Router-Reihenfolge:**
+```python
+# backend/core/main.py Zeile 195-210
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # ← MUSS aufgerufen werden!
+```
+
+**B) Prüfe ro_user_settings.py Prefix:**
+```python
+# backend/api/routers/ro_user_settings.py Zeile 18
+user_settings_router = APIRouter(
+    prefix="/api/user/settings",  # ← Prefix im Router selbst!
+    tags=["user-settings"],
+)
+```
+
+**C) Prüfe router_registry.py Mapping:**
+```python
+# backend/core/router_registry.py Zeile 73-81
+.add_router(
+    "backend.api.routers.ro_user_settings",
+    "user_settings_router",
+    "/api",  # ← EndpointMapper Prefix
+    ["user-settings"]
+)
+```
+
+**KONFLIKT:** Router hat `/api/user/settings`, EndpointMapper fügt `/api` hinzu → `/api/api/user/settings` ❌
+
+**Lösung:** Router-Prefix entfernen ODER EndpointMapper-Prefix auf `None` setzen
+
+**Option A: Router-Prefix entfernen (empfohlen)**
+```python
+# backend/api/routers/ro_user_settings.py Zeile 18
+user_settings_router = APIRouter(
+    prefix="/user/settings",  # ✅ Kein /api Prefix!
+    tags=["user-settings"],
+)
+```
+
+**Option B: EndpointMapper-Prefix auf None**
+```python
+# backend/core/router_registry.py Zeile 73-81
+.add_router(
+    "backend.api.routers.ro_user_settings",
+    "user_settings_router",
+    None,  # ✅ Kein zusätzlicher Prefix
+    ["user-settings"]
+)
+```
+
+---
+
+### **FIX 3: TypeScript Include-Pfade** 🟡 HOCH
+
+**Datei:** `frontend/tsconfig.app.json`  
+**Zeile:** 31
+
+**Problem:** `delete/` Ordner wird explizit included → alte Files werden kompiliert
+
+**Lösung:**
+```json
+// ❌ ALT:
+"include": ["src", "delete/config", "delete/contexts", "delete/shared", ...]
+
+// ✅ NEU:
+"include": ["src"]
+```
+
+**Warum:** 
+- Strict Mode bleibt AN (kein Weichmachen!)
+- Nur aktive `src/` Files werden kompiliert
+- Keine Build-Errors aus gelöschten Files
+
+---
+
+### **FIX 4: WebSocket URL (CoinSelector)** 🟢 MITTEL
+
+**Datei:** `frontend/src/pages/TradingPage/components/CoinSelector.tsx`  
+**Zeilen:** 62-73
+
+**Problem:** WS verbindet zu Port 8080 statt über Proxy zu 8100
+
+**Lösung:**
+```typescript
+// ❌ ALT (Zeile 62-73):
+const resolveWsBase = (): string => {
+  const env = (import.meta as any)?.env;
+  const raw =
+    env?.VITE_BACKEND_WS_URL ||
+    env?.VITE_WS_BASE_URL ||
+    env?.VITE_WS_URL;
+
+  if (raw && typeof raw === "string") return raw.replace(/\/+$/, "");
+
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const host = window.location.hostname || "localhost";
+  return `${proto}://${host}:8080`;  // ❌ Hardcoded Port!
+};
+
+// ✅ NEU:
+const resolveWsBase = (): string => {
+  const env = (import.meta as any)?.env;
+  const raw =
+    env?.VITE_BACKEND_WS_URL ||
+    env?.VITE_WS_BASE_URL ||
+    env?.VITE_WS_URL;
+
+  if (raw && typeof raw === "string" && raw.trim()) {
+    return raw.replace(/\/+$/, "");
+  }
+
+  // ✅ Vite Proxy: window.location.host enthält Port automatisch!
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}`;
+};
+```
+
+**Warum das funktioniert:**
+- Frontend: `localhost:8080`
+- `window.location.host` = `"localhost:8080"` (Port included!)
+- WS URL: `ws://localhost:8080/ws/...`
+- Vite Proxy leitet `/ws` → `ws://localhost:8100` (vite.config.ts Zeile 18-23)
+
+---
+
+### **FIX 5: Z-Index Overlay** 🟢 NIEDRIG
+
+**Datei:** `frontend/src/shared/layout/GlobalNav.tsx`  
+**Zeile:** 117
+
+**Problem:** Overlay `z-40` blockiert Dropdowns `z-50`
+
+**Lösung:**
+```tsx
+// ❌ ALT:
+<div className="fixed inset-0 z-40" onClick={...} />
+
+// ✅ NEU:
+<div className="fixed inset-0 z-30" onClick={...} />
+```
+
+**Layering:**
+- Overlay: `z-30` (Hintergrund)
+- Dropdowns: `z-50` (Vordergrund, klickbar)
+
+---
+
+## 🧪 VERIFIKATIONS-TESTS
+
+### **TEST 1: Backend Import** ✅ BESTANDEN
+```bash
+python3 -c "from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY; from backend.api.models.keys import Market; print('✅ Import OK')"
+```
+**Status:** ✅ Import OK
+
+---
+
+### **TEST 2: Backend Start**
+```bash
+cd /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI
+python3 -m backend.core.main
+```
+**Erwartung:** 
+```
+🟢 ClickHouse initialized
+🟢 Redis initialized
+🎉 Backend READY
+```
+
+---
+
+### **TEST 3: Router Endpoint (nach Fix 2)**
+```bash
+curl -i "http://localhost:8100/api/user/settings/coins?exchange=binance" \
+  -H "X-Client-ID: test-client-001"
+```
+**Erwartung:** 
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[]
+```
+
+**Aktuell:** ❌ 404 Not Found (Router-Prefix Problem!)
+
+---
+
+### **TEST 4: TypeScript Build**
+```bash
+cd frontend
+npm run build
+```
+**Erwartung:** Build erfolgreich, keine Errors aus `delete/`
+
+---
+
+### **TEST 5: Frontend + WebSocket**
+```bash
+cd frontend
+npm run dev
+```
+**Browser:** `http://localhost:8080/trading`
+
+**Test-Schritte:**
+1. CoinSelector öffnen → Dropdown erscheint
+2. DevTools Network → WS zu `ws://localhost:8080/ws/binance/BTCUSDT/spot`
+3. WS sendet `"symbols"` → Response mit Symbol-Liste
+4. Coins werden angezeigt
+
+---
+
+## 📋 IMPLEMENTIERUNGS-REIHENFOLGE
+
+### **PHASE 1: Backend Fixes (KRITISCH)**
+1. ✅ Fix 1: ws_router.py Import + Symbol-Handling
+2. ✅ Fix 2: Router Registration (Prefix-Konflikt lösen)
+
+### **PHASE 2: Frontend Fixes**
+3. ✅ Fix 3: tsconfig.app.json Include-Pfade
+4. ✅ Fix 4: CoinSelector WebSocket URL
+5. ✅ Fix 5: GlobalNav Z-Index
+
+### **PHASE 3: Verifikation**
+6. ✅ Backend Start Test
+7. ✅ Router Endpoint Test (CURL)
+8. ✅ TypeScript Build Test
+9. ✅ Frontend + WS Test (Browser)
+
+---
+
+## 🎯 KRITISCHE ERKENNTNISSE
+
+### ✅ **Was funktioniert:**
+- ✅ Backend Imports sind korrekt (`SYMBOL_REGISTRY` + `Market`)
+- ✅ Backend läuft (Server antwortet auf Port 8100)
+- ✅ Import-Pfade verifiziert
+- ✅ `_mapper.initialize()` wird aufgerufen (Zeile 483)
+- ✅ Router ist registriert (aber unter falschem Pfad!)
+
+### ❌ **Was NICHT funktioniert:**
+- ❌ Router `/api/user/settings/coins` → 404
+- ✅ Router `/api/api/user/settings/coins` → 200 (BEWEIS!)
+
+### 🔴 **ROOT CAUSE IDENTIFIZIERT:**
+
+**Doppelter `/api` Prefix:**
+1. `ro_user_settings.py` definiert: `prefix="/api/user/settings"`
+2. `router_registry.py` fügt hinzu: `"/api"`
+3. Resultat: `/api` + `/api/user/settings` = `/api/api/user/settings` ❌
+
+**Vergleich mit funktionierendem Router:**
+- `ro_settings.py`: `prefix="/settings"` (KEIN /api!)
+- `router_registry.py`: `"/api"`
+- Resultat: `/api` + `/settings` = `/api/settings` ✅
+
+### 🔧 **LÖSUNG (Option A - EMPFOHLEN):**
+
+**Datei:** `backend/api/routers/ro_user_settings.py` (Zeile 18)
+
+```python
+# ❌ AKTUELL:
+user_settings_router = APIRouter(
+    prefix="/api/user/settings",  # ← Doppeltes /api!
+    tags=["user-settings"],
+)
+
+# ✅ FIX:
+user_settings_router = APIRouter(
+    prefix="/user/settings",  # ← Kein /api Prefix!
+    tags=["user-settings"],
+)
+```
+
+**Warum Option A:**
+- Konsistent mit anderen Routern (`ro_settings`, `ro_whales`, etc.)
+- Single Source of Truth: EndpointMapper kontrolliert `/api` Prefix
+- Keine Änderung an `router_registry.py` nötig
+
+### 🔧 **ALTERNATIVE (Option B):**
+
+**Datei:** `backend/core/router_registry.py` (Zeile 73-81)
+
+```python
+# ❌ AKTUELL:
+.add_router(
+    "backend.api.routers.ro_user_settings",
+    "user_settings_router",
+    "/api",  # ← Doppeltes /api!
+    ["user-settings"]
+)
+
+# ✅ FIX:
+.add_router(
+    "backend.api.routers.ro_user_settings",
+    "user_settings_router",
+    None,  # ← Kein zusätzlicher Prefix
+    ["user-settings"]
+)
+```
+
+**Warum NICHT Option B:**
+- Inkonsistent mit anderen Routern
+- Jeder Router müsste eigenes `/api` Prefix haben
+- Verletzt Single Source of Truth Prinzip
+
+---
+
+## 📊 ZUSAMMENFASSUNG
+
+**Fixes gesamt:** 5  
+**Kritisch:** 2 (Backend Import + Router Registration)  
+**Hoch:** 1 (TypeScript Include)  
+**Mittel:** 1 (WebSocket URL)  
+**Niedrig:** 1 (Z-Index)
+
+**Tests durchgeführt:** 5/5 ✅  
+**Tests bestanden:** 4/5  
+**Blockierendes Problem:** Router 404 (Prefix-Konflikt) - **ROOT CAUSE IDENTIFIZIERT**
+
+### **Beweis-Kette:**
+1. ✅ `/api/user/settings/coins` → 404
+2. ✅ `/api/api/user/settings/coins` → 200 (BEWEIS für doppeltes /api!)
+3. ✅ FastAPI Routes Dump zeigt: `/api/api/user/settings/*`
+4. ✅ `_mapper.initialize()` wird aufgerufen
+5. ✅ Vergleich mit `ro_settings` zeigt korrektes Pattern
+
+### **Nächste Aktion:**
+1. **Option A implementieren** (Router-Prefix in `ro_user_settings.py` ändern)
+2. Backend neu starten
+3. CURL Tests wiederholen:
+   - `/api/user/settings/coins` → Erwartung: 200 ✅
+   - `/api/api/user/settings/coins` → Erwartung: 404 ✅
+
+---
+
+## 🚀 IMPLEMENTIERUNGS-CHECKLISTE
+
+### **PHASE 1: Backend Fixes** 🔴
+- [ ] **Fix 1:** `backend/websocket/ws_router.py` (Zeile 85-110)
+  - Import: `unified_symbol_registry` + `Market`
+  - `await SYMBOL_REGISTRY.catalog()`
+  - Tolerantes Field-Mapping
+  
+- [ ] **Fix 2:** `backend/api/routers/ro_user_settings.py` (Zeile 18)
+  - Prefix: `/api/user/settings` → `/user/settings`
+
+### **PHASE 2: Frontend Fixes** 🟡
+- [ ] **Fix 3:** `frontend/tsconfig.app.json` (Zeile 31)
+  - Include: `["src"]` (delete/ entfernen)
+  
+- [ ] **Fix 4:** `frontend/src/pages/TradingPage/components/CoinSelector.tsx` (Zeile 62-73)
+  - WS URL: `window.location.host` statt hardcoded Port
+  
+- [ ] **Fix 5:** `frontend/src/shared/layout/GlobalNav.tsx` (Zeile 117)
+  - Z-Index: `z-40` → `z-30`
+
+### **PHASE 3: Verifikation** 🟢
+- [ ] Backend neu starten
+- [ ] CURL Test: `/api/user/settings/coins` → 200
+- [ ] CURL Test: `/api/api/user/settings/coins` → 404
+- [ ] TypeScript Build: `npm run build`
+- [ ] Frontend Start: `npm run dev`
+- [ ] Browser Test: Dropdowns + WebSocket + Coins
+
+---
+
+## 📝 FINALE NOTIZEN
+
+**Wasserdichte Diagnose abgeschlossen:**
+- Alle 5 Tests durchgeführt
+- Root Cause identifiziert (doppelter `/api` Prefix)
+- Lösung verifiziert (Vergleich mit funktionierenden Routern)
+- Implementierungs-Checkliste erstellt
+
+**Bereit für Implementation!** 🎯
+</file>
+
 <file path="FRONTEND_ARCHITEKTUR_KOMPLETT.md">
 # 🏗️ Frontend Architektur - Komplettes System-Handbuch
 
@@ -154142,354 +155358,6 @@ async def get_candle_resolutions():
         "resolutions": resolutions,
         "count": len(resolutions)
     }
-</file>
-
-<file path="backend/api/routers/ro_user_settings.py">
-# backend/api/routers/ro_user_settings.py
-"""
-ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
-
-Aufgaben:
-- Vollständiges User-Settings-JSON lesen/schreiben
-- Partielle Updates (PATCH)
-- Optionale Teilbereiche: z. B. watchlists, layout, indicators, preferences
-
-Abhängigkeiten:
-- backend.services.config_manager.get_user_settings_service
-"""
-
-import logging
-import os
-from typing import Any, Dict, Optional
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
-from pydantic import BaseModel, Field
-
-from backend.services.domain.config_manager import get_user_settings_service
-
-logger = logging.getLogger("ro-user-settings")
-
-user_settings_router = APIRouter(
-    prefix="/api/user/settings",
-    tags=["user-settings"],
-)
-
-# ============================================================
-# POLICY: ALWAYS-LIVE COINS (server-side, no hardcoding)
-# ============================================================
-
-def _env_csv(name: str, default: str = "") -> list[str]:
-    raw = (os.getenv(name) or default).strip()
-    if not raw:
-        return []
-    return [x.strip() for x in raw.split(",") if x.strip()]
-
-# Default: BTCUSDT always live unless explicitly overridden by env
-_ALWAYS_LIVE_SYMBOLS = {s.upper() for s in _env_csv("ALWAYS_LIVE_SYMBOLS", "BTCUSDT")}
-_ALWAYS_LIVE_EXCHANGES = {e.lower() for e in _env_csv("ALWAYS_LIVE_EXCHANGES", "*")}
-_ALWAYS_LIVE_MARKETS = {m.lower() for m in _env_csv("ALWAYS_LIVE_MARKETS", "*")}
-
-def _norm_exchange(x: str) -> str:
-    return (x or "").strip().lower()
-
-def _norm_symbol(x: str) -> str:
-    return (x or "").strip().upper()
-
-def _norm_market(x: str) -> str:
-    m = (x or "spot").strip().lower()
-    # accept frontend variants too
-    if m == "usdt-m":
-        return "usdtm"
-    if m == "usdc-m":
-        return "usdcm"
-    if m == "coin-m":
-        return "coinm"
-    return m
-
-def _should_force_live(exchange: str, symbol: str, market: str) -> bool:
-    if symbol not in _ALWAYS_LIVE_SYMBOLS:
-        return False
-    ex_ok = ("*" in _ALWAYS_LIVE_EXCHANGES) or (exchange in _ALWAYS_LIVE_EXCHANGES)
-    mk_ok = ("*" in _ALWAYS_LIVE_MARKETS) or (market in _ALWAYS_LIVE_MARKETS)
-    return ex_ok and mk_ok
-
-def _canonicalize_and_apply_policy(coins: list[dict]) -> tuple[list[dict], bool]:
-    """Returns (canonical_coins, changed)"""
-    changed = False
-    dedup: dict[tuple[str, str, str], dict] = {}
-
-    for c in coins or []:
-        ex = _norm_exchange(c.get("exchange"))
-        sym = _norm_symbol(c.get("symbol"))
-        mk = _norm_market(c.get("market"))
-
-        if not ex or not sym:
-            # drop invalid entries
-            changed = True
-            continue
-
-        cc = dict(c)
-        cc["exchange"] = ex
-        cc["symbol"] = sym
-        cc["market"] = mk
-
-        # booleans -> bool
-        cc["store_live"] = bool(cc.get("store_live", False))
-        cc["load_history"] = bool(cc.get("load_history", False))
-
-        # enforce policy
-        if _should_force_live(ex, sym, mk) and cc["store_live"] is not True:
-            cc["store_live"] = True
-            changed = True
-
-        key = (ex, sym, mk)
-        if key in dedup:
-            changed = True
-        dedup[key] = cc
-
-    canonical = list(dedup.values())
-    return canonical, changed
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class UserSettingsPayload(BaseModel):
-    """
-    Generisches Container-Modell für User-Settings.
-    Inhalt ist frei strukturierbar; wird 1:1 im Store abgelegt.
-    """
-    data: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Beliebiges Settings-Objekt (JSON).",
-    )
-
-
-class UserSettingsPatch(BaseModel):
-    """
-    PATCH-Modell: partieller Update-Body (wird deep-merged).
-    """
-    patch: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Teil-Settings, die in bestehende Settings gemerged werden.",
-    )
-
-
-# ====================================
-# Helpers
-# ====================================
-
-def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
-    if not x_client_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing X-Client-ID header",
-        )
-    return x_client_id
-
-
-async def _load_user_settings(user_id: str) -> Dict[str, Any]:
-    svc = get_user_settings_service()
-    try:
-        settings = await svc.get(user_id)
-        if not isinstance(settings, dict):
-            return {}
-        return settings
-    except Exception as e:
-        logger.exception(f"Failed to load settings user={user_id}: {e}")
-        return {}
-
-
-async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
-    svc = get_user_settings_service()
-    try:
-        await svc.set(user_id, settings)
-    except Exception as e:
-        logger.exception(f"Failed to save settings user={user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save settings")
-
-
-def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base)
-    for k, v in (patch or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
-# ============================================================
-# Coin Settings Model
-# ============================================================
-
-class CoinSetting(BaseModel):
-    symbol: str
-    exchange: str
-    market: str
-    store_live: bool = False
-    load_history: bool = False
-    history_until: str = ""
-    favorite: bool = False
-    chart_resolution: str = "1m"
-    db_resolutions: list[str] = Field(default_factory=list)
-
-
-@user_settings_router.get("/coins", response_model=list[CoinSetting])
-async def get_coin_settings(
-    exchange: Optional[str] = Query(None, description="Filter by exchange"),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Liefert die Coin-Settings für einen User, optional gefiltert nach Exchange.
-
-    Server-side Policy:
-    - ALWAYS_LIVE_SYMBOLS (env) wird IMMER erzwungen (z. B. BTCUSDT).
-    - Normalisiert exchange/symbol/market und dedupliziert (exchange,symbol,market).
-    """
-    settings = await _load_user_settings(user_id)
-    raw_coins = settings.get("coins", [])
-
-    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
-
-    # optional filter (nach Canonicalization!)
-    if exchange:
-        ex = _norm_exchange(exchange)
-        filtered = [c for c in canonical if c.get("exchange") == ex]
-    else:
-        filtered = canonical
-
-    # self-heal persisted settings if policy/normalization changed
-    if changed:
-        settings["coins"] = canonical
-        await _save_user_settings(user_id, settings)
-
-    logger.info(
-        f"GET /api/user/settings/coins user={user_id} exchange={exchange} count={len(filtered)}"
-    )
-    return filtered
-
-
-@user_settings_router.post("/coins", response_model=list[CoinSetting])
-async def save_coin_settings(
-    coins: list[CoinSetting] = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Speichert die Coin-Settings für einen User.
-
-    WICHTIG:
-    - Payload wird kanonisiert + dedupliziert.
-    - ALWAYS_LIVE_SYMBOLS (env) wird serverseitig erzwungen.
-    - Rückgabe ist der kanonische, persistierte Zustand.
-    """
-    settings = await _load_user_settings(user_id)
-
-    incoming = [c.model_dump() for c in (coins or [])]
-    canonical, _ = _canonicalize_and_apply_policy(incoming)
-
-    settings["coins"] = canonical
-    await _save_user_settings(user_id, settings)
-
-    logger.info(f"POST /api/user/settings/coins user={user_id} count={len(canonical)}")
-    return [CoinSetting(**c) for c in canonical]
-
-
-# ============================================================
-# Generic User Settings Endpoints
-# ============================================================
-
-@user_settings_router.get("", response_model=Dict[str, Any])
-async def get_user_settings(
-    user_id: str = Depends(get_client_id),
-):
-    settings = await _load_user_settings(user_id)
-
-    # Optional: coin self-heal auch hier (damit jede GET-Route konsistent ist)
-    raw_coins = settings.get("coins", [])
-    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
-    if changed:
-        settings["coins"] = canonical
-        await _save_user_settings(user_id, settings)
-
-    return settings
-
-
-@user_settings_router.put("", response_model=Dict[str, Any])
-async def put_user_settings(
-    payload: UserSettingsPayload,
-    user_id: str = Depends(get_client_id),
-):
-    settings = payload.data or {}
-
-    # enforce coin policy if coins are present
-    if isinstance(settings.get("coins"), list):
-        canonical, _ = _canonicalize_and_apply_policy(settings["coins"])
-        settings["coins"] = canonical
-
-    await _save_user_settings(user_id, settings)
-    return settings
-
-
-@user_settings_router.patch("", response_model=Dict[str, Any])
-async def patch_user_settings(
-    patch: UserSettingsPatch,
-    user_id: str = Depends(get_client_id),
-):
-    settings = await _load_user_settings(user_id)
-    merged = _deep_merge(settings, patch.patch or {})
-
-    # enforce coin policy if coins are present
-    if isinstance(merged.get("coins"), list):
-        canonical, _ = _canonicalize_and_apply_policy(merged["coins"])
-        merged["coins"] = canonical
-
-    await _save_user_settings(user_id, merged)
-    return merged
-
-
-@user_settings_router.delete("", response_model=Dict[str, str])
-async def delete_user_settings(
-    user_id: str = Depends(get_client_id),
-):
-    await _save_user_settings(user_id, {})
-    return {"status": "deleted"}
-
-
-# ============================================================
-# BEISPIEL-SPEZIAL-ENDEPOINTS (OPTIONAL)
-# ============================================================
-
-@user_settings_router.get("/watchlists", response_model=UserSettingsPayload)
-async def get_watchlists(
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Liefert nur den Bereich 'watchlists' aus den Settings.
-    """
-    settings = await _load_user_settings(user_id)
-    wl = settings.get("watchlists") or []
-    logger.debug(f"GET /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
-
-
-@user_settings_router.put("/watchlists", response_model=UserSettingsPayload)
-async def put_watchlists(
-    payload: UserSettingsPayload = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Ersetzt den Bereich 'watchlists' in den Settings.
-    Erwartet im Body: { "data": { "watchlists": [...] } }
-    """
-    settings = await _load_user_settings(user_id)
-    wl = payload.data.get("watchlists") or []
-    settings["watchlists"] = wl
-    await _save_user_settings(user_id, settings)
-
-    logger.info(f"PUT /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
 </file>
 
 <file path="backend/core/router_registry.py">
@@ -156060,175 +156928,38 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-import { useState } from "react";
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useTradingContext } from "../../contexts/TradingContext";
-import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
-import ThemeToggle from "../ui/theme-toggle";
+<file path="frontend/tsconfig.app.json">
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
 
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
-  
-  const [activeTab, setActiveTab] = useState(() => {
-    // Set active tab based on current route
-    const path = location.pathname;
-    if (path === '/trading' || path === '/') return "Market";
-    if (path === '/quantum') return "Quantum";
-    if (path === '/database') return "Database";
-    if (path === '/whales') return "Whales";
-    if (path === '/news') return "News";
-    if (path === '/bot') return "Trading Bot";
-    if (path === '/api') return "API";
-    if (path === '/ml') return "ML";
-    if (path === '/settings') return "Settings";
-    return "Market";
-  });
-  
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-  
-  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
-  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
 
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitAny": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
 
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else if (itemName === "Settings") {
-      setIsDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    } else {
-      setActiveTab(itemName);
-      setIsDropdownOpen(false);
-      if (itemPath) navigate(itemPath);
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
     }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    // ✅ FIX: Exchange-Auswahl zu Context propagieren
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-card rounded-lg shadow-xl border border-border">
-                {MARKET_OPTIONS.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-muted cursor-pointer border-b border-border last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-foreground text-background rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-foreground text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-          >
-            {exchangeDisplayName} ▽
-          </button>
-          
-          {/* Exchange Dropdown Menu */}
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {EXCHANGES.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
+  },
+  "include": ["src"]
+}
 </file>
 
 <file path="readme/000_backfill_loop.md">
@@ -157671,706 +158402,6 @@ wscat -c ws://localhost:8100/ws/binance/BTCUSDT/spot
 ---
 
 **Ende des Dokuments**
-</file>
-
-<file path="readme/000_system_start_1.md">
-# INTELLIGENT SYSTEM STARTUP - EVENT-DRIVEN READINESS
-
-**Problem:** Hardcoded Timeouts & serielles Warten im start-system.sh  
-**Lösung:** Event-basiertes Readiness System nutzt bestehendes Health System für intelligente, parallele Startup-Validierung
-
----
-
-## 🚨 IMPLEMENTIERUNGS-REGELN
-
-### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
-
-#### 🚫 VERBOTEN:
-
-1. **NIEMALS HARDCODED**
-   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
-   - ❌ KEINE hardcoded Symbols, URLs, Parameter
-   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
-
-2. **NIEMALS MOCK DATEN**
-   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
-   - ❌ KEINE Test-Stubs in Production-Code
-   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
-
-3. **NIEMALS LEGACY CODE**
-   - ❌ KEINE veralteten Patterns, deprecated Funktionen
-   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
-   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
-
-4. **NIEMALS EXCHANGE-SPEZIFISCH**
-   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
-   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
-   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
-
-#### ✅ PFLICHT:
-
-1. **IMMER GENERISCH**
-   - Alle Funktionen müssen für ALLE Exchanges funktionieren
-   - Parameter statt hardcoding
-
-2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
-
-3. **IMMER DOKUMENTATION LESEN**
-
----
-
-## 📋 IMPLEMENTATION TASKS
-
-### **Phase 1: Backend Ready Signal**
-- [ ] **TASK 1.1:** Implementiere `_write_ready_signal()` Funktion in `backend/core/main.py`
-- [ ] **TASK 1.2:** Integriere Ready Signal in `@app.on_event("startup")`
-- [ ] **TASK 1.3:** Test: Prüfe dass `/tmp/backend_ready` File erstellt wird
-- [ ] **TASK 1.4:** Test: Validiere JSON Format des Ready Signals
-
-### **Phase 2: Smart Wait Functions (Bash)**
-- [ ] **TASK 2.1:** Implementiere `wait_for_service_smart()` mit Exponential Backoff
-- [ ] **TASK 2.2:** Implementiere `wait_for_all_services_parallel()` für parallele Checks
-- [ ] **TASK 2.3:** Implementiere `wait_for_backend_ready()` für Event-driven Check
-- [ ] **TASK 2.4:** Test: Validiere Exponential Backoff Timing
-
-### **Phase 3: Update wait_for_backend Function**
-- [ ] **TASK 3.1:** Ersetze alte `wait_for_backend()` mit neuer Implementierung
-- [ ] **TASK 3.2:** Integriere parallel service checks
-- [ ] **TASK 3.3:** Integriere event-driven ready check
-- [ ] **TASK 3.4:** Implementiere non-blocking exchange warm-up
-
-### **Phase 4: Konfigurierbare Env Vars**
-- [ ] **TASK 4.1:** Füge konfigurierbare Timeouts hinzu (MAX_RETRIES, INITIAL_DELAY, etc.)
-- [ ] **TASK 4.2:** Füge Feature Flags hinzu (USE_PARALLEL_CHECKS, USE_EVENT_DRIVEN_READY, etc.)
-- [ ] **TASK 4.3:** Implementiere Verbose Logging (STARTUP_VERBOSE)
-- [ ] **TASK 4.4:** Dokumentiere alle Env Vars
-
-### **Phase 5: Testing & Validation**
-- [ ] **TASK 5.1:** Test: Fast Startup (System ready in 5-15s)
-- [ ] **TASK 5.2:** Test: Slow Startup mit artificial delay
-- [ ] **TASK 5.3:** Test: Degraded Mode (ein Service down)
-- [ ] **TASK 5.4:** Test: Feature Flags (disable new features)
-- [ ] **TASK 5.5:** Validiere Success Metrics (Startup < 20s, Parallel Checks, etc.)
-
----
-
-## 🎯 PROBLEM: PRIMITIVE STARTUP LOGIC
-
-### **Aktuelles System (start-system.sh):**
-
-```bash
-# ❌ HARDCODED WARTEN - Zeile ~180
-wait_for_backend() {
-  for i in {1..60}; do
-    curl -s http://localhost:8100/health && exit 0
-    sleep 1
-  done
-}
-
-# ❌ SERIELL - Einer nach dem anderen
-wait_for_service "Redis" localhost 6380      # Wartet bis timeout
-wait_for_service "ClickHouse" localhost 8124 # Dann dieser
-wait_for_service "Backend" localhost 8100    # Dann dieser
-
-# ❌ DUMB POLLING - Keine Intelligenz
-# Wartet immer 60s, auch wenn Backend nach 5s bereit ist
-```
-
-**Probleme:**
-1. ❌ **Feste Timeouts** - 60s, 30s, 15s hardcoded
-2. ❌ **Serielles Warten** - Verschwendet Zeit
-3. ❌ **Kein Event-System** - Dummes Polling
-4. ❌ **Keine Retry-Logic** - Keine Exponential Backoff
-5. ❌ **False Positives** - "Failed" obwohl Backend healthy ist
-
----
-
-## ✅ LÖSUNG: NUTZE BESTEHENDES HEALTH SYSTEM
-
-### **Was wir BEREITS haben:**
-
-```python
-# backend/health/health_registry.py
-class HealthRegistry:
-    def is_system_ready_resilient(self) -> bool:
-        """Resilient readiness - system ready if ANY exchanges work"""
-        # Bereits implementiert!
-
-# backend/health/health_router.py
-@router.get("/health/ready-resilient")
-async def readiness_check_resilient():
-    """Kubernetes-style readiness - NUTZT HEALTH SYSTEM"""
-    ready, message = health_registry.get_system_readiness_resilient()
-    return {
-        "ready": ready,
-        "message": message,
-        # ... component details ...
-    }
-```
-
-**Das Health System macht bereits:**
-- ✅ **Component Tracking** (via HealthLane)
-- ✅ **Background Monitoring** (via HealthChecker)
-- ✅ **Graceful Degradation** (resilient mode)
-- ✅ **Detailed Status** (per-component health)
-
-**Wir müssen es nur NUTZEN statt ignorieren!**
-
----
-
-## 🏗️ ARCHITEKTUR: EVENT-DRIVEN READINESS
-
-### **FLOW:**
-
-```
-1. Docker Compose startet Container
-   ↓
-2. Backend (main.py) startup event läuft:
-   - Initialisiert Redis
-   - Initialisiert ClickHouse  
-   - Startet WebSockets
-   - Startet Collectors
-   - Registriert Health Components
-   ↓
-3. Backend schreibt Ready Signal
-   - Option A: /tmp/backend_ready file
-   - Option B: Redis PubSub event
-   - Option C: Health endpoint = 200
-   ↓
-4. start-system.sh wartet intelligent:
-   - Parallel: Alle Services gleichzeitig prüfen
-   - Exponential Backoff: 1s, 2s, 4s, 8s, 16s
-   - Event-driven: Nutzt /health/ready-resilient
-   ↓
-5. System ready in 5-15s (statt hardcoded 60s!)
-```
-
----
-
-## 📋 IMPLEMENTATION DETAILS
-
-### **TASK 1: Backend Ready Signal (Python)**
-
-**File:** `backend/core/main.py`
-
-**Änderung in `@app.on_event("startup")`:**
-
-```python
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-    
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-    
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-    
-    # ✅ EXISTING: ExchangeFactory, WebSockets, Collectors...
-    # (behalte bestehenden Code)
-    
-    # ✅ NEW: Write Ready Signal
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🚀 WS_AI Backend fully started")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-```
-
-**Warum 3 Methoden?**
-- **File:** Schnell, einfach, funktioniert immer
-- **Redis:** Event-driven, elegant, wenn verfügbar
-- **Logs:** Debugging & Observability
-
----
-
-### **TASK 2: Smart Wait Functions (Bash)**
-
-**File:** `start-system.sh`
-
-**Neue Functions hinzufügen (vor wait_for_backend):**
-
-```bash
-# =============================================================================
-# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
-# =============================================================================
-
-# ✅ Konfigurierbare Timeouts (via env vars)
-MAX_RETRIES="${MAX_RETRIES:-5}"
-INITIAL_DELAY="${INITIAL_DELAY:-1}"
-BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"
-SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"
-
-# ✅ Exponential Backoff Retry Logic
-wait_for_service_smart() {
-    local service_name=$1
-    local check_cmd=$2
-    local max_retries=${3:-$MAX_RETRIES}
-    local initial_delay=${4:-$INITIAL_DELAY}
-    
-    local retry=0
-    local delay=$initial_delay
-    
-    echo "⏳ Waiting for $service_name..."
-    
-    while (( retry < max_retries )); do
-        if eval "$check_cmd" >/dev/null 2>&1; then
-            echo "✅ $service_name ready after $retry retries"
-            return 0
-        fi
-        
-        if (( retry < max_retries - 1 )); then
-            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
-            sleep "$delay"
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            delay=$((delay * 2))
-        fi
-        
-        retry=$((retry + 1))
-    done
-    
-    echo "❌ $service_name failed after $max_retries retries"
-    return 1
-}
-
-# ✅ Parallele Service Checks
-wait_for_all_services_parallel() {
-    local services=("redis:6380" "clickhouse:8124" "backend:8100")
-    local pids=()
-    local temp_dir=$(mktemp -d)
-    
-    echo "🔄 Starting parallel service checks..."
-    
-    # Starte alle Checks parallel
-    for service in "${services[@]}"; do
-        IFS=':' read -r name port <<< "$service"
-        (
-            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
-                echo "0" > "$temp_dir/check_${name}.status"
-            else
-                echo "1" > "$temp_dir/check_${name}.status"
-            fi
-        ) &
-        pids+=($!)
-    done
-    
-    # Warte auf alle (mit Gesamttimeout)
-    local timeout=$SERVICE_CHECK_TIMEOUT
-    local elapsed=0
-    local all_done=false
-    
-    while (( elapsed < timeout )); do
-        all_done=true
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-                break
-            fi
-        done
-        
-        [[ "$all_done" == "true" ]] && break
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    # Kill stragglers
-    for pid in "${pids[@]}"; do
-        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
-    done
-    
-    # Prüfe Ergebnisse
-    local failed=0
-    for service in "${services[@]}"; do
-        IFS=':' read -r name _ <<< "$service"
-        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
-        if [[ "$status" != "0" ]]; then
-            echo "❌ $name check failed"
-            failed=$((failed + 1))
-        else
-            echo "✅ $name check passed"
-        fi
-    done
-    
-    rm -rf "$temp_dir"
-    
-    return $failed
-}
-
-# ✅ Event-driven Backend Ready Check
-wait_for_backend_ready() {
-    local ready_file="/tmp/backend_ready"
-    local timeout=$BACKEND_READY_TIMEOUT
-    local elapsed=0
-    
-    echo "⏳ Waiting for backend ready signal..."
-    
-    # Method 1: File-based (primary)
-    while (( elapsed < timeout )); do
-        if [[ -f "$ready_file" ]]; then
-            local ready_status=$(jq -r '.ready // false' "$ready_file" 2>/dev/null || echo "false")
-            
-            if [[ "$ready_status" == "true" ]]; then
-                echo "✅ Backend ready signal received (file)"
-                cat "$ready_file" | jq '.' 2>/dev/null || cat "$ready_file"
-                return 0
-            else
-                echo "⚠️ Backend started with errors - check $ready_file"
-                return 1
-            fi
-        fi
-        
-        # Fallback: Check health endpoint every 5s
-        if (( elapsed % 5 == 0 )) && (( elapsed > 0 )); then
-            if curl -sf --max-time 2 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-                echo "✅ Backend ready (health endpoint)"
-                return 0
-            fi
-        fi
-        
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    echo "❌ Backend ready timeout after ${timeout}s"
-    return 1
-}
-```
-
----
-
-### **TASK 3: Update wait_for_backend Function**
-
-**File:** `start-system.sh` (ersetze bestehende wait_for_backend)
-
-```bash
-wait_for_backend() {
-  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
-  if wait_for_all_services_parallel; then
-    echo "✅ All services responding"
-  else
-    echo "⚠️ Some services failed - continuing with resilient mode"
-  fi
-  
-  echo ""
-  
-  # ✅ STEP 2: Event-driven backend ready check
-  if wait_for_backend_ready; then
-    echo "✅ Backend fully initialized"
-  else
-    echo "⚠️ Backend timeout - checking resilient health"
-    
-    # Fallback: Check resilient health endpoint
-    if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-      echo "✅ Backend operational in degraded mode"
-    else
-      echo "❌ Backend not responding"
-      return 1
-    fi
-  fi
-  
-  echo ""
-  echo "🚀 Backend startup complete"
-  echo ""
-  
-  # ✅ STEP 3: Warm-up exchanges (non-blocking)
-  echo "🔄 Warming up exchanges (background)..."
-  for exchange in "${EXCHANGES[@]}"; do
-    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
-  done
-  
-  # Give exchanges a moment to respond, but don't block
-  sleep 3
-  
-  return 0
-}
-```
-
----
-
-### **TASK 4: Konfigurierbare Env Vars**
-
-**File:** `start-system.sh` (am Anfang bei Konfiguration hinzufügen)
-
-```bash
-# =============================================================================
-# INTELLIGENT STARTUP CONFIGURATION
-# =============================================================================
-
-# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
-export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
-export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
-export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
-export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
-
-# ✅ Feature Flags (enable/disable new behavior)
-export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
-export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
-export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
-
-# ✅ Observability
-export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
-
-# Log configuration
-if [[ "$STARTUP_VERBOSE" == "1" ]]; then
-  echo "🔧 Startup Configuration:"
-  echo "   MAX_RETRIES=$MAX_RETRIES"
-  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
-  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
-  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
-  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
-  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
-  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
-  echo ""
-fi
-```
-
----
-
-## 🧪 TESTING & VALIDATION
-
-### **TEST 1: Fast Startup**
-
-```bash
-# Clean state
-./stop-system.sh
-rm -f /tmp/backend_ready
-
-# Start with defaults
-./start-system.sh
-
-# Expected: System ready in 5-15s (nicht 60s!)
-# Logs should show:
-# - ✅ All services responding (parallel checks)
-# - ✅ Backend ready signal received
-# - ✅ Backend fully initialized
-```
-
-### **TEST 2: Slow Startup (simulate delay)**
-
-```bash
-# Add artificial delay to backend
-export BACKEND_READY_TIMEOUT=120
-
-./start-system.sh
-
-# Expected: Exponential backoff visible in logs
-# - Retry 1/5 in 1s
-# - Retry 2/5 in 2s
-# - Retry 3/5 in 4s
-# ...
-```
-
-### **TEST 3: Degraded Mode**
-
-```bash
-# Simulate one service failure (e.g. Redis down)
-docker stop 0_ws_ai-redis-1
-
-./start-system.sh
-
-# Expected: 
-# - ⚠️ Redis check failed
-# - ✅ Backend operational in degraded mode
-# - System continues (resilient!)
-```
-
-### **TEST 4: Feature Flags**
-
-```bash
-# Disable new features, use old behavior
-export USE_PARALLEL_CHECKS=0
-export USE_EVENT_DRIVEN_READY=0
-
-./start-system.sh
-
-# Expected: Falls back to serial checks and polling
-```
-
----
-
-## 📊 SUCCESS METRICS
-
-### **Performance:**
-- ✅ **Startup Time:** 5-15s (statt 60s hardcoded)
-- ✅ **Parallel Checks:** 3 services gleichzeitig (statt seriell)
-- ✅ **Event-Driven:** Reagiert sofort wenn ready (nicht nach timeout)
-
-### **Reliability:**
-- ✅ **Retry Logic:** Exponential backoff (1s → 16s)
-- ✅ **Resilient Mode:** System startet auch bei Teil-Failures
-- ✅ **Multiple Methods:** File + Redis PubSub + Health endpoint
-
-### **Observability:**
-- ✅ **Konfigurierbar:** Alle Timeouts via env vars
-- ✅ **Feature Flags:** Neue Features an/aus schaltbar
-- ✅ **Verbose Mode:** Detailliertes Logging wenn gewünscht
-
----
-
-## 🚀 DEPLOYMENT STRATEGY
-
-### **Phase 1: Backend Signal (Low Risk)**
-- Implementiere `_write_ready_signal()` in main.py
-- Backend schreibt Signal, aber start-system.sh ignoriert es noch
-- Test: Prüfe dass /tmp/backend_ready erstellt wird
-
-### **Phase 2: Parallel Checks (Medium Risk)**  
-- Implementiere parallel service checks
-- Feature Flag: `USE_PARALLEL_CHECKS=1` (default)
-- Rollback: `USE_PARALLEL_CHECKS=0` falls Probleme
-
-### **Phase 3: Event-Driven (Medium Risk)**
-- Implementiere `wait_for_backend_ready()`
-- Feature Flag: `USE_EVENT_DRIVEN_READY=1` (default)
-- Fallback zu old behavior wenn Signal fehlt
-
-### **Phase 4: Full Rollout (Low Risk)**
-- Alle Features enabled
-- Monitor startup times
-- Fine-tune timeouts basierend auf Metrics
-
----
-
-## 🎯 BENEFITS
-
-### **Entwickler:**
-- **Schneller Local Development:** 5-15s Startup (nicht 60s)
-- **Besseres Debugging:** Sieht genau wo es hängt
-- **Flexibler:** Kann Timeouts anpassen per env var
-
-### **Operations:**
-- **Production-Ready:** Kubernetes-style Readiness
-- **Resilient:** Partial failures ok
-- **Observable:** Klare Status & Logs
-
-### **Business:**
-- **Faster Deployments:** Schnellere Iteration
-- **Higher Uptime:** Graceful degradation
-- **Better UX:** System reagiert schneller
-
----
-
-## 🔄 FUTURE ENHANCEMENTS
-
-### **Optional (Post-MVP):**
-
-1. **Redis PubSub Subscriber**
-   ```bash
-   # start-system.sh subscribes to Redis channel
-   redis-cli -p 6380 subscribe system:backend:ready
-   ```
-
-2. **Prometheus Metrics**
-   ```python
-   startup_duration_seconds.observe(duration)
-   startup_failures_total.inc()
-   ```
-
-3. **Distributed Tracing**
-   ```python
-   with tracer.start_span("backend.startup"):
-       await initialize_services()
-   ```
-
-4. **Health History**
-   ```python
-   # Track startup times over time
-   await unified_rs_service.zadd(
-       "startup:history",
-       {datetime.now().isoformat(): duration}
-   )
-   ```
-
----
-
-## 🏆 SUMMARY
-
-**Was wir ändern:**
-- ✅ Backend signalisiert Readiness (Python)
-- ✅ Smart wait functions (Bash)
-- ✅ Parallele Checks (Bash)
-- ✅ Event-driven statt Polling (Bash)
-- ✅ Konfigurierbare Timeouts (Env vars)
-
-**Was wir NICHT ändern:**
-- ❌ Health System (perfekt wie es ist!)
-- ❌ Docker Compose (funktioniert)
-- ❌ Collectors & WebSockets (robust)
-
-**Result:**
-Ein **intelligentes, event-basiertes Startup System** das das bestehende Health System **nutzt** statt zu ignorieren!
-
-**Startup Zeit:** 5-15s statt hardcoded 60s  
-**Resilience:** Partial failures ok  
-**Observability:** Klare Status & Metrics  
-**Maintainability:** Konfigurierbar & erweiterbar  
-
----
-
-## 📚 REFERENCES
-
-- **Health System:** `readme/000_healthy.md`
-- **Graceful Startup:** `readme/000_graceful_start_system_build.md`
-- **Market Build:** `readme/000_market_build.md`
-- **Services:** `readme/000_services.md`
 </file>
 
 <file path="readme/FRONTEND_API_KONFORMITAET_IMPLEMENTIERUNG.md">
@@ -160165,6 +160196,354 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
+<file path="backend/api/routers/ro_user_settings.py">
+# backend/api/routers/ro_user_settings.py
+"""
+ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
+
+Aufgaben:
+- Vollständiges User-Settings-JSON lesen/schreiben
+- Partielle Updates (PATCH)
+- Optionale Teilbereiche: z. B. watchlists, layout, indicators, preferences
+
+Abhängigkeiten:
+- backend.services.config_manager.get_user_settings_service
+"""
+
+import logging
+import os
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
+from pydantic import BaseModel, Field
+
+from backend.services.domain.config_manager import get_user_settings_service
+
+logger = logging.getLogger("ro-user-settings")
+
+user_settings_router = APIRouter(
+    prefix="/user/settings",
+    tags=["user-settings"],
+)
+
+# ============================================================
+# POLICY: ALWAYS-LIVE COINS (server-side, no hardcoding)
+# ============================================================
+
+def _env_csv(name: str, default: str = "") -> list[str]:
+    raw = (os.getenv(name) or default).strip()
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+# Default: BTCUSDT always live unless explicitly overridden by env
+_ALWAYS_LIVE_SYMBOLS = {s.upper() for s in _env_csv("ALWAYS_LIVE_SYMBOLS", "BTCUSDT")}
+_ALWAYS_LIVE_EXCHANGES = {e.lower() for e in _env_csv("ALWAYS_LIVE_EXCHANGES", "*")}
+_ALWAYS_LIVE_MARKETS = {m.lower() for m in _env_csv("ALWAYS_LIVE_MARKETS", "*")}
+
+def _norm_exchange(x: str) -> str:
+    return (x or "").strip().lower()
+
+def _norm_symbol(x: str) -> str:
+    return (x or "").strip().upper()
+
+def _norm_market(x: str) -> str:
+    m = (x or "spot").strip().lower()
+    # accept frontend variants too
+    if m == "usdt-m":
+        return "usdtm"
+    if m == "usdc-m":
+        return "usdcm"
+    if m == "coin-m":
+        return "coinm"
+    return m
+
+def _should_force_live(exchange: str, symbol: str, market: str) -> bool:
+    if symbol not in _ALWAYS_LIVE_SYMBOLS:
+        return False
+    ex_ok = ("*" in _ALWAYS_LIVE_EXCHANGES) or (exchange in _ALWAYS_LIVE_EXCHANGES)
+    mk_ok = ("*" in _ALWAYS_LIVE_MARKETS) or (market in _ALWAYS_LIVE_MARKETS)
+    return ex_ok and mk_ok
+
+def _canonicalize_and_apply_policy(coins: list[dict]) -> tuple[list[dict], bool]:
+    """Returns (canonical_coins, changed)"""
+    changed = False
+    dedup: dict[tuple[str, str, str], dict] = {}
+
+    for c in coins or []:
+        ex = _norm_exchange(c.get("exchange"))
+        sym = _norm_symbol(c.get("symbol"))
+        mk = _norm_market(c.get("market"))
+
+        if not ex or not sym:
+            # drop invalid entries
+            changed = True
+            continue
+
+        cc = dict(c)
+        cc["exchange"] = ex
+        cc["symbol"] = sym
+        cc["market"] = mk
+
+        # booleans -> bool
+        cc["store_live"] = bool(cc.get("store_live", False))
+        cc["load_history"] = bool(cc.get("load_history", False))
+
+        # enforce policy
+        if _should_force_live(ex, sym, mk) and cc["store_live"] is not True:
+            cc["store_live"] = True
+            changed = True
+
+        key = (ex, sym, mk)
+        if key in dedup:
+            changed = True
+        dedup[key] = cc
+
+    canonical = list(dedup.values())
+    return canonical, changed
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+class UserSettingsPayload(BaseModel):
+    """
+    Generisches Container-Modell für User-Settings.
+    Inhalt ist frei strukturierbar; wird 1:1 im Store abgelegt.
+    """
+    data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Beliebiges Settings-Objekt (JSON).",
+    )
+
+
+class UserSettingsPatch(BaseModel):
+    """
+    PATCH-Modell: partieller Update-Body (wird deep-merged).
+    """
+    patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Teil-Settings, die in bestehende Settings gemerged werden.",
+    )
+
+
+# ====================================
+# Helpers
+# ====================================
+
+def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
+    if not x_client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing X-Client-ID header",
+        )
+    return x_client_id
+
+
+async def _load_user_settings(user_id: str) -> Dict[str, Any]:
+    svc = get_user_settings_service()
+    try:
+        settings = await svc.get(user_id)
+        if not isinstance(settings, dict):
+            return {}
+        return settings
+    except Exception as e:
+        logger.exception(f"Failed to load settings user={user_id}: {e}")
+        return {}
+
+
+async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
+    svc = get_user_settings_service()
+    try:
+        await svc.set(user_id, settings)
+    except Exception as e:
+        logger.exception(f"Failed to save settings user={user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save settings")
+
+
+def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base)
+    for k, v in (patch or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+# ============================================================
+# Coin Settings Model
+# ============================================================
+
+class CoinSetting(BaseModel):
+    symbol: str
+    exchange: str
+    market: str
+    store_live: bool = False
+    load_history: bool = False
+    history_until: str = ""
+    favorite: bool = False
+    chart_resolution: str = "1m"
+    db_resolutions: list[str] = Field(default_factory=list)
+
+
+@user_settings_router.get("/coins", response_model=list[CoinSetting])
+async def get_coin_settings(
+    exchange: Optional[str] = Query(None, description="Filter by exchange"),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Liefert die Coin-Settings für einen User, optional gefiltert nach Exchange.
+
+    Server-side Policy:
+    - ALWAYS_LIVE_SYMBOLS (env) wird IMMER erzwungen (z. B. BTCUSDT).
+    - Normalisiert exchange/symbol/market und dedupliziert (exchange,symbol,market).
+    """
+    settings = await _load_user_settings(user_id)
+    raw_coins = settings.get("coins", [])
+
+    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
+
+    # optional filter (nach Canonicalization!)
+    if exchange:
+        ex = _norm_exchange(exchange)
+        filtered = [c for c in canonical if c.get("exchange") == ex]
+    else:
+        filtered = canonical
+
+    # self-heal persisted settings if policy/normalization changed
+    if changed:
+        settings["coins"] = canonical
+        await _save_user_settings(user_id, settings)
+
+    logger.info(
+        f"GET /api/user/settings/coins user={user_id} exchange={exchange} count={len(filtered)}"
+    )
+    return filtered
+
+
+@user_settings_router.post("/coins", response_model=list[CoinSetting])
+async def save_coin_settings(
+    coins: list[CoinSetting] = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Speichert die Coin-Settings für einen User.
+
+    WICHTIG:
+    - Payload wird kanonisiert + dedupliziert.
+    - ALWAYS_LIVE_SYMBOLS (env) wird serverseitig erzwungen.
+    - Rückgabe ist der kanonische, persistierte Zustand.
+    """
+    settings = await _load_user_settings(user_id)
+
+    incoming = [c.model_dump() for c in (coins or [])]
+    canonical, _ = _canonicalize_and_apply_policy(incoming)
+
+    settings["coins"] = canonical
+    await _save_user_settings(user_id, settings)
+
+    logger.info(f"POST /api/user/settings/coins user={user_id} count={len(canonical)}")
+    return [CoinSetting(**c) for c in canonical]
+
+
+# ============================================================
+# Generic User Settings Endpoints
+# ============================================================
+
+@user_settings_router.get("", response_model=Dict[str, Any])
+async def get_user_settings(
+    user_id: str = Depends(get_client_id),
+):
+    settings = await _load_user_settings(user_id)
+
+    # Optional: coin self-heal auch hier (damit jede GET-Route konsistent ist)
+    raw_coins = settings.get("coins", [])
+    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
+    if changed:
+        settings["coins"] = canonical
+        await _save_user_settings(user_id, settings)
+
+    return settings
+
+
+@user_settings_router.put("", response_model=Dict[str, Any])
+async def put_user_settings(
+    payload: UserSettingsPayload,
+    user_id: str = Depends(get_client_id),
+):
+    settings = payload.data or {}
+
+    # enforce coin policy if coins are present
+    if isinstance(settings.get("coins"), list):
+        canonical, _ = _canonicalize_and_apply_policy(settings["coins"])
+        settings["coins"] = canonical
+
+    await _save_user_settings(user_id, settings)
+    return settings
+
+
+@user_settings_router.patch("", response_model=Dict[str, Any])
+async def patch_user_settings(
+    patch: UserSettingsPatch,
+    user_id: str = Depends(get_client_id),
+):
+    settings = await _load_user_settings(user_id)
+    merged = _deep_merge(settings, patch.patch or {})
+
+    # enforce coin policy if coins are present
+    if isinstance(merged.get("coins"), list):
+        canonical, _ = _canonicalize_and_apply_policy(merged["coins"])
+        merged["coins"] = canonical
+
+    await _save_user_settings(user_id, merged)
+    return merged
+
+
+@user_settings_router.delete("", response_model=Dict[str, str])
+async def delete_user_settings(
+    user_id: str = Depends(get_client_id),
+):
+    await _save_user_settings(user_id, {})
+    return {"status": "deleted"}
+
+
+# ============================================================
+# BEISPIEL-SPEZIAL-ENDEPOINTS (OPTIONAL)
+# ============================================================
+
+@user_settings_router.get("/watchlists", response_model=UserSettingsPayload)
+async def get_watchlists(
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Liefert nur den Bereich 'watchlists' aus den Settings.
+    """
+    settings = await _load_user_settings(user_id)
+    wl = settings.get("watchlists") or []
+    logger.debug(f"GET /api/user/settings/watchlists user={user_id} count={len(wl)}")
+    return UserSettingsPayload(data={"watchlists": wl})
+
+
+@user_settings_router.put("/watchlists", response_model=UserSettingsPayload)
+async def put_watchlists(
+    payload: UserSettingsPayload = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    Ersetzt den Bereich 'watchlists' in den Settings.
+    Erwartet im Body: { "data": { "watchlists": [...] } }
+    """
+    settings = await _load_user_settings(user_id)
+    wl = payload.data.get("watchlists") or []
+    settings["watchlists"] = wl
+    await _save_user_settings(user_id, settings)
+
+    logger.info(f"PUT /api/user/settings/watchlists user={user_id} count={len(wl)}")
+    return UserSettingsPayload(data={"watchlists": wl})
+</file>
+
 <file path="backend/database/clickhouse/cl_message_handlers.py">
 import asyncio
 import logging
@@ -161668,144 +162047,6 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.registry.symbol_registry import SYMBOL_REGISTRY
-                    from backend.core.models.market_enum import MarketEnum
-                    
-                    market_enum = MarketEnum.SPOT if market == "spot" else MarketEnum.USDTM
-                    catalog = SYMBOL_REGISTRY.catalog(exchange, market_enum)
-                    
-                    symbols = [entry["symbol"] for entry in catalog]
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": market,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="frontend/src/config/exchangeSupport.ts">
 // ✅ DYNAMISCHE Exchange & Market Configuration
 // Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
@@ -162008,456 +162249,6 @@ export const useTradingContext = () => {
 };
 
 export { TradingContext };
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
-// frontend/src/pages/TradingPage/components/CoinSelector.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, Settings } from "lucide-react";
-
-interface CoinSetting {
-  symbol: string;
-  exchange: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite?: boolean;
-  chart_resolution?: string;
-  db_resolutions?: string[];
-}
-
-interface AdvancedCoinSelectorProps {
-  selectedSymbol: string;
-  onSymbolSelect: (symbol: string) => void;
-  onSettingsClick?: () => void;
-  exchange?: string;
-  selectedMarket?: string;
-}
-
-const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
-  selectedSymbol,
-  onSymbolSelect,
-  onSettingsClick,
-  exchange = "bitget",
-  selectedMarket,
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string }>>([]);
-  const [loadingSymbols, setLoadingSymbols] = useState(false);
-
-  const [loadingSettings, setLoadingSettings] = useState(false);
-  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
-
-  const market = selectedMarket || "spot";
-
-  const resolveApiBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_BACKEND_HTTP_URL ||
-      env?.VITE_API_BASE_URL ||
-      env?.VITE_BACKEND_URL ||
-      "http://localhost:8100";
-    return String(raw).replace(/\/+$/, "");
-  };
-
-  const resolveWsBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw = env?.VITE_BACKEND_WS_URL || env?.VITE_WS_BASE_URL || env?.VITE_WS_URL;
-    if (raw && typeof raw === "string") return raw.replace(/\/+$/, "");
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const host = window.location.hostname || "localhost";
-    return `${proto}://${host}:8080`;
-  };
-
-  const getClientId = (): string => {
-    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
-    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
-
-    const key = "wsai_client_id";
-    try {
-      const existing = window.localStorage.getItem(key);
-      if (existing && existing.trim()) return existing.trim();
-
-      const generated =
-        (globalThis.crypto && "randomUUID" in globalThis.crypto)
-          ? (globalThis.crypto as any).randomUUID()
-          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
-
-      window.localStorage.setItem(key, generated);
-      return generated;
-    } catch {
-      return `client_${Date.now()}`;
-    }
-  };
-
-  const alwaysLiveSymbols = useMemo(() => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
-      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
-      "BTCUSDT";
-    return new Set(
-      String(raw)
-        .split(",")
-        .map((s: string) => s.trim().toUpperCase())
-        .filter(Boolean)
-    );
-  }, []);
-
-  const keyFor = (ex: string, sym: string, mk: string) =>
-    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
-
-  const loadCoinSettings = async (): Promise<void> => {
-    setLoadingSettings(true);
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-      });
-
-      if (!res.ok) throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
-
-      const list: CoinSetting[] = await res.json();
-      const map = new Map<string, CoinSetting>();
-      for (const s of Array.isArray(list) ? list : []) {
-        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-      }
-      setCoinSettings(map);
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load coin settings");
-    } finally {
-      setLoadingSettings(false);
-    }
-  };
-
-  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-        body: JSON.stringify(settingsList),
-      });
-
-      if (!res.ok) throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
-
-      const ct = res.headers.get("content-type") || "";
-      if (ct.includes("application/json")) {
-        const body = await res.json();
-        if (Array.isArray(body)) {
-          const map = new Map<string, CoinSetting>();
-          for (const s of body) {
-            if (!s?.symbol || !s?.exchange) continue;
-            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-          }
-          setCoinSettings(map);
-          return;
-        }
-      }
-
-      // If backend returns only status, re-fetch canonical state
-      await loadCoinSettings();
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to save coin settings");
-    }
-  };
-
-  // Load settings when dropdown opens OR exchange/market changes while open
-  useEffect(() => {
-    if (isOpen) loadCoinSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, exchange, market]);
-
-  const wsOnceRef = useRef<WebSocket | null>(null);
-
-  const loadSymbols = async (): Promise<void> => {
-    setLoadingSymbols(true);
-    setLocalError(null);
-
-    try {
-      wsOnceRef.current?.close();
-    } catch {}
-    wsOnceRef.current = null;
-
-    try {
-      const wsBase = resolveWsBase();
-      const laneSymbol = selectedSymbol || "BTCUSDT";
-      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(laneSymbol)}/${encodeURIComponent(market)}`;
-
-      const list: string[] = await new Promise((resolve, reject) => {
-        const ws = new WebSocket(wsUrl);
-        wsOnceRef.current = ws;
-
-        let done = false;
-        const timeout = window.setTimeout(() => {
-          if (done) return;
-          done = true;
-          try { ws.close(); } catch {}
-          reject(new Error("WS symbols request timeout"));
-        }, 5000);
-
-        ws.onopen = () => {
-          try { ws.send("symbols"); } catch (err) {
-            window.clearTimeout(timeout);
-            if (!done) {
-              done = true;
-              try { ws.close(); } catch {}
-              reject(err instanceof Error ? err : new Error("WS send failed"));
-            }
-          }
-        };
-
-        ws.onerror = () => {
-          window.clearTimeout(timeout);
-          if (!done) {
-            done = true;
-            try { ws.close(); } catch {}
-            reject(new Error("WS connection error"));
-          }
-        };
-
-        ws.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                resolve(data.symbols);
-              }
-              return;
-            }
-            if (data?.type === "error") {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                reject(new Error(data.message || "WS error"));
-              }
-            }
-          } catch {}
-        };
-      });
-
-      setSymbols(list.map((s) => ({ symbol: String(s), exchange, market_type: market })));
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load symbols");
-      setSymbols([]);
-    } finally {
-      setLoadingSymbols(false);
-    }
-  };
-
-  useEffect(() => {
-    loadSymbols();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchange, market, selectedSymbol]);
-
-  useEffect(() => {
-    return () => {
-      try { wsOnceRef.current?.close(); } catch {}
-      wsOnceRef.current = null;
-    };
-  }, []);
-
-  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
-
-  const isLiveEnabled = (sym: string): boolean => {
-    if (isAlwaysLive(sym)) return true;
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.store_live;
-  };
-
-  const isHistoricalEnabled = (sym: string): boolean => {
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.load_history;
-  };
-
-  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
-    const key = keyFor(exchange, sym, market);
-    const current = coinSettings.get(key);
-
-    const next: CoinSetting = current
-      ? { ...current, ...patch, symbol: sym, exchange, market }
-      : { symbol: sym, exchange, market, store_live: false, load_history: false, ...patch };
-
-    const list = Array.from(coinSettings.values());
-    const idx = list.findIndex(
-      (x) =>
-        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
-        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
-        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
-    );
-
-    if (idx >= 0) list[idx] = next;
-    else list.push(next);
-
-    const map = new Map(coinSettings);
-    map.set(key, next);
-    setCoinSettings(map);
-
-    return list;
-  };
-
-  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isAlwaysLive(sym)) return;
-    const updatedList = upsertSetting(sym, { store_live: !isLiveEnabled(sym) });
-    await saveCoinSettings(updatedList);
-  };
-
-  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const updatedList = upsertSetting(sym, { load_history: !isHistoricalEnabled(sym) });
-    await saveCoinSettings(updatedList);
-  };
-
-  const filteredSymbols = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
-    if (!q) return symbols;
-    return symbols.filter((x) => x.symbol.toLowerCase().includes(q));
-  }, [symbols, searchTerm]);
-
-  return (
-    <div className="relative w-full">
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          type="button"
-          onClick={() => setIsOpen((v) => !v)}
-          className="flex-1 bg-gray-800 text-white px-4 py-3 rounded border border-gray-600 flex items-center justify-between hover:bg-gray-700"
-        >
-          <span className="font-medium">{selectedSymbol || "Select Symbol"}</span>
-          <span className="text-xs text-gray-400">
-            {exchange.toUpperCase()} / {market.toUpperCase()}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            loadSymbols();
-            if (isOpen) loadCoinSettings();
-          }}
-          disabled={loadingSymbols}
-          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600 disabled:opacity-50"
-          title="Refresh symbols/settings"
-        >
-          <RefreshCw className={`w-4 h-4 text-white ${loadingSymbols ? "animate-spin" : ""}`} />
-        </button>
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onSettingsClick?.();
-          }}
-          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600"
-          title="Open settings"
-        >
-          <Settings className="w-4 h-4 text-white" />
-        </button>
-      </div>
-
-      {isOpen && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg z-50 max-h-96 overflow-hidden">
-          <div className="p-3 border-b border-gray-600">
-            <input
-              type="text"
-              placeholder="Search symbols..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-gray-700 text-white px-3 py-2 rounded border border-gray-500 text-sm"
-              autoFocus
-            />
-            {(loadingSettings || loadingSymbols) && (
-              <div className="mt-2 text-xs text-gray-400">
-                {loadingSymbols ? "Loading symbols..." : null}
-                {loadingSymbols && loadingSettings ? " / " : null}
-                {loadingSettings ? "Loading settings..." : null}
-              </div>
-            )}
-            {localError && <div className="mt-2 text-xs text-red-400">{localError}</div>}
-          </div>
-
-          <div className="max-h-80 overflow-y-auto">
-            {filteredSymbols.map((item) => {
-              const sym = item.symbol;
-              const live = isLiveEnabled(sym);
-              const hist = isHistoricalEnabled(sym);
-              const locked = isAlwaysLive(sym);
-
-              return (
-                <div
-                  key={`${item.exchange}_${item.market_type}_${sym}`}
-                  onClick={() => {
-                    onSymbolSelect(sym);
-                    setIsOpen(false);
-                    setSearchTerm("");
-                  }}
-                  className={`flex items-center justify-between px-4 py-3 hover:bg-gray-700 cursor-pointer border-b border-gray-700 ${
-                    sym === selectedSymbol ? "bg-gray-700" : ""
-                  }`}
-                >
-                  <span className="font-medium text-white">{sym}</span>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={(e) => handleLiveClick(sym, e)}
-                      className={`px-2 py-1 rounded text-xs font-bold ${
-                        live ? "bg-green-600 text-white" : "bg-red-600 text-white"
-                      } ${locked ? "opacity-70 cursor-not-allowed" : ""}`}
-                      title={locked ? "Always-Live (server policy)" : "Toggle Live Storage"}
-                    >
-                      L
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => handleHistoricalClick(sym, e)}
-                      className={`px-2 py-1 rounded text-xs font-bold ${
-                        hist ? "bg-green-600 text-white" : "bg-red-600 text-white"
-                      }`}
-                      title="Toggle Historical Backfill"
-                    >
-                      H
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            {filteredSymbols.length === 0 && (
-              <div className="p-4 text-center text-gray-400">No symbols found</div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default CoinSelector;
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -162700,6 +162491,177 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
+</file>
+
+<file path="frontend/src/shared/layout/GlobalNav.tsx">
+import { useState } from "react";
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTradingContext } from "../../contexts/TradingContext";
+import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
+  
+  const [activeTab, setActiveTab] = useState(() => {
+    // Set active tab based on current route
+    const path = location.pathname;
+    if (path === '/trading' || path === '/') return "Market";
+    if (path === '/quantum') return "Quantum";
+    if (path === '/database') return "Database";
+    if (path === '/whales') return "Whales";
+    if (path === '/news') return "News";
+    if (path === '/bot') return "Trading Bot";
+    if (path === '/api') return "API";
+    if (path === '/ml') return "ML";
+    if (path === '/settings') return "Settings";
+    return "Market";
+  });
+  
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+  
+  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
+  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else if (itemName === "Settings") {
+      setIsDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    } else {
+      setActiveTab(itemName);
+      setIsDropdownOpen(false);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    // ✅ FIX: Exchange-Auswahl zu Context propagieren
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-card rounded-lg shadow-xl border border-border">
+                {MARKET_OPTIONS.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-muted cursor-pointer border-b border-border last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-foreground text-background rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-foreground text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+          >
+            {exchangeDisplayName} ▽
+          </button>
+          
+          {/* Exchange Dropdown Menu */}
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {EXCHANGES.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
 </file>
 
 <file path="Dockerfile">
@@ -164184,6 +164146,160 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    mk = (market or "spot").lower()
+
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
 <file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
 import React, { useMemo } from "react";
 import { useWsLane } from "../../services/ws/useWsLane";
@@ -164348,6 +164464,523 @@ const ChartSection = ({
 };
 
 export default ChartSection;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
+// frontend/src/pages/TradingPage/components/CoinSelector.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw, Settings } from "lucide-react";
+
+interface CoinSetting {
+  symbol: string;
+  exchange: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite?: boolean;
+  chart_resolution?: string;
+  db_resolutions?: string[];
+}
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange?: string;        // dynamic exchange (no hardcode)
+  selectedMarket?: string;  // e.g. "spot" | "usdtm" | ...
+}
+
+/**
+ * CoinSelector
+ * - Keeps existing architecture:
+ *   - Symbols are loaded via WS ("symbols" request) from /ws/{exchange}/{symbol}/{market}
+ *   - Coin settings (L/H) are loaded/saved via REST /api/user/settings/coins (GET/POST) using X-Client-ID
+ * - Adds:
+ *   - getClientId() (no hardcoded "default-client")
+ *   - alwaysLiveSymbols from ENV
+ *   - Always-live UI lock for L button
+ */
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange = "bitget",
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string }>>([]);
+  const [loadingSymbols, setLoadingSymbols] = useState(false);
+
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
+
+  const market = selectedMarket || "spot";
+
+  // ----------------------------
+  // ENV / URL helpers
+  // ----------------------------
+  const resolveApiBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_HTTP_URL ||
+      env?.VITE_API_BASE_URL ||
+      env?.VITE_BACKEND_URL ||
+      "http://localhost:8100";
+    return String(raw).replace(/\/+$/, "");
+  };
+
+  const resolveWsBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_WS_URL ||
+      env?.VITE_WS_BASE_URL ||
+      env?.VITE_WS_URL;
+
+    if (raw && typeof raw === "string" && raw.trim()) {
+      return raw.replace(/\/+$/, "");
+    }
+
+    // ✅ Vite Proxy: window.location.host enthält Port automatisch!
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${window.location.host}`;
+  };
+
+  const getClientId = (): string => {
+    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
+    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
+
+    const key = "wsai_client_id";
+    try {
+      const existing = window.localStorage.getItem(key);
+      if (existing && existing.trim()) return existing.trim();
+
+      const generated =
+        (globalThis.crypto && "randomUUID" in globalThis.crypto)
+          ? (globalThis.crypto as any).randomUUID()
+          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+
+      window.localStorage.setItem(key, generated);
+      return generated;
+    } catch {
+      // absolute fallback (no hardcoding default-client into requests)
+      return `client_${Date.now()}`;
+    }
+  };
+
+  const alwaysLiveSymbols = useMemo(() => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
+      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
+      "BTCUSDT";
+    return new Set(
+      String(raw)
+        .split(",")
+        .map((s: string) => s.trim().toUpperCase())
+        .filter(Boolean)
+    );
+  }, []);
+
+  // ----------------------------
+  // Keying
+  // ----------------------------
+  const keyFor = (ex: string, sym: string, mk: string) =>
+    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
+
+  // ----------------------------
+  // REST: load/save coin settings
+  // ----------------------------
+  const loadCoinSettings = async (): Promise<void> => {
+    setLoadingSettings(true);
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      const list: CoinSetting[] = await res.json();
+      const map = new Map<string, CoinSetting>();
+      for (const s of Array.isArray(list) ? list : []) {
+        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+      }
+      setCoinSettings(map);
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load coin settings");
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
+        },
+        body: JSON.stringify(settingsList),
+      });
+
+      if (!res.ok) {
+        throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      // Expect canonical list back (preferred). If backend returns only status, we still keep optimistic state.
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const maybe = await res.json();
+        if (Array.isArray(maybe)) {
+          const map = new Map<string, CoinSetting>();
+          for (const s of maybe) {
+            if (!s?.symbol || !s?.exchange) continue;
+            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+          }
+          setCoinSettings(map);
+        }
+      }
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to save coin settings");
+    }
+  };
+
+  // Load settings when dropdown opens (keeps your behavior: no background polling)
+  useEffect(() => {
+    if (isOpen) loadCoinSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, exchange]);
+
+  // ----------------------------
+  // WS: load symbols
+  // ----------------------------
+  const wsOnceRef = useRef<WebSocket | null>(null);
+
+  const loadSymbols = async (): Promise<void> => {
+    setLoadingSymbols(true);
+    setLocalError(null);
+
+    // close any previous one-off ws if still open
+    try {
+      wsOnceRef.current?.close();
+    } catch {}
+    wsOnceRef.current = null;
+
+    try {
+      const wsBase = resolveWsBase();
+      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/BTCUSDT/${encodeURIComponent(market)}`;
+
+      const list: string[] = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        wsOnceRef.current = ws;
+
+        let done = false;
+        const timeout = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          try { ws.close(); } catch {}
+          reject(new Error("WS symbols request timeout"));
+        }, 5000);
+
+        ws.onopen = () => {
+          try {
+            ws.send("symbols");
+          } catch (err) {
+            window.clearTimeout(timeout);
+            if (!done) {
+              done = true;
+              try { ws.close(); } catch {}
+              reject(err instanceof Error ? err : new Error("WS send failed"));
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(timeout);
+          if (!done) {
+            done = true;
+            try { ws.close(); } catch {}
+            reject(new Error("WS connection error"));
+          }
+        };
+
+        ws.onmessage = (e) => {
+          // Expect JSON {type:"symbols", symbols:[...]}
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                resolve(data.symbols);
+              }
+              return;
+            }
+            if (data?.type === "error") {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                reject(new Error(data.message || "WS error"));
+              }
+            }
+          } catch {
+            // ignore non-json
+          }
+        };
+
+        ws.onclose = () => {
+          // ignore; timeout/error handles failure
+        };
+      });
+
+      setSymbols(
+        list.map((s) => ({
+          symbol: String(s),
+          exchange,
+          market_type: market,
+        }))
+      );
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load symbols");
+      setSymbols([]);
+    } finally {
+      setLoadingSymbols(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchange, market]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        wsOnceRef.current?.close();
+      } catch {}
+      wsOnceRef.current = null;
+    };
+  }, []);
+
+  // ----------------------------
+  // L/H helpers + toggles
+  // ----------------------------
+  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
+
+  const isLiveEnabled = (sym: string): boolean => {
+    if (isAlwaysLive(sym)) return true;
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.store_live;
+  };
+
+  const isHistoricalEnabled = (sym: string): boolean => {
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.load_history;
+  };
+
+  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
+    const key = keyFor(exchange, sym, market);
+    const current = coinSettings.get(key);
+
+    const next: CoinSetting = current
+      ? { ...current, ...patch, symbol: sym, exchange, market }
+      : {
+          symbol: sym,
+          exchange,
+          market,
+          store_live: false,
+          load_history: false,
+          ...patch,
+        };
+
+    const list = Array.from(coinSettings.values());
+
+    const idx = list.findIndex(
+      (x) =>
+        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
+        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
+        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
+    );
+
+    if (idx >= 0) list[idx] = next;
+    else list.push(next);
+
+    // optimistic local map update (immediately reflects UI)
+    const map = new Map(coinSettings);
+    map.set(key, next);
+    setCoinSettings(map);
+
+    return list;
+  };
+
+  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isAlwaysLive(sym)) return;
+
+    const newState = !isLiveEnabled(sym);
+    const updatedList = upsertSetting(sym, { store_live: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    const newState = !isHistoricalEnabled(sym);
+    const updatedList = upsertSetting(sym, { load_history: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  // ----------------------------
+  // UI filtering
+  // ----------------------------
+  const filteredSymbols = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return symbols;
+    return symbols.filter((x) => x.symbol.toLowerCase().includes(q));
+  }, [symbols, searchTerm]);
+
+  return (
+    <div className="relative w-full">
+      <div className="flex items-center gap-2 mb-2">
+        <button
+          type="button"
+          onClick={() => setIsOpen((v) => !v)}
+          className="flex-1 bg-gray-800 text-white px-4 py-3 rounded border border-gray-600 flex items-center justify-between hover:bg-gray-700"
+        >
+          <span className="font-medium">{selectedSymbol || "Select Symbol"}</span>
+          <span className="text-xs text-gray-400">{exchange.toUpperCase()} / {market.toUpperCase()}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            loadSymbols();
+            if (isOpen) loadCoinSettings();
+          }}
+          disabled={loadingSymbols}
+          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600 disabled:opacity-50"
+          title="Refresh symbols/settings"
+        >
+          <RefreshCw className={`w-4 h-4 text-white ${loadingSymbols ? "animate-spin" : ""}`} />
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSettingsClick?.();
+          }}
+          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600"
+          title="Open settings"
+        >
+          <Settings className="w-4 h-4 text-white" />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg z-50 max-h-96 overflow-hidden">
+          <div className="p-3 border-b border-gray-600">
+            <input
+              type="text"
+              placeholder="Search symbols..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-gray-700 text-white px-3 py-2 rounded border border-gray-500 text-sm"
+              autoFocus
+            />
+            {(loadingSettings || loadingSymbols) && (
+              <div className="mt-2 text-xs text-gray-400">
+                {loadingSymbols ? "Loading symbols..." : null}
+                {loadingSymbols && loadingSettings ? " / " : null}
+                {loadingSettings ? "Loading settings..." : null}
+              </div>
+            )}
+            {localError && <div className="mt-2 text-xs text-red-400">{localError}</div>}
+          </div>
+
+          <div className="max-h-80 overflow-y-auto">
+            {filteredSymbols.map((item) => {
+              const sym = item.symbol;
+              const live = isLiveEnabled(sym);
+              const hist = isHistoricalEnabled(sym);
+              const locked = isAlwaysLive(sym);
+
+              return (
+                <div
+                  key={`${item.exchange}_${item.market_type}_${sym}`}
+                  onClick={() => {
+                    onSymbolSelect(sym);
+                    setIsOpen(false);
+                    setSearchTerm("");
+                  }}
+                  className={`flex items-center justify-between px-4 py-3 hover:bg-gray-700 cursor-pointer border-b border-gray-700 ${
+                    sym === selectedSymbol ? "bg-gray-700" : ""
+                  }`}
+                >
+                  <span className="font-medium text-white">{sym}</span>
+
+                  <div className="flex items-center gap-2">
+                    {/* L button (live storage) */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleLiveClick(sym, e)}
+                      className={`px-2 py-1 rounded text-xs font-bold ${
+                        live ? "bg-green-600 text-white" : "bg-red-600 text-white"
+                      } ${locked ? "opacity-70 cursor-not-allowed" : ""}`}
+                      title={locked ? "Always-Live (server policy)" : "Toggle Live Storage"}
+                    >
+                      L
+                    </button>
+
+                    {/* H button (historical backfill) */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleHistoricalClick(sym, e)}
+                      className={`px-2 py-1 rounded text-xs font-bold ${
+                        hist ? "bg-green-600 text-white" : "bg-red-600 text-white"
+                      }`}
+                      title="Toggle Historical Backfill"
+                    >
+                      H
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {filteredSymbols.length === 0 && (
+              <div className="p-4 text-center text-gray-400">No symbols found</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
 </file>
 
 <file path="frontend/src/pages/TradingPage/TradingPage.tsx">
