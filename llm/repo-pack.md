@@ -662,6 +662,12 @@ frontend/
       config.ts
     shared/
       components/
+        CandleChart/
+          CandleChart.tsx
+          chartThemes.ts
+          index.ts
+          types.ts
+          useCandleChart.ts
         PriceDisplay.tsx
       hooks/
         use-debounce.ts
@@ -140248,6 +140254,463 @@ export function useMarketTrades(
 export { default } from "./TradingPage";
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
+/**
+ * CandleChart Component
+ * =====================
+ * 
+ * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
+ * 
+ * Features:
+ * - Lazy-Loading der TradingView Lightweight Charts Library
+ * - Automatische Dark/Light Mode Synchronisation
+ * - WebSocket Integration für Live-Daten
+ * - Responsive Design
+ * 
+ * Usage:
+ * ```tsx
+ * <CandleChart 
+ *   symbol="BTCUSDT"
+ *   exchange="binance"
+ *   market="spot"
+ *   interval="1h"
+ *   limit={100}
+ * />
+ * ```
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
+ * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
+ */
+
+import React, { useEffect, useRef } from 'react';
+import { useCandleChart } from './useCandleChart';
+import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
+import type { CandleChartProps } from './types';
+
+const CandleChart: React.FC<CandleChartProps> = ({
+  symbol,
+  exchange,
+  market,
+  interval,
+  limit = 100,
+  className = '',
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // ✅ Chart Hook (Init, Theme, Resize)
+  const { isChartReady, setChartData } = useCandleChart({
+    interval,
+    containerRef: chartContainerRef,
+  });
+
+  // ✅ Data Hook (WebSocket Integration)
+  const { chartData, loading, error } = useChartView(
+    symbol,
+    market,
+    exchange,
+    interval,
+    limit
+  );
+
+  // Load Chart Data when ready
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0) {
+      setChartData(chartData);
+    }
+  }, [isChartReady, chartData, setChartData]);
+
+  return (
+    <div
+      className={`chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden ${className}`}
+    >
+      {/* Chart Container */}
+      <div className="relative w-full h-full">
+        <div ref={chartContainerRef} className="chart-container w-full h-full" />
+
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
+              {error.message || String(error)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default CandleChart;
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
+/**
+ * CandleChart Themes
+ * ==================
+ * 
+ * Light/Dark theme presets for TradingView Lightweight Charts.
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, reagiert auf Theme-Wechsel
+ * ✅ PRODUCTION-READY: Optimierte Farben für Lesbarkeit
+ * ✅ KONSISTENT: Verwendet für alle Charts im System
+ */
+
+import type { ChartTheme, CandlestickSeriesTheme } from './types';
+
+/**
+ * Light Mode Theme
+ * Optimiert für hellen Hintergrund
+ */
+export const CHART_THEME_LIGHT: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#111827', // Tailwind gray-900
+  },
+  grid: {
+    vertLines: { color: 'rgba(0, 0, 0, 0.08)' },
+    horzLines: { color: 'rgba(0, 0, 0, 0.08)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    timeVisible: true,
+    secondsVisible: false, // Wird dynamisch überschrieben
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+  },
+};
+
+/**
+ * Dark Mode Theme
+ * Optimiert für dunklen Hintergrund - HELLE TEXTE!
+ */
+export const CHART_THEME_DARK: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#e5e7eb', // Tailwind gray-200 - ✅ HELL für Dark Mode!
+  },
+  grid: {
+    vertLines: { color: 'rgba(255, 255, 255, 0.06)' },
+    horzLines: { color: 'rgba(255, 255, 255, 0.06)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    timeVisible: true,
+    secondsVisible: false, // Wird dynamisch überschrieben
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+  },
+};
+
+/**
+ * Candlestick Series Theme (Light Mode)
+ * Standard Grün/Rot Farben
+ */
+export const SERIES_THEME_LIGHT: CandlestickSeriesTheme = {
+  upColor: '#26a69a', // Grün für Aufwärts-Candles
+  downColor: '#ef5350', // Rot für Abwärts-Candles
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Candlestick Series Theme (Dark Mode)
+ * Gleiche Farben wie Light Mode (funktionieren auf beiden Hintergründen)
+ */
+export const SERIES_THEME_DARK: CandlestickSeriesTheme = {
+  upColor: '#26a69a',
+  downColor: '#ef5350',
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Helper: Get Chart Theme based on current mode
+ */
+export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
+  const theme = isDark ? CHART_THEME_DARK : CHART_THEME_LIGHT;
+  
+  // ✅ DYNAMISCH: secondsVisible basierend auf Interval
+  return {
+    ...theme,
+    timeScale: {
+      ...theme.timeScale,
+      secondsVisible: interval.includes('s'), // z.B. "1s", "5s", "15s"
+    },
+  };
+}
+
+/**
+ * Helper: Get Series Theme based on current mode
+ */
+export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
+  return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/index.ts">
+/**
+ * CandleChart Module Exports
+ * ===========================
+ * 
+ * Barrel export für einfache Imports in anderen Components.
+ * 
+ * Usage:
+ * ```tsx
+ * import CandleChart from '@/shared/components/CandleChart';
+ * // oder
+ * import { CandleChart, useCandleChart } from '@/shared/components/CandleChart';
+ * ```
+ */
+
+export { default } from './CandleChart';
+export { default as CandleChart } from './CandleChart';
+export { useCandleChart } from './useCandleChart';
+export * from './types';
+export * from './chartThemes';
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/types.ts">
+/**
+ * CandleChart Types
+ * =================
+ * 
+ * Shared TypeScript interfaces for the reusable CandleChart component.
+ * Used across all pages (TradingPage, Quantum, etc.)
+ */
+
+export interface CandleChartProps {
+  symbol: string;
+  exchange: string;
+  market: string;
+  interval: string;
+  limit?: number;
+  className?: string;
+}
+
+export interface CandleData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface ChartTheme {
+  layout: {
+    background: { color: string };
+    textColor: string;
+  };
+  grid: {
+    vertLines: { color: string };
+    horzLines: { color: string };
+  };
+  timeScale: {
+    borderColor: string;
+    timeVisible: boolean;
+    secondsVisible: boolean;
+  };
+  rightPriceScale: {
+    borderColor: string;
+  };
+  crosshair?: {
+    vertLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+    horzLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+  };
+}
+
+export interface CandlestickSeriesTheme {
+  upColor: string;
+  downColor: string;
+  borderVisible: boolean;
+  wickUpColor: string;
+  wickDownColor: string;
+  priceLineVisible?: boolean;
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+/**
+ * useCandleChart Hook
+ * ===================
+ * 
+ * Custom React Hook für TradingView Lightweight Charts Integration.
+ * 
+ * Features:
+ * - Lazy-Loading der Chart-Library
+ * - Automatische Theme-Synchronisation (Dark/Light Mode)
+ * - Responsive Resize Handling
+ * - Cleanup bei Unmount
+ * 
+ * ✅ DYNAMISCH: Reagiert auf Theme-Wechsel via MutationObserver
+ * ✅ WIEDERVERWENDBAR: Kann in allen Pages genutzt werden
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { createLazyChart } from '../../../lib/chartLazyLoader';
+import { useTheme } from '../../ui/theme-provider';
+import { getChartTheme, getSeriesTheme } from './chartThemes';
+import type { CandleData } from './types';
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+
+  // Initialize Chart
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        const isDark = actualTheme === 'dark';
+        const chartTheme = getChartTheme(isDark, interval);
+        const seriesTheme = getSeriesTheme(isDark);
+
+        // ✅ Lazy-Load Chart Library
+        const chart = await createLazyChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          ...chartTheme,
+        });
+
+        if (!isMounted) {
+          chart.remove();
+          return;
+        }
+
+        chartInstance.current = chart;
+        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
+
+        setIsChartReady(true);
+
+        // ✅ Resize Observer
+        const resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && chartInstance.current) {
+            const { width, height } = entries[0].contentRect;
+            chartInstance.current.applyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+
+        // ✅ Theme-Wechsel Observer (reagiert auf <html class="dark">)
+        const themeObserver = new MutationObserver(() => {
+          if (chartInstance.current && seriesInstance.current) {
+            const isDarkNow = document.documentElement.classList.contains('dark');
+            const newChartTheme = getChartTheme(isDarkNow, interval);
+            const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+            chartInstance.current.applyOptions(newChartTheme);
+            seriesInstance.current.applyOptions(newSeriesTheme);
+          }
+        });
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ['class'],
+        });
+
+        // Cleanup
+        return () => {
+          resizeObserver.disconnect();
+          themeObserver.disconnect();
+        };
+      } catch (err) {
+        console.error('[useCandleChart] Failed to initialize chart:', err);
+      }
+    };
+
+    initChart();
+
+    return () => {
+      isMounted = false;
+      if (chartInstance.current) {
+        chartInstance.current.remove();
+        chartInstance.current = null;
+      }
+    };
+  }, [interval, actualTheme, containerRef]);
+
+  // Helper: Set Chart Data
+  const setChartData = (data: CandleData[]) => {
+    if (isChartReady && seriesInstance.current && data.length > 0) {
+      const formattedData = data.map((d) => ({
+        time: Math.floor(d.time / 1000), // ✅ Millisekunden → Sekunden
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+      }));
+      seriesInstance.current.setData(formattedData);
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+  };
+}
+</file>
+
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
 // frontend/src/shared/components/PriceDisplay.tsx
 type Props = {
@@ -156957,167 +157420,6 @@ async def get_ohlc_from_ch(
 export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
 </file>
 
-<file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
-/**
- * ChartView Component
- * ====================
- * 
- * LAZY-LOADING INTEGRATION:
- * Diese Component nutzt lib/chartLazyLoader.ts für On-Demand-Loading
- * der TradingView Lightweight Charts Library (~200KB).
- * 
- * Chart wird erst geladen wenn Component mounted → spart Initial-Bundle-Size!
- * 
- * HOOK INTEGRATION:
- * - useChartView: Lädt OHLC-Daten via WebSocket (kein REST!)
- * - Auto-refresh: Live-Updates via WebSocket
- * - WebSocket: Live-Candle Updates
- */
-
-import React, { useEffect, useRef, useState } from "react";
-import { createLazyChart } from '../../../lib/chartLazyLoader';
-import { useChartView } from '../hooks/useChartView';
-
-interface ChartViewProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  interval: string;
-}
-
-const ChartView: React.FC<ChartViewProps> = ({
-  symbol,
-  market,
-  exchange,
-  interval,
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartInstance = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-
-  // Hook lädt Historical Data via WebSocket
-  const { chartData, loading, error } = useChartView(symbol, market, exchange, interval, 100);
-
-  // Initialize Chart with Lazy-Loading
-  useEffect(() => {
-    const container = chartContainerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        // ✅ Lazy-Load LightweightCharts Library
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          layout: {
-            background: { color: 'transparent' },
-            textColor: 'hsl(var(--foreground))',
-          },
-          grid: {
-            vertLines: { color: 'hsl(var(--border))' },
-            horzLines: { color: 'hsl(var(--border))' },
-          },
-          timeScale: {
-            borderColor: 'hsl(var(--border))',
-            timeVisible: true,
-            secondsVisible: interval.includes('s'),
-          },
-          rightPriceScale: {
-            borderColor: 'hsl(var(--border))',
-          },
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesRef.current = chart.addCandlestickSeries({
-          upColor: '#26a69a',
-          downColor: '#ef5350',
-          borderVisible: false,
-          wickUpColor: '#26a69a',
-          wickDownColor: '#ef5350',
-        });
-
-        setIsChartReady(true);
-
-        // Resize Observer
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        // Cleanup
-        return () => {
-          resizeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error('[ChartView] Failed to initialize chart:', err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval]);
-
-  // Load Historical Data
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0 && seriesRef.current) {
-      const formattedData = chartData.map((d) => ({
-        time: Math.floor(d.time / 1000), // ✅ FIX: Millisekunden → Sekunden für TradingView
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-      }));
-      seriesRef.current.setData(formattedData);
-    }
-  }, [isChartReady, chartData]);
-
-  return (
-    <div className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden">
-      {/* Chart Container */}
-      <div className="relative w-full h-full">
-        <div ref={chartContainerRef} className="chart-container w-full h-full" />
-        
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
-              {error.message || String(error)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default ChartView;
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -162447,6 +162749,52 @@ class CentralizedWsManager:
 
 # Global instance
 ws_manager = CentralizedWsManager()
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
+/**
+ * ChartView Component
+ * ====================
+ * 
+ * ✅ REFACTORED: Nutzt jetzt die wiederverwendbare CandleChart Component
+ * 
+ * Diese Component ist jetzt nur noch ein Wrapper um die Shared CandleChart.
+ * Alle Chart-Logik (Theme, Resize, Lazy-Loading) ist in CandleChart ausgelagert.
+ * 
+ * MIGRATION:
+ * - Alte Implementierung → Shared CandleChart Component
+ * - Dark Mode Fix inklusive
+ * - Keine Code-Duplikation mehr
+ */
+
+import React from "react";
+import CandleChart from '../../../shared/components/CandleChart';
+
+interface ChartViewProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  interval: string;
+}
+
+const ChartView: React.FC<ChartViewProps> = ({
+  symbol,
+  market,
+  exchange,
+  interval,
+}) => {
+  return (
+    <CandleChart
+      symbol={symbol}
+      exchange={exchange}
+      market={market}
+      interval={interval}
+      limit={100}
+    />
+  );
+};
+
+export default ChartView;
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -169486,1702 +169834,6 @@ class BackfillLoopService:
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
-</file>
-
-<file path="backend/services/adapter/unified_aggregator.py">
-import asyncio
-import logging
-import json
-from datetime import datetime
-from decimal import Decimal
-
-from redis.exceptions import ResponseError, ConnectionError
-from redis import asyncio as aioredis
-
-from backend.services.adapter.whale_detector import WhaleDetector
-from backend.database.clickhouse import get_clickhouse_client, cl_handlers_instance, cl_manager_instance
-
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-from backend.services.discovery.dis_trades import discover_trade_streams
-from backend.services.discovery.dis_config import get_streams_per_exchange
-
-# Candle-Aggregation Imports
-from backend.services.adapter.stream_aggregator import registry, MultiResCandleAgg
-
-logger = logging.getLogger("unified_aggregator")
-
-
-class UnifiedAggregator:
-    """
-    Zentraler Aggregator für Trades:
-    - konsumiert Redis-Streams (discover_trade_streams)
-    - schreibt Trades nach ClickHouse
-    - triggert Candle-Aggregation (MultiResCandleAgg)
-    - triggert Whale Detection
-    """
-
-    def __init__(self, redis_url: str):
-        self.redis_url = redis_url
-        self.r = None  # Redis-Client, wird in run_unified_aggregator gesetzt
-        self.group = "unified_agg_group"
-        self.consumer = "unified_consumer"
-        self.running = True
-        self.whale_detector = WhaleDetector()
-        self.ch_client = get_clickhouse_client()
-        self.agg = MultiResCandleAgg()
-
-    async def process_and_store_trade(self, trade_data: dict):
-        """
-        Whale-Detection-Logik für einzelnen Trade.
-        """
-        try:
-            symbol = trade_data.get("symbol")
-            price = str(trade_data.get("price", "0"))
-            size = str(trade_data.get("size", "0"))
-
-            if not symbol:
-                return
-
-            trade_value = Decimal(price) * Decimal(size)
-            threshold = await self.whale_detector.get_threshold(symbol)
-
-            if trade_value >= threshold:
-                await self.store_whale_trade(trade_data)
-
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error processing trade data: {e}, data: {trade_data}")
-        except Exception:
-            logger.error("Unexpected error in process_and_store_trade", exc_info=True)
-
-    async def store_whale_trade(self, trade: dict):
-        """
-        Aggregiert und speichert Whale-Trades in ClickHouse.
-        """
-        try:
-            ts = datetime.fromtimestamp(int(trade["timestamp"]) / 1000)
-            time_bucket = ts.replace(second=0, microsecond=0)
-
-            total_volume = Decimal(str(trade["price"])) * Decimal(str(trade["size"]))
-
-            params = {
-                "exchange": trade["exchange"],
-                "symbol": trade["symbol"],
-                "time_bucket": time_bucket,
-                "total_volume": float(total_volume),           # R0.1: Scalar statt Tuple
-                "avg_price": float(str(trade["price"])),       # R0.1: Scalar statt Tuple
-                "whale_count": 1,                              # R0.1: Scalar statt Tuple
-            }
-
-            query = """
-            INSERT INTO whale_orders (
-                exchange,
-                symbol,
-                time_bucket,
-                total_volume,
-                avg_price,
-                whale_count
-            )
-            VALUES (
-                %(exchange)s,
-                %(symbol)s,
-                %(time_bucket)s,
-                %(total_volume)s,
-                %(avg_price)s,
-                %(whale_count)s
-            )
-            """
-
-            await self.ch_client.execute(query, params)
-            logger.info("Stored whale trade for %s", trade["symbol"])
-        except Exception:
-            logger.error("Failed to store whale trade", exc_info=True)
-
-    async def consume_trades(self, streams):
-        """
-        Konsumiert Trades aus den angegebenen Redis-Streams.
-
-        Erwartetes Stream-Format:
-            <exchange>:trades:<market_type>:<symbol>
-        z.B.:
-            binance:trades:spot:BTCUSDT
-        """
-        if not streams:
-            logger.error("No streams provided to consume_trades")
-            return
-
-        # Defensive: nur existierende Streams mit Consumer-Group initialisieren
-        active_streams = []
-        for stream_key in streams:
-            try:
-                exists = await self.r.exists(stream_key)
-                if exists:
-                    active_streams.append(stream_key)
-                    try:
-                        await self.r.xgroup_create(
-                            stream_key, self.group, id="0", mkstream=True
-                        )
-                    except ResponseError as e:
-                        if "BUSYGROUP" not in str(e):
-                            raise
-                else:
-                    logger.debug("Stream does not exist yet: %s", stream_key)
-            except Exception as e:
-                logger.warning("Stream check failed for %s: %s", stream_key, str(e))
-
-        if not active_streams:
-            logger.error("No active streams found - cannot consume")
-            return
-
-        logger.info(
-            "✅ Consumer groups initialized for %d/%d active streams",
-            len(active_streams),
-            len(streams),
-        )
-        streams = active_streams
-
-        while self.running:
-            try:
-                stream_dict = {s: ">" for s in streams}
-                messages = await self.r.xreadgroup(
-                    groupname=self.group,
-                    consumername=self.consumer,
-                    streams=stream_dict,
-                    count=100,
-                    block=5000,
-                )
-
-                if not messages:
-                    continue
-
-                for stream_key, msgs in messages:
-                    for msg_id, data in msgs:
-                        try:
-                            raw = data.get("trade")
-                            if not raw:
-                                logger.warning(
-                                    "Missing 'trade' field in message %s", msg_id
-                                )
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            trade = json.loads(raw)
-
-                            parts = stream_key.split(":", 3)
-                            if len(parts) != 4:
-                                logger.warning(
-                                    "Unexpected stream key format: %s", stream_key
-                                )
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            exchange, _, market_type, symbol = parts
-
-                            trade_id = (
-                                trade.get("trade_id")
-                                or trade.get("id")
-                                or ""
-                            )
-                            price = trade.get("price")
-                            size = trade.get("size")
-                            side = trade.get("side")
-                            timestamp = (
-                                trade.get("timestamp")
-                                or trade.get("ts")
-                                or trade.get("time")
-                            )
-                            market = trade.get("market", market_type)
-
-                            if not symbol:
-                                symbol = trade.get("symbol")
-
-                            if not all([symbol, timestamp, price, size]):
-                                logger.warning(
-                                    "Incomplete trade data in %s: %s",
-                                    stream_key,
-                                    trade,
-                                )
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            # ClickHouse-Queue
-                            await self._queue_trade_for_clickhouse(
-                                exchange=exchange,
-                                trade_id=trade_id,
-                                symbol=symbol,
-                                market=market,
-                                price=price,
-                                size=size,
-                                side=side,
-                                timestamp=timestamp,
-                            )
-
-                            # Candle-Aggregation
-                            res_map = registry.list(exchange, symbol)
-                            if res_map:
-                                _finished = self.agg.on_trade(
-                                    exchange,
-                                    symbol,
-                                    market,
-                                    timestamp,
-                                    price,
-                                    size,
-                                    res_map,
-                                )
-
-                            # Whale-Detection
-                            whale_trade = {
-                                "exchange": exchange,
-                                "symbol": symbol,
-                                "price": price,
-                                "size": size,
-                                "timestamp": timestamp,
-                            }
-                            await self.process_and_store_trade(whale_trade)
-
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                        except json.JSONDecodeError as e:
-                            logger.error(
-                                "JSON decode error for message %s: %s",
-                                msg_id,
-                                str(e),
-                            )
-                            await self.r.xack(stream_key, self.group, msg_id)
-                        except Exception as e:
-                            logger.error(
-                                "Error processing message %s from %s: %s",
-                                msg_id,
-                                stream_key,
-                                str(e),
-                                exc_info=True,
-                            )
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-            except (ConnectionError, ResponseError) as e:
-                logger.error("Redis error in consume_trades: %s", str(e))
-                await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(
-                    "Unexpected error in consume_trades: %s", str(e), exc_info=True
-                )
-                await asyncio.sleep(1)
-
-    async def _queue_trade_for_clickhouse(
-        self,
-        exchange: str,
-        trade_id: str,
-        symbol: str,
-        market: str,
-        price,
-        size,
-        side,
-        timestamp,
-    ):
-        """
-        Schiebt Trades in die ClickHouse-Trade-Queue.
-        """
-        try:
-            labels = await get_symbol_labels(exchange, symbol, market)
-
-            trade_payload = {
-                "exchange": exchange,
-                "trade_id": trade_id,
-                "symbol": symbol,
-                "market": market,
-                "price": Decimal(str(price)),
-                "size": Decimal(str(size)),
-                "side": side,
-                "timestamp": int(timestamp),
-                "asset_key": labels.get("asset_key"),
-                "instrument_uid": labels.get("instrument_uid"),
-            }
-
-            success = await cl_handlers_instance.queue_message(
-                exchange=exchange,
-                message_type="trades",
-                data=trade_payload
-            )
-            if not success:
-                logger.warning(
-                    "Failed to queue trade for ClickHouse: %s:%s",
-                    exchange,
-                    symbol,
-                )
-            else:
-                logger.debug(
-                    "✅ Queued trade %s:%s @ %s",
-                    exchange,
-                    symbol,
-                    str(price),
-                )
-        except Exception as e:
-            logger.error(
-                "Error queuing trade for ClickHouse: %s", str(e), exc_info=True
-            )
-
-    async def stop(self):
-        """
-        Stoppt den Aggregator sauber.
-        """
-        self.running = False
-        logger.info("UnifiedAggregator wird gestoppt...")
-        if self.r is not None:
-            try:
-                await self.r.close()
-            except Exception:
-                logger.warning("Error closing Redis client", exc_info=True)
-
-
-async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
-    """
-    Holt Labeling-Infos (asset_key, instrument_uid) aus dem Unified Symbol Registry.
-    Nur für Exchanges die in SYMBOL_LABELS_EXCHANGES (ENV) aktiviert sind.
-    
-    ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
-    
-    Wenn Exchange NICHT in Liste: Simple Format, KEINE Warnings!
-    """
-    import os
-    
-    # ENV lesen
-    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
-    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
-    
-    # Wenn Exchange NICHT enabled: Simple Format, KEINE Registry, KEINE Warnings!
-    if exchange.lower() not in enabled_exchanges:
-        return {
-            "asset_key": f"{exchange}/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
-        }
-    
-    # Nur für ENABLED Exchanges: Symbol Registry nutzen
-    try:
-        # market_type mapping: spot → SPOT, usdtm/coinm/futures → USDTM
-        if market_type == "spot":
-            market = Market.SPOT
-        else:
-            market = Market.USDTM  # Default für alle Futures-Typen
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
-        meta = next(
-            (
-                x
-                for x in catalog
-                if x.get("native_symbol", "").upper()
-                == native_symbol.upper()
-            ),
-            None,
-        )
-
-        if meta:
-            return {
-                "asset_key": meta.get("asset_key"),
-                "instrument_uid": meta.get("instrument_uid"),
-            }
-
-        logger.warning(
-            "No labels found for %s:%s:%s",
-            exchange,
-            native_symbol,
-            market_type,
-        )
-        return {
-            "asset_key": f"UNKNOWN/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
-        }
-
-    except Exception as e:
-        logger.error(
-            "Error getting labels for %s:%s: %s",
-            exchange,
-            native_symbol,
-            str(e),
-            exc_info=True,
-        )
-        return {
-            "asset_key": f"ERROR/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
-        }
-
-
-async def run_unified_aggregator():
-    """
-    ENTRYPOINT für den Unified Aggregator.
-
-    Nutzt das Discovery-System (discover_trade_streams), um dynamisch
-    die relevanten Trade-Streams zu finden, und startet dann
-    consume_trades() auf dieser Menge.
-    """
-    from backend.core.config import settings
-
-    aggregator = UnifiedAggregator(settings.REDIS_URL)
-    # WICHTIG: Redis-Client initialisieren
-    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-    retry_interval = 30
-
-    logger.info("🚀 Unified Aggregator starting with Stream Discovery System")
-    
-    # 🔥 KRITISCH: ClickHouse Manager initialisieren (registriert Lanes)
-    logger.info("🔧 Initializing ClickHouse Manager...")
-    await cl_manager_instance.initialize()
-    logger.info("✅ ClickHouse Manager initialized with all lanes")
-    
-    # 🔥 KRITISCH: ClickHouse Handler Workers starten
-    logger.info("🔧 Starting ClickHouse message handlers...")
-    await cl_handlers_instance.start_processing(num_workers=3)
-    logger.info("✅ ClickHouse handlers started with 3 workers")
-
-    try:
-        while True:
-            try:
-                redis_conn = getattr(aggregator, "r", None)
-                if redis_conn is None:
-                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
-
-                per_exchange_limit = get_streams_per_exchange()
-
-                streams, active_symbols, existing_streams = await discover_trade_streams(
-                    redis_conn,
-                    per_exchange_limit=per_exchange_limit,
-                )
-
-                if not existing_streams:
-                    logger.warning(
-                        "⏳ No trade streams found in Redis – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                if not streams:
-                    logger.warning(
-                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                logger.info(
-                    "📡 Found %d existing trade streams in Redis", len(existing_streams)
-                )
-                logger.info("📋 Active symbols from config: %s", active_symbols)
-                logger.info(
-                    "📊 Final stream count: %d (limit %d per exchange)",
-                    len(streams),
-                    per_exchange_limit,
-                )
-
-                await aggregator.consume_trades(streams)
-
-                logger.warning(
-                    "⏳ Trade consumer returned – retrying discovery in %ds...",
-                    retry_interval,
-                )
-                await asyncio.sleep(retry_interval)
-
-            except asyncio.CancelledError:
-                logger.info("🛑 Unified Aggregator shutdown signal received")
-                await aggregator.stop()
-                break
-            except Exception as e:
-                logger.error(
-                    "❌ Error in Unified Aggregator main loop: %s – retrying in %ds...",
-                    str(e),
-                    retry_interval,
-                    exc_info=True,
-                )
-                await asyncio.sleep(retry_interval)
-    finally:
-        await aggregator.stop()
-        logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
-<file path="backend/services/usecases/unified_historical.py">
-import asyncio
-import logging
-import time
-from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
-
-# ✅ TASK 25: Unified Historical Service - ClickHouse Integration
-from backend.database.clickhouse import unified_cl_service
-
-logger = logging.getLogger("unified-historical")
-
-
-class UnifiedHistoricalService:
-    """
-    🚀 UNIFIED HISTORICAL SERVICE - GENERISCH FÜR ALLE 8 EXCHANGES
-
-    Ersetzt 8x Historical Service Duplikate → 1x Service
-    """
-
-    def __init__(self, exchange_name: str):
-        self.exchange_name = exchange_name.lower()
-        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
-
-        # Exchange-spezifische Komponenten (generisch geladen)
-        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
-        self.rate_limiter = WebSocketRateLimiter(
-            RateLimitConfig.from_env(self.exchange_name.upper())
-        )
-        self.exchange_config = self._load_exchange_config()
-
-        # ✅ Health-System Integration (generisch für alle Exchanges)
-        self.health_lane = None
-        try:
-            from backend.health import health_registry
-            self.health_lane = health_registry.register_component(
-                "historical", 
-                f"{self.exchange_name}_backfill"
-            )
-            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
-        except Exception as e:
-            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
-
-        # Performance Settings
-        self.batch_size = 500  # Optimiert für Bulk-Inserts
-
-    def _load_exchange_config(self):
-        """Dynamisch Exchange Config laden"""
-        try:
-            import importlib
-
-            config_module = f"backend.exchanges.{self.exchange_name}.config"
-            config_attr = f"{self.exchange_name}_config"
-
-            module = importlib.import_module(config_module)
-            return getattr(module, config_attr)
-        except Exception as e:
-            self.logger.warning(
-                f"Could not load config for {self.exchange_name}: {e}"
-            )
-            return None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self.rest_api:
-            await self.rest_api.close()
-
-    async def history(
-        self,
-        symbol: str,
-        market_type: str,
-        end_date: datetime,
-        interval: str = "1m",
-        limit: int = 1000,
-        to_date: Optional[datetime] = None,  # ✅ NEU - Cursor für deterministisches Fenster
-    ) -> int:
-        """
-        Generischer Historical Backfill für alle Exchanges.
-
-        Erwartet Interval-Strings im globalen Format:
-        '1s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h',
-        '8h', '12h', '1d', '3d', '1w', '1M'
-        
-        ✅ WICHTIG - Intervall-Definition:
-        - end_date: INKLUSIV (lower bound) - lädt ab diesem Zeitpunkt
-        - to_date: EXKLUSIV (upper bound) - lädt bis (aber nicht inklusive) diesem Zeitpunkt
-        
-        Beispiel:
-            end_date=2024-01-01 00:00:00, to_date=2024-01-01 01:00:00
-            → lädt Trades: 00:00:00.000 bis 00:59:59.999 (nicht 01:00:00.000!)
-        
-        Die Exchange-API params[endTime] wird auf to_date_ms - 1 gesetzt (konservativ,
-        funktioniert für alle Exchanges mit inklusivem endTime).
-        """
-        self.logger.info(
-            f"� {self.exchange_name.title()} Backfilling {symbol} until {end_date} ({interval})"
-        )
-
-        # Einheitlicher Intervall-Namensraum (identisch zu Routern/Configs)
-        interval_map = {
-            "1s": "1s",      # Premium only
-            "1m": "1m",
-            "3m": "3m",
-            "5m": "5m",
-            "15m": "15m",
-            "30m": "30m",
-            "1h": "1h",
-            "2h": "2h",
-            "4h": "4h",
-            "6h": "6h",
-            "8h": "8h",
-            "12h": "12h",
-            "1d": "1d",
-            "3d": "3d",
-            "1w": "1w",
-            "1M": "1M",
-        }
-
-        if interval not in interval_map:
-            raise ValueError(f"Unsupported interval: {interval}")
-
-        # Premium check (generisch)
-        if (
-            interval == "1s"
-            and self.exchange_config
-            and not getattr(self.exchange_config, "is_premium", False)
-        ):
-            raise ValueError(
-                f"1s interval requires premium account for {self.exchange_name}"
-            )
-
-        # ✅ BLOCKER 1 FIX: Deterministischer Cursor (to_date)
-        # Timezone normalisieren
-        if end_date.tzinfo is None:
-            end_date = end_date.replace(tzinfo=timezone.utc)
-        else:
-            end_date = end_date.astimezone(timezone.utc)
-        
-        until_timestamp = int(end_date.timestamp() * 1000)
-        
-        # Cursor-Ende: to_date (deterministisch) statt now() (nicht-deterministisch)
-        if to_date is None:
-            to_date = datetime.now(timezone.utc)
-        else:
-            if to_date.tzinfo is None:
-                to_date = to_date.replace(tzinfo=timezone.utc)
-            else:
-                to_date = to_date.astimezone(timezone.utc)
-        
-        t_end = int(to_date.timestamp() * 1000)  # ✅ Cursor-Ende (deterministisch)
-        window_size = 3600 * 1000  # 1 Stunde (3600 Sekunden * 1000 ms)
-        t_start = max(t_end - window_size, until_timestamp)
-
-        # ✅ BLOCKER 1 FIX: to_date EXKLUSIV garantieren
-        # Konservative Lösung: endTime = to_date - 1ms (funktioniert für alle Exchanges mit inklusivem endTime)
-        # Falls Exchange exklusives endTime hat, verlieren wir 1ms (meist irrelevant für Trades)
-        params = {
-            "symbol": symbol,
-            "limit": min(limit, 1000),
-            "startTime": t_start,           # INKLUSIV lower bound
-            "endTime": t_end - 1,           # ✅ to_date - 1ms = exklusiv garantiert
-        }
-
-        self.logger.info(
-            f"📊 {self.exchange_name.title()} Backfilling {symbol} "
-            f"FROM {datetime.fromtimestamp(until_timestamp/1000).strftime('%Y-%m-%d')} "
-            f"TO {datetime.fromtimestamp(t_end/1000).strftime('%Y-%m-%d %H:%M:%S')} (window: 1h, rückwärts)"
-        )
-
-        # Batch-Verarbeitung
-        all_trades: List[Dict] = []
-        total_trades = 0
-        batch_count = 0
-        empty_windows = 0  # Zähler für leere Fenster
-
-        # ✅ BLOCKER 2 FIX: Korrekte While-Bedingung (t_end > until_timestamp)
-        while t_end > until_timestamp and total_trades < limit:
-            # Rate Limiting
-            await self.rate_limiter.acquire()
-            
-            # ✅ Daten abrufen (generisch mit Health-Integration)
-            try:
-                if market_type == "spot":
-                    # ✅ Check ob Methode existiert (für Candles, nicht Trades)
-                    if not hasattr(self.rest_api, 'fetch_spot_candles'):
-                        self._report_not_implemented("fetch_spot_candles", market_type, symbol)
-                        return 0  # Graceful exit - System läuft weiter
-                    response = await self.rest_api.fetch_spot_candles(**params)
-                else:
-                    if not hasattr(self.rest_api, 'fetch_futures_candles'):
-                        self._report_not_implemented("fetch_futures_candles", market_type, symbol)
-                        return 0  # Graceful exit - System läuft weiter
-                    response = await self.rest_api.fetch_futures_candles(**params)
-                
-                # ✅ Success: Report zu Health-System
-                if self.health_lane and response:
-                    self.health_lane.record_success({
-                        "candles_fetched": len(response),
-                        "market": market_type,
-                        "symbol": symbol
-                    })
-                    
-            except AttributeError as e:
-                # Methode fehlt - Report und graceful exit
-                self._report_not_implemented(str(e), market_type, symbol)
-                return 0
-            except Exception as e:
-                # Anderer Fehler - Report zu Health und continue
-                if self.health_lane:
-                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
-                self.logger.error(
-                    f"API fetch failed for {self.exchange_name}: {e}", 
-                    exc_info=True
-                )
-                # ✅ BLOCKER 2 FIX: Fenster rückwärts schieben
-                t_end = t_start
-                t_start = max(t_end - window_size, until_timestamp)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
-                continue
-            
-            if not response or len(response) == 0:
-                # Leeres Fenster - weitermachen
-                empty_windows += 1
-                if empty_windows % 10 == 0:
-                    self.logger.debug(f"📭 {empty_windows} empty windows encountered")
-                
-                # ✅ BLOCKER 2 FIX: Zeitfenster rückwärts verschieben
-                t_end = t_start
-                t_start = max(t_end - window_size, until_timestamp)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
-                continue
-            
-            trades = response
-            all_trades.extend(trades)
-            total_trades += len(trades)
-            
-            # Progress-Logging alle 5000 Trades
-            if total_trades % 5000 == 0:
-                current_date = datetime.fromtimestamp(t_start/1000)
-                self.logger.info(
-                    f"📊 Progress: {total_trades:,} trades loaded, "
-                    f"currently at {current_date.strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-            
-            # Batch voll? Speichern und leeren
-            if len(all_trades) >= self.batch_size:
-                await self._store_batch(symbol, market_type, all_trades)
-                batch_count += 1
-                self.logger.debug(f"💾 Batch {batch_count} stored ({len(all_trades)} trades)")
-                all_trades = []
-            
-            # ✅ BLOCKER 2 FIX: Zeitfenster RÜCKWÄRTS verschieben
-            t_end = t_start
-            t_start = max(t_end - window_size, until_timestamp)
-            
-            # Params für nächste Iteration aktualisieren
-            params["startTime"] = t_start
-            params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
-
-        # Restliche Daten speichern
-        if all_trades:
-            await self._store_batch(symbol, market_type, all_trades)
-            batch_count += 1
-
-        self.logger.info(
-            f"✅ {self.exchange_name.title()} Backfill completed: "
-            f"{total_trades} trades in {batch_count} batches"
-        )
-        return total_trades
-
-    async def _store_batch(
-        self,
-        symbol: str,
-        market_type: str,
-        trades: List[Dict[str, Any]],
-    ):
-        """
-        Store RAW Trades (ClickHouse only - Redis nicht nötig für Historical)
-        
-        ⚠️ WICHTIG: Erwartet bereits UNIFIED Trades vom REST-Layer!
-        Keine Exchange-spezifischen Felder (qty, isBuyerMaker, etc.) hier!
-        
-        Redis ist NUR für Live-Streaming relevant.
-        Historical Trades gehen direkt in ClickHouse.
-        """
-        try:
-            clickhouse_tasks = []
-            
-            for trade in trades:
-                try:
-                    # ✅ Komplett generisch - Trades sind bereits unified!
-                    # ⚠️ WICHTIG: trade_id NICHT senden - ClickHouse generiert es automatisch (MATERIALIZED)!
-                    trade_data = {
-                        "symbol": trade.get("symbol", symbol),
-                        "market": trade.get("market", market_type),
-                        "price": str(trade["price"]),            # Schon unified
-                        "size": str(trade["size"]),              # Schon unified
-                        "side": trade["side"],                   # Schon unified
-                        "timestamp": int(trade["timestamp"]),    # Schon unified
-                        "source": "rest_backfill",
-                    }
-                    
-                    clickhouse_tasks.append(
-                        unified_cl_service.insert_trades(
-                            self.exchange_name, trade_data
-                        )
-                    )
-                    
-                except Exception as trade_error:
-                    self.logger.warning(
-                        f"Trade transform failed for {self.exchange_name}: {trade_error}"
-                    )
-            
-            # Parallel execution
-            if clickhouse_tasks:
-                clickhouse_results = await asyncio.gather(
-                    *clickhouse_tasks, return_exceptions=True
-                )
-                
-                # Error counting
-                clickhouse_errors = sum(
-                    1 for r in clickhouse_results if isinstance(r, Exception)
-                )
-                
-                if clickhouse_errors > 0:
-                    self.logger.warning(
-                        f"💾 {self.exchange_name} batch stored with errors: "
-                        f"ClickHouse({clickhouse_errors}/{len(trades)})"
-                    )
-                else:
-                    self.logger.debug(
-                        f"💾 {self.exchange_name} batch of {len(trades)} trades stored successfully"
-                    )
-            
-        except Exception as e:
-            self.logger.error(
-                f"❌ {self.exchange_name} batch storage failed: {str(e)}",
-                exc_info=True,
-            )
-
-    async def get_available_intervals(
-        self, symbol: str, market_type: str
-    ) -> Dict[str, Any]:
-        """Ermittelt verfügbare Intervalle für Symbol (generisch)"""
-        self.logger.info(
-            f"🔍 Checking available intervals for {symbol} on {self.exchange_name} ({market_type})"
-        )
-
-        try:
-            available_intervals: List[Dict[str, Any]] = []
-            test_end_date = datetime.now(timezone.utc)
-
-            # Standard-Intervalle testen; falls Exchange-Config vorhanden,
-            # bevorzugt deren Definition (z. B. ['1m', '5m', ...])
-            if self.exchange_config and hasattr(
-                self.exchange_config, "supported_intervals"
-            ):
-                standard_intervals = getattr(
-                    self.exchange_config,
-                    "supported_intervals",
-                    ["1m", "5m", "15m", "1h", "4h", "1d"],
-                )
-            else:
-                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
-
-            # Falls Config-Format kein reines List[str] ist, hier hart auf Strings normalisieren
-            standard_intervals = [
-                i["value"] if isinstance(i, dict) and "value" in i else i
-                for i in standard_intervals
-            ]
-
-            for interval in standard_intervals:
-                try:
-                    # Rate Limiting beachten
-                    await self.rate_limiter.acquire()
-
-                    # API-Parameter
-                    params = {
-                        "symbol": symbol,
-                        "interval": interval,
-                        "limit": 1,
-                        "endTime": int(test_end_date.timestamp() * 1000),
-                    }
-
-                    # API-Aufruf
-                    if market_type == "spot":
-                        response = await self.rest_api.fetch_spot_candles(**params)
-                    else:
-                        response = await self.rest_api.fetch_futures_candles(
-                            **params
-                        )
-
-                    if response:
-                        resolution_seconds = self._interval_to_seconds(interval)
-                        available_intervals.append(
-                            {
-                                "interval": interval,
-                                "resolution_seconds": resolution_seconds,
-                                "human_readable": self._seconds_to_human(
-                                    resolution_seconds
-                                ),
-                                "supported": True,
-                            }
-                        )
-
-                except Exception as e:
-                    self.logger.debug(
-                        f"Interval {interval} not available for "
-                        f"{symbol} on {self.exchange_name}: {e}"
-                    )
-                    continue
-
-            return {
-                "exchange": self.exchange_name,
-                "symbol": symbol,
-                "market_type": market_type,
-                "available_intervals": available_intervals,
-                "total_count": len(available_intervals),
-                "account_type": "premium"
-                if self.exchange_config
-                and getattr(self.exchange_config, "is_premium", False)
-                else "free",
-            }
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
-                exc_info=True,
-            )
-            return {"error": str(e)}
-
-    def _interval_to_seconds(self, interval: str) -> int:
-        """Konvertiert Interval-String zu Sekunden"""
-        interval_seconds = {
-            "1s": 1,
-            "1m": 60,
-            "3m": 180,
-            "5m": 300,
-            "15m": 900,
-            "30m": 1800,
-            "1h": 3600,
-            "2h": 7200,
-            "4h": 14400,
-            "6h": 21600,
-            "8h": 28800,
-            "12h": 43200,
-            "1d": 86400,
-            "3d": 259200,
-            "1w": 604800,
-            "1M": 2592000,
-        }
-        return interval_seconds.get(interval, 60)
-
-    def _seconds_to_human(self, seconds: int) -> str:
-        """Konvertiert Sekunden zu menschenlesbarem Format"""
-        if seconds < 60:
-            return f"{seconds}s"
-        elif seconds < 3600:
-            return f"{seconds // 60}min"
-        elif seconds < 86400:
-            return f"{seconds // 3600}h"
-        elif seconds < 604800:
-            return f"{seconds // 86400}d"
-        else:
-            return f"{seconds // 604800}w"
-
-    def _report_not_implemented(self, method: str, market_type: str, symbol: str):
-        """
-        ✅ Report fehlende Implementierung an Health-System (generisch für alle Exchanges)
-        
-        Args:
-            method: Name der fehlenden Methode (z.B. 'fetch_spot_candles')
-            market_type: Market type (spot/futures)
-            symbol: Trading symbol
-        """
-        error_msg = (
-            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
-            f"Historical backfill not available for {symbol}. "
-            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
-        )
-        
-        # ✅ Health-System Reporting (nutzt bestehendes HealthLane System)
-        if self.health_lane:
-            self.health_lane.record_error(error_msg)
-        
-        # ✅ Logger Warning (sichtbar in Logs)
-        self.logger.warning(
-            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
-            f"{method} not implemented for {market_type}. "
-            f"Add method to rest_api.py to enable historical data collection."
-        )
-
-    async def bulk_backfill(
-        self,
-        symbols: List[str],
-        market_type: str,
-        intervals: List[str],
-        end_date: datetime,
-        limit: int = 1000,
-    ) -> Dict[str, Any]:
-        """Bulk-Backfill für mehrere Symbole und Intervalle"""
-        self.logger.info(
-            f"🔄 {self.exchange_name.title()} bulk backfill: "
-            f"{len(symbols)} symbols, {len(intervals)} intervals"
-        )
-
-        total_tasks = len(symbols) * len(intervals)
-        completed_tasks = 0
-        results: Dict[str, Dict[str, Any]] = {}
-
-        for symbol in symbols:
-            results[symbol] = {}
-            for interval in intervals:
-                try:
-                    trade_count = await self.history(
-                        symbol, market_type, end_date, interval, limit
-                    )
-                    results[symbol][interval] = {
-                        "success": True,
-                        "trades": trade_count,
-                    }
-                    completed_tasks += 1
-                    self.logger.info(
-                        f"Progress: {completed_tasks}/{total_tasks} - "
-                        f"{self.exchange_name} {symbol} {interval}: {trade_count} trades"
-                    )
-
-                except Exception as e:
-                    results[symbol][interval] = {
-                        "success": False,
-                        "error": str(e),
-                    }
-                    completed_tasks += 1
-                    self.logger.error(
-                        f"Failed {self.exchange_name} {symbol} {interval}: {e}",
-                        exc_info=True,
-                    )
-
-        self.logger.info(
-            f"✅ {self.exchange_name.title()} bulk backfill completed: "
-            f"{completed_tasks}/{total_tasks} tasks"
-        )
-        return results
-
-
-# ✅ FACTORY FUNCTIONS - LEGACY COMPATIBILITY
-# Diese ersetzen die bisherigen XxxBackfill Klassen
-
-def get_binance_backfill():
-    """Factory für Binance Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("binance")
-
-
-def get_gateio_backfill():
-    """Factory für GateIO Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("gateio")
-
-
-def get_bybit_backfill():
-    """Factory für Bybit Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("bybit")
-
-
-def get_mexc_backfill():
-    """Factory für MEXC Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("mexc")
-
-
-def get_bitget_backfill():
-    """Factory für Bitget Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("bitget")
-
-
-def get_okx_backfill():
-    """Factory für OKX Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("okx")
-
-
-def get_htx_backfill():
-    """Factory für HTX Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("htx")
-
-
-def get_coinbase_backfill():
-    """Factory für Coinbase Historical - Legacy Compatibility"""
-    return UnifiedHistoricalService("coinbase")
-
-
-# ✅ AUTO-DISCOVERY FUNCTION - Für unified_trade_api.py Integration
-def get_available_backfill_services():
-    """
-    Returns dictionary of all available backfill services.
-    Used by unified_trade_api.py for auto-discovery.
-    """
-    return {
-        "binance": get_binance_backfill,
-        "gateio": get_gateio_backfill,
-        "bybit": get_bybit_backfill,
-        "mexc": get_mexc_backfill,
-        "bitget": get_bitget_backfill,
-        "okx": get_okx_backfill,
-        "htx": get_htx_backfill,
-        "coinbase": get_coinbase_backfill,
-    }
-</file>
-
 <file path="monitor-system.sh">
 #!/usr/bin/env bash
 # =============================================================================
@@ -173236,6 +171888,1702 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
+</file>
+
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+</file>
+
+<file path="backend/services/adapter/unified_aggregator.py">
+import asyncio
+import logging
+import json
+from datetime import datetime
+from decimal import Decimal
+
+from redis.exceptions import ResponseError, ConnectionError
+from redis import asyncio as aioredis
+
+from backend.services.adapter.whale_detector import WhaleDetector
+from backend.database.clickhouse import get_clickhouse_client, cl_handlers_instance, cl_manager_instance
+
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+from backend.services.discovery.dis_trades import discover_trade_streams
+from backend.services.discovery.dis_config import get_streams_per_exchange
+
+# Candle-Aggregation Imports
+from backend.services.adapter.stream_aggregator import registry, MultiResCandleAgg
+
+logger = logging.getLogger("unified_aggregator")
+
+
+class UnifiedAggregator:
+    """
+    Zentraler Aggregator für Trades:
+    - konsumiert Redis-Streams (discover_trade_streams)
+    - schreibt Trades nach ClickHouse
+    - triggert Candle-Aggregation (MultiResCandleAgg)
+    - triggert Whale Detection
+    """
+
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
+        self.r = None  # Redis-Client, wird in run_unified_aggregator gesetzt
+        self.group = "unified_agg_group"
+        self.consumer = "unified_consumer"
+        self.running = True
+        self.whale_detector = WhaleDetector()
+        self.ch_client = get_clickhouse_client()
+        self.agg = MultiResCandleAgg()
+
+    async def process_and_store_trade(self, trade_data: dict):
+        """
+        Whale-Detection-Logik für einzelnen Trade.
+        """
+        try:
+            symbol = trade_data.get("symbol")
+            price = str(trade_data.get("price", "0"))
+            size = str(trade_data.get("size", "0"))
+
+            if not symbol:
+                return
+
+            trade_value = Decimal(price) * Decimal(size)
+            threshold = await self.whale_detector.get_threshold(symbol)
+
+            if trade_value >= threshold:
+                await self.store_whale_trade(trade_data)
+
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error processing trade data: {e}, data: {trade_data}")
+        except Exception:
+            logger.error("Unexpected error in process_and_store_trade", exc_info=True)
+
+    async def store_whale_trade(self, trade: dict):
+        """
+        Aggregiert und speichert Whale-Trades in ClickHouse.
+        """
+        try:
+            ts = datetime.fromtimestamp(int(trade["timestamp"]) / 1000)
+            time_bucket = ts.replace(second=0, microsecond=0)
+
+            total_volume = Decimal(str(trade["price"])) * Decimal(str(trade["size"]))
+
+            params = {
+                "exchange": trade["exchange"],
+                "symbol": trade["symbol"],
+                "time_bucket": time_bucket,
+                "total_volume": float(total_volume),           # R0.1: Scalar statt Tuple
+                "avg_price": float(str(trade["price"])),       # R0.1: Scalar statt Tuple
+                "whale_count": 1,                              # R0.1: Scalar statt Tuple
+            }
+
+            query = """
+            INSERT INTO whale_orders (
+                exchange,
+                symbol,
+                time_bucket,
+                total_volume,
+                avg_price,
+                whale_count
+            )
+            VALUES (
+                %(exchange)s,
+                %(symbol)s,
+                %(time_bucket)s,
+                %(total_volume)s,
+                %(avg_price)s,
+                %(whale_count)s
+            )
+            """
+
+            await self.ch_client.execute(query, params)
+            logger.info("Stored whale trade for %s", trade["symbol"])
+        except Exception:
+            logger.error("Failed to store whale trade", exc_info=True)
+
+    async def consume_trades(self, streams):
+        """
+        Konsumiert Trades aus den angegebenen Redis-Streams.
+
+        Erwartetes Stream-Format:
+            <exchange>:trades:<market_type>:<symbol>
+        z.B.:
+            binance:trades:spot:BTCUSDT
+        """
+        if not streams:
+            logger.error("No streams provided to consume_trades")
+            return
+
+        # Defensive: nur existierende Streams mit Consumer-Group initialisieren
+        active_streams = []
+        for stream_key in streams:
+            try:
+                exists = await self.r.exists(stream_key)
+                if exists:
+                    active_streams.append(stream_key)
+                    try:
+                        await self.r.xgroup_create(
+                            stream_key, self.group, id="0", mkstream=True
+                        )
+                    except ResponseError as e:
+                        if "BUSYGROUP" not in str(e):
+                            raise
+                else:
+                    logger.debug("Stream does not exist yet: %s", stream_key)
+            except Exception as e:
+                logger.warning("Stream check failed for %s: %s", stream_key, str(e))
+
+        if not active_streams:
+            logger.error("No active streams found - cannot consume")
+            return
+
+        logger.info(
+            "✅ Consumer groups initialized for %d/%d active streams",
+            len(active_streams),
+            len(streams),
+        )
+        streams = active_streams
+
+        while self.running:
+            try:
+                stream_dict = {s: ">" for s in streams}
+                messages = await self.r.xreadgroup(
+                    groupname=self.group,
+                    consumername=self.consumer,
+                    streams=stream_dict,
+                    count=100,
+                    block=5000,
+                )
+
+                if not messages:
+                    continue
+
+                for stream_key, msgs in messages:
+                    for msg_id, data in msgs:
+                        try:
+                            raw = data.get("trade")
+                            if not raw:
+                                logger.warning(
+                                    "Missing 'trade' field in message %s", msg_id
+                                )
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            trade = json.loads(raw)
+
+                            parts = stream_key.split(":", 3)
+                            if len(parts) != 4:
+                                logger.warning(
+                                    "Unexpected stream key format: %s", stream_key
+                                )
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            exchange, _, market_type, symbol = parts
+
+                            trade_id = (
+                                trade.get("trade_id")
+                                or trade.get("id")
+                                or ""
+                            )
+                            price = trade.get("price")
+                            size = trade.get("size")
+                            side = trade.get("side")
+                            timestamp = (
+                                trade.get("timestamp")
+                                or trade.get("ts")
+                                or trade.get("time")
+                            )
+                            market = trade.get("market", market_type)
+
+                            if not symbol:
+                                symbol = trade.get("symbol")
+
+                            if not all([symbol, timestamp, price, size]):
+                                logger.warning(
+                                    "Incomplete trade data in %s: %s",
+                                    stream_key,
+                                    trade,
+                                )
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            # ClickHouse-Queue
+                            await self._queue_trade_for_clickhouse(
+                                exchange=exchange,
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                price=price,
+                                size=size,
+                                side=side,
+                                timestamp=timestamp,
+                            )
+
+                            # Candle-Aggregation
+                            res_map = registry.list(exchange, symbol)
+                            if res_map:
+                                _finished = self.agg.on_trade(
+                                    exchange,
+                                    symbol,
+                                    market,
+                                    timestamp,
+                                    price,
+                                    size,
+                                    res_map,
+                                )
+
+                            # Whale-Detection
+                            whale_trade = {
+                                "exchange": exchange,
+                                "symbol": symbol,
+                                "price": price,
+                                "size": size,
+                                "timestamp": timestamp,
+                            }
+                            await self.process_and_store_trade(whale_trade)
+
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                        except json.JSONDecodeError as e:
+                            logger.error(
+                                "JSON decode error for message %s: %s",
+                                msg_id,
+                                str(e),
+                            )
+                            await self.r.xack(stream_key, self.group, msg_id)
+                        except Exception as e:
+                            logger.error(
+                                "Error processing message %s from %s: %s",
+                                msg_id,
+                                stream_key,
+                                str(e),
+                                exc_info=True,
+                            )
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+            except (ConnectionError, ResponseError) as e:
+                logger.error("Redis error in consume_trades: %s", str(e))
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(
+                    "Unexpected error in consume_trades: %s", str(e), exc_info=True
+                )
+                await asyncio.sleep(1)
+
+    async def _queue_trade_for_clickhouse(
+        self,
+        exchange: str,
+        trade_id: str,
+        symbol: str,
+        market: str,
+        price,
+        size,
+        side,
+        timestamp,
+    ):
+        """
+        Schiebt Trades in die ClickHouse-Trade-Queue.
+        """
+        try:
+            labels = await get_symbol_labels(exchange, symbol, market)
+
+            trade_payload = {
+                "exchange": exchange,
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "market": market,
+                "price": Decimal(str(price)),
+                "size": Decimal(str(size)),
+                "side": side,
+                "timestamp": int(timestamp),
+                "asset_key": labels.get("asset_key"),
+                "instrument_uid": labels.get("instrument_uid"),
+            }
+
+            success = await cl_handlers_instance.queue_message(
+                exchange=exchange,
+                message_type="trades",
+                data=trade_payload
+            )
+            if not success:
+                logger.warning(
+                    "Failed to queue trade for ClickHouse: %s:%s",
+                    exchange,
+                    symbol,
+                )
+            else:
+                logger.debug(
+                    "✅ Queued trade %s:%s @ %s",
+                    exchange,
+                    symbol,
+                    str(price),
+                )
+        except Exception as e:
+            logger.error(
+                "Error queuing trade for ClickHouse: %s", str(e), exc_info=True
+            )
+
+    async def stop(self):
+        """
+        Stoppt den Aggregator sauber.
+        """
+        self.running = False
+        logger.info("UnifiedAggregator wird gestoppt...")
+        if self.r is not None:
+            try:
+                await self.r.close()
+            except Exception:
+                logger.warning("Error closing Redis client", exc_info=True)
+
+
+async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
+    """
+    Holt Labeling-Infos (asset_key, instrument_uid) aus dem Unified Symbol Registry.
+    Nur für Exchanges die in SYMBOL_LABELS_EXCHANGES (ENV) aktiviert sind.
+    
+    ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
+    
+    Wenn Exchange NICHT in Liste: Simple Format, KEINE Warnings!
+    """
+    import os
+    
+    # ENV lesen
+    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
+    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
+    
+    # Wenn Exchange NICHT enabled: Simple Format, KEINE Registry, KEINE Warnings!
+    if exchange.lower() not in enabled_exchanges:
+        return {
+            "asset_key": f"{exchange}/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
+        }
+    
+    # Nur für ENABLED Exchanges: Symbol Registry nutzen
+    try:
+        # market_type mapping: spot → SPOT, usdtm/coinm/futures → USDTM
+        if market_type == "spot":
+            market = Market.SPOT
+        else:
+            market = Market.USDTM  # Default für alle Futures-Typen
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
+        meta = next(
+            (
+                x
+                for x in catalog
+                if x.get("native_symbol", "").upper()
+                == native_symbol.upper()
+            ),
+            None,
+        )
+
+        if meta:
+            return {
+                "asset_key": meta.get("asset_key"),
+                "instrument_uid": meta.get("instrument_uid"),
+            }
+
+        logger.warning(
+            "No labels found for %s:%s:%s",
+            exchange,
+            native_symbol,
+            market_type,
+        )
+        return {
+            "asset_key": f"UNKNOWN/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
+        }
+
+    except Exception as e:
+        logger.error(
+            "Error getting labels for %s:%s: %s",
+            exchange,
+            native_symbol,
+            str(e),
+            exc_info=True,
+        )
+        return {
+            "asset_key": f"ERROR/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
+        }
+
+
+async def run_unified_aggregator():
+    """
+    ENTRYPOINT für den Unified Aggregator.
+
+    Nutzt das Discovery-System (discover_trade_streams), um dynamisch
+    die relevanten Trade-Streams zu finden, und startet dann
+    consume_trades() auf dieser Menge.
+    """
+    from backend.core.config import settings
+
+    aggregator = UnifiedAggregator(settings.REDIS_URL)
+    # WICHTIG: Redis-Client initialisieren
+    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    retry_interval = 30
+
+    logger.info("🚀 Unified Aggregator starting with Stream Discovery System")
+    
+    # 🔥 KRITISCH: ClickHouse Manager initialisieren (registriert Lanes)
+    logger.info("🔧 Initializing ClickHouse Manager...")
+    await cl_manager_instance.initialize()
+    logger.info("✅ ClickHouse Manager initialized with all lanes")
+    
+    # 🔥 KRITISCH: ClickHouse Handler Workers starten
+    logger.info("🔧 Starting ClickHouse message handlers...")
+    await cl_handlers_instance.start_processing(num_workers=3)
+    logger.info("✅ ClickHouse handlers started with 3 workers")
+
+    try:
+        while True:
+            try:
+                redis_conn = getattr(aggregator, "r", None)
+                if redis_conn is None:
+                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
+
+                per_exchange_limit = get_streams_per_exchange()
+
+                streams, active_symbols, existing_streams = await discover_trade_streams(
+                    redis_conn,
+                    per_exchange_limit=per_exchange_limit,
+                )
+
+                if not existing_streams:
+                    logger.warning(
+                        "⏳ No trade streams found in Redis – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                if not streams:
+                    logger.warning(
+                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                logger.info(
+                    "📡 Found %d existing trade streams in Redis", len(existing_streams)
+                )
+                logger.info("📋 Active symbols from config: %s", active_symbols)
+                logger.info(
+                    "📊 Final stream count: %d (limit %d per exchange)",
+                    len(streams),
+                    per_exchange_limit,
+                )
+
+                await aggregator.consume_trades(streams)
+
+                logger.warning(
+                    "⏳ Trade consumer returned – retrying discovery in %ds...",
+                    retry_interval,
+                )
+                await asyncio.sleep(retry_interval)
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Unified Aggregator shutdown signal received")
+                await aggregator.stop()
+                break
+            except Exception as e:
+                logger.error(
+                    "❌ Error in Unified Aggregator main loop: %s – retrying in %ds...",
+                    str(e),
+                    retry_interval,
+                    exc_info=True,
+                )
+                await asyncio.sleep(retry_interval)
+    finally:
+        await aggregator.stop()
+        logger.info("✅ Unified Aggregator stopped gracefully")
+</file>
+
+<file path="backend/services/usecases/unified_historical.py">
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Any, Optional
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
+
+# ✅ TASK 25: Unified Historical Service - ClickHouse Integration
+from backend.database.clickhouse import unified_cl_service
+
+logger = logging.getLogger("unified-historical")
+
+
+class UnifiedHistoricalService:
+    """
+    🚀 UNIFIED HISTORICAL SERVICE - GENERISCH FÜR ALLE 8 EXCHANGES
+
+    Ersetzt 8x Historical Service Duplikate → 1x Service
+    """
+
+    def __init__(self, exchange_name: str):
+        self.exchange_name = exchange_name.lower()
+        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
+
+        # Exchange-spezifische Komponenten (generisch geladen)
+        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
+        self.rate_limiter = WebSocketRateLimiter(
+            RateLimitConfig.from_env(self.exchange_name.upper())
+        )
+        self.exchange_config = self._load_exchange_config()
+
+        # ✅ Health-System Integration (generisch für alle Exchanges)
+        self.health_lane = None
+        try:
+            from backend.health import health_registry
+            self.health_lane = health_registry.register_component(
+                "historical", 
+                f"{self.exchange_name}_backfill"
+            )
+            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
+        except Exception as e:
+            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
+
+        # Performance Settings
+        self.batch_size = 500  # Optimiert für Bulk-Inserts
+
+    def _load_exchange_config(self):
+        """Dynamisch Exchange Config laden"""
+        try:
+            import importlib
+
+            config_module = f"backend.exchanges.{self.exchange_name}.config"
+            config_attr = f"{self.exchange_name}_config"
+
+            module = importlib.import_module(config_module)
+            return getattr(module, config_attr)
+        except Exception as e:
+            self.logger.warning(
+                f"Could not load config for {self.exchange_name}: {e}"
+            )
+            return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.rest_api:
+            await self.rest_api.close()
+
+    async def history(
+        self,
+        symbol: str,
+        market_type: str,
+        end_date: datetime,
+        interval: str = "1m",
+        limit: int = 1000,
+        to_date: Optional[datetime] = None,  # ✅ NEU - Cursor für deterministisches Fenster
+    ) -> int:
+        """
+        Generischer Historical Backfill für alle Exchanges.
+
+        Erwartet Interval-Strings im globalen Format:
+        '1s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h',
+        '8h', '12h', '1d', '3d', '1w', '1M'
+        
+        ✅ WICHTIG - Intervall-Definition:
+        - end_date: INKLUSIV (lower bound) - lädt ab diesem Zeitpunkt
+        - to_date: EXKLUSIV (upper bound) - lädt bis (aber nicht inklusive) diesem Zeitpunkt
+        
+        Beispiel:
+            end_date=2024-01-01 00:00:00, to_date=2024-01-01 01:00:00
+            → lädt Trades: 00:00:00.000 bis 00:59:59.999 (nicht 01:00:00.000!)
+        
+        Die Exchange-API params[endTime] wird auf to_date_ms - 1 gesetzt (konservativ,
+        funktioniert für alle Exchanges mit inklusivem endTime).
+        """
+        self.logger.info(
+            f"� {self.exchange_name.title()} Backfilling {symbol} until {end_date} ({interval})"
+        )
+
+        # Einheitlicher Intervall-Namensraum (identisch zu Routern/Configs)
+        interval_map = {
+            "1s": "1s",      # Premium only
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "2h": "2h",
+            "4h": "4h",
+            "6h": "6h",
+            "8h": "8h",
+            "12h": "12h",
+            "1d": "1d",
+            "3d": "3d",
+            "1w": "1w",
+            "1M": "1M",
+        }
+
+        if interval not in interval_map:
+            raise ValueError(f"Unsupported interval: {interval}")
+
+        # Premium check (generisch)
+        if (
+            interval == "1s"
+            and self.exchange_config
+            and not getattr(self.exchange_config, "is_premium", False)
+        ):
+            raise ValueError(
+                f"1s interval requires premium account for {self.exchange_name}"
+            )
+
+        # ✅ BLOCKER 1 FIX: Deterministischer Cursor (to_date)
+        # Timezone normalisieren
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        else:
+            end_date = end_date.astimezone(timezone.utc)
+        
+        until_timestamp = int(end_date.timestamp() * 1000)
+        
+        # Cursor-Ende: to_date (deterministisch) statt now() (nicht-deterministisch)
+        if to_date is None:
+            to_date = datetime.now(timezone.utc)
+        else:
+            if to_date.tzinfo is None:
+                to_date = to_date.replace(tzinfo=timezone.utc)
+            else:
+                to_date = to_date.astimezone(timezone.utc)
+        
+        t_end = int(to_date.timestamp() * 1000)  # ✅ Cursor-Ende (deterministisch)
+        window_size = 3600 * 1000  # 1 Stunde (3600 Sekunden * 1000 ms)
+        t_start = max(t_end - window_size, until_timestamp)
+
+        # ✅ BLOCKER 1 FIX: to_date EXKLUSIV garantieren
+        # Konservative Lösung: endTime = to_date - 1ms (funktioniert für alle Exchanges mit inklusivem endTime)
+        # Falls Exchange exklusives endTime hat, verlieren wir 1ms (meist irrelevant für Trades)
+        params = {
+            "symbol": symbol,
+            "limit": min(limit, 1000),
+            "startTime": t_start,           # INKLUSIV lower bound
+            "endTime": t_end - 1,           # ✅ to_date - 1ms = exklusiv garantiert
+        }
+
+        self.logger.info(
+            f"📊 {self.exchange_name.title()} Backfilling {symbol} "
+            f"FROM {datetime.fromtimestamp(until_timestamp/1000).strftime('%Y-%m-%d')} "
+            f"TO {datetime.fromtimestamp(t_end/1000).strftime('%Y-%m-%d %H:%M:%S')} (window: 1h, rückwärts)"
+        )
+
+        # Batch-Verarbeitung
+        all_trades: List[Dict] = []
+        total_trades = 0
+        batch_count = 0
+        empty_windows = 0  # Zähler für leere Fenster
+
+        # ✅ BLOCKER 2 FIX: Korrekte While-Bedingung (t_end > until_timestamp)
+        while t_end > until_timestamp and total_trades < limit:
+            # Rate Limiting
+            await self.rate_limiter.acquire()
+            
+            # ✅ Daten abrufen (generisch mit Health-Integration)
+            try:
+                if market_type == "spot":
+                    # ✅ Check ob Methode existiert (für Candles, nicht Trades)
+                    if not hasattr(self.rest_api, 'fetch_spot_candles'):
+                        self._report_not_implemented("fetch_spot_candles", market_type, symbol)
+                        return 0  # Graceful exit - System läuft weiter
+                    response = await self.rest_api.fetch_spot_candles(**params)
+                else:
+                    if not hasattr(self.rest_api, 'fetch_futures_candles'):
+                        self._report_not_implemented("fetch_futures_candles", market_type, symbol)
+                        return 0  # Graceful exit - System läuft weiter
+                    response = await self.rest_api.fetch_futures_candles(**params)
+                
+                # ✅ Success: Report zu Health-System
+                if self.health_lane and response:
+                    self.health_lane.record_success({
+                        "candles_fetched": len(response),
+                        "market": market_type,
+                        "symbol": symbol
+                    })
+                    
+            except AttributeError as e:
+                # Methode fehlt - Report und graceful exit
+                self._report_not_implemented(str(e), market_type, symbol)
+                return 0
+            except Exception as e:
+                # Anderer Fehler - Report zu Health und continue
+                if self.health_lane:
+                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
+                self.logger.error(
+                    f"API fetch failed for {self.exchange_name}: {e}", 
+                    exc_info=True
+                )
+                # ✅ BLOCKER 2 FIX: Fenster rückwärts schieben
+                t_end = t_start
+                t_start = max(t_end - window_size, until_timestamp)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
+                continue
+            
+            if not response or len(response) == 0:
+                # Leeres Fenster - weitermachen
+                empty_windows += 1
+                if empty_windows % 10 == 0:
+                    self.logger.debug(f"📭 {empty_windows} empty windows encountered")
+                
+                # ✅ BLOCKER 2 FIX: Zeitfenster rückwärts verschieben
+                t_end = t_start
+                t_start = max(t_end - window_size, until_timestamp)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
+                continue
+            
+            trades = response
+            all_trades.extend(trades)
+            total_trades += len(trades)
+            
+            # Progress-Logging alle 5000 Trades
+            if total_trades % 5000 == 0:
+                current_date = datetime.fromtimestamp(t_start/1000)
+                self.logger.info(
+                    f"📊 Progress: {total_trades:,} trades loaded, "
+                    f"currently at {current_date.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            
+            # Batch voll? Speichern und leeren
+            if len(all_trades) >= self.batch_size:
+                await self._store_batch(symbol, market_type, all_trades)
+                batch_count += 1
+                self.logger.debug(f"💾 Batch {batch_count} stored ({len(all_trades)} trades)")
+                all_trades = []
+            
+            # ✅ BLOCKER 2 FIX: Zeitfenster RÜCKWÄRTS verschieben
+            t_end = t_start
+            t_start = max(t_end - window_size, until_timestamp)
+            
+            # Params für nächste Iteration aktualisieren
+            params["startTime"] = t_start
+            params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
+
+        # Restliche Daten speichern
+        if all_trades:
+            await self._store_batch(symbol, market_type, all_trades)
+            batch_count += 1
+
+        self.logger.info(
+            f"✅ {self.exchange_name.title()} Backfill completed: "
+            f"{total_trades} trades in {batch_count} batches"
+        )
+        return total_trades
+
+    async def _store_batch(
+        self,
+        symbol: str,
+        market_type: str,
+        trades: List[Dict[str, Any]],
+    ):
+        """
+        Store RAW Trades (ClickHouse only - Redis nicht nötig für Historical)
+        
+        ⚠️ WICHTIG: Erwartet bereits UNIFIED Trades vom REST-Layer!
+        Keine Exchange-spezifischen Felder (qty, isBuyerMaker, etc.) hier!
+        
+        Redis ist NUR für Live-Streaming relevant.
+        Historical Trades gehen direkt in ClickHouse.
+        """
+        try:
+            clickhouse_tasks = []
+            
+            for trade in trades:
+                try:
+                    # ✅ Komplett generisch - Trades sind bereits unified!
+                    # ⚠️ WICHTIG: trade_id NICHT senden - ClickHouse generiert es automatisch (MATERIALIZED)!
+                    trade_data = {
+                        "symbol": trade.get("symbol", symbol),
+                        "market": trade.get("market", market_type),
+                        "price": str(trade["price"]),            # Schon unified
+                        "size": str(trade["size"]),              # Schon unified
+                        "side": trade["side"],                   # Schon unified
+                        "timestamp": int(trade["timestamp"]),    # Schon unified
+                        "source": "rest_backfill",
+                    }
+                    
+                    clickhouse_tasks.append(
+                        unified_cl_service.insert_trades(
+                            self.exchange_name, trade_data
+                        )
+                    )
+                    
+                except Exception as trade_error:
+                    self.logger.warning(
+                        f"Trade transform failed for {self.exchange_name}: {trade_error}"
+                    )
+            
+            # Parallel execution
+            if clickhouse_tasks:
+                clickhouse_results = await asyncio.gather(
+                    *clickhouse_tasks, return_exceptions=True
+                )
+                
+                # Error counting
+                clickhouse_errors = sum(
+                    1 for r in clickhouse_results if isinstance(r, Exception)
+                )
+                
+                if clickhouse_errors > 0:
+                    self.logger.warning(
+                        f"💾 {self.exchange_name} batch stored with errors: "
+                        f"ClickHouse({clickhouse_errors}/{len(trades)})"
+                    )
+                else:
+                    self.logger.debug(
+                        f"💾 {self.exchange_name} batch of {len(trades)} trades stored successfully"
+                    )
+            
+        except Exception as e:
+            self.logger.error(
+                f"❌ {self.exchange_name} batch storage failed: {str(e)}",
+                exc_info=True,
+            )
+
+    async def get_available_intervals(
+        self, symbol: str, market_type: str
+    ) -> Dict[str, Any]:
+        """Ermittelt verfügbare Intervalle für Symbol (generisch)"""
+        self.logger.info(
+            f"🔍 Checking available intervals for {symbol} on {self.exchange_name} ({market_type})"
+        )
+
+        try:
+            available_intervals: List[Dict[str, Any]] = []
+            test_end_date = datetime.now(timezone.utc)
+
+            # Standard-Intervalle testen; falls Exchange-Config vorhanden,
+            # bevorzugt deren Definition (z. B. ['1m', '5m', ...])
+            if self.exchange_config and hasattr(
+                self.exchange_config, "supported_intervals"
+            ):
+                standard_intervals = getattr(
+                    self.exchange_config,
+                    "supported_intervals",
+                    ["1m", "5m", "15m", "1h", "4h", "1d"],
+                )
+            else:
+                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+            # Falls Config-Format kein reines List[str] ist, hier hart auf Strings normalisieren
+            standard_intervals = [
+                i["value"] if isinstance(i, dict) and "value" in i else i
+                for i in standard_intervals
+            ]
+
+            for interval in standard_intervals:
+                try:
+                    # Rate Limiting beachten
+                    await self.rate_limiter.acquire()
+
+                    # API-Parameter
+                    params = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "limit": 1,
+                        "endTime": int(test_end_date.timestamp() * 1000),
+                    }
+
+                    # API-Aufruf
+                    if market_type == "spot":
+                        response = await self.rest_api.fetch_spot_candles(**params)
+                    else:
+                        response = await self.rest_api.fetch_futures_candles(
+                            **params
+                        )
+
+                    if response:
+                        resolution_seconds = self._interval_to_seconds(interval)
+                        available_intervals.append(
+                            {
+                                "interval": interval,
+                                "resolution_seconds": resolution_seconds,
+                                "human_readable": self._seconds_to_human(
+                                    resolution_seconds
+                                ),
+                                "supported": True,
+                            }
+                        )
+
+                except Exception as e:
+                    self.logger.debug(
+                        f"Interval {interval} not available for "
+                        f"{symbol} on {self.exchange_name}: {e}"
+                    )
+                    continue
+
+            return {
+                "exchange": self.exchange_name,
+                "symbol": symbol,
+                "market_type": market_type,
+                "available_intervals": available_intervals,
+                "total_count": len(available_intervals),
+                "account_type": "premium"
+                if self.exchange_config
+                and getattr(self.exchange_config, "is_premium", False)
+                else "free",
+            }
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
+                exc_info=True,
+            )
+            return {"error": str(e)}
+
+    def _interval_to_seconds(self, interval: str) -> int:
+        """Konvertiert Interval-String zu Sekunden"""
+        interval_seconds = {
+            "1s": 1,
+            "1m": 60,
+            "3m": 180,
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "2h": 7200,
+            "4h": 14400,
+            "6h": 21600,
+            "8h": 28800,
+            "12h": 43200,
+            "1d": 86400,
+            "3d": 259200,
+            "1w": 604800,
+            "1M": 2592000,
+        }
+        return interval_seconds.get(interval, 60)
+
+    def _seconds_to_human(self, seconds: int) -> str:
+        """Konvertiert Sekunden zu menschenlesbarem Format"""
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            return f"{seconds // 60}min"
+        elif seconds < 86400:
+            return f"{seconds // 3600}h"
+        elif seconds < 604800:
+            return f"{seconds // 86400}d"
+        else:
+            return f"{seconds // 604800}w"
+
+    def _report_not_implemented(self, method: str, market_type: str, symbol: str):
+        """
+        ✅ Report fehlende Implementierung an Health-System (generisch für alle Exchanges)
+        
+        Args:
+            method: Name der fehlenden Methode (z.B. 'fetch_spot_candles')
+            market_type: Market type (spot/futures)
+            symbol: Trading symbol
+        """
+        error_msg = (
+            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
+            f"Historical backfill not available for {symbol}. "
+            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
+        )
+        
+        # ✅ Health-System Reporting (nutzt bestehendes HealthLane System)
+        if self.health_lane:
+            self.health_lane.record_error(error_msg)
+        
+        # ✅ Logger Warning (sichtbar in Logs)
+        self.logger.warning(
+            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
+            f"{method} not implemented for {market_type}. "
+            f"Add method to rest_api.py to enable historical data collection."
+        )
+
+    async def bulk_backfill(
+        self,
+        symbols: List[str],
+        market_type: str,
+        intervals: List[str],
+        end_date: datetime,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        """Bulk-Backfill für mehrere Symbole und Intervalle"""
+        self.logger.info(
+            f"🔄 {self.exchange_name.title()} bulk backfill: "
+            f"{len(symbols)} symbols, {len(intervals)} intervals"
+        )
+
+        total_tasks = len(symbols) * len(intervals)
+        completed_tasks = 0
+        results: Dict[str, Dict[str, Any]] = {}
+
+        for symbol in symbols:
+            results[symbol] = {}
+            for interval in intervals:
+                try:
+                    trade_count = await self.history(
+                        symbol, market_type, end_date, interval, limit
+                    )
+                    results[symbol][interval] = {
+                        "success": True,
+                        "trades": trade_count,
+                    }
+                    completed_tasks += 1
+                    self.logger.info(
+                        f"Progress: {completed_tasks}/{total_tasks} - "
+                        f"{self.exchange_name} {symbol} {interval}: {trade_count} trades"
+                    )
+
+                except Exception as e:
+                    results[symbol][interval] = {
+                        "success": False,
+                        "error": str(e),
+                    }
+                    completed_tasks += 1
+                    self.logger.error(
+                        f"Failed {self.exchange_name} {symbol} {interval}: {e}",
+                        exc_info=True,
+                    )
+
+        self.logger.info(
+            f"✅ {self.exchange_name.title()} bulk backfill completed: "
+            f"{completed_tasks}/{total_tasks} tasks"
+        )
+        return results
+
+
+# ✅ FACTORY FUNCTIONS - LEGACY COMPATIBILITY
+# Diese ersetzen die bisherigen XxxBackfill Klassen
+
+def get_binance_backfill():
+    """Factory für Binance Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("binance")
+
+
+def get_gateio_backfill():
+    """Factory für GateIO Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("gateio")
+
+
+def get_bybit_backfill():
+    """Factory für Bybit Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("bybit")
+
+
+def get_mexc_backfill():
+    """Factory für MEXC Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("mexc")
+
+
+def get_bitget_backfill():
+    """Factory für Bitget Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("bitget")
+
+
+def get_okx_backfill():
+    """Factory für OKX Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("okx")
+
+
+def get_htx_backfill():
+    """Factory für HTX Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("htx")
+
+
+def get_coinbase_backfill():
+    """Factory für Coinbase Historical - Legacy Compatibility"""
+    return UnifiedHistoricalService("coinbase")
+
+
+# ✅ AUTO-DISCOVERY FUNCTION - Für unified_trade_api.py Integration
+def get_available_backfill_services():
+    """
+    Returns dictionary of all available backfill services.
+    Used by unified_trade_api.py for auto-discovery.
+    """
+    return {
+        "binance": get_binance_backfill,
+        "gateio": get_gateio_backfill,
+        "bybit": get_bybit_backfill,
+        "mexc": get_mexc_backfill,
+        "bitget": get_bitget_backfill,
+        "okx": get_okx_backfill,
+        "htx": get_htx_backfill,
+        "coinbase": get_coinbase_backfill,
+    }
 </file>
 
 <file path="frontend/src/App.tsx">
