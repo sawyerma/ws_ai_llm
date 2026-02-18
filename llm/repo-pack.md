@@ -21411,6 +21411,109 @@ bitget_symbol_manager = symbol_manager
 # Bitget Exchange Integration Package
 </file>
 
+<file path="backend/exchanges/bitget/config.py">
+"""
+🔄 MINIMIERTE BITGET CONFIG - 85% weniger Duplikate!
+Vorher: 360 Zeilen (davon 250+ Duplikate)
+Nachher: 70 Zeilen (nur Exchange-spezifisches)
+"""
+import os
+from dataclasses import dataclass, field
+from typing import Dict, List
+
+# ✅ UNIFIED CONFIG IMPORTS - ersetzt alle Duplikate
+from backend.services.domain.unified_config import (
+    unified_redis_config as redis_config,
+    unified_clickhouse_config as clickhouse_config,
+    unified_system_config as system_config,
+    TLS_CONFIG,
+    EXCHANGE_REGISTRY
+)
+
+# ✅ EXCHANGE-SPEZIFISCH: Bitget Endpoints (bleibt vollständig)
+class BitgetEndpoints:
+    """Zentrale Bitget API Endpoint Konfiguration"""
+    # === Core API Endpoints (ECHTE BITGET PFADE) ===
+    PING = "/api/spot/v1/public/time"
+    ACCOUNT = "/api/spot/v1/account/assets"
+    EXCHANGE_INFO = "/api/v2/spot/public/symbols"  # ✅ V2 API - V1 deprecated!
+    TICKER_24HR = "/api/spot/v1/market/tickers"
+    DEPTH = "/api/spot/v1/market/depth"
+    TRADES = "/api/spot/v1/market/fills"
+    SPOT_TRADES_HISTORY = "/api/spot/v1/market/fills-history"
+    FUTURES_TRADES = "/api/v2/mix/market/fills"
+    
+    @classmethod
+    def get_all_endpoints(cls) -> dict:
+        """Gibt alle konfigurierten Endpoints zurück"""
+        return {
+            "ping": cls.PING,
+            "account": cls.ACCOUNT,
+            "exchange_info": cls.EXCHANGE_INFO,
+            "ticker_24hr": cls.TICKER_24HR,
+            "depth": cls.DEPTH,
+            "trades": cls.TRADES,
+            "spot_trades_history": cls.SPOT_TRADES_HISTORY,
+            "futures_trades": cls.FUTURES_TRADES
+        }
+
+# ✅ EXCHANGE-SPEZIFISCH: Bitget Config (bleibt vollständig, alle Features)
+@dataclass
+class BitgetConfig:
+    # Symbol Formats - BitGet-spezifisch
+    SYMBOL_FORMATS = {
+        "spot": "_SPBL",
+        "usdtm": "_UMCBL",
+        "coinm": "_CMCBL",
+        "delivery": "_DMCBL"
+    }
+    
+    # REST API URLs
+    rest_base_url: str = os.getenv("BITGET_REST_URL", "https://api.bitget.com")
+    futures_rest_base_url: str = os.getenv("BITGET_FUTURES_URL", "https://fapi.bitget.com")
+
+    # API Credentials - Bitget benötigt Passphrase
+    api_key: str = os.getenv("BITGET_API_KEY", "PUBLIC_ACCESS")
+    secret_key: str = os.getenv("BITGET_SECRET_KEY", "")
+    passphrase: str = os.getenv("BITGET_PASSPHRASE", "")
+
+    # Rate Limits - Bitget-spezifisch
+    max_rps: int = int(os.getenv("BITGET_MAX_RPS", "30"))
+    historical_rps: float = float(os.getenv("BITGET_HISTORICAL_RPS", "15.0"))
+    futures_max_rps: int = int(os.getenv("BITGET_FUT_MAX_RPS", "5"))
+    futures_historical_rps: float = float(os.getenv("BITGET_FUT_HISTORICAL_RPS", "2.0"))
+
+    # WebSocket Limits
+    ws_connect_limit_per_5min: int = int(os.getenv("BITGET_WS_CONNECT_LIMIT", "300"))
+    ws_max_connections: int = int(os.getenv("BITGET_WS_MAX_CONN", "5"))
+
+    # Advanced Settings
+    request_timeout: int = int(os.getenv("BITGET_TIMEOUT", "30"))
+    max_retries: int = int(os.getenv("BITGET_MAX_RETRIES", "3"))
+    enable_1s: bool = os.getenv("BITGET_ENABLE_1S", "false").lower() == "true"
+
+    # Market Mappings - ECHTE BITGET WebSocket URLs
+    market_mappings: Dict[str, Dict[str, str]] = field(
+        default_factory=lambda: {
+            "spot": {"ws_url": "wss://ws.bitget.com/spot/v1/stream", "stream_suffix": ""},
+            "usdtm": {"ws_url": "wss://ws.bitget.com/mix/v1/stream", "stream_suffix": ""},
+            "coinm": {"ws_url": "wss://ws.bitget.com/mix/v1/stream", "stream_suffix": ""},
+        }
+    )
+
+    @property
+    def is_premium(self) -> bool:
+        return bool(self.api_key and self.api_key != "PUBLIC_ACCESS" and len(self.api_key) > 10)
+
+    @property
+    def available_resolutions(self) -> List[int]:
+        base = [60, 180, 300, 900, 1800, 3600, 7200, 14400, 21600, 28800, 43200, 86400, 259200, 604800, 2592000]
+        return ([1] + base) if self.enable_1s else base
+
+# Konfigurationsinstanzen
+bitget_config = BitgetConfig()
+</file>
+
 <file path="backend/exchanges/bybit/services/__init__.py">
 # Bybit Services Package
 </file>
@@ -133699,109 +133802,6 @@ class BitgetOrderbookService:
         return None
 </file>
 
-<file path="backend/exchanges/bitget/config.py">
-"""
-🔄 MINIMIERTE BITGET CONFIG - 85% weniger Duplikate!
-Vorher: 360 Zeilen (davon 250+ Duplikate)
-Nachher: 70 Zeilen (nur Exchange-spezifisches)
-"""
-import os
-from dataclasses import dataclass, field
-from typing import Dict, List
-
-# ✅ UNIFIED CONFIG IMPORTS - ersetzt alle Duplikate
-from backend.services.domain.unified_config import (
-    unified_redis_config as redis_config,
-    unified_clickhouse_config as clickhouse_config,
-    unified_system_config as system_config,
-    TLS_CONFIG,
-    EXCHANGE_REGISTRY
-)
-
-# ✅ EXCHANGE-SPEZIFISCH: Bitget Endpoints (bleibt vollständig)
-class BitgetEndpoints:
-    """Zentrale Bitget API Endpoint Konfiguration"""
-    # === Core API Endpoints (ECHTE BITGET PFADE) ===
-    PING = "/api/spot/v1/public/time"
-    ACCOUNT = "/api/spot/v1/account/assets"
-    EXCHANGE_INFO = "/api/v2/spot/public/symbols"  # ✅ V2 API - V1 deprecated!
-    TICKER_24HR = "/api/spot/v1/market/tickers"
-    DEPTH = "/api/spot/v1/market/depth"
-    TRADES = "/api/spot/v1/market/fills"
-    SPOT_TRADES_HISTORY = "/api/spot/v1/market/fills-history"
-    FUTURES_TRADES = "/api/v2/mix/market/fills"
-    
-    @classmethod
-    def get_all_endpoints(cls) -> dict:
-        """Gibt alle konfigurierten Endpoints zurück"""
-        return {
-            "ping": cls.PING,
-            "account": cls.ACCOUNT,
-            "exchange_info": cls.EXCHANGE_INFO,
-            "ticker_24hr": cls.TICKER_24HR,
-            "depth": cls.DEPTH,
-            "trades": cls.TRADES,
-            "spot_trades_history": cls.SPOT_TRADES_HISTORY,
-            "futures_trades": cls.FUTURES_TRADES
-        }
-
-# ✅ EXCHANGE-SPEZIFISCH: Bitget Config (bleibt vollständig, alle Features)
-@dataclass
-class BitgetConfig:
-    # Symbol Formats - BitGet-spezifisch
-    SYMBOL_FORMATS = {
-        "spot": "_SPBL",
-        "usdtm": "_UMCBL",
-        "coinm": "_CMCBL",
-        "delivery": "_DMCBL"
-    }
-    
-    # REST API URLs
-    rest_base_url: str = os.getenv("BITGET_REST_URL", "https://api.bitget.com")
-    futures_rest_base_url: str = os.getenv("BITGET_FUTURES_URL", "https://fapi.bitget.com")
-
-    # API Credentials - Bitget benötigt Passphrase
-    api_key: str = os.getenv("BITGET_API_KEY", "PUBLIC_ACCESS")
-    secret_key: str = os.getenv("BITGET_SECRET_KEY", "")
-    passphrase: str = os.getenv("BITGET_PASSPHRASE", "")
-
-    # Rate Limits - Bitget-spezifisch
-    max_rps: int = int(os.getenv("BITGET_MAX_RPS", "30"))
-    historical_rps: float = float(os.getenv("BITGET_HISTORICAL_RPS", "15.0"))
-    futures_max_rps: int = int(os.getenv("BITGET_FUT_MAX_RPS", "5"))
-    futures_historical_rps: float = float(os.getenv("BITGET_FUT_HISTORICAL_RPS", "2.0"))
-
-    # WebSocket Limits
-    ws_connect_limit_per_5min: int = int(os.getenv("BITGET_WS_CONNECT_LIMIT", "300"))
-    ws_max_connections: int = int(os.getenv("BITGET_WS_MAX_CONN", "5"))
-
-    # Advanced Settings
-    request_timeout: int = int(os.getenv("BITGET_TIMEOUT", "30"))
-    max_retries: int = int(os.getenv("BITGET_MAX_RETRIES", "3"))
-    enable_1s: bool = os.getenv("BITGET_ENABLE_1S", "false").lower() == "true"
-
-    # Market Mappings - ECHTE BITGET WebSocket URLs
-    market_mappings: Dict[str, Dict[str, str]] = field(
-        default_factory=lambda: {
-            "spot": {"ws_url": "wss://ws.bitget.com/spot/v1/stream", "stream_suffix": ""},
-            "usdtm": {"ws_url": "wss://ws.bitget.com/mix/v1/stream", "stream_suffix": ""},
-            "coinm": {"ws_url": "wss://ws.bitget.com/mix/v1/stream", "stream_suffix": ""},
-        }
-    )
-
-    @property
-    def is_premium(self) -> bool:
-        return bool(self.api_key and self.api_key != "PUBLIC_ACCESS" and len(self.api_key) > 10)
-
-    @property
-    def available_resolutions(self) -> List[int]:
-        base = [60, 180, 300, 900, 1800, 3600, 7200, 14400, 21600, 28800, 43200, 86400, 259200, 604800, 2592000]
-        return ([1] + base) if self.enable_1s else base
-
-# Konfigurationsinstanzen
-bitget_config = BitgetConfig()
-</file>
-
 <file path="backend/exchanges/bybit/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -135957,6 +135957,647 @@ WS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
+<file path="backend/websocket/ws_message_parsers.py">
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """
+    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
+    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
+    
+    Examples:
+        Gate.io: BTC_USDT → BTCUSDT
+        OKX: BTC-USDT → BTCUSDT
+        HTX: btcusdt → BTCUSDT
+        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
+        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
+    """
+    if not native_symbol:
+        return ""
+    
+    s = str(native_symbol).strip()
+    
+    if exchange == "gateio":
+        # BTC_USDT -> BTCUSDT
+        return s.replace("_", "").upper()
+    
+    if exchange == "okx":
+        # BTC-USDT -> BTCUSDT
+        return s.replace("-", "").upper()
+    
+    if exchange == "htx":
+        # btcusdt -> BTCUSDT
+        return s.upper()
+    
+    if exchange == "coinbase":
+        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
+        return s.upper()
+    
+    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
+    return s.upper()
+
+class BaseMessageParser:
+    """Base Class für Exchange Message Parser"""
+    
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Trade Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
+        """
+        raise NotImplementedError
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse WebSocket Message zu standardisiertem Orderbook Format
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm, etc.)
+            
+        Returns:
+            {
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+                "timestamp": int
+            }
+        """
+        return None  # Default: kein Orderbook-Parsing
+
+class BinanceMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Binance Orderbook Service"""
+        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
+        service = BinanceOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
+        
+        Args:
+            raw_message: Raw WebSocket message
+            market: Market type (spot, usdtm, coinm) - default: "spot"
+        """
+        try:
+            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
+            
+            # Binance Trade Message Format
+            if "e" in data and data["e"] == "trade":
+                trade = {
+                    "exchange": "binance",
+                    "symbol": data["s"],
+                    "trade_id": data["t"],
+                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
+                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
+                    "side": "buy" if data["m"] == False else "sell",
+                    "timestamp": data["T"],
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
+                return trade
+            else:
+                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BitgetMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bitget Orderbook Service"""
+        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
+        service = BitgetOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
+            
+            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
+                # instId ist in "arg", nicht in "data"!
+                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
+                for trade in data.get("data", []):
+                    trade_obj = {
+                        "exchange": "bitget",
+                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GateIOMessageParser(BaseMessageParser):
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Gate.io Orderbook Service"""
+        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
+        service = GateIOOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
+            
+            # Check for trade update event
+            if data.get("event") == "update" and data.get("channel") == "spot.trades":
+                result = data.get("result")
+                
+                if not result:
+                    logger.warning(f"⚠️ GATE.IO No result in trade update")
+                    return None
+                
+                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
+                if isinstance(result, dict):
+                    # Single trade as dict
+                    trade = result
+                elif isinstance(result, list) and len(result) > 0:
+                    # Array of trades
+                    trade = result[0]
+                else:
+                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
+                    return None
+                
+                trade_obj = {
+                    "exchange": "gateio",
+                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
+                    "trade_id": str(trade["id"]),
+                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                    "side": trade["side"],
+                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
+                    "market": market  # ✅ Von Parameter, nicht hardcoded!
+                }
+                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                return trade_obj
+            
+            # Subscription confirmation
+            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
+                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
+                return None
+            else:
+                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class HTXMessageParser(BaseMessageParser):
+    """
+    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
+    
+    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
+    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an HTX Orderbook Service"""
+        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
+        service = HTXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ DEBUG: Log message type und erste Bytes
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
+            else:
+                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
+            
+            # ✅ GZIP Decompression wenn binäre Daten
+            if isinstance(raw_message, bytes):
+                # Check für GZIP Magic Bytes (0x1f 0x8b)
+                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
+                    logger.info(f"✅ HTX GZIP detected, decompressing...")
+                    decompressed = gzip.decompress(raw_message)
+                    raw_message = decompressed.decode('utf-8')
+                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
+                else:
+                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
+                    raw_message = raw_message.decode('utf-8')
+            
+            # JSON Parse
+            data = json.loads(raw_message)
+            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
+            
+            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
+            if "ping" in data:
+                # Ping-Message erkannt, muss mit Pong beantwortet werden
+                # Wird vom WebSocket Handler verarbeitet
+                return {
+                    "type": "ping",
+                    "pong": data["ping"],
+                    "exchange": "htx"
+                }
+            
+            # ✅ Trade-Daten Parsing
+            if "tick" in data and "data" in data["tick"]:
+                trades = []
+                for trade in data["tick"]["data"]:
+                    trades.append({
+                        "exchange": "htx",
+                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
+                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
+                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
+                        "side": "buy" if trade["direction"] == "buy" else "sell",
+                        "timestamp": trade["ts"],
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    })
+                
+                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
+                return trades[0] if trades else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"HTX message parsing error: {e}")
+            return None
+
+class MEXCMessageParser(BaseMessageParser):
+    """
+    MEXC Message Parser mit Protocol Buffers Support
+    
+    MEXC sendet TWO Arten von Messages:
+    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
+    2. Binary: Protocol Buffers Trade-Daten
+    
+    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
+    Proto: https://github.com/mexcdevelop/websocket-proto
+    """
+    
+    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an MEXC Orderbook Service"""
+        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
+        service = MEXCOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
+            if isinstance(raw_message, bytes):
+                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
+                return await self._parse_protobuf_trade(raw_message, market)
+            else:
+                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
+                return await self._parse_json_message(raw_message, market)
+                
+        except Exception as e:
+            logger.error(f"MEXC message parsing error: {e}")
+            return None
+    
+    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON Messages (Subscription Responses)"""
+        try:
+            data = json.loads(raw_message)
+            
+            # Subscription Response
+            if "code" in data and "msg" in data:
+                if data["code"] == 0:
+                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
+                else:
+                    logger.error(f"❌ MEXC subscription error: {data}")
+                return None
+            
+            # Legacy JSON Trade Format (falls noch verwendet)
+            if "d" in data and "deals" in data.get("d", {}):
+                for trade in data["d"]["deals"]:
+                    return {
+                        "exchange": "mexc",
+                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
+                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
+                        "price": str(trade["p"]),
+                        "size": str(trade["v"]),
+                        "side": "buy" if trade.get("S") == 1 else "sell",
+                        "timestamp": int(trade["t"]),
+                        "market": market
+                    }
+        except Exception as e:
+            logger.error(f"MEXC JSON parsing error: {e}")
+        return None
+    
+    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Protocol Buffers Trade-Daten
+        
+        Struktur (von MEXC Doku):
+        {
+          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
+          "publicdeals": {
+            "dealsList": [{
+              "price": "93220.00",
+              "quantity": "0.04438243",
+              "tradetype": 2,  // 1=Buy, 2=Sell
+              "time": 1736409765051
+            }]
+          },
+          "symbol": "BTCUSDT",
+          "sendtime": 1736409765052
+        }
+        """
+        try:
+            # ✅ Einfacher Protobuf Wire Format Parser
+            # Format: Tag-Length-Value (TLV)
+            
+            symbol = None
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            i = 0
+            while i < len(raw_message):
+                # Read Tag (field number + wire type)
+                if i >= len(raw_message):
+                    break
+                    
+                tag = raw_message[i]
+                i += 1
+                
+                wire_type = tag & 0x07
+                field_num = tag >> 3
+                
+                # Wire Type 2: Length-delimited (strings, embedded messages)
+                if wire_type == 2:
+                    # Read length
+                    length = raw_message[i]
+                    i += 1
+                    
+                    # Read value
+                    value = raw_message[i:i+length]
+                    i += length
+                    
+                    # Decode basierend auf Field Position
+                    try:
+                        decoded = value.decode('utf-8', errors='ignore')
+                        
+                        # Channel (field 1) - enthält Symbol
+                        if field_num == 1 and '@' in decoded:
+                            parts = decoded.split('@')
+                            if len(parts) >= 5:
+                                symbol = parts[-1]  # BTCUSDT am Ende
+                        
+                        # Symbol field (field 3)
+                        elif field_num == 3:
+                            symbol = decoded
+                        
+                        # Embedded message (dealsList)
+                        elif b'\n' in value or b'\x12' in value:
+                            # Parse nested trade data
+                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
+                            
+                    except:
+                        pass
+                
+                # Wire Type 0: Varint (int, enum)
+                elif wire_type == 0:
+                    # Skip varint
+                    while i < len(raw_message) and (raw_message[i] & 0x80):
+                        i += 1
+                    i += 1
+                
+                else:
+                    # Skip unknown wire types
+                    i += 1
+            
+            # ✅ Build Trade Object
+            if symbol and price and quantity:
+                return {
+                    "exchange": "mexc",
+                    "symbol": normalize_to_unified(symbol, "mexc"),
+                    "trade_id": str(timestamp or datetime.now().timestamp()),
+                    "price": str(price),
+                    "size": str(quantity),
+                    "side": "buy" if tradetype == 1 else "sell",
+                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
+                    "market": market
+                }
+            
+            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"MEXC protobuf parsing error: {e}")
+            return None
+    
+    def _parse_deal_data(self, data: bytes) -> tuple:
+        """Parse nested dealsList data"""
+        try:
+            # Suche nach String-Patterns für price und quantity
+            price = None
+            quantity = None
+            tradetype = None
+            timestamp = None
+            
+            # Simple pattern matching für Decimal strings
+            text = data.decode('utf-8', errors='ignore')
+            
+            # Price ist meist die erste Decimal-Zahl
+            import re
+            decimals = re.findall(r'\d+\.\d+', text)
+            if len(decimals) >= 2:
+                price = decimals[0]
+                quantity = decimals[1]
+            
+            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
+            if b'\x18\x01' in data:
+                tradetype = 1  # Buy
+            elif b'\x18\x02' in data:
+                tradetype = 2  # Sell
+            
+            # Timestamp - varint nach trade type
+            # Simplified: extract any large number
+            for i in range(len(data) - 8):
+                if data[i] == 0x20:  # Tag for timestamp
+                    # Try to read varint
+                    timestamp = 0
+                    shift = 0
+                    for j in range(i+1, min(i+10, len(data))):
+                        b = data[j]
+                        timestamp |= (b & 0x7F) << shift
+                        if not (b & 0x80):
+                            break
+                        shift += 7
+                    if timestamp > 1000000000000:  # Reasonable timestamp
+                        break
+            
+            return price, quantity, tradetype, timestamp
+            
+        except Exception as e:
+            logger.error(f"Deal data parsing error: {e}")
+            return None, None, None, None
+
+class OKXMessageParser(BaseMessageParser):
+    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an OKX Orderbook Service"""
+        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
+        service = OKXOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
+            
+            # OKX Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "okx",
+                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
+                        "trade_id": trade["tradeId"],
+                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["side"],
+                        "timestamp": int(trade["ts"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class BybitMessageParser(BaseMessageParser):
+    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Bybit Orderbook Service"""
+        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
+        service = BybitOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
+            
+            # Bybit Trade Message Format
+            if "data" in data:
+                for trade in data["data"]:
+                    trade_obj = {
+                        "exchange": "bybit",
+                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
+                        "trade_id": trade["i"],
+                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
+                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
+                        "side": trade["S"].lower(),  # Buy -> buy
+                        "timestamp": int(trade["T"]),
+                        "market": market  # ✅ Von Parameter, nicht hardcoded!
+                    }
+                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                    return trade_obj
+            else:
+                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class CoinbaseMessageParser(BaseMessageParser):
+    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
+    
+    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        """Delegiert an Coinbase Orderbook Service"""
+        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
+        service = CoinbaseOrderbookService()
+        return await service.parse_ws_orderbook(raw_message, market)
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
+            data = json.loads(raw_message)
+            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
+            
+            # Coinbase Trade Message Format
+            if "events" in data:
+                for event in data["events"]:
+                    if "trades" in event:
+                        for trade in event["trades"]:
+                            trade_obj = {
+                                "exchange": "coinbase",
+                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
+                                "trade_id": trade["trade_id"],
+                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
+                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
+                                "side": trade["side"],
+                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
+                                "market": market  # ✅ Von Parameter, nicht hardcoded!
+                            }
+                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
+                            return trade_obj
+            else:
+                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
+        return None
+
+class GenericMessageParser(BaseMessageParser):
+    """Fallback Parser für unbekannte Exchanges"""
+    
+    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw_message)
+            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
+            return None  # Kein generisches Format möglich
+        except Exception as e:
+            logger.error(f"{self.exchange} message parsing error: {e}")
+        return None
+
+# Exchange-spezifische Parser Registry
+MESSAGE_PARSERS = {
+    "binance": BinanceMessageParser,
+    "bitget": BitgetMessageParser,
+    "gateio": GateIOMessageParser,
+    "bybit": BybitMessageParser,     # ✅ Bybit Parser
+    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
+    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
+    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
+    "okx": OKXMessageParser,          # ✅ OKX Parser
+}
+
+def get_ws_message_parser(exchange: str) -> BaseMessageParser:
+    """Hole Message Parser für Exchange"""
+    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
+    return parser_class(exchange)
+</file>
+
 <file path="diag_py/deep_analysis.sh">
 #!/bin/bash
 
@@ -137392,411 +138033,6 @@ export function usePriceAlerts(currentPrice: number) {
 <file path="frontend/src/pages/CoinMonitor/index.tsx">
 // frontend/src/pages/CoinMonitor/index.tsx
 export { default } from "./CoinMonitor";
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
-import React, { useState, useEffect, useMemo } from 'react';
-import { Search, RefreshCw, Settings } from 'lucide-react';
-
-// ✅ DYNAMISCH: Types inline (kein Legacy Import)
-interface CoinSetting {
-  symbol: string;
-  exchange: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until: string;
-  favorite: boolean;
-  chart_resolution: string;
-  db_resolutions: string[];
-}
-
-interface AdvancedCoinSelectorProps {
-  selectedSymbol: string;
-  onSymbolSelect: (symbol: string) => void;
-  onSettingsClick?: () => void;
-  exchange?: string;
-  selectedMarket?: string;
-}
-
-// ✅ DYNAMISCH: API Calls direkt (kein Mock)
-const getSettings = async (exchange: string): Promise<CoinSetting[]> => {
-  try {
-    const response = await fetch(`/api/settings/coins?exchange=${exchange}`);
-    if (!response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data) ? data : [];
-  } catch (error) {
-    console.error('Failed to load settings:', error);
-    return [];
-  }
-};
-
-const saveSettings = async (settings: CoinSetting[]): Promise<void> => {
-  try {
-    await fetch('/api/settings/coins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
-    });
-  } catch (error) {
-    console.error('Failed to save settings:', error);
-  }
-};
-
-const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
-  selectedSymbol,
-  onSymbolSelect,
-  onSettingsClick,
-  exchange = "bitget",
-  selectedMarket,
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<CoinSetting[]>([]);
-  const [symbols, setSymbols] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-
-  const safeSettings = Array.isArray(settings) ? settings : [];
-
-  useEffect(() => {
-    const loadSettings = async () => {
-      const data = await getSettings(exchange);
-      setSettings(data);
-    };
-    loadSettings();
-  }, [exchange]);
-
-  const loadSymbols = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/market/symbols?exchange=${exchange}`);
-      const data = await response.json();
-      setSymbols(data.symbols || []);
-    } catch (err) {
-      console.error('Failed to load symbols:', err);
-      setLocalError('Failed to load symbols');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadSymbols();
-  }, [exchange, selectedMarket]);
-
-  const toggleFavorite = (symbol: string) => {
-    setFavorites(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(symbol)) {
-        newSet.delete(symbol);
-      } else {
-        newSet.add(symbol);
-      }
-      return newSet;
-    });
-  };
-
-  const filteredSymbols = useMemo(() => {
-    let filtered = symbols || [];
-
-    filtered = filtered.filter((symbol: any, index: number, self: any[]) => 
-      index === self.findIndex((s: any) => 
-        s.symbol === symbol.symbol && 
-        s.market_type === symbol.market_type &&
-        s.exchange === symbol.exchange
-      )
-    );
-
-    if (searchTerm) {
-      filtered = filtered.filter((symbol: any) =>
-        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-
-    return filtered.sort((a: any, b: any) => {
-      const aFav = favorites.has(a.symbol);
-      const bFav = favorites.has(b.symbol);
-      if (aFav && !bFav) return -1;
-      if (!aFav && bFav) return 1;
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }, [symbols, searchTerm, favorites]);
-
-  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    toggleFavorite(symbol);
-  };
-
-  const handleLiveClick = async (coin: any, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    const coinExchange = coin.exchange || exchange;
-    const existingSetting = safeSettings.find(s => 
-      s.symbol === coin.symbol && 
-      s.exchange === coinExchange &&
-      s.market === coin.market_type
-    );
-    
-    let updated;
-    if (existingSetting) {
-      updated = safeSettings.map(s => 
-        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
-          ? { ...s, store_live: !s.store_live } : s
-      );
-    } else {
-      const newSetting: CoinSetting = {
-        symbol: coin.symbol,
-        exchange: coinExchange,
-        market: coin.market_type,
-        store_live: true,
-        load_history: false,
-        history_until: '',
-        favorite: false,
-        chart_resolution: '1m',
-        db_resolutions: []
-      };
-      updated = [...safeSettings, newSetting];
-    }
-    
-    await saveSettings(updated);
-    const freshData = await getSettings(exchange);
-    setSettings(freshData);
-  };
-
-  const handleHistoricalClick = async (coin: any, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    const coinExchange = coin.exchange || exchange;
-    const existingSetting = safeSettings.find(s => 
-      s.symbol === coin.symbol && 
-      s.exchange === coinExchange &&
-      s.market === coin.market_type
-    );
-    
-    let updated;
-    if (existingSetting) {
-      updated = safeSettings.map(s => 
-        s.symbol === coin.symbol && s.exchange === coinExchange && s.market === coin.market_type
-          ? { ...s, load_history: !s.load_history } : s
-      );
-    } else {
-      const newSetting: CoinSetting = {
-        symbol: coin.symbol,
-        exchange: coinExchange,
-        market: coin.market_type,
-        store_live: false,
-        load_history: true,
-        history_until: '2020-01-01',
-        favorite: false,
-        chart_resolution: '1m',
-        db_resolutions: []
-      };
-      updated = [...safeSettings, newSetting];
-    }
-    
-    await saveSettings(updated);
-    const freshData = await getSettings(exchange);
-    setSettings(freshData);
-  };
-
-  const isLiveEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
-    const setting = safeSettings.find(s => 
-      s.symbol === symbol && 
-      s.exchange === coinExchange && 
-      s.market === market
-    );
-    return setting?.store_live || false;
-  };
-
-  const isHistoricalEnabled = (symbol: string, market: string, coinExchange: string): boolean => {
-    const setting = safeSettings.find(s => 
-      s.symbol === symbol && 
-      s.exchange === coinExchange && 
-      s.market === market
-    );
-    return setting?.load_history || false;
-  };
-
-  const handleSymbolSelect = (coin: any) => {
-    onSymbolSelect(coin.symbol);
-    setIsOpen(false);
-  };
-
-  const displaySymbol = selectedSymbol;
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
-      >
-        <span className="font-bold text-white dark:text-white text-sm">
-          {displaySymbol}
-        </span>
-        <svg
-          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-        </svg>
-      </button>
-
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
-          <div className="p-2 border-b border-border">
-            <div className="relative">
-              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search symbols"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
-            <div className="flex items-center w-[130px]">
-              <span className="text-yellow-500 mr-2 text-xs">★</span>
-              <span className="text-xs">COIN</span>
-              <span className="ml-1">↑</span>
-            </div>
-            <div className="w-[110px] text-right text-xs">PRICE</div>
-            <div className="w-[90px] text-right text-xs">24H</div>
-            <div className="w-[35px] text-center text-xs">L</div>
-            <div className="w-[12px] text-center text-xs">H</div>
-          </div>
-
-          <div className="max-h-[300px] overflow-y-auto">
-            {loading ? (
-              <div className="p-4 text-center text-gray-400">
-                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
-                <span className="text-xs">Loading...</span>
-              </div>
-            ) : localError ? (
-              <div className="p-4 text-center">
-                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
-                <div className="text-gray-400 text-xs">{localError}</div>
-              </div>
-            ) : filteredSymbols.length > 0 ? (
-              filteredSymbols.map((coin: any) => {
-                const uniqueKey = (coin as any).instrument_uid 
-                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
-                
-                return (
-                  <div
-                    key={uniqueKey}
-                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
-                      coin.symbol === displaySymbol
-                        ? "bg-muted"
-                        : "hover:bg-muted"
-                    }`}
-                    onClick={() => handleSymbolSelect(coin)}
-                  >
-                    <div className="flex items-center w-[130px]">
-                      <span
-                        className={`text-sm mr-2 ${
-                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
-                        }`}
-                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
-                      >
-                        ★
-                      </span>
-                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
-                    </div>
-                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
-                      {coin.price}
-                    </div>
-                    <div
-                      className={`w-[90px] text-right font-bold text-sm ${
-                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
-                      }`}
-                    >
-                      {coin.change}
-                    </div>
-                    <div className="w-[35px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                            ? "rgb(34, 197, 94)"
-                            : "rgb(239, 68, 68)"
-                        }}
-                        onClick={(e) => handleLiveClick(coin, e)}
-                        title={isLiveEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                          ? `Live data ACTIVE for ${coin.symbol}` 
-                          : `Enable Live data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                    <div className="w-[12px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                            ? "rgb(34, 197, 94)"
-                            : "rgb(239, 68, 68)"
-                        }}
-                        onClick={(e) => handleHistoricalClick(coin, e)}
-                        title={isHistoricalEnabled(coin.symbol, coin.market_type, coin.exchange) 
-                          ? `Historical data ACTIVE for ${coin.symbol}` 
-                          : `Enable Historical data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="p-4 text-center text-gray-400">
-                <span className="text-xs">No symbols found</span>
-              </div>
-            )}
-          </div>
-
-          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
-            <div>
-              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => loadSymbols()}
-                disabled={loading}
-                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
-                title="Refresh symbols"
-              >
-                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
-              </button>
-              {onSettingsClick && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSettingsClick();
-                    setIsOpen(false);
-                  }}
-                  className="p-0.5 text-gray-400 hover:text-white"
-                  title="Settings"
-                >
-                  <Settings size={10} />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isOpen && (
-        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-      )}
-    </div>
-  );
-};
-
-export default CoinSelector;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/MarketTrades.tsx">
@@ -154289,782 +154525,6 @@ async def get_ohlc_from_ch(
     return []
 </file>
 
-<file path="backend/websocket/ws_message_parsers.py">
-import json
-import gzip
-import logging
-from typing import Dict, Any, Optional, Union
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """
-    Konvertiert Exchange-natives Symbol zu Unified-Format (BTCUSDT etc.)
-    Dieses Unified-Format wird intern (Redis, ClickHouse, Metriken) verwendet.
-    
-    Examples:
-        Gate.io: BTC_USDT → BTCUSDT
-        OKX: BTC-USDT → BTCUSDT
-        HTX: btcusdt → BTCUSDT
-        Coinbase: BTC-USD → BTC-USD (anderes Quote, bleibt!)
-        Binance: BTCUSDT → BTCUSDT (bereits normalisiert)
-    """
-    if not native_symbol:
-        return ""
-    
-    s = str(native_symbol).strip()
-    
-    if exchange == "gateio":
-        # BTC_USDT -> BTCUSDT
-        return s.replace("_", "").upper()
-    
-    if exchange == "okx":
-        # BTC-USDT -> BTCUSDT
-        return s.replace("-", "").upper()
-    
-    if exchange == "htx":
-        # btcusdt -> BTCUSDT
-        return s.upper()
-    
-    if exchange == "coinbase":
-        # BTC-USD -> BTC-USD (bewusst anderes Quote, aber uppercase)
-        return s.upper()
-    
-    # Default: einfach uppercase (Binance, Bitget, Bybit, MEXC)
-    return s.upper()
-
-class BaseMessageParser:
-    """Base Class für Exchange Message Parser"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Trade Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.) - NO HARDCODING!
-        """
-        raise NotImplementedError
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse WebSocket Message zu standardisiertem Orderbook Format
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm, etc.)
-            
-        Returns:
-            {
-                "bids": [[price, size], ...],
-                "asks": [[price, size], ...],
-                "timestamp": int
-            }
-        """
-        return None  # Default: kein Orderbook-Parsing
-
-class BinanceMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Binance Orderbook Service"""
-        from backend.exchanges.binance.services.orderbook import BinanceOrderbookService
-        service = BinanceOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        ✅ SAUBERE LÖSUNG: Signature konsistent mit allen anderen Exchanges
-        
-        Args:
-            raw_message: Raw WebSocket message
-            market: Market type (spot, usdtm, coinm) - default: "spot"
-        """
-        try:
-            logger.info(f"🔍 BINANCE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BINANCE JSON parsed, keys: {list(data.keys())}")
-            
-            # Binance Trade Message Format
-            if "e" in data and data["e"] == "trade":
-                trade = {
-                    "exchange": "binance",
-                    "symbol": data["s"],
-                    "trade_id": data["t"],
-                    "price": str(data["p"]),  # ✅ String für Decimal(76,38)
-                    "size": str(data["q"]),   # ✅ String für Decimal(76,38)
-                    "side": "buy" if data["m"] == False else "sell",
-                    "timestamp": data["T"],
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ BINANCE Trade parsed: {trade['symbol']} @ {trade['price']}")
-                return trade
-            else:
-                logger.warning(f"⚠️ BINANCE Message not a trade: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BINANCE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BitgetMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bitget Orderbook Service"""
-        from backend.exchanges.bitget.services.orderbook import BitgetOrderbookService
-        service = BitgetOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BITGET Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BITGET JSON parsed, keys: {list(data.keys())}")
-            
-            if "action" in data and (data["action"] == "update" or data["action"] == "snapshot"):
-                # instId ist in "arg", nicht in "data"!
-                symbol = data.get("arg", {}).get("instId", "UNKNOWN")
-                for trade in data.get("data", []):
-                    trade_obj = {
-                        "exchange": "bitget",
-                        "symbol": normalize_to_unified(symbol, "bitget"),  # ✅ Normalisiert
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BITGET Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BITGET Message not a trade: action={data.get('action')}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BITGET parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GateIOMessageParser(BaseMessageParser):
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Gate.io Orderbook Service"""
-        from backend.exchanges.gateio.services.orderbook import GateIOOrderbookService
-        service = GateIOOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 GATE.IO Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 GATE.IO JSON parsed, event={data.get('event')}, channel={data.get('channel')}")
-            
-            # Check for trade update event
-            if data.get("event") == "update" and data.get("channel") == "spot.trades":
-                result = data.get("result")
-                
-                if not result:
-                    logger.warning(f"⚠️ GATE.IO No result in trade update")
-                    return None
-                
-                # ✅ FIX: Gate.io kann result als DICT oder LIST senden
-                if isinstance(result, dict):
-                    # Single trade as dict
-                    trade = result
-                elif isinstance(result, list) and len(result) > 0:
-                    # Array of trades
-                    trade = result[0]
-                else:
-                    logger.warning(f"⚠️ GATE.IO Result format unknown: {type(result)}")
-                    return None
-                
-                trade_obj = {
-                    "exchange": "gateio",
-                    "symbol": normalize_to_unified(trade["currency_pair"], "gateio"),  # ✅ BTC_USDT → BTCUSDT
-                    "trade_id": str(trade["id"]),
-                    "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                    "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                    "side": trade["side"],
-                    "timestamp": int(trade["create_time_ms"].split(".")[0]) if isinstance(trade["create_time_ms"], str) else int(trade["create_time_ms"]),
-                    "market": market  # ✅ Von Parameter, nicht hardcoded!
-                }
-                logger.info(f"✅ GATE.IO Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                return trade_obj
-            
-            # Subscription confirmation
-            elif data.get("event") == "subscribe" and data.get("channel") == "spot.trades":
-                logger.info(f"✅ GATE.IO subscription confirmed: {data.get('result')}")
-                return None
-            else:
-                logger.warning(f"⚠️ GATE.IO Message not a trade: event={data.get('event')}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ GATE.IO parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class HTXMessageParser(BaseMessageParser):
-    """
-    ✅ HTX Message Parser mit GZIP-Decompression & Ping-Pong
-    
-    HTX sendet GZIP-komprimierte Messages (Magic Bytes: 0x1f 0x8b)
-    Dokumentation: https://huobiapi.github.io/docs/spot/v1/en/#market-trade-detail
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an HTX Orderbook Service"""
-        from backend.exchanges.htx.services.orderbook import HTXOrderbookService
-        service = HTXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ DEBUG: Log message type und erste Bytes
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 HTX received BINARY message: {len(raw_message)} bytes, magic: {raw_message[:2].hex()}")
-            else:
-                logger.info(f"🔍 HTX received STRING message: {len(raw_message)} chars")
-            
-            # ✅ GZIP Decompression wenn binäre Daten
-            if isinstance(raw_message, bytes):
-                # Check für GZIP Magic Bytes (0x1f 0x8b)
-                if len(raw_message) >= 2 and raw_message[0:2] == b'\x1f\x8b':
-                    logger.info(f"✅ HTX GZIP detected, decompressing...")
-                    decompressed = gzip.decompress(raw_message)
-                    raw_message = decompressed.decode('utf-8')
-                    logger.info(f"✅ HTX decompressed: {raw_message[:100]}")
-                else:
-                    logger.info(f"⚠️ HTX binary but not GZIP, decoding as UTF-8...")
-                    raw_message = raw_message.decode('utf-8')
-            
-            # JSON Parse
-            data = json.loads(raw_message)
-            logger.info(f"🔍 HTX parsed JSON keys: {list(data.keys())}")
-            
-            # ✅ Ping-Pong Handling (HTX erwartet Pong-Response)
-            if "ping" in data:
-                # Ping-Message erkannt, muss mit Pong beantwortet werden
-                # Wird vom WebSocket Handler verarbeitet
-                return {
-                    "type": "ping",
-                    "pong": data["ping"],
-                    "exchange": "htx"
-                }
-            
-            # ✅ Trade-Daten Parsing
-            if "tick" in data and "data" in data["tick"]:
-                trades = []
-                for trade in data["tick"]["data"]:
-                    trades.append({
-                        "exchange": "htx",
-                        "symbol": normalize_to_unified(data.get("ch", "").split(".")[1] if "ch" in data else "UNKNOWN", "htx"),  # ✅ Normalisiert
-                        "trade_id": trade.get("tradeId", trade.get("id", str(datetime.now().timestamp()))),
-                        "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["amount"]),  # ✅ String für Decimal(76,38)
-                        "side": "buy" if trade["direction"] == "buy" else "sell",
-                        "timestamp": trade["ts"],
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    })
-                
-                # Returniere ersten Trade (weitere werden im nächsten Loop verarbeitet)
-                return trades[0] if trades else None
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"HTX message parsing error: {e}")
-            return None
-
-class MEXCMessageParser(BaseMessageParser):
-    """
-    MEXC Message Parser mit Protocol Buffers Support
-    
-    MEXC sendet TWO Arten von Messages:
-    1. JSON: Subscription Responses ({"id":0, "code":0, "msg":"..."})
-    2. Binary: Protocol Buffers Trade-Daten
-    
-    Dokumentation: https://www.mexc.com/api-docs/spot-v3/websocket-market-streams
-    Proto: https://github.com/mexcdevelop/websocket-proto
-    """
-    
-    async def parse_orderbook_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an MEXC Orderbook Service"""
-        from backend.exchanges.mexc.services.orderbook import MEXCOrderbookService
-        service = MEXCOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            # ✅ SCHRITT 1: Erkenne ob JSON oder Binary
-            if isinstance(raw_message, bytes):
-                logger.info(f"🔍 MEXC received BINARY (Protobuf): {len(raw_message)} bytes")
-                return await self._parse_protobuf_trade(raw_message, market)
-            else:
-                logger.info(f"🔍 MEXC received STRING (JSON): {len(raw_message)} chars")
-                return await self._parse_json_message(raw_message, market)
-                
-        except Exception as e:
-            logger.error(f"MEXC message parsing error: {e}")
-            return None
-    
-    async def _parse_json_message(self, raw_message: str, market: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON Messages (Subscription Responses)"""
-        try:
-            data = json.loads(raw_message)
-            
-            # Subscription Response
-            if "code" in data and "msg" in data:
-                if data["code"] == 0:
-                    logger.info(f"✅ MEXC subscription confirmed: {data['msg']}")
-                else:
-                    logger.error(f"❌ MEXC subscription error: {data}")
-                return None
-            
-            # Legacy JSON Trade Format (falls noch verwendet)
-            if "d" in data and "deals" in data.get("d", {}):
-                for trade in data["d"]["deals"]:
-                    return {
-                        "exchange": "mexc",
-                        "symbol": normalize_to_unified(data.get("s", "UNKNOWN"), "mexc"),
-                        "trade_id": trade.get("t", str(datetime.now().timestamp())),
-                        "price": str(trade["p"]),
-                        "size": str(trade["v"]),
-                        "side": "buy" if trade.get("S") == 1 else "sell",
-                        "timestamp": int(trade["t"]),
-                        "market": market
-                    }
-        except Exception as e:
-            logger.error(f"MEXC JSON parsing error: {e}")
-        return None
-    
-    async def _parse_protobuf_trade(self, raw_message: bytes, market: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse Protocol Buffers Trade-Daten
-        
-        Struktur (von MEXC Doku):
-        {
-          "channel": "spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT",
-          "publicdeals": {
-            "dealsList": [{
-              "price": "93220.00",
-              "quantity": "0.04438243",
-              "tradetype": 2,  // 1=Buy, 2=Sell
-              "time": 1736409765051
-            }]
-          },
-          "symbol": "BTCUSDT",
-          "sendtime": 1736409765052
-        }
-        """
-        try:
-            # ✅ Einfacher Protobuf Wire Format Parser
-            # Format: Tag-Length-Value (TLV)
-            
-            symbol = None
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            i = 0
-            while i < len(raw_message):
-                # Read Tag (field number + wire type)
-                if i >= len(raw_message):
-                    break
-                    
-                tag = raw_message[i]
-                i += 1
-                
-                wire_type = tag & 0x07
-                field_num = tag >> 3
-                
-                # Wire Type 2: Length-delimited (strings, embedded messages)
-                if wire_type == 2:
-                    # Read length
-                    length = raw_message[i]
-                    i += 1
-                    
-                    # Read value
-                    value = raw_message[i:i+length]
-                    i += length
-                    
-                    # Decode basierend auf Field Position
-                    try:
-                        decoded = value.decode('utf-8', errors='ignore')
-                        
-                        # Channel (field 1) - enthält Symbol
-                        if field_num == 1 and '@' in decoded:
-                            parts = decoded.split('@')
-                            if len(parts) >= 5:
-                                symbol = parts[-1]  # BTCUSDT am Ende
-                        
-                        # Symbol field (field 3)
-                        elif field_num == 3:
-                            symbol = decoded
-                        
-                        # Embedded message (dealsList)
-                        elif b'\n' in value or b'\x12' in value:
-                            # Parse nested trade data
-                            price, quantity, tradetype, timestamp = self._parse_deal_data(value)
-                            
-                    except:
-                        pass
-                
-                # Wire Type 0: Varint (int, enum)
-                elif wire_type == 0:
-                    # Skip varint
-                    while i < len(raw_message) and (raw_message[i] & 0x80):
-                        i += 1
-                    i += 1
-                
-                else:
-                    # Skip unknown wire types
-                    i += 1
-            
-            # ✅ Build Trade Object
-            if symbol and price and quantity:
-                return {
-                    "exchange": "mexc",
-                    "symbol": normalize_to_unified(symbol, "mexc"),
-                    "trade_id": str(timestamp or datetime.now().timestamp()),
-                    "price": str(price),
-                    "size": str(quantity),
-                    "side": "buy" if tradetype == 1 else "sell",
-                    "timestamp": int(timestamp or datetime.now().timestamp() * 1000),
-                    "market": market
-                }
-            
-            logger.warning(f"MEXC protobuf incomplete: symbol={symbol}, price={price}, qty={quantity}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"MEXC protobuf parsing error: {e}")
-            return None
-    
-    def _parse_deal_data(self, data: bytes) -> tuple:
-        """Parse nested dealsList data"""
-        try:
-            # Suche nach String-Patterns für price und quantity
-            price = None
-            quantity = None
-            tradetype = None
-            timestamp = None
-            
-            # Simple pattern matching für Decimal strings
-            text = data.decode('utf-8', errors='ignore')
-            
-            # Price ist meist die erste Decimal-Zahl
-            import re
-            decimals = re.findall(r'\d+\.\d+', text)
-            if len(decimals) >= 2:
-                price = decimals[0]
-                quantity = decimals[1]
-            
-            # Trade type (1 oder 2) - Byte 0x18 followed by 0x01 or 0x02
-            if b'\x18\x01' in data:
-                tradetype = 1  # Buy
-            elif b'\x18\x02' in data:
-                tradetype = 2  # Sell
-            
-            # Timestamp - varint nach trade type
-            # Simplified: extract any large number
-            for i in range(len(data) - 8):
-                if data[i] == 0x20:  # Tag for timestamp
-                    # Try to read varint
-                    timestamp = 0
-                    shift = 0
-                    for j in range(i+1, min(i+10, len(data))):
-                        b = data[j]
-                        timestamp |= (b & 0x7F) << shift
-                        if not (b & 0x80):
-                            break
-                        shift += 7
-                    if timestamp > 1000000000000:  # Reasonable timestamp
-                        break
-            
-            return price, quantity, tradetype, timestamp
-            
-        except Exception as e:
-            logger.error(f"Deal data parsing error: {e}")
-            return None, None, None, None
-
-class OKXMessageParser(BaseMessageParser):
-    """OKX Message Parser - https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an OKX Orderbook Service"""
-        from backend.exchanges.okx.services.orderbook import OKXOrderbookService
-        service = OKXOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 OKX Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 OKX JSON parsed, keys: {list(data.keys())}")
-            
-            # OKX Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "okx",
-                        "symbol": normalize_to_unified(trade["instId"], "okx"),  # ✅ BTC-USDT → BTCUSDT
-                        "trade_id": trade["tradeId"],
-                        "price": str(trade["px"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["sz"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["side"],
-                        "timestamp": int(trade["ts"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ OKX Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ OKX Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ OKX parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class BybitMessageParser(BaseMessageParser):
-    """Bybit Message Parser - https://bybit-exchange.github.io/docs/v5/websocket/public/trade"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Bybit Orderbook Service"""
-        from backend.exchanges.bybit.services.orderbook import BybitOrderbookService
-        service = BybitOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 BYBIT Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 BYBIT JSON parsed, keys: {list(data.keys())}")
-            
-            # Bybit Trade Message Format
-            if "data" in data:
-                for trade in data["data"]:
-                    trade_obj = {
-                        "exchange": "bybit",
-                        "symbol": normalize_to_unified(trade["s"], "bybit"),  # ✅ Normalisiert
-                        "trade_id": trade["i"],
-                        "price": str(trade["p"]),  # ✅ String für Decimal(76,38)
-                        "size": str(trade["v"]),   # ✅ String für Decimal(76,38)
-                        "side": trade["S"].lower(),  # Buy -> buy
-                        "timestamp": int(trade["T"]),
-                        "market": market  # ✅ Von Parameter, nicht hardcoded!
-                    }
-                    logger.info(f"✅ BYBIT Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                    return trade_obj
-            else:
-                logger.warning(f"⚠️ BYBIT Message has no data: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ BYBIT parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class CoinbaseMessageParser(BaseMessageParser):
-    """Coinbase Message Parser - https://docs.cloud.coinbase.com/advanced-trade-api/docs/ws-channels#market-trades-channel"""
-    
-    async def parse_orderbook_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        """Delegiert an Coinbase Orderbook Service"""
-        from backend.exchanges.coinbase.services.orderbook import CoinbaseOrderbookService
-        service = CoinbaseOrderbookService()
-        return await service.parse_ws_orderbook(raw_message, market)
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            logger.info(f"🔍 COINBASE Parser called with message: {raw_message[:100]}")
-            data = json.loads(raw_message)
-            logger.info(f"🔍 COINBASE JSON parsed, keys: {list(data.keys())}")
-            
-            # Coinbase Trade Message Format
-            if "events" in data:
-                for event in data["events"]:
-                    if "trades" in event:
-                        for trade in event["trades"]:
-                            trade_obj = {
-                                "exchange": "coinbase",
-                                "symbol": normalize_to_unified(trade["product_id"], "coinbase"),  # ✅ Normalisiert
-                                "trade_id": trade["trade_id"],
-                                "price": str(trade["price"]),  # ✅ String für Decimal(76,38)
-                                "size": str(trade["size"]),    # ✅ String für Decimal(76,38)
-                                "side": trade["side"],
-                                "timestamp": int(datetime.fromisoformat(trade["time"].replace("Z", "+00:00")).timestamp() * 1000),
-                                "market": market  # ✅ Von Parameter, nicht hardcoded!
-                            }
-                            logger.info(f"✅ COINBASE Trade parsed: {trade_obj['symbol']} @ {trade_obj['price']}")
-                            return trade_obj
-            else:
-                logger.warning(f"⚠️ COINBASE Message has no events: keys={list(data.keys())}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ COINBASE parsing error: {e}, raw: {raw_message[:200]}")
-        return None
-
-class GenericMessageParser(BaseMessageParser):
-    """Fallback Parser für unbekannte Exchanges"""
-    
-    async def parse_trade_message(self, raw_message: str, market: str = "spot") -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(raw_message)
-            logger.warning(f"Using GenericMessageParser for {self.exchange}: {json.dumps(data)[:200]}")
-            return None  # Kein generisches Format möglich
-        except Exception as e:
-            logger.error(f"{self.exchange} message parsing error: {e}")
-        return None
-
-# Exchange-spezifische Parser Registry
-MESSAGE_PARSERS = {
-    "binance": BinanceMessageParser,
-    "bitget": BitgetMessageParser,
-    "gateio": GateIOMessageParser,
-    "bybit": BybitMessageParser,     # ✅ Bybit Parser
-    "coinbase": CoinbaseMessageParser, # ✅ Coinbase Parser
-    "htx": HTXMessageParser,          # ✅ HTX mit GZIP-Support
-    "mexc": MEXCMessageParser,        # ✅ MEXC Parser
-    "okx": OKXMessageParser,          # ✅ OKX Parser
-}
-
-def get_ws_message_parser(exchange: str) -> BaseMessageParser:
-    """Hole Message Parser für Exchange"""
-    parser_class = MESSAGE_PARSERS.get(exchange, GenericMessageParser)
-    return parser_class(exchange)
-</file>
-
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.registry.symbol_registry import SYMBOL_REGISTRY
-                    from backend.core.models.market_enum import MarketEnum
-                    
-                    market_enum = MarketEnum.SPOT if market == "spot" else MarketEnum.USDTM
-                    catalog = SYMBOL_REGISTRY.catalog(exchange, market_enum)
-                    
-                    symbols = [entry["symbol"] for entry in catalog]
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": market,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ⚠️ Orderbook Request: "orderbook" - TODO: Implement via WS-Lane
-            # Currently not implemented - requires orderbook subscription in ws_manager
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Orderbook not yet implemented via WS. Use REST endpoint or implement orderbook lane."
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
 /**
  * ChartView Component
@@ -155224,6 +154684,505 @@ const ChartView: React.FC<ChartViewProps> = ({
 };
 
 export default ChartView;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, RefreshCw, Settings } from 'lucide-react';
+
+interface CoinSetting {
+  symbol: string;
+  exchange: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite?: boolean;
+  chart_resolution?: string;
+  db_resolutions?: string[];
+}
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange?: string;
+  selectedMarket?: string;
+}
+
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange,
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [symbols, setSymbols] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
+  const [settingsLoading, setSettingsLoading] = useState(false);
+
+  const resolveWsBase = (): string => {
+    const envBase =
+      (import.meta as any)?.env?.VITE_WS_BASE_URL ||
+      (import.meta as any)?.env?.VITE_BACKEND_WS_URL;
+    if (envBase && typeof envBase === "string") return envBase.replace(/\/$/, "");
+
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const host = window.location.hostname || "localhost";
+    return `${proto}://${host}:8080`;
+  };
+
+  const resolveApiBase = (): string => {
+    const envBase = (import.meta as any)?.env?.VITE_API_BASE_URL;
+    if (envBase && typeof envBase === "string") return envBase.replace(/\/$/, "");
+    const proto = window.location.protocol;
+    const host = window.location.hostname || "localhost";
+    return `${proto}//${host}:8080`;
+  };
+
+  const loadCoinSettings = async () => {
+    if (!exchange) return;
+    setSettingsLoading(true);
+    try {
+      const apiBase = resolveApiBase();
+      const response = await fetch(`${apiBase}/api/user/settings/coins?exchange=${exchange}`, {
+        headers: {
+          'X-Client-ID': 'default-client',
+        },
+      });
+      
+      if (response.ok) {
+        const settings: CoinSetting[] = await response.json();
+        const settingsMap = new Map<string, CoinSetting>();
+        settings.forEach(s => {
+          const key = `${s.exchange}_${s.symbol}_${s.market}`;
+          settingsMap.set(key, s);
+        });
+        setCoinSettings(settingsMap);
+      }
+    } catch (err) {
+      console.error('Failed to load coin settings:', err);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const saveCoinSettings = async (updatedSettings: CoinSetting[]) => {
+    try {
+      const apiBase = resolveApiBase();
+      const response = await fetch(`${apiBase}/api/user/settings/coins`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-ID': 'default-client',
+        },
+        body: JSON.stringify(updatedSettings),
+      });
+      
+      if (response.ok) {
+        const settings: CoinSetting[] = await response.json();
+        const settingsMap = new Map<string, CoinSetting>();
+        settings.forEach(s => {
+          const key = `${s.exchange}_${s.symbol}_${s.market}`;
+          settingsMap.set(key, s);
+        });
+        setCoinSettings(settingsMap);
+      }
+    } catch (err) {
+      console.error('Failed to save coin settings:', err);
+    }
+  };
+
+  const loadSymbols = async () => {
+    if (!exchange) return;
+    setLoading(true);
+    setLocalError(null);
+    try {
+      const market = selectedMarket || "spot";
+      const wsUrl = `${resolveWsBase()}/ws/${exchange}/BTCUSDT/${market}`;
+
+      const symbolsList: string[] = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        let done = false;
+        const timeout = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          try { ws.close(); } catch {}
+          reject(new Error("WS symbols request timeout"));
+        }, 5000);
+
+        ws.onopen = () => {
+          try {
+            ws.send("symbols");
+          } catch (e) {
+            window.clearTimeout(timeout);
+            if (!done) {
+              done = true;
+              reject(e instanceof Error ? e : new Error("WS send failed"));
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(timeout);
+          if (!done) {
+            done = true;
+            try { ws.close(); } catch {}
+            reject(new Error("WS connection error"));
+          }
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                resolve(data.symbols);
+              }
+              return;
+            }
+            if (data?.type === "error") {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                reject(new Error(data.message || "WS error"));
+              }
+              return;
+            }
+          } catch {
+            // ignore non-json
+          }
+        };
+
+        ws.onclose = () => {
+          // If it closes before we got symbols, let timeout/error handle.
+        };
+      });
+
+      setSymbols(
+        symbolsList.map((s) => ({
+          symbol: s,
+          exchange,
+          market_type: selectedMarket || "spot",
+        }))
+      );
+    } catch (err) {
+      console.error('Failed to load symbols:', err);
+      setLocalError('Failed to load symbols');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+    loadCoinSettings();
+  }, [exchange, selectedMarket]);
+
+  const getCoinSettingKey = (symbol: string, market: string) => {
+    return `${exchange}_${symbol}_${market}`;
+  };
+
+  const isLiveEnabled = (symbol: string): boolean => {
+    const key = getCoinSettingKey(symbol, selectedMarket || "spot");
+    return coinSettings.get(key)?.store_live || false;
+  };
+
+  const isHistoricalEnabled = (symbol: string): boolean => {
+    const key = getCoinSettingKey(symbol, selectedMarket || "spot");
+    return coinSettings.get(key)?.load_history || false;
+  };
+
+  const handleLiveClick = async (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!exchange) return;
+    
+    const market = selectedMarket || "spot";
+    const key = getCoinSettingKey(symbol, market);
+    const currentSetting = coinSettings.get(key);
+    const newLiveState = !isLiveEnabled(symbol);
+    
+    const updatedSetting: CoinSetting = currentSetting 
+      ? { ...currentSetting, store_live: newLiveState }
+      : {
+          symbol,
+          exchange,
+          market,
+          store_live: newLiveState,
+          load_history: false,
+        };
+    
+    const allSettings = Array.from(coinSettings.values());
+    const existingIndex = allSettings.findIndex(s => 
+      s.symbol === symbol && s.exchange === exchange && s.market === market
+    );
+    
+    if (existingIndex >= 0) {
+      allSettings[existingIndex] = updatedSetting;
+    } else {
+      allSettings.push(updatedSetting);
+    }
+    
+    await saveCoinSettings(allSettings);
+  };
+
+  const handleHistoricalClick = async (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!exchange) return;
+    
+    const market = selectedMarket || "spot";
+    const key = getCoinSettingKey(symbol, market);
+    const currentSetting = coinSettings.get(key);
+    const newHistoryState = !isHistoricalEnabled(symbol);
+    
+    const updatedSetting: CoinSetting = currentSetting 
+      ? { ...currentSetting, load_history: newHistoryState }
+      : {
+          symbol,
+          exchange,
+          market,
+          store_live: false,
+          load_history: newHistoryState,
+        };
+    
+    const allSettings = Array.from(coinSettings.values());
+    const existingIndex = allSettings.findIndex(s => 
+      s.symbol === symbol && s.exchange === exchange && s.market === market
+    );
+    
+    if (existingIndex >= 0) {
+      allSettings[existingIndex] = updatedSetting;
+    } else {
+      allSettings.push(updatedSetting);
+    }
+    
+    await saveCoinSettings(allSettings);
+  };
+
+  const toggleFavorite = (symbol: string) => {
+    setFavorites(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(symbol)) {
+        newSet.delete(symbol);
+      } else {
+        newSet.add(symbol);
+      }
+      return newSet;
+    });
+  };
+
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    filtered = filtered.filter((symbol: any, index: number, self: any[]) => 
+      index === self.findIndex((s: any) => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    if (searchTerm) {
+      filtered = filtered.filter((symbol: any) =>
+        symbol.symbol.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+
+    return filtered.sort((a: any, b: any) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
+
+  const handleToggleFavorite = (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleFavorite(symbol);
+  };
+
+
+  const handleSymbolSelect = (coin: any) => {
+    onSymbolSelect(coin.symbol);
+    setIsOpen(false);
+  };
+
+  const displaySymbol = selectedSymbol;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {displaySymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          <div className="max-h-[300px] overflow-y-auto">
+            {loading ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin: any) => {
+                const uniqueKey = (coin as any).instrument_uid 
+                  || `${coin.exchange}|${coin.market_type}|${coin.symbol}|${coin.baseCoin || ''}|${coin.quoteCoin || ''}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === displaySymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => handleSymbolSelect(coin)}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] flex justify-center">
+                      <span
+                        className={`text-xs font-bold cursor-pointer transition-colors ${
+                          isLiveEnabled(coin.symbol) ? "text-green-500" : "text-red-500"
+                        }`}
+                        onClick={(e) => handleLiveClick(coin.symbol, e)}
+                        title={isLiveEnabled(coin.symbol) ? "Live storage enabled" : "Live storage disabled"}
+                      >
+                        L
+                      </span>
+                    </div>
+                    <div className="w-[12px] flex justify-center">
+                      <span
+                        className={`text-xs font-bold cursor-pointer transition-colors ${
+                          isHistoricalEnabled(coin.symbol) ? "text-green-500" : "text-red-500"
+                        }`}
+                        onClick={(e) => handleHistoricalClick(coin.symbol, e)}
+                        title={isHistoricalEnabled(coin.symbol) ? "Historical backfill enabled" : "Historical backfill disabled"}
+                      >
+                        H
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loading}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -161880,6 +161839,611 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: d
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                
+                # ✅ TRADE PARSING
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                # ✅ ORDERBOOK PARSING
+                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
+                
+                # Wenn weder Trade noch Orderbook, return
+                if not trade_data and not orderbook_data:
+                    return
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data and trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ TRADE DATA PROCESSING
+                if trade_data:
+                    # Redis Stream über rs_ Lane System
+                    from backend.database.redis import unified_rs_service
+                    
+                    success = await unified_rs_service.add_trade(
+                        exchange, symbol, trade_data, market
+                    )
+                    
+                    if not success:
+                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                    
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="trade_data",
+                        data=trade_data
+                    )
+                
+                # 3. ✅ ORDERBOOK DATA PROCESSING
+                if orderbook_data:
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="orderbook_data",
+                        data=orderbook_data
+                    )
+                
+                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
+                if trade_data:
+                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg
+                    from backend.core.config import config
+                    
+                    # Aggregator pro Lane erstellen (einmalig)
+                    if not hasattr(lane, 'candle_agg'):
+                        # ✅ DYNAMISCH: Resolutions aus ENV
+                        lane.candle_agg = MultiResCandleAgg(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            resolutions=config.ws_candle_resolutions
+                        )
+                    
+                    # Trade zu Candles aggregieren
+                    finished_candles = lane.candle_agg.on_trade(trade_data)
+                    
+                    # Finished Candles broadcasten
+                    for candle in finished_candles:
+                        await self.broadcast_to_frontend(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            message_type="candle_data",
+                            data=candle
+                        )
+                
+                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, data, market_type=market)
+            elif message_type == "orderbook_data":
+                await broadcast_orderbook_data(exchange, symbol, data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
+</file>
+
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.registry.symbol_registry import SYMBOL_REGISTRY
+                    from backend.core.models.market_enum import MarketEnum
+                    
+                    market_enum = MarketEnum.SPOT if market == "spot" else MarketEnum.USDTM
+                    catalog = SYMBOL_REGISTRY.catalog(exchange, market_enum)
+                    
+                    symbols = [entry["symbol"] for entry in catalog]
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": market,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
 <file path="frontend/src/config/exchangeSupport.ts">
 // ✅ DYNAMISCHE Exchange & Market Configuration
 // Lädt Exchanges und Markets vom Backend (kein Hardcoding!)
@@ -162324,6 +162888,65 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
+</file>
+
+<file path="Dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ============================================================
+# LAYER 1: System Dependencies (CACHED solange unverändert)
+# ============================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    tar \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
+# ============================================================
+# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
+COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
+COPY vendor/system/file_linux/config.guess ./config.guess
+COPY vendor/system/file_linux/config.sub ./config.sub
+
+RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
+ && cd ta-lib/ \
+ && cp ../config.guess ../config.sub . \
+ && chmod +x config.guess config.sub \
+ && ./configure --prefix=/usr \
+ && (make -j$(nproc) || make) \
+ && make install \
+ && cd .. \
+ && rm -rf ta-lib* config.guess config.sub \
+ && ldconfig
+
+# ============================================================
+# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
+# ============================================================
+COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
+COPY vendor/backend/file_linux/ ./wheels/
+
+RUN pip install --no-cache-dir --no-index --find-links ./wheels \
+    -r backend_requirements.lock
+
+# ============================================================
+# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
+# ============================================================
+COPY backend ./backend
+
+# ENV für Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Port exposen
+EXPOSE 8100
+
+# Start der App
+CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
 <file path="start-health.sh">
@@ -163747,473 +164370,6 @@ class BinanceRestAPI:
         if self._session:
             await self._session.close()
             self._session = None
-</file>
-
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                
-                # ✅ TRADE PARSING
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                # ✅ ORDERBOOK PARSING
-                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
-                
-                # Wenn weder Trade noch Orderbook, return
-                if not trade_data and not orderbook_data:
-                    return
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data and trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ TRADE DATA PROCESSING
-                if trade_data:
-                    # Redis Stream über rs_ Lane System
-                    from backend.database.redis import unified_rs_service
-                    
-                    success = await unified_rs_service.add_trade(
-                        exchange, symbol, trade_data, market
-                    )
-                    
-                    if not success:
-                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                    
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="trade_data",
-                        data=trade_data
-                    )
-                
-                # 3. ✅ ORDERBOOK DATA PROCESSING
-                if orderbook_data:
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="orderbook_data",
-                        data=orderbook_data
-                    )
-                
-                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
-                if trade_data:
-                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg
-                    from backend.core.config import config
-                    
-                    # Aggregator pro Lane erstellen (einmalig)
-                    if not hasattr(lane, 'candle_agg'):
-                        # ✅ DYNAMISCH: Resolutions aus ENV
-                        lane.candle_agg = MultiResCandleAgg(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            resolutions=config.ws_candle_resolutions
-                        )
-                    
-                    # Trade zu Candles aggregieren
-                    finished_candles = lane.candle_agg.on_trade(trade_data)
-                    
-                    # Finished Candles broadcasten
-                    for candle in finished_candles:
-                        await self.broadcast_to_frontend(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            message_type="candle_data",
-                            data=candle
-                        )
-                
-                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            elif message_type == "orderbook_data":
-                await broadcast_orderbook_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
 </file>
 
 <file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
@@ -165688,65 +165844,6 @@ services:
 volumes:
   clickhouse-data:
   redis-data:
-</file>
-
-<file path="Dockerfile">
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# ============================================================
-# LAYER 1: System Dependencies (CACHED solange unverändert)
-# ============================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    wget \
-    tar \
-    curl \
- && rm -rf /var/lib/apt/lists/*
-
-# ============================================================
-# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
-# ============================================================
-# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
-COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
-COPY vendor/system/file_linux/config.guess ./config.guess
-COPY vendor/system/file_linux/config.sub ./config.sub
-
-RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
- && cd ta-lib/ \
- && cp ../config.guess ../config.sub . \
- && chmod +x config.guess config.sub \
- && ./configure --prefix=/usr \
- && (make -j$(nproc) || make) \
- && make install \
- && cd .. \
- && rm -rf ta-lib* config.guess config.sub \
- && ldconfig
-
-# ============================================================
-# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
-# ============================================================
-COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
-COPY vendor/backend/file_linux/ ./wheels/
-
-RUN pip install --no-cache-dir --no-index --find-links ./wheels \
-    -r backend_requirements.lock
-
-# ============================================================
-# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
-# ============================================================
-COPY backend ./backend
-
-# ENV für Python
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Port exposen
-EXPOSE 8100
-
-# Start der App
-CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
 <file path="frontend/src/main.tsx">
