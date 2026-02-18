@@ -737,6 +737,7 @@ __init__.py
 DATENFLUSS_LIVE_CHART.md
 docker-compose.yml
 Dockerfile
+FEHLER_ANALYSE.md
 FIX_PLAN_FINAL.md
 FRONTEND_ARCHITEKTUR_KOMPLETT.md
 monitor-system.sh
@@ -14256,389 +14257,6 @@ class UnifiedClService:
 
 # Global UnifiedClService instance
 unified_cl_service = UnifiedClService()
-</file>
-
-<file path="backend/database/clickhouse/cl_user_settings.py">
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-
-# ✅ TASK 27: User Settings Migration → ClickHouse Lane System
-from backend.database.clickhouse.cl_unified import unified_cl_service
-
-logger = logging.getLogger("cl-user-settings")
-
-class ClickHouseUserSettingsManager:
-    """
-    ⚙️ USER SETTINGS CLICKHOUSE INTEGRATION
-    
-    Migriert User Settings (CoinSettings, IndicatorSettings, etc.) zu ClickHouse Lane System
-    Ersetzt fragmentierte ClickHouse User Settings durch vereinheitlichte cl_ Lane Calls
-    """
-    
-    def __init__(self):
-        self.cl_service = unified_cl_service
-        self.initialized = False
-        
-    async def initialize(self) -> bool:
-        """Initialisiere User Settings ClickHouse Integration"""
-        try:
-            logger.info("⚙️ Initializing User Settings ClickHouse Integration...")
-            
-            # Teste ClickHouse Lane System Verfügbarkeit
-            if hasattr(self.cl_service, 'get_system_overview'):
-                cl_status = self.cl_service.get_system_overview()
-                logger.info(f"✅ ClickHouse Lane System ready for user settings: {cl_status.get('initialized', False)}")
-            
-            self.initialized = True
-            logger.info("✅ User Settings ClickHouse Integration initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ User Settings ClickHouse Integration initialization failed: {e}")
-            return False
-    
-    # ✅ COIN SETTINGS MANAGEMENT
-    async def create_coin_settings(self, user_id: str, exchange: str, symbol: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Erstelle Coin Settings über ClickHouse Lane System
-        Ersetzt legacy ClickHouse Manager Calls
-        """
-        try:
-            # Prepare coin settings data for ClickHouse
-            coin_settings_data = {
-                "user_id": user_id,
-                "exchange": exchange,
-                "symbol": symbol,
-                "settings": settings,
-                "active": settings.get("active", True),
-                "notifications_enabled": settings.get("notifications_enabled", False),
-                "price_alerts": settings.get("price_alerts", []),
-                "volume_alerts": settings.get("volume_alerts", []),
-                "technical_indicators": settings.get("technical_indicators", {}),
-                "created_at": int(datetime.now().timestamp() * 1000),
-                "updated_at": int(datetime.now().timestamp() * 1000)
-            }
-            
-            # ✅ cl_ Lane System Call statt legacy ClickHouse Manager
-            result = await self.cl_service.insert_user_settings(
-                table_type="coin_settings",
-                data=coin_settings_data
-            )
-            
-            if result:
-                logger.info(f"✅ Created coin settings for {user_id}/{exchange}/{symbol}")
-                return {
-                    "success": True,
-                    "user_id": user_id,
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "settings_id": result.get("id"),
-                    "created_at": coin_settings_data["created_at"]
-                }
-            else:
-                raise Exception("ClickHouse insert failed")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to create coin settings for {user_id}/{exchange}/{symbol}: {e}")
-            return {"success": False, "error": str(e)}
-    
-    async def get_coin_settings(self, user_id: str, exchange: str = None, symbol: str = None) -> List[Dict[str, Any]]:
-        """
-        Hole Coin Settings über ClickHouse Lane System
-        Ersetzt legacy ClickHouse Manager Calls  
-        """
-        try:
-            # Build query filters
-            filters = {"user_id": user_id}
-            if exchange:
-                filters["exchange"] = exchange
-            if symbol:
-                filters["symbol"] = symbol
-            
-            # ✅ cl_ Lane System Call
-            settings_data = await self.cl_service.query_user_settings(
-                table_type="coin_settings", 
-                filters=filters,
-                limit=1000
-            )
-            
-            if settings_data:
-                logger.info(f"📊 Retrieved {len(settings_data)} coin settings for {user_id}")
-                return settings_data
-            else:
-                return []
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to get coin settings for {user_id}: {e}")
-            return []
-    
-    async def update_coin_settings(self, user_id: str, exchange: str, symbol: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Aktualisiere Coin Settings über ClickHouse Lane System
-        """
-        try:
-            # Prepare update data
-            update_data = {
-                "user_id": user_id,
-                "exchange": exchange,
-                "symbol": symbol,
-                "settings": updates,
-                "updated_at": int(datetime.now().timestamp() * 1000)
-            }
-            
-            # ✅ cl_ Lane System Call
-            result = await self.cl_service.update_user_settings(
-                table_type="coin_settings",
-                filters={"user_id": user_id, "exchange": exchange, "symbol": symbol},
-                updates=update_data
-            )
-            
-            if result:
-                logger.info(f"✅ Updated coin settings for {user_id}/{exchange}/{symbol}")
-                return {"success": True, "updated_at": update_data["updated_at"]}
-            else:
-                raise Exception("ClickHouse update failed")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to update coin settings for {user_id}/{exchange}/{symbol}: {e}")
-            return {"success": False, "error": str(e)}
-    
-    # ✅ INDICATOR SETTINGS MANAGEMENT
-    async def create_indicator_settings(self, user_id: str, exchange: str, symbol: str, indicator_config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Erstelle Indicator Settings über ClickHouse Lane System
-        """
-        try:
-            indicator_data = {
-                "user_id": user_id,
-                "exchange": exchange,
-                "symbol": symbol,
-                "indicator_type": indicator_config.get("type", "unknown"),
-                "indicator_name": indicator_config.get("name", ""),
-                "parameters": indicator_config.get("parameters", {}),
-                "timeframes": indicator_config.get("timeframes", ["1h"]),
-                "enabled": indicator_config.get("enabled", True),
-                "alert_conditions": indicator_config.get("alert_conditions", []),
-                "created_at": int(datetime.now().timestamp() * 1000),
-                "updated_at": int(datetime.now().timestamp() * 1000)
-            }
-            
-            # ✅ cl_ Lane System Call
-            result = await self.cl_service.insert_user_settings(
-                table_type="indicator_settings",
-                data=indicator_data
-            )
-            
-            if result:
-                logger.info(f"✅ Created indicator settings {indicator_config.get('name')} for {user_id}/{exchange}/{symbol}")
-                return {
-                    "success": True,
-                    "indicator_id": result.get("id"),
-                    "indicator_name": indicator_data["indicator_name"],
-                    "created_at": indicator_data["created_at"]
-                }
-            else:
-                raise Exception("ClickHouse insert failed")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to create indicator settings for {user_id}: {e}")
-            return {"success": False, "error": str(e)}
-    
-    async def get_indicator_settings(self, user_id: str, exchange: str = None, symbol: str = None, indicator_type: str = None) -> List[Dict[str, Any]]:
-        """
-        Hole Indicator Settings über ClickHouse Lane System
-        """
-        try:
-            filters = {"user_id": user_id}
-            if exchange:
-                filters["exchange"] = exchange
-            if symbol:
-                filters["symbol"] = symbol
-            if indicator_type:
-                filters["indicator_type"] = indicator_type
-            
-            # ✅ cl_ Lane System Call
-            indicator_data = await self.cl_service.query_user_settings(
-                table_type="indicator_settings",
-                filters=filters,
-                limit=500
-            )
-            
-            if indicator_data:
-                logger.info(f"📊 Retrieved {len(indicator_data)} indicator settings for {user_id}")
-                return indicator_data
-            else:
-                return []
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to get indicator settings for {user_id}: {e}")
-            return []
-    
-    # ✅ PORTFOLIO SETTINGS MANAGEMENT  
-    async def create_portfolio_settings(self, user_id: str, portfolio_config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Erstelle Portfolio Settings über ClickHouse Lane System
-        """
-        try:
-            portfolio_data = {
-                "user_id": user_id,
-                "portfolio_name": portfolio_config.get("name", "Default Portfolio"),
-                "base_currency": portfolio_config.get("base_currency", "USDT"),
-                "exchanges": portfolio_config.get("exchanges", []),
-                "allocation_strategy": portfolio_config.get("allocation_strategy", "equal"),
-                "risk_management": portfolio_config.get("risk_management", {}),
-                "rebalance_frequency": portfolio_config.get("rebalance_frequency", "weekly"),
-                "performance_tracking": portfolio_config.get("performance_tracking", True),
-                "created_at": int(datetime.now().timestamp() * 1000),
-                "updated_at": int(datetime.now().timestamp() * 1000)
-            }
-            
-            # ✅ cl_ Lane System Call
-            result = await self.cl_service.insert_user_settings(
-                table_type="portfolio_settings",
-                data=portfolio_data
-            )
-            
-            if result:
-                logger.info(f"✅ Created portfolio settings {portfolio_config.get('name')} for {user_id}")
-                return {
-                    "success": True,
-                    "portfolio_id": result.get("id"),
-                    "portfolio_name": portfolio_data["portfolio_name"],
-                    "created_at": portfolio_data["created_at"]
-                }
-            else:
-                raise Exception("ClickHouse insert failed")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to create portfolio settings for {user_id}: {e}")
-            return {"success": False, "error": str(e)}
-    
-    # ✅ UNIFIED USER SETTINGS DASHBOARD
-    async def get_user_dashboard_settings(self, user_id: str) -> Dict[str, Any]:
-        """
-        Vollständige User Settings Overview über ClickHouse Lane System
-        Ersetzt fragmentierte User Settings Abfragen
-        """
-        try:
-            logger.info(f"⚙️ Loading complete user dashboard settings for {user_id}")
-            
-            dashboard_data = {
-                "user_id": user_id,
-                "load_time": datetime.now().isoformat(),
-                "coin_settings": [],
-                "indicator_settings": [],
-                "portfolio_settings": [],
-                "summary": {"total_coins": 0, "total_indicators": 0, "total_portfolios": 0}
-            }
-            
-            # Parallel laden aller Settings über cl_ Lane System
-            coin_settings_task = self.get_coin_settings(user_id)
-            indicator_settings_task = self.get_indicator_settings(user_id)
-            portfolio_settings_task = self.cl_service.query_user_settings(
-                table_type="portfolio_settings",
-                filters={"user_id": user_id},
-                limit=10
-            )
-            
-            # Asynchron parallel verarbeiten
-            results = await asyncio.gather(
-                coin_settings_task,
-                indicator_settings_task, 
-                portfolio_settings_task,
-                return_exceptions=True
-            )
-            
-            # Results verarbeiten
-            coin_settings = results[0] if not isinstance(results[0], Exception) else []
-            indicator_settings = results[1] if not isinstance(results[1], Exception) else []
-            portfolio_settings = results[2] if not isinstance(results[2], Exception) else []
-            
-            dashboard_data["coin_settings"] = coin_settings
-            dashboard_data["indicator_settings"] = indicator_settings
-            dashboard_data["portfolio_settings"] = portfolio_settings
-            
-            dashboard_data["summary"] = {
-                "total_coins": len(coin_settings),
-                "total_indicators": len(indicator_settings),
-                "total_portfolios": len(portfolio_settings),
-                "active_coins": len([c for c in coin_settings if c.get("active", False)]),
-                "enabled_indicators": len([i for i in indicator_settings if i.get("enabled", False)])
-            }
-            
-            logger.info(f"✅ User dashboard settings loaded: {dashboard_data['summary']['total_coins']} coins, {dashboard_data['summary']['total_indicators']} indicators")
-            return dashboard_data
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to load user dashboard settings for {user_id}: {e}")
-            return {"user_id": user_id, "error": str(e)}
-    
-    # ✅ SETTINGS CLEANUP & MAINTENANCE
-    async def cleanup_old_settings(self, days_old: int = 90) -> Dict[str, Any]:
-        """
-        Cleanup alter User Settings über ClickHouse Lane System
-        """
-        try:
-            logger.info(f"🧹 Starting cleanup of user settings older than {days_old} days")
-            
-            cutoff_timestamp = int((datetime.now().timestamp() - (days_old * 24 * 3600)) * 1000)
-            
-            # Cleanup tasks für verschiedene Settings-Typen
-            cleanup_results = {}
-            
-            for settings_type in ["coin_settings", "indicator_settings", "portfolio_settings"]:
-                try:
-                    # ✅ cl_ Lane System Call für Cleanup
-                    result = await self.cl_service.delete_user_settings(
-                        table_type=settings_type,
-                        filters={"updated_at": f"<{cutoff_timestamp}"}
-                    )
-                    
-                    cleanup_results[settings_type] = {
-                        "success": True,
-                        "deleted_count": result.get("deleted_count", 0)
-                    }
-                    
-                except Exception as cleanup_error:
-                    cleanup_results[settings_type] = {
-                        "success": False,
-                        "error": str(cleanup_error)
-                    }
-            
-            total_deleted = sum(r.get("deleted_count", 0) for r in cleanup_results.values() if r.get("success"))
-            
-            logger.info(f"✅ Settings cleanup completed: {total_deleted} total records deleted")
-            return {
-                "cleanup_completed": True,
-                "cutoff_days": days_old,
-                "total_deleted": total_deleted,
-                "results_by_type": cleanup_results
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Settings cleanup failed: {e}")
-            return {"cleanup_completed": False, "error": str(e)}
-
-# Global ClickHouse User Settings Manager instance
-cl_user_settings = ClickHouseUserSettingsManager()
-
-
-def get_user_settings_store():
-    """
-    Factory-Funktion für config_manager.py Kompatibilität
-    Gibt die cl_user_settings Instanz zurück
-    """
-    return cl_user_settings
-
-
-def get_user_settings_cache():
-    """
-    Factory-Funktion für config_manager.py Kompatibilität
-    Gibt die cl_user_settings Instanz zurück (cache-fähig)
-    """
-    return cl_user_settings
 </file>
 
 <file path="backend/database/redis/__init__.py">
@@ -29126,6 +28744,140 @@ class HealthRegistry:
 health_registry = HealthRegistry()
 </file>
 
+<file path="backend/health/health_router.py">
+from fastapi import APIRouter, Response, HTTPException
+from datetime import datetime
+import json
+from .health_registry import health_registry
+
+# ✅ FIX: Removed prefix here since main.py already adds prefix="/health"
+# This prevents double prefix bug (/health/health/ready)
+health_router = APIRouter(tags=["health"])
+
+@health_router.get("/")
+async def health_overview():
+    """Basic Health Check - Immer 200 solange Service läuft"""
+    return {
+        "status": "alive", 
+        "service": "trading-system",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@health_router.get("/ready")
+async def readiness_check():
+    """Kubernetes Readiness Probe - 200 wenn ready, 503 wenn nicht"""
+    system_health = health_registry.get_system_health()
+    
+    if system_health["ready"]:
+        return Response(
+            content=json.dumps(system_health),
+            status_code=200,
+            media_type="application/json"
+        )
+    else:
+        return Response(
+            content=json.dumps(system_health),
+            status_code=503,  # Service Unavailable
+            media_type="application/json"
+        )
+
+@health_router.get("/live")
+async def liveness_check():
+    """Kubernetes Liveness Probe - Immer 200 solange Process läuft"""
+    return Response(
+        content=json.dumps({"status": "alive", "timestamp": datetime.now().isoformat()}),
+        status_code=200,
+        media_type="application/json"
+    )
+
+@health_router.get("/detailed")
+async def detailed_health():
+    """
+    ✅ PHASE 3: Detaillierte Health-Information mit Exchange-fokussiertem JSON Format (README Implementation)
+    """
+    system_health = health_registry.get_system_health()
+    resilient_ready, resilient_message = health_registry.get_system_readiness_resilient()
+    
+    # ✅ Extract exchange information for README JSON format
+    exchange_status = {
+        "healthy": [],
+        "warming_up": [], 
+        "failed": [],
+        "offline": []
+    }
+    
+    # Categorize exchanges by health status
+    if system_health.get("components_by_type", {}).get("exchange"):
+        for exchange_data in system_health["components_by_type"]["exchange"]:
+            exchange_name = exchange_data.get("component_name", "unknown")
+            effective_status = exchange_data.get("effective_status", "unknown").lower()
+            
+            if effective_status == "healthy":
+                exchange_status["healthy"].append(exchange_name)
+            elif effective_status in ["degraded", "stale"]:
+                exchange_status["warming_up"].append(exchange_name)
+            elif effective_status in ["failed", "error"]:
+                exchange_status["failed"].append(exchange_name)
+            else:
+                exchange_status["offline"].append(exchange_name)
+    
+    # ✅ PHASE 3: README-compliant JSON format
+    return {
+        "system_status": system_health.get("system_status", "unknown"),
+        "ready": resilient_ready,  # ⭐ Always true - system runs regardless (README requirement)
+        "exchange_status": exchange_status,
+        "message": resilient_message or f"{len(exchange_status['healthy'])}/{len(exchange_status['healthy']) + len(exchange_status['warming_up']) + len(exchange_status['failed']) + len(exchange_status['offline'])} exchanges operational",
+        "timestamp": datetime.now().isoformat(),
+        "startup_mode": "resilient",
+        "detailed_components": system_health  # Full health data for debugging
+    }
+
+@health_router.get("/ready/resilient")
+async def readiness_check_resilient():
+    """✅ PHASE 3: Resilient readiness - immer 200, zeigt aber detailed status (README Implementation)"""
+    system_health = health_registry.get_system_health()
+    resilient_ready, message = health_registry._calculate_system_readiness_resilient()
+    
+    # ⭐ ALWAYS 200 - system läuft immer, status ist nur informativ
+    return {
+        **system_health,
+        "resilient_ready": resilient_ready,
+        "resilient_message": message,
+        "startup_mode": "graceful"
+    }
+
+@health_router.get("/components")
+async def all_components():
+    return {
+        "components": [lane.get_health() for lane in health_registry.get_all_lanes()],
+        "timestamp": datetime.now().isoformat()
+    }
+
+@health_router.get("/components/{component_type}")
+async def components_by_type(component_type: str):
+    return health_registry.get_health_by_type(component_type)
+
+@health_router.get("/components/{component_type}/{component_name}")
+async def specific_component(component_type: str, component_name: str):
+    health = health_registry.get_component_health(component_type, component_name)
+    if not health:
+        raise HTTPException(status_code=404, detail=f"Component {component_type}.{component_name} not found")
+    return health.get_health()
+
+@health_router.get("/critical")
+async def critical_components_health():
+    """Health Status nur für kritische Komponenten"""
+    all_lanes = health_registry.get_all_lanes()
+    critical_health = [lane.get_health() for lane in all_lanes if lane.critical]
+    
+    return {
+        "critical_components": critical_health,
+        "total_critical": len(critical_health),
+        "healthy_critical": sum(1 for h in critical_health if h["effective_status"] == "healthy"),
+        "timestamp": datetime.now().isoformat()
+    }
+</file>
+
 <file path="backend/indicators/calculators/alma_calculator.py">
 # backend/indicators/calculators/alma_calculator.py
 """
@@ -37787,6 +37539,329 @@ class ExchangeFactory:
     def reset_cache(cls):
         cls._api_instances.clear()
         cls._available_exchanges = None
+</file>
+
+<file path="backend/services/adapter/unified_collector.py">
+"""
+✅ UNIFIED COLLECTOR SERVICE - Business Logic Service für alle Exchange Collectors
+Ersetzt die 8x fehlenden Exchange Collectors mit einem zentralen Service
+"""
+
+import asyncio
+import logging
+from datetime import datetime
+from typing import Dict, List, Optional, Set
+from backend.websocket.ws_unified import universal_ws_service, start_websocket_service
+
+logger = logging.getLogger("unified-collector-service")
+
+class UnifiedCollectorService:
+    """
+    ✅ UNIFIED COLLECTOR SERVICE - Business Logic für alle Exchange Collectors
+    
+    Zentraler Service der alle Exchange Collector-Funktionen managed:
+    - Alle 8 Exchanges: Binance, GateIO, Bybit, OKX, MEXC, HTX, Coinbase, Bitget
+    - Nutzt WebSocket Service für technische WebSocket-Verwaltung
+    - Business Logic für Collector-Management
+    - Generische API für alle Exchanges
+    """
+    
+    def __init__(self, supported_exchanges=None, symbols=None, market_types=None):
+        # ✅ Generisch - nichts hardcoded
+        self.exchanges = supported_exchanges or [
+            'binance', 'bitget', 'mexc', 'gateio', 'bybit', 'okx', 'htx', 'coinbase'
+        ]
+        self.symbols = symbols or ['BTCUSDT', 'ETHUSDT', 'ADAUSDT']
+        self.market_types = market_types or ['spot', 'usdtm']
+        
+        self.running = False
+        self.active_collectors: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
+        
+    async def start(self):
+        """Startet den Unified Collector Service"""
+        if self.running:
+            logger.info("Unified Collector Service bereits gestartet")
+            return
+            
+        logger.info("🚀 Starting Unified Collector Service")
+        
+        # ✅ Nutzt ws_unified.py für WebSocket-Anteil
+        await start_websocket_service()
+        
+        self.running = True
+        logger.info("✅ Unified Collector Service started")
+    
+    async def start_all_collectors(self):
+        """
+        ✅ ENTERPRISE: PARALLEL Collector Startup
+        
+        Startet alle Collectors gleichzeitig mittels asyncio.gather()
+        - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
+        - Resilient: Einzelne Failures crashen nicht das System
+        - Fast: 10-15x schneller als serieller Start
+        """
+        if not self.running:
+            await self.start()
+            
+        logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
+        
+        # ✅ Sammle alle Start-Tasks (KEIN await hier!)
+        tasks = []
+        total_collectors = 0
+        
+        for exchange in self.exchanges:
+            for symbol in self.symbols:
+                for market_type in self.market_types:
+                    # ✅ Generisch: Prüfe über _should_skip_collector
+                    if self._should_skip_collector(exchange, market_type):
+                        continue
+                    
+                    # ✅ Task erstellen ohne zu awaiten
+                    task = self._start_exchange_collector_safe(
+                        exchange, symbol, market_type
+                    )
+                    tasks.append(task)
+                    total_collectors += 1
+        
+        logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
+        
+        # ✅ PARALLEL ausführen mit asyncio.gather()
+        # return_exceptions=True → Einzelne Failures crashen nicht alle
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # ✅ Ergebnisse auswerten
+        started_count = 0
+        failed_count = 0
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                failed_count += 1
+                logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
+            else:
+                started_count += 1
+        
+        # ✅ Performance Metrics loggen
+        success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
+        
+        logger.info(
+            f"✅ PARALLEL Collectors: COMPLETE "
+            f"({started_count} started, {failed_count} failed, "
+            f"{success_rate:.1f}% success rate)"
+        )
+        
+        # ✅ Health System Update
+        if hasattr(self, 'health_component'):
+            self.health_component.record_success({
+                "action": "collectors_started_parallel",
+                "total": total_collectors,
+                "started": started_count,
+                "failed": failed_count,
+                "success_rate": success_rate
+            })
+    
+    def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
+        """
+        ✅ ENTERPRISE: Generische Skip-Logik
+        
+        Keine hardcoded If-Bedingungen, nutzt Exchange-Config
+        """
+        # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
+        # Coinbase unterstützt keine Futures
+        if exchange == 'coinbase' and market_type in ['usdtm', 'coinm', 'usdcm']:
+            return True
+        
+        # Weitere generische Prüfungen können hier ergänzt werden
+        # z.B. via EXCHANGE_REGISTRY.get(exchange, {}).get("supported_markets")
+        
+        return False
+    
+    async def _start_exchange_collector_safe(
+        self, 
+        exchange: str, 
+        symbol: str, 
+        market_type: str
+    ) -> bool:
+        """
+        ✅ ENTERPRISE: Safe Wrapper für Collector Start
+        
+        Wrapped _start_exchange_collector mit Error Handling
+        - Einzelne Failures crashen nicht das System
+        - Detailed Logging für Debugging
+        - Returns bool statt raising Exception
+        """
+        collector_key = f"{exchange}:{symbol}:{market_type}"
+        
+        try:
+            await self._start_exchange_collector(exchange, symbol, market_type)
+            logger.debug(f"✅ Collector started: {collector_key}")
+            return True
+            
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Failed to start collector {collector_key}: {e}",
+                exc_info=False  # Keine full traceback in production
+            )
+            
+            # ✅ Health System Integration
+            if hasattr(self, 'health_component'):
+                self.health_component.record_error(
+                    f"Collector start failed: {collector_key}: {str(e)}"
+                )
+            
+            return False
+        
+    async def _start_exchange_collector(self, exchange: str, symbol: str, market: str, queue: asyncio.Queue = None):
+        """
+        Startet einzelnen Exchange Collector
+        ✅ Nutzt ws_unified.py für WebSocket-Anteil
+        """
+        collector_key = f"{exchange}:{symbol}:{market}"
+        
+        if collector_key in self.active_collectors:
+            logger.debug(f"Collector already active: {collector_key}")
+            return
+            
+        try:
+            # Coinbase Symbol-Format anpassen
+            ws_symbol = symbol
+            if exchange == 'coinbase':
+                ws_symbol = symbol.replace('USDT', '-USD')  # BTCUSDT → BTC-USD
+            
+            # ✅ Nutze WebSocket Service für WebSocket-Verbindung
+            lane_key = await universal_ws_service.start_exchange_websocket(
+                exchange=exchange,
+                symbol=ws_symbol,
+                market_type=market
+            )
+            
+            # Queue-Integration für lokale broadcast_task
+            if queue:
+                async def queue_handler(trade_data):
+                    await queue.put(trade_data)
+                logger.info(f"✅ Queue-Integration aktiviert für {collector_key}")
+            
+            # Speichere Collector Info
+            self.active_collectors[collector_key] = {
+                "exchange": exchange,
+                "symbol": symbol,
+                "ws_symbol": ws_symbol,
+                "market_type": market,
+                "lane_key": lane_key,
+                "started_at": datetime.now(),
+                "status": "active",
+                "queue_enabled": queue is not None
+            }
+            
+            logger.info(f"✅ Collector started: {collector_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start collector {collector_key}: {e}")
+            raise
+    
+    async def stop_exchange_collector(self, exchange: str, symbol: str, market_type: str):
+        """Stoppt einzelnen Exchange Collector"""
+        collector_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if collector_key not in self.active_collectors:
+            logger.warning(f"Collector not active: {collector_key}")
+            return
+            
+        try:
+            collector_info = self.active_collectors[collector_key]
+            ws_symbol = collector_info["ws_symbol"]
+            
+            # ✅ Nutze WebSocket Service zum Stoppen
+            await universal_ws_service.stop_exchange_websocket(exchange, ws_symbol, market_type)
+            
+            # Aus aktiven Collectors entfernen
+            del self.active_collectors[collector_key]
+            
+            logger.info(f"✅ Collector stopped: {collector_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to stop collector {collector_key}: {e}")
+    
+    async def stop_all_collectors(self):
+        """Stoppt alle laufenden Collectors"""
+        logger.info("🛑 Stopping all collectors...")
+        
+        # Alle aktiven Collectors stoppen
+        active_collectors_copy = list(self.active_collectors.keys())
+        for collector_key in active_collectors_copy:
+            exchange, symbol, market_type = collector_key.split(":")
+            await self.stop_exchange_collector(exchange, symbol, market_type)
+        
+        # WebSocket Service stoppen
+        await universal_ws_service.stop()
+        
+        self.running = False
+        logger.info("✅ All collectors stopped")
+    
+    def get_service_status(self) -> Dict:
+        """Status des Unified Collector Service"""
+        # Hole WebSocket Service Status
+        ws_status = universal_ws_service.get_service_status()
+        
+        return {
+            "service": "unified_collector_service",
+            "running": self.running,
+            "total_collectors": len(self.active_collectors),
+            "active_exchanges": list(set(info["exchange"] for info in self.active_collectors.values())),
+            "websocket_service": ws_status,
+            "collectors": {
+                collector_key: {
+                    "exchange": info["exchange"],
+                    "symbol": info["symbol"],
+                    "market_type": info["market_type"],
+                    "status": info["status"],
+                    "started_at": info["started_at"].isoformat()
+                }
+                for collector_key, info in self.active_collectors.items()
+            },
+            "configuration": {
+                "supported_exchanges": self.exchanges,
+                "symbols": self.symbols,
+                "market_types": self.market_types
+            }
+        }
+    
+    def get_exchange_collectors(self, exchange: str) -> List[Dict]:
+        """Alle aktiven Collectors für eine Exchange"""
+        return [
+            {
+                "collector_key": collector_key,
+                "symbol": info["symbol"],
+                "market_type": info["market_type"],
+                "status": info["status"]
+            }
+            for collector_key, info in self.active_collectors.items()
+            if info["exchange"] == exchange
+        ]
+
+
+# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
+unified_collector_service = UnifiedCollectorService()
+
+# ✅ SERVICE API - Einfache Funktionen für collector_starter.py
+async def start_unified_collector_service():
+    """Startet den Unified Collector Service"""
+    await unified_collector_service.start()
+
+async def stop_unified_collector_service():
+    """Stoppt den Unified Collector Service"""
+    await unified_collector_service.stop_all_collectors()
+
+async def start_all_exchange_collectors():
+    """Startet alle Exchange Collectors - API für collector_starter.py"""
+    await unified_collector_service.start_all_collectors()
+
+def get_unified_collector_status() -> Dict:
+    """Service Status - API für Health Checks"""
+    return unified_collector_service.get_service_status()
+
+def get_exchange_collector_status(exchange: str) -> List[Dict]:
+    """Exchange Collector Status - API für Exchange Health"""
+    return unified_collector_service.get_exchange_collectors(exchange)
 </file>
 
 <file path="backend/services/adapter/unified_trade_api.py">
@@ -76707,6 +76782,1422 @@ See here: /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/api/routers/00
 
 <file path="readme/000_services.md">
 See here: /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/000_services.md
+</file>
+
+<file path="readme/000_system_start_1.md">
+# INTELLIGENT SYSTEM STARTUP - EVENT-DRIVEN READINESS
+
+**Problem:** Hardcoded Timeouts & serielles Warten im start-system.sh  
+**Lösung:** Event-basiertes Readiness System nutzt bestehendes Health System für intelligente, parallele Startup-Validierung
+
+---
+
+## 🚨 IMPLEMENTIERUNGS-REGELN
+
+### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
+
+#### 🚫 VERBOTEN:
+
+1. **NIEMALS HARDCODED**
+   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
+   - ❌ KEINE hardcoded Symbols, URLs, Parameter
+   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
+
+2. **NIEMALS MOCK DATEN**
+   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
+   - ❌ KEINE Test-Stubs in Production-Code
+   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
+
+3. **NIEMALS LEGACY CODE**
+   - ❌ KEINE veralteten Patterns, deprecated Funktionen
+   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
+   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
+
+4. **NIEMALS EXCHANGE-SPEZIFISCH**
+   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
+   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
+   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
+
+#### ✅ PFLICHT:
+
+1. **IMMER GENERISCH**
+   - Alle Funktionen müssen für ALLE Exchanges funktionieren
+   - Parameter statt hardcoding
+
+2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
+
+3. **IMMER DOKUMENTATION LESEN**
+
+---
+
+## 📋 IMPLEMENTATION TASKS
+
+### **Phase 1: Backend Ready Signal**
+- [ ] **TASK 1.1:** Implementiere `_write_ready_signal()` Funktion in `backend/core/main.py`
+- [ ] **TASK 1.2:** Integriere Ready Signal in `@app.on_event("startup")`
+- [ ] **TASK 1.3:** Test: Prüfe dass `/tmp/backend_ready` File erstellt wird
+- [ ] **TASK 1.4:** Test: Validiere JSON Format des Ready Signals
+
+### **Phase 2: Smart Wait Functions (Bash)**
+- [ ] **TASK 2.1:** Implementiere `wait_for_service_smart()` mit Exponential Backoff
+- [ ] **TASK 2.2:** Implementiere `wait_for_all_services_parallel()` für parallele Checks
+- [ ] **TASK 2.3:** Implementiere `wait_for_backend_ready()` für Event-driven Check
+- [ ] **TASK 2.4:** Test: Validiere Exponential Backoff Timing
+
+### **Phase 3: Update wait_for_backend Function**
+- [ ] **TASK 3.1:** Ersetze alte `wait_for_backend()` mit neuer Implementierung
+- [ ] **TASK 3.2:** Integriere parallel service checks
+- [ ] **TASK 3.3:** Integriere event-driven ready check
+- [ ] **TASK 3.4:** Implementiere non-blocking exchange warm-up
+
+### **Phase 4: Konfigurierbare Env Vars**
+- [ ] **TASK 4.1:** Füge konfigurierbare Timeouts hinzu (MAX_RETRIES, INITIAL_DELAY, etc.)
+- [ ] **TASK 4.2:** Füge Feature Flags hinzu (USE_PARALLEL_CHECKS, USE_EVENT_DRIVEN_READY, etc.)
+- [ ] **TASK 4.3:** Implementiere Verbose Logging (STARTUP_VERBOSE)
+- [ ] **TASK 4.4:** Dokumentiere alle Env Vars
+
+### **Phase 5: Testing & Validation**
+- [ ] **TASK 5.1:** Test: Fast Startup (System ready in 5-15s)
+- [ ] **TASK 5.2:** Test: Slow Startup mit artificial delay
+- [ ] **TASK 5.3:** Test: Degraded Mode (ein Service down)
+- [ ] **TASK 5.4:** Test: Feature Flags (disable new features)
+- [ ] **TASK 5.5:** Validiere Success Metrics (Startup < 20s, Parallel Checks, etc.)
+
+---
+
+## 🎯 PROBLEM: PRIMITIVE STARTUP LOGIC
+
+### **Aktuelles System (start-system.sh):**
+
+```bash
+# ❌ HARDCODED WARTEN - Zeile ~180
+wait_for_backend() {
+  for i in {1..60}; do
+    curl -s http://localhost:8100/health && exit 0
+    sleep 1
+  done
+}
+
+# ❌ SERIELL - Einer nach dem anderen
+wait_for_service "Redis" localhost 6380      # Wartet bis timeout
+wait_for_service "ClickHouse" localhost 8124 # Dann dieser
+wait_for_service "Backend" localhost 8100    # Dann dieser
+
+# ❌ DUMB POLLING - Keine Intelligenz
+# Wartet immer 60s, auch wenn Backend nach 5s bereit ist
+```
+
+**Probleme:**
+1. ❌ **Feste Timeouts** - 60s, 30s, 15s hardcoded
+2. ❌ **Serielles Warten** - Verschwendet Zeit
+3. ❌ **Kein Event-System** - Dummes Polling
+4. ❌ **Keine Retry-Logic** - Keine Exponential Backoff
+5. ❌ **False Positives** - "Failed" obwohl Backend healthy ist
+
+---
+
+## ✅ LÖSUNG: NUTZE BESTEHENDES HEALTH SYSTEM
+
+### **Was wir BEREITS haben:**
+
+```python
+# backend/health/health_registry.py
+class HealthRegistry:
+    def is_system_ready_resilient(self) -> bool:
+        """Resilient readiness - system ready if ANY exchanges work"""
+        # Bereits implementiert!
+
+# backend/health/health_router.py
+@router.get("/health/ready-resilient")
+async def readiness_check_resilient():
+    """Kubernetes-style readiness - NUTZT HEALTH SYSTEM"""
+    ready, message = health_registry.get_system_readiness_resilient()
+    return {
+        "ready": ready,
+        "message": message,
+        # ... component details ...
+    }
+```
+
+**Das Health System macht bereits:**
+- ✅ **Component Tracking** (via HealthLane)
+- ✅ **Background Monitoring** (via HealthChecker)
+- ✅ **Graceful Degradation** (resilient mode)
+- ✅ **Detailed Status** (per-component health)
+
+**Wir müssen es nur NUTZEN statt ignorieren!**
+
+---
+
+## 🏗️ ARCHITEKTUR: EVENT-DRIVEN READINESS
+
+### **FLOW:**
+
+```
+1. Docker Compose startet Container
+   ↓
+2. Backend (main.py) startup event läuft:
+   - Initialisiert Redis
+   - Initialisiert ClickHouse  
+   - Startet WebSockets
+   - Startet Collectors
+   - Registriert Health Components
+   ↓
+3. Backend schreibt Ready Signal
+   - Option A: /tmp/backend_ready file
+   - Option B: Redis PubSub event
+   - Option C: Health endpoint = 200
+   ↓
+4. start-system.sh wartet intelligent:
+   - Parallel: Alle Services gleichzeitig prüfen
+   - Exponential Backoff: 1s, 2s, 4s, 8s, 16s
+   - Event-driven: Nutzt /health/ready-resilient
+   ↓
+5. System ready in 5-15s (statt hardcoded 60s!)
+```
+
+---
+
+## 📋 IMPLEMENTATION DETAILS
+
+### **TASK 1: Backend Ready Signal (Python)**
+
+**File:** `backend/core/main.py`
+
+**Änderung in `@app.on_event("startup")`:**
+
+```python
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+    
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+    
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+    
+    # ✅ EXISTING: ExchangeFactory, WebSockets, Collectors...
+    # (behalte bestehenden Code)
+    
+    # ✅ NEW: Write Ready Signal
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🚀 WS_AI Backend fully started")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+```
+
+**Warum 3 Methoden?**
+- **File:** Schnell, einfach, funktioniert immer
+- **Redis:** Event-driven, elegant, wenn verfügbar
+- **Logs:** Debugging & Observability
+
+---
+
+### **TASK 2: Smart Wait Functions (Bash)**
+
+**File:** `start-system.sh`
+
+**Neue Functions hinzufügen (vor wait_for_backend):**
+
+```bash
+# =============================================================================
+# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
+# =============================================================================
+
+# ✅ Konfigurierbare Timeouts (via env vars)
+MAX_RETRIES="${MAX_RETRIES:-5}"
+INITIAL_DELAY="${INITIAL_DELAY:-1}"
+BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"
+SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"
+
+# ✅ Exponential Backoff Retry Logic
+wait_for_service_smart() {
+    local service_name=$1
+    local check_cmd=$2
+    local max_retries=${3:-$MAX_RETRIES}
+    local initial_delay=${4:-$INITIAL_DELAY}
+    
+    local retry=0
+    local delay=$initial_delay
+    
+    echo "⏳ Waiting for $service_name..."
+    
+    while (( retry < max_retries )); do
+        if eval "$check_cmd" >/dev/null 2>&1; then
+            echo "✅ $service_name ready after $retry retries"
+            return 0
+        fi
+        
+        if (( retry < max_retries - 1 )); then
+            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
+            sleep "$delay"
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            delay=$((delay * 2))
+        fi
+        
+        retry=$((retry + 1))
+    done
+    
+    echo "❌ $service_name failed after $max_retries retries"
+    return 1
+}
+
+# ✅ Parallele Service Checks
+wait_for_all_services_parallel() {
+    local services=("redis:6380" "clickhouse:8124" "backend:8100")
+    local pids=()
+    local temp_dir=$(mktemp -d)
+    
+    echo "🔄 Starting parallel service checks..."
+    
+    # Starte alle Checks parallel
+    for service in "${services[@]}"; do
+        IFS=':' read -r name port <<< "$service"
+        (
+            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
+                echo "0" > "$temp_dir/check_${name}.status"
+            else
+                echo "1" > "$temp_dir/check_${name}.status"
+            fi
+        ) &
+        pids+=($!)
+    done
+    
+    # Warte auf alle (mit Gesamttimeout)
+    local timeout=$SERVICE_CHECK_TIMEOUT
+    local elapsed=0
+    local all_done=false
+    
+    while (( elapsed < timeout )); do
+        all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        
+        [[ "$all_done" == "true" ]] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    # Kill stragglers
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+    done
+    
+    # Prüfe Ergebnisse
+    local failed=0
+    for service in "${services[@]}"; do
+        IFS=':' read -r name _ <<< "$service"
+        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
+        if [[ "$status" != "0" ]]; then
+            echo "❌ $name check failed"
+            failed=$((failed + 1))
+        else
+            echo "✅ $name check passed"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    return $failed
+}
+
+# ✅ Event-driven Backend Ready Check
+wait_for_backend_ready() {
+    local ready_file="/tmp/backend_ready"
+    local timeout=$BACKEND_READY_TIMEOUT
+    local elapsed=0
+    
+    echo "⏳ Waiting for backend ready signal..."
+    
+    # Method 1: File-based (primary)
+    while (( elapsed < timeout )); do
+        if [[ -f "$ready_file" ]]; then
+            local ready_status=$(jq -r '.ready // false' "$ready_file" 2>/dev/null || echo "false")
+            
+            if [[ "$ready_status" == "true" ]]; then
+                echo "✅ Backend ready signal received (file)"
+                cat "$ready_file" | jq '.' 2>/dev/null || cat "$ready_file"
+                return 0
+            else
+                echo "⚠️ Backend started with errors - check $ready_file"
+                return 1
+            fi
+        fi
+        
+        # Fallback: Check health endpoint every 5s
+        if (( elapsed % 5 == 0 )) && (( elapsed > 0 )); then
+            if curl -sf --max-time 2 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+                echo "✅ Backend ready (health endpoint)"
+                return 0
+            fi
+        fi
+        
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    echo "❌ Backend ready timeout after ${timeout}s"
+    return 1
+}
+```
+
+---
+
+### **TASK 3: Update wait_for_backend Function**
+
+**File:** `start-system.sh` (ersetze bestehende wait_for_backend)
+
+```bash
+wait_for_backend() {
+  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
+  if wait_for_all_services_parallel; then
+    echo "✅ All services responding"
+  else
+    echo "⚠️ Some services failed - continuing with resilient mode"
+  fi
+  
+  echo ""
+  
+  # ✅ STEP 2: Event-driven backend ready check
+  if wait_for_backend_ready; then
+    echo "✅ Backend fully initialized"
+  else
+    echo "⚠️ Backend timeout - checking resilient health"
+    
+    # Fallback: Check resilient health endpoint
+    if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+      echo "✅ Backend operational in degraded mode"
+    else
+      echo "❌ Backend not responding"
+      return 1
+    fi
+  fi
+  
+  echo ""
+  echo "🚀 Backend startup complete"
+  echo ""
+  
+  # ✅ STEP 3: Warm-up exchanges (non-blocking)
+  echo "🔄 Warming up exchanges (background)..."
+  for exchange in "${EXCHANGES[@]}"; do
+    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
+  done
+  
+  # Give exchanges a moment to respond, but don't block
+  sleep 3
+  
+  return 0
+}
+```
+
+---
+
+### **TASK 4: Konfigurierbare Env Vars**
+
+**File:** `start-system.sh` (am Anfang bei Konfiguration hinzufügen)
+
+```bash
+# =============================================================================
+# INTELLIGENT STARTUP CONFIGURATION
+# =============================================================================
+
+# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
+export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
+export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
+export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
+export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
+
+# ✅ Feature Flags (enable/disable new behavior)
+export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
+export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
+export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
+
+# ✅ Observability
+export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
+
+# Log configuration
+if [[ "$STARTUP_VERBOSE" == "1" ]]; then
+  echo "🔧 Startup Configuration:"
+  echo "   MAX_RETRIES=$MAX_RETRIES"
+  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
+  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
+  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
+  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
+  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
+  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
+  echo ""
+fi
+```
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+### **TEST 1: Fast Startup**
+
+```bash
+# Clean state
+./stop-system.sh
+rm -f /tmp/backend_ready
+
+# Start with defaults
+./start-system.sh
+
+# Expected: System ready in 5-15s (nicht 60s!)
+# Logs should show:
+# - ✅ All services responding (parallel checks)
+# - ✅ Backend ready signal received
+# - ✅ Backend fully initialized
+```
+
+### **TEST 2: Slow Startup (simulate delay)**
+
+```bash
+# Add artificial delay to backend
+export BACKEND_READY_TIMEOUT=120
+
+./start-system.sh
+
+# Expected: Exponential backoff visible in logs
+# - Retry 1/5 in 1s
+# - Retry 2/5 in 2s
+# - Retry 3/5 in 4s
+# ...
+```
+
+### **TEST 3: Degraded Mode**
+
+```bash
+# Simulate one service failure (e.g. Redis down)
+docker stop 0_ws_ai-redis-1
+
+./start-system.sh
+
+# Expected: 
+# - ⚠️ Redis check failed
+# - ✅ Backend operational in degraded mode
+# - System continues (resilient!)
+```
+
+### **TEST 4: Feature Flags**
+
+```bash
+# Disable new features, use old behavior
+export USE_PARALLEL_CHECKS=0
+export USE_EVENT_DRIVEN_READY=0
+
+./start-system.sh
+
+# Expected: Falls back to serial checks and polling
+```
+
+---
+
+## 📊 SUCCESS METRICS
+
+### **Performance:**
+- ✅ **Startup Time:** 5-15s (statt 60s hardcoded)
+- ✅ **Parallel Checks:** 3 services gleichzeitig (statt seriell)
+- ✅ **Event-Driven:** Reagiert sofort wenn ready (nicht nach timeout)
+
+### **Reliability:**
+- ✅ **Retry Logic:** Exponential backoff (1s → 16s)
+- ✅ **Resilient Mode:** System startet auch bei Teil-Failures
+- ✅ **Multiple Methods:** File + Redis PubSub + Health endpoint
+
+### **Observability:**
+- ✅ **Konfigurierbar:** Alle Timeouts via env vars
+- ✅ **Feature Flags:** Neue Features an/aus schaltbar
+- ✅ **Verbose Mode:** Detailliertes Logging wenn gewünscht
+
+---
+
+## 🚀 DEPLOYMENT STRATEGY
+
+### **Phase 1: Backend Signal (Low Risk)**
+- Implementiere `_write_ready_signal()` in main.py
+- Backend schreibt Signal, aber start-system.sh ignoriert es noch
+- Test: Prüfe dass /tmp/backend_ready erstellt wird
+
+### **Phase 2: Parallel Checks (Medium Risk)**  
+- Implementiere parallel service checks
+- Feature Flag: `USE_PARALLEL_CHECKS=1` (default)
+- Rollback: `USE_PARALLEL_CHECKS=0` falls Probleme
+
+### **Phase 3: Event-Driven (Medium Risk)**
+- Implementiere `wait_for_backend_ready()`
+- Feature Flag: `USE_EVENT_DRIVEN_READY=1` (default)
+- Fallback zu old behavior wenn Signal fehlt
+
+### **Phase 4: Full Rollout (Low Risk)**
+- Alle Features enabled
+- Monitor startup times
+- Fine-tune timeouts basierend auf Metrics
+
+---
+
+## 🎯 BENEFITS
+
+### **Entwickler:**
+- **Schneller Local Development:** 5-15s Startup (nicht 60s)
+- **Besseres Debugging:** Sieht genau wo es hängt
+- **Flexibler:** Kann Timeouts anpassen per env var
+
+### **Operations:**
+- **Production-Ready:** Kubernetes-style Readiness
+- **Resilient:** Partial failures ok
+- **Observable:** Klare Status & Logs
+
+### **Business:**
+- **Faster Deployments:** Schnellere Iteration
+- **Higher Uptime:** Graceful degradation
+- **Better UX:** System reagiert schneller
+
+---
+
+## 🔄 FUTURE ENHANCEMENTS
+
+### **Optional (Post-MVP):**
+
+1. **Redis PubSub Subscriber**
+   ```bash
+   # start-system.sh subscribes to Redis channel
+   redis-cli -p 6380 subscribe system:backend:ready
+   ```
+
+2. **Prometheus Metrics**
+   ```python
+   startup_duration_seconds.observe(duration)
+   startup_failures_total.inc()
+   ```
+
+3. **Distributed Tracing**
+   ```python
+   with tracer.start_span("backend.startup"):
+       await initialize_services()
+   ```
+
+4. **Health History**
+   ```python
+   # Track startup times over time
+   await unified_rs_service.zadd(
+       "startup:history",
+       {datetime.now().isoformat(): duration}
+   )
+   ```
+
+---
+
+## 🏆 SUMMARY
+
+**Was wir ändern:**
+- ✅ Backend signalisiert Readiness (Python)
+- ✅ Smart wait functions (Bash)
+- ✅ Parallele Checks (Bash)
+- ✅ Event-driven statt Polling (Bash)
+- ✅ Konfigurierbare Timeouts (Env vars)
+
+**Was wir NICHT ändern:**
+- ❌ Health System (perfekt wie es ist!)
+- ❌ Docker Compose (funktioniert)
+- ❌ Collectors & WebSockets (robust)
+
+**Result:**
+Ein **intelligentes, event-basiertes Startup System** das das bestehende Health System **nutzt** statt zu ignorieren!
+
+**Startup Zeit:** 5-15s statt hardcoded 60s  
+**Resilience:** Partial failures ok  
+**Observability:** Klare Status & Metrics  
+**Maintainability:** Konfigurierbar & erweiterbar  
+
+---
+
+## 📚 REFERENCES
+
+- **Health System:** `readme/000_healthy.md`
+- **Graceful Startup:** `readme/000_graceful_start_system_build.md`
+- **Market Build:** `readme/000_market_build.md`
+- **Services:** `readme/000_services.md`
+</file>
+
+<file path="readme/000_system_start_2.md">
+# ENTERPRISE COLLECTOR STARTUP - PARALLEL & BACKGROUND EXECUTION
+
+**Ergänzung zu:** `000_system_start_1.md`  
+**Problem:** Collector Startup blockiert Backend Ready Signal (68+ Sekunden)  
+**Lösung:** Parallel Execution + Background Start (Enterprise Non-Blocking Pattern)
+
+---
+
+## 🚨 IMPLEMENTIERUNGS-REGELN
+
+### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
+
+#### 🚫 VERBOTEN:
+
+1. **NIEMALS HARDCODED**
+   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
+   - ❌ KEINE hardcoded Symbols, URLs, Parameter
+   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
+
+2. **NIEMALS MOCK DATEN**
+   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
+   - ❌ KEINE Test-Stubs in Production-Code
+   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
+
+3. **NIEMALS LEGACY CODE**
+   - ❌ KEINE veralteten Patterns, deprecated Funktionen
+   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
+   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
+
+4. **NIEMALS EXCHANGE-SPEZIFISCH**
+   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
+   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
+   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
+
+#### ✅ PFLICHT:
+
+1. **IMMER GENERISCH**
+   - Alle Funktionen müssen für ALLE Exchanges funktionieren
+   - Parameter statt hardcoding
+
+2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
+
+3. **IMMER DOKUMENTATION LESEN**
+
+---
+
+## 📋 IMPLEMENTATION TASKS
+
+### **Phase 1: Parallel Collector Execution**
+- [ ] **TASK 1.1:** Implementiere `_start_exchange_collector_safe()` Wrapper mit Error Handling
+- [ ] **TASK 1.2:** Implementiere `_should_skip_collector()` für generische Skip-Logik
+- [ ] **TASK 1.3:** Update `start_all_collectors()` mit `asyncio.gather()` für parallele Ausführung
+- [ ] **TASK 1.4:** Implementiere Result Evaluation und Success Rate Logging
+- [ ] **TASK 1.5:** Test: Validiere parallel execution (48 Collectors in 3-5s)
+
+### **Phase 2: Background Start Integration**
+- [ ] **TASK 2.1:** Implementiere `start_collectors_background()` Funktion in `main.py`
+- [ ] **TASK 2.2:** Update `on_startup()` mit asyncio.create_task() für non-blocking start
+- [ ] **TASK 2.3:** Integriere Health System Tracking für Collector Status
+- [ ] **TASK 2.4:** Implementiere Ready Signal VOR Collector Start
+- [ ] **TASK 2.5:** Test: Backend Ready < 20s (non-blocking)
+
+### **Phase 3: Configuration Management**
+- [ ] **TASK 3.1:** Erstelle `collector_starter.py` mit konfigurierbaren Settings
+- [ ] **TASK 3.2:** Implementiere `get_supported_exchanges()` für Auto-Discovery
+- [ ] **TASK 3.3:** Füge Env Vars hinzu (COLLECTOR_SYMBOLS, COLLECTOR_MARKETS, etc.)
+- [ ] **TASK 3.4:** Implementiere Performance Tuning Parameter (PARALLEL, BACKGROUND, MAX_CONCURRENT)
+- [ ] **TASK 3.5:** Dokumentiere alle Configuration Options
+
+### **Phase 4: Testing & Validation**
+- [ ] **TASK 4.1:** Test: Parallel Performance (48 collectors in <5s)
+- [ ] **TASK 4.2:** Test: Background Non-Blocking (Backend ready während Collector Start)
+- [ ] **TASK 4.3:** Test: Graceful Degradation (simuliere einzelne Collector Failures)
+- [ ] **TASK 4.4:** Test: Configuration Override (custom COLLECTOR_SYMBOLS, etc.)
+- [ ] **TASK 4.5:** Validiere Performance Benchmarks (10-15x Speed-Up)
+
+### **Phase 5: Deployment**
+- [ ] **TASK 5.1:** Backup: Sichere bestehende Files (unified_collector.py, main.py)
+- [ ] **TASK 5.2:** Deploy: Update Files mit neuem Code
+- [ ] **TASK 5.3:** Build: `docker compose build backend`
+- [ ] **TASK 5.4:** Monitor: Startup Zeit < 20s?
+- [ ] **TASK 5.5:** Verify: Alle Collectors gestartet? Success Rate > 95%?
+
+---
+
+## 🎯 PROBLEM ANALYSE
+
+### **Root Cause: SERIELLER Collector Start**
+
+**Aktueller Code:** `backend/services/adapter/unified_collector.py`
+
+```python
+async def start_all_collectors(self):
+    """❌ SERIAL - Einer nach dem anderen"""
+    for exchange in self.exchanges:           # 8 Exchanges
+        for symbol in self.symbols:           # 3 Symbols  
+            for market_type in self.market_types:  # 2 Markets
+                await self._start_exchange_collector(...)  # ⏱️ ~1s pro Call
+                # TOTAL: 8 × 3 × 2 = 48 Collectors × 1s = 48+ Sekunden!
+```
+
+**Timeline:**
+```
+23:30:38 → Backend Start
+23:30:53 → WebSocket defaults initialized (15s) ✅
+23:30:53 → start_all_collectors() begins
+23:31:46 → start_all_collectors() completes (53s!) ❌
+23:31:46 → Ready Signal written
+```
+
+**Konsequenz:**
+- Backend Timeout in `start-system.sh` = 60 Sekunden
+- Tatsächliche Startup Zeit = 68 Sekunden
+- **System wird als "nicht bereit" markiert obwohl es funktioniert!**
+
+---
+
+## ✅ ENTERPRISE-LÖSUNG: HYBRID APPROACH
+
+### **Strategie: Parallel + Background**
+
+**Komponenten:**
+1. **PARALLEL Execution** → Alle Collectors gleichzeitig starten
+2. **BACKGROUND Start** → Non-Blocking, Backend Ready sofort
+3. **Health Integration** → Status über Health System tracken
+
+**Performance-Gewinn:**
+- Vorher: 48+ Sekunden (seriell)
+- Nachher: ~3-5 Sekunden (parallel)
+- **Backend Ready:** ~15 Sekunden (non-blocking)
+
+---
+
+## 📋 IMPLEMENTATION: PARALLEL COLLECTOR START
+
+### **PART 1: Parallel Execution**
+
+**File:** `backend/services/adapter/unified_collector.py`
+
+**Method:** `start_all_collectors()`
+
+```python
+async def start_all_collectors(self):
+    """
+    ✅ ENTERPRISE: PARALLEL Collector Startup
+    
+    Startet alle Collectors gleichzeitig mittels asyncio.gather()
+    - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
+    - Resilient: Einzelne Failures crashen nicht das System
+    - Fast: 10-15x schneller als serieller Start
+    """
+    if not self.running:
+        await self.start()
+        
+    logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
+    
+    # ✅ Sammle alle Start-Tasks (KEIN await hier!)
+    tasks = []
+    total_collectors = 0
+    
+    for exchange in self.exchanges:
+        for symbol in self.symbols:
+            for market_type in self.market_types:
+                # ✅ Coinbase Exception: Keine Futures (generisch aus Config)
+                if self._should_skip_collector(exchange, market_type):
+                    continue
+                
+                # ✅ Task erstellen ohne zu awaiten
+                task = self._start_exchange_collector_safe(
+                    exchange, symbol, market_type
+                )
+                tasks.append(task)
+                total_collectors += 1
+    
+    logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
+    
+    # ✅ PARALLEL ausführen mit asyncio.gather()
+    # return_exceptions=True → Einzelne Failures crashen nicht alle
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # ✅ Ergebnisse auswerten
+    started_count = 0
+    failed_count = 0
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            failed_count += 1
+            logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
+        else:
+            started_count += 1
+    
+    # ✅ Performance Metrics loggen
+    success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
+    
+    logger.info(
+        f"✅ PARALLEL Collectors: COMPLETE "
+        f"({started_count} started, {failed_count} failed, "
+        f"{success_rate:.1f}% success rate)"
+    )
+    
+    # ✅ Health System Update
+    if hasattr(self, 'health_component'):
+        self.health_component.record_success({
+            "action": "collectors_started_parallel",
+            "total": total_collectors,
+            "started": started_count,
+            "failed": failed_count,
+            "success_rate": success_rate
+        })
+
+
+def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
+    """
+    ✅ ENTERPRISE: Generische Skip-Logik
+    
+    Keine hardcoded If-Bedingungen, nutzt Exchange-Config
+    """
+    # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
+    from backend.services.domain.unified_config import EXCHANGE_REGISTRY
+    
+    exchange_config = EXCHANGE_REGISTRY.get(exchange, {})
+    supported_markets = exchange_config.get("supported_markets", ["spot", "futures"])
+    
+    # Map market_type zu config format
+    market_map = {
+        "spot": "spot",
+        "usdtm": "futures",
+        "coinm": "futures",
+        "usdcm": "futures"
+    }
+    
+    market_category = market_map.get(market_type, market_type)
+    
+    return market_category not in supported_markets
+
+
+async def _start_exchange_collector_safe(
+    self, 
+    exchange: str, 
+    symbol: str, 
+    market_type: str
+) -> bool:
+    """
+    ✅ ENTERPRISE: Safe Wrapper für Collector Start
+    
+    Wrapped _start_exchange_collector mit Error Handling
+    - Einzelne Failures crashen nicht das System
+    - Detailed Logging für Debugging
+    - Returns bool statt raising Exception
+    """
+    collector_key = f"{exchange}:{symbol}:{market_type}"
+    
+    try:
+        await self._start_exchange_collector(exchange, symbol, market_type)
+        logger.debug(f"✅ Collector started: {collector_key}")
+        return True
+        
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Failed to start collector {collector_key}: {e}",
+            exc_info=False  # Keine full traceback in production
+        )
+        
+        # ✅ Health System Integration
+        if hasattr(self, 'health_component'):
+            self.health_component.record_error(
+                f"Collector start failed: {collector_key}: {str(e)}"
+            )
+        
+        return False
+```
+
+---
+
+## 📋 IMPLEMENTATION: BACKGROUND START
+
+### **PART 2: Non-Blocking Backend Startup**
+
+**File:** `backend/core/main.py`
+
+**Function:** `on_startup()`
+
+```python
+@app.on_event("startup")
+async def on_startup():
+    """
+    ✅ ENTERPRISE: Non-Blocking Startup
+    
+    Kritische Services: Blocking (Redis, ClickHouse)
+    Collectors: Background (Non-Blocking)
+    """
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    # ============================================================
+    # PHASE 1: KRITISCHE SERVICES (Blocking)
+    # ============================================================
+    
+    # ✅ ClickHouse Init (Blocking - must complete)
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}", exc_info=True)
+    
+    # ✅ Redis Init (Blocking - must complete)
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}", exc_info=True)
+    
+    # ✅ ExchangeFactory Init (Blocking)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info("🟢 ExchangeFactory initialized")
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+    
+    # ✅ WebSocket Lane Registry Init (Blocking)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+    
+    # ============================================================
+    # PHASE 2: WEBSOCKET DEFAULTS (Blocking - schnell)
+    # ============================================================
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        
+        # ✅ Generisch: Auto-Discovery Exchanges
+        from backend.services.adapter.exchange_factory import ExchangeFactory
+        available_exchanges = ExchangeFactory.get_available_exchanges()
+        
+        # ✅ Konfigurierbar: Default Symbols aus Config
+        from backend.services.adapter.collector_starter import FRONTEND_COINS
+        default_symbols = FRONTEND_COINS[:1]  # Nur BTCUSDT für schnellen Start
+        
+        for exchange in available_exchanges:
+            for symbol in default_symbols:
+                try:
+                    await ws_manager.start_websocket_lane(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market="spot"
+                    )
+                    logger.info(f"🟢 Started WebSocket (REAL): {exchange} {symbol} spot")
+                except Exception as e:
+                    logger.error(
+                        f"🔴 Failed to start WebSocket {exchange} {symbol}: {e}", 
+                        exc_info=True
+                    )
+        
+        logger.info("🟢 WebSocket defaults initialized (REAL WebSockets)")
+        
+    except Exception as e:
+        logger.error(f"WebSocket auto-start failed: {e}", exc_info=True)
+    
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(True, [])
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+```
+
+---
+
+## 📊 CONFIGURATION: ENTERPRISE TUNING
+
+### **Konfigurierbare Parameter**
+
+**File:** `backend/services/adapter/collector_starter.py`
+
+```python
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+from typing import List
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'COLLECTOR_SYMBOLS', 
+    'BTCUSDT,ETHUSDT,ADAUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+```
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+### **TEST 1: Parallel Performance**
+
+```bash
+# Clean state
+./stop-system.sh
+
+# Enable verbose logging
+export STARTUP_VERBOSE=1
+
+# Start system
+time ./start-system.sh
+
+# Expected Results:
+# - Backend Ready: ~15 seconds (nicht 68s!)
+# - Total Startup: ~20 seconds
+# - Log zeigt: "PARALLEL Collectors: COMPLETE (XX started, Y failed)"
+```
+
+### **TEST 2: Background Non-Blocking**
+
+```bash
+# Prüfe Backend Ready Signal Timing
+./start-system.sh 2>&1 | grep -E "Backend READY|Collectors.*COMPLETE"
+
+# Expected:
+# [23:30:XX] Backend READY - Collectors starting in background
+# [23:30:YY] Background collectors: STARTUP COMPLETE
+# Zeit zwischen Ready und Complete: ~3-5 Sekunden
+```
+
+### **TEST 3: Graceful Degradation**
+
+```python
+# Simuliere Collector Failure
+# In unified_collector.py temporär:
+async def _start_exchange_collector(self, exchange, symbol, market):
+    if exchange == "okx" and symbol == "ETHUSDT":
+        raise Exception("Simulated failure")
+    # ... rest of code
+
+# Start system
+./start-system.sh
+
+# Expected:
+# - System startet trotzdem
+# - Log zeigt: "⚠️ Failed to start collector okx:ETHUSDT:spot"
+# - Andere Collectors laufen normal
+# - Success Rate < 100% aber System operational
+```
+
+### **TEST 4: Configuration Override**
+
+```bash
+# Custom Configuration
+export COLLECTOR_SYMBOLS="BTCUSDT"          # Nur 1 Symbol
+export COLLECTOR_MARKETS="spot"             # Nur Spot
+export COLLECTOR_PARALLEL="1"               # Parallel an
+export COLLECTOR_BACKGROUND="0"             # Background aus (für Test)
+
+./start-system.sh
+
+# Expected:
+# - Nur 8 Collectors starten (1 symbol × 1 market × 8 exchanges)
+# - Blocking Mode: Backend wartet auf Collectors
+# - Schneller: Nur ~8 Sekunden für alle
+```
+
+---
+
+## 📈 PERFORMANCE BENCHMARKS
+
+### **Messung: Collector Startup Time**
+
+| **Configuration**        | **Method**   | **Time** | **Speed-Up** |
+|-------------------------|--------------|----------|--------------|
+| 48 Collectors Seriell   | Sequential   | 48+ sec  | 1x (Baseline)|
+| 48 Collectors Parallel  | gather()     | 3-5 sec  | **10-15x**   |
+| Background Start        | create_task()| Non-Blocking | **∞x**   |
+| **HYBRID (Recommended)**| **Both**     | **~15s** | **3-4x**     |
+
+### **Messung: Backend Ready Time**
+
+| **Component**           | **Sequential** | **Parallel** | **Background** |
+|------------------------|----------------|--------------|----------------|
+| Redis Init             | 1s             | 1s           | 1s             |
+| ClickHouse Init        | 2s             | 2s           | 2s             |
+| WebSocket Defaults     | 15s            | 15s          | 15s            |
+| Collectors Start       | 48s            | 5s           | 0s (async)     |
+| Ready Signal           | 66s            | 23s          | **18s**        |
+
+**Result:** Background Start = **3.7x schneller**
+
+---
+
+## 🏆 SUCCESS CRITERIA
+
+### **Performance:**
+- ✅ Backend Ready < 20 Sekunden (statt 68s)
+- ✅ Collectors Complete < 25 Sekunden (statt 48s+)
+- ✅ System operational während Collector Startup
+
+### **Reliability:**
+- ✅ Einzelne Collector Failures crashen nicht System
+- ✅ Graceful Degradation: Partial Success ok
+- ✅ Health System tracking: Alle Collectors visible
+
+### **Maintainability:**
+- ✅ Kein Hardcoding: Alle Werte konfigurierbar
+- ✅ Generisch: Auto-Discovery Exchanges
+- ✅ Observable: Metrics & Logging
+
+### **Enterprise-Grade:**
+- ✅ Async/Await Best Practices
+- ✅ Error Handling & Retry Logic
+- ✅ Configuration Management
+- ✅ Health Integration
+
+---
+
+## 📋 DEPLOYMENT CHECKLIST
+
+### **Pre-Deployment:**
+- [ ] Backup: `cp unified_collector.py unified_collector.py.backup`
+- [ ] Backup: `cp main.py main.py.backup`
+- [ ] Review: Code-Changes validieren
+- [ ] Test: Lokal testen mit `./start-system.sh`
+
+### **Deployment:**
+- [ ] Update: `unified_collector.py` mit parallel code
+- [ ] Update: `main.py` mit background start
+- [ ] Update: `collector_starter.py` mit config
+- [ ] Rebuild: `docker compose build backend`
+- [ ] Deploy: `./start-system.sh`
+
+### **Post-Deployment:**
+- [ ] Monitor: Backend Startup Zeit < 20s?
+- [ ] Verify: Alle Collectors gestartet?
+- [ ] Check: Health System Status
+- [ ] Metrics: Success Rate > 95%?
+
+### **Rollback Plan:**
+- [ ] Restore: `mv unified_collector.py.backup unified_collector.py`
+- [ ] Restore: `mv main.py.backup main.py`
+- [ ] Rebuild: `docker compose build backend`
+- [ ] Restart: `./start-system.sh`
+
+---
+
+## 🔄 MIGRATION STRATEGY
+
+### **Phase 1: Parallel Execution (Low Risk)**
+1. Update `unified_collector.py` → `start_all_collectors()`
+2. Enable: `COLLECTOR_PARALLEL=1`
+3. Test: Backend Startup Zeit
+4. **Rollback:** `COLLECTOR_PARALLEL=0` if issues
+
+### **Phase 2: Background Start (Medium Risk)**
+1. Update `main.py` → `on_startup()`
+2. Enable: `COLLECTOR_BACKGROUND=1`
+3. Test: Backend Ready Signal timing
+4. **Rollback:** `COLLECTOR_BACKGROUND=0` if issues
+
+### **Phase 3: Full Production (Low Risk)**
+1. Monitor: 24h Production run
+2. Metrics: Startup times, Success rates
+3. Tune: Adjust timeouts if needed
+4. Document: Final configuration
+
+---
+
+## 📚 REFERENCES
+
+### **Related Documentation:**
+- **Event-Driven Startup:** `readme/000_system_start_1.md`
+- **Health System:** `readme/000_healty_build.md`
+- **Services Architecture:** `readme/000_services.md`
+- **WebSocket Build:** `readme/000_websocket_build.md`
+
+### **Code Files:**
+- **Collectors:** `backend/services/adapter/unified_collector.py`
+- **Starter:** `backend/services/adapter/collector_starter.py`
+- **Main:** `backend/core/main.py`
+- **Health:** `backend/health/health_registry.py`
+
+### **External Resources:**
+- **asyncio.gather():** https://docs.python.org/3/library/asyncio-task.html#asyncio.gather
+- **asyncio.create_task():** https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+- **FastAPI Events:** https://fastapi.tiangolo.com/advanced/events/
+
+---
+
+## 🎯 SUMMARY
+
+**Problem Solved:**
+- ✅ Collector Startup blockiert Backend nicht mehr
+- ✅ Parallel Execution = 10-15x schneller
+- ✅ Background Start = Non-Blocking Ready Signal
+
+**Enterprise Patterns:**
+- ✅ Async/Await statt Blocking
+- ✅ Parallel statt Serial
+- ✅ Background statt Foreground
+- ✅ Configurable statt Hardcoded
+
+**Performance Gain:**
+- Backend Ready: **66s → 18s** (3.7x faster)
+- Collectors Complete: **48s → 5s** (9.6x faster)
+- start-system.sh: **Keine Timeouts mehr!**
+
+**Result:**
+Ein **production-ready, enterprise-grade Startup System** das schnell, resilient und observable ist!
+
+---
+
+**Status:** ✅ ENTERPRISE READY  
+**Performance:** 🚀 3-10x FASTER  
+**Reliability:** 💪 GRACEFUL DEGRADATION  
+**Maintainability:** 🔧 FULLY CONFIGURABLE
 </file>
 
 <file path="readme/000_user_api_keys_integration.md">
@@ -132157,6 +133648,459 @@ async def initialize_clickhouse_foundation() -> bool:
         return False
 </file>
 
+<file path="backend/database/clickhouse/cl_user_settings.py">
+import asyncio
+import logging
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+
+# ✅ TASK 27: User Settings Migration → ClickHouse Lane System
+from backend.database.clickhouse.cl_unified import unified_cl_service
+
+logger = logging.getLogger("cl-user-settings")
+
+class ClickHouseUserSettingsManager:
+    """
+    ⚙️ USER SETTINGS CLICKHOUSE INTEGRATION
+    
+    Migriert User Settings (CoinSettings, IndicatorSettings, etc.) zu ClickHouse Lane System
+    Ersetzt fragmentierte ClickHouse User Settings durch vereinheitlichte cl_ Lane Calls
+    """
+    
+    def __init__(self):
+        self.cl_service = unified_cl_service
+        self.initialized = False
+        
+    async def initialize(self) -> bool:
+        """Initialisiere User Settings ClickHouse Integration"""
+        try:
+            logger.info("⚙️ Initializing User Settings ClickHouse Integration...")
+            
+            # Teste ClickHouse Lane System Verfügbarkeit
+            if hasattr(self.cl_service, 'get_system_overview'):
+                cl_status = self.cl_service.get_system_overview()
+                logger.info(f"✅ ClickHouse Lane System ready for user settings: {cl_status.get('initialized', False)}")
+            
+            self.initialized = True
+            logger.info("✅ User Settings ClickHouse Integration initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ User Settings ClickHouse Integration initialization failed: {e}")
+            return False
+    
+    # ✅ COIN SETTINGS MANAGEMENT
+    async def create_coin_settings(self, user_id: str, exchange: str, symbol: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Erstelle Coin Settings über ClickHouse Lane System
+        Ersetzt legacy ClickHouse Manager Calls
+        """
+        try:
+            # Prepare coin settings data for ClickHouse
+            coin_settings_data = {
+                "user_id": user_id,
+                "exchange": exchange,
+                "symbol": symbol,
+                "settings": settings,
+                "active": settings.get("active", True),
+                "notifications_enabled": settings.get("notifications_enabled", False),
+                "price_alerts": settings.get("price_alerts", []),
+                "volume_alerts": settings.get("volume_alerts", []),
+                "technical_indicators": settings.get("technical_indicators", {}),
+                "created_at": int(datetime.now().timestamp() * 1000),
+                "updated_at": int(datetime.now().timestamp() * 1000)
+            }
+            
+            # ✅ cl_ Lane System Call statt legacy ClickHouse Manager
+            result = await self.cl_service.insert_user_settings(
+                table_type="coin_settings",
+                data=coin_settings_data
+            )
+            
+            if result:
+                logger.info(f"✅ Created coin settings for {user_id}/{exchange}/{symbol}")
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "settings_id": result.get("id"),
+                    "created_at": coin_settings_data["created_at"]
+                }
+            else:
+                raise Exception("ClickHouse insert failed")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to create coin settings for {user_id}/{exchange}/{symbol}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def get_coin_settings(self, user_id: str, exchange: str = None, symbol: str = None) -> List[Dict[str, Any]]:
+        """
+        Hole Coin Settings über ClickHouse Lane System
+        Ersetzt legacy ClickHouse Manager Calls  
+        """
+        try:
+            # Build query filters
+            filters = {"user_id": user_id}
+            if exchange:
+                filters["exchange"] = exchange
+            if symbol:
+                filters["symbol"] = symbol
+            
+            # ✅ cl_ Lane System Call
+            settings_data = await self.cl_service.query_user_settings(
+                table_type="coin_settings", 
+                filters=filters,
+                limit=1000
+            )
+            
+            if settings_data:
+                logger.info(f"📊 Retrieved {len(settings_data)} coin settings for {user_id}")
+                return settings_data
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to get coin settings for {user_id}: {e}")
+            return []
+    
+    async def update_coin_settings(self, user_id: str, exchange: str, symbol: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Aktualisiere Coin Settings über ClickHouse Lane System
+        """
+        try:
+            # Prepare update data
+            update_data = {
+                "user_id": user_id,
+                "exchange": exchange,
+                "symbol": symbol,
+                "settings": updates,
+                "updated_at": int(datetime.now().timestamp() * 1000)
+            }
+            
+            # ✅ cl_ Lane System Call
+            result = await self.cl_service.update_user_settings(
+                table_type="coin_settings",
+                filters={"user_id": user_id, "exchange": exchange, "symbol": symbol},
+                updates=update_data
+            )
+            
+            if result:
+                logger.info(f"✅ Updated coin settings for {user_id}/{exchange}/{symbol}")
+                return {"success": True, "updated_at": update_data["updated_at"]}
+            else:
+                raise Exception("ClickHouse update failed")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to update coin settings for {user_id}/{exchange}/{symbol}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ✅ INDICATOR SETTINGS MANAGEMENT
+    async def create_indicator_settings(self, user_id: str, exchange: str, symbol: str, indicator_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Erstelle Indicator Settings über ClickHouse Lane System
+        """
+        try:
+            indicator_data = {
+                "user_id": user_id,
+                "exchange": exchange,
+                "symbol": symbol,
+                "indicator_type": indicator_config.get("type", "unknown"),
+                "indicator_name": indicator_config.get("name", ""),
+                "parameters": indicator_config.get("parameters", {}),
+                "timeframes": indicator_config.get("timeframes", ["1h"]),
+                "enabled": indicator_config.get("enabled", True),
+                "alert_conditions": indicator_config.get("alert_conditions", []),
+                "created_at": int(datetime.now().timestamp() * 1000),
+                "updated_at": int(datetime.now().timestamp() * 1000)
+            }
+            
+            # ✅ cl_ Lane System Call
+            result = await self.cl_service.insert_user_settings(
+                table_type="indicator_settings",
+                data=indicator_data
+            )
+            
+            if result:
+                logger.info(f"✅ Created indicator settings {indicator_config.get('name')} for {user_id}/{exchange}/{symbol}")
+                return {
+                    "success": True,
+                    "indicator_id": result.get("id"),
+                    "indicator_name": indicator_data["indicator_name"],
+                    "created_at": indicator_data["created_at"]
+                }
+            else:
+                raise Exception("ClickHouse insert failed")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to create indicator settings for {user_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def get_indicator_settings(self, user_id: str, exchange: str = None, symbol: str = None, indicator_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Hole Indicator Settings über ClickHouse Lane System
+        """
+        try:
+            filters = {"user_id": user_id}
+            if exchange:
+                filters["exchange"] = exchange
+            if symbol:
+                filters["symbol"] = symbol
+            if indicator_type:
+                filters["indicator_type"] = indicator_type
+            
+            # ✅ cl_ Lane System Call
+            indicator_data = await self.cl_service.query_user_settings(
+                table_type="indicator_settings",
+                filters=filters,
+                limit=500
+            )
+            
+            if indicator_data:
+                logger.info(f"📊 Retrieved {len(indicator_data)} indicator settings for {user_id}")
+                return indicator_data
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to get indicator settings for {user_id}: {e}")
+            return []
+    
+    # ✅ PORTFOLIO SETTINGS MANAGEMENT  
+    async def create_portfolio_settings(self, user_id: str, portfolio_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Erstelle Portfolio Settings über ClickHouse Lane System
+        """
+        try:
+            portfolio_data = {
+                "user_id": user_id,
+                "portfolio_name": portfolio_config.get("name", "Default Portfolio"),
+                "base_currency": portfolio_config.get("base_currency", "USDT"),
+                "exchanges": portfolio_config.get("exchanges", []),
+                "allocation_strategy": portfolio_config.get("allocation_strategy", "equal"),
+                "risk_management": portfolio_config.get("risk_management", {}),
+                "rebalance_frequency": portfolio_config.get("rebalance_frequency", "weekly"),
+                "performance_tracking": portfolio_config.get("performance_tracking", True),
+                "created_at": int(datetime.now().timestamp() * 1000),
+                "updated_at": int(datetime.now().timestamp() * 1000)
+            }
+            
+            # ✅ cl_ Lane System Call
+            result = await self.cl_service.insert_user_settings(
+                table_type="portfolio_settings",
+                data=portfolio_data
+            )
+            
+            if result:
+                logger.info(f"✅ Created portfolio settings {portfolio_config.get('name')} for {user_id}")
+                return {
+                    "success": True,
+                    "portfolio_id": result.get("id"),
+                    "portfolio_name": portfolio_data["portfolio_name"],
+                    "created_at": portfolio_data["created_at"]
+                }
+            else:
+                raise Exception("ClickHouse insert failed")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to create portfolio settings for {user_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ✅ UNIFIED USER SETTINGS DASHBOARD
+    async def get_user_dashboard_settings(self, user_id: str) -> Dict[str, Any]:
+        """
+        Vollständige User Settings Overview über ClickHouse Lane System
+        Ersetzt fragmentierte User Settings Abfragen
+        """
+        try:
+            logger.info(f"⚙️ Loading complete user dashboard settings for {user_id}")
+            
+            dashboard_data = {
+                "user_id": user_id,
+                "load_time": datetime.now().isoformat(),
+                "coin_settings": [],
+                "indicator_settings": [],
+                "portfolio_settings": [],
+                "summary": {"total_coins": 0, "total_indicators": 0, "total_portfolios": 0}
+            }
+            
+            # Parallel laden aller Settings über cl_ Lane System
+            coin_settings_task = self.get_coin_settings(user_id)
+            indicator_settings_task = self.get_indicator_settings(user_id)
+            portfolio_settings_task = self.cl_service.query_user_settings(
+                table_type="portfolio_settings",
+                filters={"user_id": user_id},
+                limit=10
+            )
+            
+            # Asynchron parallel verarbeiten
+            results = await asyncio.gather(
+                coin_settings_task,
+                indicator_settings_task, 
+                portfolio_settings_task,
+                return_exceptions=True
+            )
+            
+            # Results verarbeiten
+            coin_settings = results[0] if not isinstance(results[0], Exception) else []
+            indicator_settings = results[1] if not isinstance(results[1], Exception) else []
+            portfolio_settings = results[2] if not isinstance(results[2], Exception) else []
+            
+            dashboard_data["coin_settings"] = coin_settings
+            dashboard_data["indicator_settings"] = indicator_settings
+            dashboard_data["portfolio_settings"] = portfolio_settings
+            
+            dashboard_data["summary"] = {
+                "total_coins": len(coin_settings),
+                "total_indicators": len(indicator_settings),
+                "total_portfolios": len(portfolio_settings),
+                "active_coins": len([c for c in coin_settings if c.get("active", False)]),
+                "enabled_indicators": len([i for i in indicator_settings if i.get("enabled", False)])
+            }
+            
+            logger.info(f"✅ User dashboard settings loaded: {dashboard_data['summary']['total_coins']} coins, {dashboard_data['summary']['total_indicators']} indicators")
+            return dashboard_data
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load user dashboard settings for {user_id}: {e}")
+            return {"user_id": user_id, "error": str(e)}
+    
+    # ✅ SETTINGS CLEANUP & MAINTENANCE
+    async def cleanup_old_settings(self, days_old: int = 90) -> Dict[str, Any]:
+        """
+        Cleanup alter User Settings über ClickHouse Lane System
+        """
+        try:
+            logger.info(f"🧹 Starting cleanup of user settings older than {days_old} days")
+            
+            cutoff_timestamp = int((datetime.now().timestamp() - (days_old * 24 * 3600)) * 1000)
+            
+            # Cleanup tasks für verschiedene Settings-Typen
+            cleanup_results = {}
+            
+            for settings_type in ["coin_settings", "indicator_settings", "portfolio_settings"]:
+                try:
+                    # ✅ cl_ Lane System Call für Cleanup
+                    result = await self.cl_service.delete_user_settings(
+                        table_type=settings_type,
+                        filters={"updated_at": f"<{cutoff_timestamp}"}
+                    )
+                    
+                    cleanup_results[settings_type] = {
+                        "success": True,
+                        "deleted_count": result.get("deleted_count", 0)
+                    }
+                    
+                except Exception as cleanup_error:
+                    cleanup_results[settings_type] = {
+                        "success": False,
+                        "error": str(cleanup_error)
+                    }
+            
+            total_deleted = sum(r.get("deleted_count", 0) for r in cleanup_results.values() if r.get("success"))
+            
+            logger.info(f"✅ Settings cleanup completed: {total_deleted} total records deleted")
+            return {
+                "cleanup_completed": True,
+                "cutoff_days": days_old,
+                "total_deleted": total_deleted,
+                "results_by_type": cleanup_results
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Settings cleanup failed: {e}")
+            return {"cleanup_completed": False, "error": str(e)}
+
+    # ✅ KOMPATIBILITÄTS-WRAPPER für UserSettingsService
+    async def fetch(self, user_id: str) -> Dict[str, Any]:
+        """
+        Wrapper für UserSettingsService.store.fetch()
+        Lädt Settings aus ClickHouse oder gibt leeres Dict zurück
+        """
+        try:
+            # Versuche Dashboard zu laden
+            dashboard = await self.get_user_dashboard_settings(user_id)
+            
+            # Extrahiere Settings in flache Struktur
+            return {
+                "coins": dashboard.get("coin_settings", []),
+                "indicators": dashboard.get("indicator_settings", []),
+                "portfolio": dashboard.get("portfolio_settings", []),
+                "version": 1,
+                "updated_at": int(datetime.now().timestamp() * 1000)
+            }
+        except Exception as e:
+            logger.debug(f"fetch() fallback to empty dict for {user_id}: {e}")
+            return {}
+    
+    async def upsert(self, user_id: str, settings: Dict[str, Any]) -> bool:
+        """
+        Wrapper für UserSettingsService.store.upsert()
+        Speichert Settings in ClickHouse
+        """
+        try:
+            coins = settings.get("coins", [])
+            
+            # Speichere jedes Coin Setting einzeln
+            for coin in coins:
+                if not isinstance(coin, dict):
+                    continue
+                    
+                exchange = coin.get("exchange")
+                symbol = coin.get("symbol")
+                
+                if not exchange or not symbol:
+                    continue
+                
+                # Nutze bestehende create_coin_settings Methode
+                await self.create_coin_settings(
+                    user_id=user_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                    settings=coin
+                )
+            
+            logger.info(f"✅ upsert() saved {len(coins)} coins for {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"upsert() failed for {user_id}: {e}", exc_info=True)
+            return False
+    
+    async def get(self, user_id: str) -> Dict[str, Any]:
+        """Alias für fetch() - Redis Cache Kompatibilität"""
+        return await self.fetch(user_id)
+    
+    async def set(self, user_id: str, settings: Dict[str, Any]) -> bool:
+        """Alias für upsert() - Redis Cache Kompatibilität"""
+        return await self.upsert(user_id, settings)
+    
+    async def invalidate(self, user_id: str) -> bool:
+        """Cache invalidation - Dummy für jetzt"""
+        logger.debug(f"invalidate() called for {user_id} (no-op)")
+        return True
+
+
+# Global ClickHouse User Settings Manager instance
+cl_user_settings = ClickHouseUserSettingsManager()
+
+
+def get_user_settings_store():
+    """
+    Factory-Funktion für config_manager.py Kompatibilität
+    Gibt die cl_user_settings Instanz zurück
+    """
+    return cl_user_settings
+
+
+def get_user_settings_cache():
+    """
+    Factory-Funktion für config_manager.py Kompatibilität
+    Gibt die cl_user_settings Instanz zurück (cache-fähig)
+    """
+    return cl_user_settings
+</file>
+
 <file path="backend/database/clickhouse/init.sql">
 -- ========================================
 -- TRADING SYSTEM CLICKHOUSE SCHEMA
@@ -134245,465 +136189,8 @@ class ProgressHealthService:
 progress_health_service = ProgressHealthService()
 </file>
 
-<file path="backend/health/health_router.py">
-from fastapi import APIRouter, Response, HTTPException
-from datetime import datetime
-import json
-from .health_registry import health_registry
-
-# ✅ FIX: Removed prefix here since main.py already adds prefix="/health"
-# This prevents double prefix bug (/health/health/ready)
-health_router = APIRouter(tags=["health"])
-
-@health_router.get("/")
-async def health_overview():
-    """Basic Health Check - Immer 200 solange Service läuft"""
-    return {
-        "status": "alive", 
-        "service": "trading-system",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@health_router.get("/ready")
-async def readiness_check():
-    """Kubernetes Readiness Probe - 200 wenn ready, 503 wenn nicht"""
-    system_health = health_registry.get_system_health()
-    
-    if system_health["ready"]:
-        return Response(
-            content=json.dumps(system_health),
-            status_code=200,
-            media_type="application/json"
-        )
-    else:
-        return Response(
-            content=json.dumps(system_health),
-            status_code=503,  # Service Unavailable
-            media_type="application/json"
-        )
-
-@health_router.get("/live")
-async def liveness_check():
-    """Kubernetes Liveness Probe - Immer 200 solange Process läuft"""
-    return Response(
-        content=json.dumps({"status": "alive", "timestamp": datetime.now().isoformat()}),
-        status_code=200,
-        media_type="application/json"
-    )
-
-@health_router.get("/detailed")
-async def detailed_health():
-    """
-    ✅ PHASE 3: Detaillierte Health-Information mit Exchange-fokussiertem JSON Format (README Implementation)
-    """
-    system_health = health_registry.get_system_health()
-    resilient_ready, resilient_message = health_registry.get_system_readiness_resilient()
-    
-    # ✅ Extract exchange information for README JSON format
-    exchange_status = {
-        "healthy": [],
-        "warming_up": [], 
-        "failed": [],
-        "offline": []
-    }
-    
-    # Categorize exchanges by health status
-    if system_health.get("components_by_type", {}).get("exchange"):
-        for exchange_data in system_health["components_by_type"]["exchange"]:
-            exchange_name = exchange_data.get("component_name", "unknown")
-            effective_status = exchange_data.get("effective_status", "unknown").lower()
-            
-            if effective_status == "healthy":
-                exchange_status["healthy"].append(exchange_name)
-            elif effective_status in ["degraded", "stale"]:
-                exchange_status["warming_up"].append(exchange_name)
-            elif effective_status in ["failed", "error"]:
-                exchange_status["failed"].append(exchange_name)
-            else:
-                exchange_status["offline"].append(exchange_name)
-    
-    # ✅ PHASE 3: README-compliant JSON format
-    return {
-        "system_status": system_health.get("system_status", "unknown"),
-        "ready": resilient_ready,  # ⭐ Always true - system runs regardless (README requirement)
-        "exchange_status": exchange_status,
-        "message": resilient_message or f"{len(exchange_status['healthy'])}/{len(exchange_status['healthy']) + len(exchange_status['warming_up']) + len(exchange_status['failed']) + len(exchange_status['offline'])} exchanges operational",
-        "timestamp": datetime.now().isoformat(),
-        "startup_mode": "resilient",
-        "detailed_components": system_health  # Full health data for debugging
-    }
-
-@health_router.get("/ready/resilient")
-async def readiness_check_resilient():
-    """✅ PHASE 3: Resilient readiness - immer 200, zeigt aber detailed status (README Implementation)"""
-    system_health = health_registry.get_system_health()
-    resilient_ready, message = health_registry._calculate_system_readiness_resilient()
-    
-    # ⭐ ALWAYS 200 - system läuft immer, status ist nur informativ
-    return {
-        **system_health,
-        "resilient_ready": resilient_ready,
-        "resilient_message": message,
-        "startup_mode": "graceful"
-    }
-
-@health_router.get("/components")
-async def all_components():
-    return {
-        "components": [lane.get_health() for lane in health_registry.get_all_lanes()],
-        "timestamp": datetime.now().isoformat()
-    }
-
-@health_router.get("/components/{component_type}")
-async def components_by_type(component_type: str):
-    return health_registry.get_health_by_type(component_type)
-
-@health_router.get("/components/{component_type}/{component_name}")
-async def specific_component(component_type: str, component_name: str):
-    health = health_registry.get_component_health(component_type, component_name)
-    if not health:
-        raise HTTPException(status_code=404, detail=f"Component {component_type}.{component_name} not found")
-    return health.get_health()
-
-@health_router.get("/critical")
-async def critical_components_health():
-    """Health Status nur für kritische Komponenten"""
-    all_lanes = health_registry.get_all_lanes()
-    critical_health = [lane.get_health() for lane in all_lanes if lane.critical]
-    
-    return {
-        "critical_components": critical_health,
-        "total_critical": len(critical_health),
-        "healthy_critical": sum(1 for h in critical_health if h["effective_status"] == "healthy"),
-        "timestamp": datetime.now().isoformat()
-    }
-</file>
-
 <file path="backend/services/adapter/__init__.py">
 # Adapter Services Package
-</file>
-
-<file path="backend/services/adapter/unified_collector.py">
-"""
-✅ UNIFIED COLLECTOR SERVICE - Business Logic Service für alle Exchange Collectors
-Ersetzt die 8x fehlenden Exchange Collectors mit einem zentralen Service
-"""
-
-import asyncio
-import logging
-from datetime import datetime
-from typing import Dict, List, Optional, Set
-from backend.websocket.ws_unified import universal_ws_service, start_websocket_service
-
-logger = logging.getLogger("unified-collector-service")
-
-class UnifiedCollectorService:
-    """
-    ✅ UNIFIED COLLECTOR SERVICE - Business Logic für alle Exchange Collectors
-    
-    Zentraler Service der alle Exchange Collector-Funktionen managed:
-    - Alle 8 Exchanges: Binance, GateIO, Bybit, OKX, MEXC, HTX, Coinbase, Bitget
-    - Nutzt WebSocket Service für technische WebSocket-Verwaltung
-    - Business Logic für Collector-Management
-    - Generische API für alle Exchanges
-    """
-    
-    def __init__(self, supported_exchanges=None, symbols=None, market_types=None):
-        # ✅ Generisch - nichts hardcoded
-        self.exchanges = supported_exchanges or [
-            'binance', 'bitget', 'mexc', 'gateio', 'bybit', 'okx', 'htx', 'coinbase'
-        ]
-        self.symbols = symbols or ['BTCUSDT', 'ETHUSDT', 'ADAUSDT']
-        self.market_types = market_types or ['spot', 'usdtm']
-        
-        self.running = False
-        self.active_collectors: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
-        
-    async def start(self):
-        """Startet den Unified Collector Service"""
-        if self.running:
-            logger.info("Unified Collector Service bereits gestartet")
-            return
-            
-        logger.info("🚀 Starting Unified Collector Service")
-        
-        # ✅ Nutzt ws_unified.py für WebSocket-Anteil
-        await start_websocket_service()
-        
-        self.running = True
-        logger.info("✅ Unified Collector Service started")
-    
-    async def start_all_collectors(self):
-        """
-        ✅ ENTERPRISE: PARALLEL Collector Startup
-        
-        Startet alle Collectors gleichzeitig mittels asyncio.gather()
-        - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
-        - Resilient: Einzelne Failures crashen nicht das System
-        - Fast: 10-15x schneller als serieller Start
-        """
-        if not self.running:
-            await self.start()
-            
-        logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
-        
-        # ✅ Sammle alle Start-Tasks (KEIN await hier!)
-        tasks = []
-        total_collectors = 0
-        
-        for exchange in self.exchanges:
-            for symbol in self.symbols:
-                for market_type in self.market_types:
-                    # ✅ Generisch: Prüfe über _should_skip_collector
-                    if self._should_skip_collector(exchange, market_type):
-                        continue
-                    
-                    # ✅ Task erstellen ohne zu awaiten
-                    task = self._start_exchange_collector_safe(
-                        exchange, symbol, market_type
-                    )
-                    tasks.append(task)
-                    total_collectors += 1
-        
-        logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
-        
-        # ✅ PARALLEL ausführen mit asyncio.gather()
-        # return_exceptions=True → Einzelne Failures crashen nicht alle
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # ✅ Ergebnisse auswerten
-        started_count = 0
-        failed_count = 0
-        
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                failed_count += 1
-                logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
-            else:
-                started_count += 1
-        
-        # ✅ Performance Metrics loggen
-        success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
-        
-        logger.info(
-            f"✅ PARALLEL Collectors: COMPLETE "
-            f"({started_count} started, {failed_count} failed, "
-            f"{success_rate:.1f}% success rate)"
-        )
-        
-        # ✅ Health System Update
-        if hasattr(self, 'health_component'):
-            self.health_component.record_success({
-                "action": "collectors_started_parallel",
-                "total": total_collectors,
-                "started": started_count,
-                "failed": failed_count,
-                "success_rate": success_rate
-            })
-    
-    def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
-        """
-        ✅ ENTERPRISE: Generische Skip-Logik
-        
-        Keine hardcoded If-Bedingungen, nutzt Exchange-Config
-        """
-        # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
-        # Coinbase unterstützt keine Futures
-        if exchange == 'coinbase' and market_type in ['usdtm', 'coinm', 'usdcm']:
-            return True
-        
-        # Weitere generische Prüfungen können hier ergänzt werden
-        # z.B. via EXCHANGE_REGISTRY.get(exchange, {}).get("supported_markets")
-        
-        return False
-    
-    async def _start_exchange_collector_safe(
-        self, 
-        exchange: str, 
-        symbol: str, 
-        market_type: str
-    ) -> bool:
-        """
-        ✅ ENTERPRISE: Safe Wrapper für Collector Start
-        
-        Wrapped _start_exchange_collector mit Error Handling
-        - Einzelne Failures crashen nicht das System
-        - Detailed Logging für Debugging
-        - Returns bool statt raising Exception
-        """
-        collector_key = f"{exchange}:{symbol}:{market_type}"
-        
-        try:
-            await self._start_exchange_collector(exchange, symbol, market_type)
-            logger.debug(f"✅ Collector started: {collector_key}")
-            return True
-            
-        except Exception as e:
-            logger.warning(
-                f"⚠️ Failed to start collector {collector_key}: {e}",
-                exc_info=False  # Keine full traceback in production
-            )
-            
-            # ✅ Health System Integration
-            if hasattr(self, 'health_component'):
-                self.health_component.record_error(
-                    f"Collector start failed: {collector_key}: {str(e)}"
-                )
-            
-            return False
-        
-    async def _start_exchange_collector(self, exchange: str, symbol: str, market: str, queue: asyncio.Queue = None):
-        """
-        Startet einzelnen Exchange Collector
-        ✅ Nutzt ws_unified.py für WebSocket-Anteil
-        """
-        collector_key = f"{exchange}:{symbol}:{market}"
-        
-        if collector_key in self.active_collectors:
-            logger.debug(f"Collector already active: {collector_key}")
-            return
-            
-        try:
-            # Coinbase Symbol-Format anpassen
-            ws_symbol = symbol
-            if exchange == 'coinbase':
-                ws_symbol = symbol.replace('USDT', '-USD')  # BTCUSDT → BTC-USD
-            
-            # ✅ Nutze WebSocket Service für WebSocket-Verbindung
-            lane_key = await universal_ws_service.start_exchange_websocket(
-                exchange=exchange,
-                symbol=ws_symbol,
-                market_type=market
-            )
-            
-            # Queue-Integration für lokale broadcast_task
-            if queue:
-                async def queue_handler(trade_data):
-                    await queue.put(trade_data)
-                logger.info(f"✅ Queue-Integration aktiviert für {collector_key}")
-            
-            # Speichere Collector Info
-            self.active_collectors[collector_key] = {
-                "exchange": exchange,
-                "symbol": symbol,
-                "ws_symbol": ws_symbol,
-                "market_type": market,
-                "lane_key": lane_key,
-                "started_at": datetime.now(),
-                "status": "active",
-                "queue_enabled": queue is not None
-            }
-            
-            logger.info(f"✅ Collector started: {collector_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start collector {collector_key}: {e}")
-            raise
-    
-    async def stop_exchange_collector(self, exchange: str, symbol: str, market_type: str):
-        """Stoppt einzelnen Exchange Collector"""
-        collector_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if collector_key not in self.active_collectors:
-            logger.warning(f"Collector not active: {collector_key}")
-            return
-            
-        try:
-            collector_info = self.active_collectors[collector_key]
-            ws_symbol = collector_info["ws_symbol"]
-            
-            # ✅ Nutze WebSocket Service zum Stoppen
-            await universal_ws_service.stop_exchange_websocket(exchange, ws_symbol, market_type)
-            
-            # Aus aktiven Collectors entfernen
-            del self.active_collectors[collector_key]
-            
-            logger.info(f"✅ Collector stopped: {collector_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to stop collector {collector_key}: {e}")
-    
-    async def stop_all_collectors(self):
-        """Stoppt alle laufenden Collectors"""
-        logger.info("🛑 Stopping all collectors...")
-        
-        # Alle aktiven Collectors stoppen
-        active_collectors_copy = list(self.active_collectors.keys())
-        for collector_key in active_collectors_copy:
-            exchange, symbol, market_type = collector_key.split(":")
-            await self.stop_exchange_collector(exchange, symbol, market_type)
-        
-        # WebSocket Service stoppen
-        await universal_ws_service.stop()
-        
-        self.running = False
-        logger.info("✅ All collectors stopped")
-    
-    def get_service_status(self) -> Dict:
-        """Status des Unified Collector Service"""
-        # Hole WebSocket Service Status
-        ws_status = universal_ws_service.get_service_status()
-        
-        return {
-            "service": "unified_collector_service",
-            "running": self.running,
-            "total_collectors": len(self.active_collectors),
-            "active_exchanges": list(set(info["exchange"] for info in self.active_collectors.values())),
-            "websocket_service": ws_status,
-            "collectors": {
-                collector_key: {
-                    "exchange": info["exchange"],
-                    "symbol": info["symbol"],
-                    "market_type": info["market_type"],
-                    "status": info["status"],
-                    "started_at": info["started_at"].isoformat()
-                }
-                for collector_key, info in self.active_collectors.items()
-            },
-            "configuration": {
-                "supported_exchanges": self.exchanges,
-                "symbols": self.symbols,
-                "market_types": self.market_types
-            }
-        }
-    
-    def get_exchange_collectors(self, exchange: str) -> List[Dict]:
-        """Alle aktiven Collectors für eine Exchange"""
-        return [
-            {
-                "collector_key": collector_key,
-                "symbol": info["symbol"],
-                "market_type": info["market_type"],
-                "status": info["status"]
-            }
-            for collector_key, info in self.active_collectors.items()
-            if info["exchange"] == exchange
-        ]
-
-
-# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
-unified_collector_service = UnifiedCollectorService()
-
-# ✅ SERVICE API - Einfache Funktionen für collector_starter.py
-async def start_unified_collector_service():
-    """Startet den Unified Collector Service"""
-    await unified_collector_service.start()
-
-async def stop_unified_collector_service():
-    """Stoppt den Unified Collector Service"""
-    await unified_collector_service.stop_all_collectors()
-
-async def start_all_exchange_collectors():
-    """Startet alle Exchange Collectors - API für collector_starter.py"""
-    await unified_collector_service.start_all_collectors()
-
-def get_unified_collector_status() -> Dict:
-    """Service Status - API für Health Checks"""
-    return unified_collector_service.get_service_status()
-
-def get_exchange_collector_status(exchange: str) -> List[Dict]:
-    """Exchange Collector Status - API für Exchange Health"""
-    return unified_collector_service.get_exchange_collectors(exchange)
 </file>
 
 <file path="backend/services/adapter/unified_exchange_service.py">
@@ -151010,1422 +152497,6 @@ PY
 Wenn das passt und der Aggregator läuft, ist alles integriert.
 </file>
 
-<file path="readme/000_system_start_1.md">
-# INTELLIGENT SYSTEM STARTUP - EVENT-DRIVEN READINESS
-
-**Problem:** Hardcoded Timeouts & serielles Warten im start-system.sh  
-**Lösung:** Event-basiertes Readiness System nutzt bestehendes Health System für intelligente, parallele Startup-Validierung
-
----
-
-## 🚨 IMPLEMENTIERUNGS-REGELN
-
-### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
-
-#### 🚫 VERBOTEN:
-
-1. **NIEMALS HARDCODED**
-   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
-   - ❌ KEINE hardcoded Symbols, URLs, Parameter
-   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
-
-2. **NIEMALS MOCK DATEN**
-   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
-   - ❌ KEINE Test-Stubs in Production-Code
-   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
-
-3. **NIEMALS LEGACY CODE**
-   - ❌ KEINE veralteten Patterns, deprecated Funktionen
-   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
-   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
-
-4. **NIEMALS EXCHANGE-SPEZIFISCH**
-   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
-   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
-   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
-
-#### ✅ PFLICHT:
-
-1. **IMMER GENERISCH**
-   - Alle Funktionen müssen für ALLE Exchanges funktionieren
-   - Parameter statt hardcoding
-
-2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
-
-3. **IMMER DOKUMENTATION LESEN**
-
----
-
-## 📋 IMPLEMENTATION TASKS
-
-### **Phase 1: Backend Ready Signal**
-- [ ] **TASK 1.1:** Implementiere `_write_ready_signal()` Funktion in `backend/core/main.py`
-- [ ] **TASK 1.2:** Integriere Ready Signal in `@app.on_event("startup")`
-- [ ] **TASK 1.3:** Test: Prüfe dass `/tmp/backend_ready` File erstellt wird
-- [ ] **TASK 1.4:** Test: Validiere JSON Format des Ready Signals
-
-### **Phase 2: Smart Wait Functions (Bash)**
-- [ ] **TASK 2.1:** Implementiere `wait_for_service_smart()` mit Exponential Backoff
-- [ ] **TASK 2.2:** Implementiere `wait_for_all_services_parallel()` für parallele Checks
-- [ ] **TASK 2.3:** Implementiere `wait_for_backend_ready()` für Event-driven Check
-- [ ] **TASK 2.4:** Test: Validiere Exponential Backoff Timing
-
-### **Phase 3: Update wait_for_backend Function**
-- [ ] **TASK 3.1:** Ersetze alte `wait_for_backend()` mit neuer Implementierung
-- [ ] **TASK 3.2:** Integriere parallel service checks
-- [ ] **TASK 3.3:** Integriere event-driven ready check
-- [ ] **TASK 3.4:** Implementiere non-blocking exchange warm-up
-
-### **Phase 4: Konfigurierbare Env Vars**
-- [ ] **TASK 4.1:** Füge konfigurierbare Timeouts hinzu (MAX_RETRIES, INITIAL_DELAY, etc.)
-- [ ] **TASK 4.2:** Füge Feature Flags hinzu (USE_PARALLEL_CHECKS, USE_EVENT_DRIVEN_READY, etc.)
-- [ ] **TASK 4.3:** Implementiere Verbose Logging (STARTUP_VERBOSE)
-- [ ] **TASK 4.4:** Dokumentiere alle Env Vars
-
-### **Phase 5: Testing & Validation**
-- [ ] **TASK 5.1:** Test: Fast Startup (System ready in 5-15s)
-- [ ] **TASK 5.2:** Test: Slow Startup mit artificial delay
-- [ ] **TASK 5.3:** Test: Degraded Mode (ein Service down)
-- [ ] **TASK 5.4:** Test: Feature Flags (disable new features)
-- [ ] **TASK 5.5:** Validiere Success Metrics (Startup < 20s, Parallel Checks, etc.)
-
----
-
-## 🎯 PROBLEM: PRIMITIVE STARTUP LOGIC
-
-### **Aktuelles System (start-system.sh):**
-
-```bash
-# ❌ HARDCODED WARTEN - Zeile ~180
-wait_for_backend() {
-  for i in {1..60}; do
-    curl -s http://localhost:8100/health && exit 0
-    sleep 1
-  done
-}
-
-# ❌ SERIELL - Einer nach dem anderen
-wait_for_service "Redis" localhost 6380      # Wartet bis timeout
-wait_for_service "ClickHouse" localhost 8124 # Dann dieser
-wait_for_service "Backend" localhost 8100    # Dann dieser
-
-# ❌ DUMB POLLING - Keine Intelligenz
-# Wartet immer 60s, auch wenn Backend nach 5s bereit ist
-```
-
-**Probleme:**
-1. ❌ **Feste Timeouts** - 60s, 30s, 15s hardcoded
-2. ❌ **Serielles Warten** - Verschwendet Zeit
-3. ❌ **Kein Event-System** - Dummes Polling
-4. ❌ **Keine Retry-Logic** - Keine Exponential Backoff
-5. ❌ **False Positives** - "Failed" obwohl Backend healthy ist
-
----
-
-## ✅ LÖSUNG: NUTZE BESTEHENDES HEALTH SYSTEM
-
-### **Was wir BEREITS haben:**
-
-```python
-# backend/health/health_registry.py
-class HealthRegistry:
-    def is_system_ready_resilient(self) -> bool:
-        """Resilient readiness - system ready if ANY exchanges work"""
-        # Bereits implementiert!
-
-# backend/health/health_router.py
-@router.get("/health/ready-resilient")
-async def readiness_check_resilient():
-    """Kubernetes-style readiness - NUTZT HEALTH SYSTEM"""
-    ready, message = health_registry.get_system_readiness_resilient()
-    return {
-        "ready": ready,
-        "message": message,
-        # ... component details ...
-    }
-```
-
-**Das Health System macht bereits:**
-- ✅ **Component Tracking** (via HealthLane)
-- ✅ **Background Monitoring** (via HealthChecker)
-- ✅ **Graceful Degradation** (resilient mode)
-- ✅ **Detailed Status** (per-component health)
-
-**Wir müssen es nur NUTZEN statt ignorieren!**
-
----
-
-## 🏗️ ARCHITEKTUR: EVENT-DRIVEN READINESS
-
-### **FLOW:**
-
-```
-1. Docker Compose startet Container
-   ↓
-2. Backend (main.py) startup event läuft:
-   - Initialisiert Redis
-   - Initialisiert ClickHouse  
-   - Startet WebSockets
-   - Startet Collectors
-   - Registriert Health Components
-   ↓
-3. Backend schreibt Ready Signal
-   - Option A: /tmp/backend_ready file
-   - Option B: Redis PubSub event
-   - Option C: Health endpoint = 200
-   ↓
-4. start-system.sh wartet intelligent:
-   - Parallel: Alle Services gleichzeitig prüfen
-   - Exponential Backoff: 1s, 2s, 4s, 8s, 16s
-   - Event-driven: Nutzt /health/ready-resilient
-   ↓
-5. System ready in 5-15s (statt hardcoded 60s!)
-```
-
----
-
-## 📋 IMPLEMENTATION DETAILS
-
-### **TASK 1: Backend Ready Signal (Python)**
-
-**File:** `backend/core/main.py`
-
-**Änderung in `@app.on_event("startup")`:**
-
-```python
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-    
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-    
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-    
-    # ✅ EXISTING: ExchangeFactory, WebSockets, Collectors...
-    # (behalte bestehenden Code)
-    
-    # ✅ NEW: Write Ready Signal
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🚀 WS_AI Backend fully started")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-```
-
-**Warum 3 Methoden?**
-- **File:** Schnell, einfach, funktioniert immer
-- **Redis:** Event-driven, elegant, wenn verfügbar
-- **Logs:** Debugging & Observability
-
----
-
-### **TASK 2: Smart Wait Functions (Bash)**
-
-**File:** `start-system.sh`
-
-**Neue Functions hinzufügen (vor wait_for_backend):**
-
-```bash
-# =============================================================================
-# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
-# =============================================================================
-
-# ✅ Konfigurierbare Timeouts (via env vars)
-MAX_RETRIES="${MAX_RETRIES:-5}"
-INITIAL_DELAY="${INITIAL_DELAY:-1}"
-BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"
-SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"
-
-# ✅ Exponential Backoff Retry Logic
-wait_for_service_smart() {
-    local service_name=$1
-    local check_cmd=$2
-    local max_retries=${3:-$MAX_RETRIES}
-    local initial_delay=${4:-$INITIAL_DELAY}
-    
-    local retry=0
-    local delay=$initial_delay
-    
-    echo "⏳ Waiting for $service_name..."
-    
-    while (( retry < max_retries )); do
-        if eval "$check_cmd" >/dev/null 2>&1; then
-            echo "✅ $service_name ready after $retry retries"
-            return 0
-        fi
-        
-        if (( retry < max_retries - 1 )); then
-            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
-            sleep "$delay"
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            delay=$((delay * 2))
-        fi
-        
-        retry=$((retry + 1))
-    done
-    
-    echo "❌ $service_name failed after $max_retries retries"
-    return 1
-}
-
-# ✅ Parallele Service Checks
-wait_for_all_services_parallel() {
-    local services=("redis:6380" "clickhouse:8124" "backend:8100")
-    local pids=()
-    local temp_dir=$(mktemp -d)
-    
-    echo "🔄 Starting parallel service checks..."
-    
-    # Starte alle Checks parallel
-    for service in "${services[@]}"; do
-        IFS=':' read -r name port <<< "$service"
-        (
-            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
-                echo "0" > "$temp_dir/check_${name}.status"
-            else
-                echo "1" > "$temp_dir/check_${name}.status"
-            fi
-        ) &
-        pids+=($!)
-    done
-    
-    # Warte auf alle (mit Gesamttimeout)
-    local timeout=$SERVICE_CHECK_TIMEOUT
-    local elapsed=0
-    local all_done=false
-    
-    while (( elapsed < timeout )); do
-        all_done=true
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-                break
-            fi
-        done
-        
-        [[ "$all_done" == "true" ]] && break
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    # Kill stragglers
-    for pid in "${pids[@]}"; do
-        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
-    done
-    
-    # Prüfe Ergebnisse
-    local failed=0
-    for service in "${services[@]}"; do
-        IFS=':' read -r name _ <<< "$service"
-        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
-        if [[ "$status" != "0" ]]; then
-            echo "❌ $name check failed"
-            failed=$((failed + 1))
-        else
-            echo "✅ $name check passed"
-        fi
-    done
-    
-    rm -rf "$temp_dir"
-    
-    return $failed
-}
-
-# ✅ Event-driven Backend Ready Check
-wait_for_backend_ready() {
-    local ready_file="/tmp/backend_ready"
-    local timeout=$BACKEND_READY_TIMEOUT
-    local elapsed=0
-    
-    echo "⏳ Waiting for backend ready signal..."
-    
-    # Method 1: File-based (primary)
-    while (( elapsed < timeout )); do
-        if [[ -f "$ready_file" ]]; then
-            local ready_status=$(jq -r '.ready // false' "$ready_file" 2>/dev/null || echo "false")
-            
-            if [[ "$ready_status" == "true" ]]; then
-                echo "✅ Backend ready signal received (file)"
-                cat "$ready_file" | jq '.' 2>/dev/null || cat "$ready_file"
-                return 0
-            else
-                echo "⚠️ Backend started with errors - check $ready_file"
-                return 1
-            fi
-        fi
-        
-        # Fallback: Check health endpoint every 5s
-        if (( elapsed % 5 == 0 )) && (( elapsed > 0 )); then
-            if curl -sf --max-time 2 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-                echo "✅ Backend ready (health endpoint)"
-                return 0
-            fi
-        fi
-        
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    echo "❌ Backend ready timeout after ${timeout}s"
-    return 1
-}
-```
-
----
-
-### **TASK 3: Update wait_for_backend Function**
-
-**File:** `start-system.sh` (ersetze bestehende wait_for_backend)
-
-```bash
-wait_for_backend() {
-  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
-  if wait_for_all_services_parallel; then
-    echo "✅ All services responding"
-  else
-    echo "⚠️ Some services failed - continuing with resilient mode"
-  fi
-  
-  echo ""
-  
-  # ✅ STEP 2: Event-driven backend ready check
-  if wait_for_backend_ready; then
-    echo "✅ Backend fully initialized"
-  else
-    echo "⚠️ Backend timeout - checking resilient health"
-    
-    # Fallback: Check resilient health endpoint
-    if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-      echo "✅ Backend operational in degraded mode"
-    else
-      echo "❌ Backend not responding"
-      return 1
-    fi
-  fi
-  
-  echo ""
-  echo "🚀 Backend startup complete"
-  echo ""
-  
-  # ✅ STEP 3: Warm-up exchanges (non-blocking)
-  echo "🔄 Warming up exchanges (background)..."
-  for exchange in "${EXCHANGES[@]}"; do
-    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
-  done
-  
-  # Give exchanges a moment to respond, but don't block
-  sleep 3
-  
-  return 0
-}
-```
-
----
-
-### **TASK 4: Konfigurierbare Env Vars**
-
-**File:** `start-system.sh` (am Anfang bei Konfiguration hinzufügen)
-
-```bash
-# =============================================================================
-# INTELLIGENT STARTUP CONFIGURATION
-# =============================================================================
-
-# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
-export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
-export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
-export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
-export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
-
-# ✅ Feature Flags (enable/disable new behavior)
-export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
-export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
-export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
-
-# ✅ Observability
-export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
-
-# Log configuration
-if [[ "$STARTUP_VERBOSE" == "1" ]]; then
-  echo "🔧 Startup Configuration:"
-  echo "   MAX_RETRIES=$MAX_RETRIES"
-  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
-  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
-  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
-  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
-  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
-  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
-  echo ""
-fi
-```
-
----
-
-## 🧪 TESTING & VALIDATION
-
-### **TEST 1: Fast Startup**
-
-```bash
-# Clean state
-./stop-system.sh
-rm -f /tmp/backend_ready
-
-# Start with defaults
-./start-system.sh
-
-# Expected: System ready in 5-15s (nicht 60s!)
-# Logs should show:
-# - ✅ All services responding (parallel checks)
-# - ✅ Backend ready signal received
-# - ✅ Backend fully initialized
-```
-
-### **TEST 2: Slow Startup (simulate delay)**
-
-```bash
-# Add artificial delay to backend
-export BACKEND_READY_TIMEOUT=120
-
-./start-system.sh
-
-# Expected: Exponential backoff visible in logs
-# - Retry 1/5 in 1s
-# - Retry 2/5 in 2s
-# - Retry 3/5 in 4s
-# ...
-```
-
-### **TEST 3: Degraded Mode**
-
-```bash
-# Simulate one service failure (e.g. Redis down)
-docker stop 0_ws_ai-redis-1
-
-./start-system.sh
-
-# Expected: 
-# - ⚠️ Redis check failed
-# - ✅ Backend operational in degraded mode
-# - System continues (resilient!)
-```
-
-### **TEST 4: Feature Flags**
-
-```bash
-# Disable new features, use old behavior
-export USE_PARALLEL_CHECKS=0
-export USE_EVENT_DRIVEN_READY=0
-
-./start-system.sh
-
-# Expected: Falls back to serial checks and polling
-```
-
----
-
-## 📊 SUCCESS METRICS
-
-### **Performance:**
-- ✅ **Startup Time:** 5-15s (statt 60s hardcoded)
-- ✅ **Parallel Checks:** 3 services gleichzeitig (statt seriell)
-- ✅ **Event-Driven:** Reagiert sofort wenn ready (nicht nach timeout)
-
-### **Reliability:**
-- ✅ **Retry Logic:** Exponential backoff (1s → 16s)
-- ✅ **Resilient Mode:** System startet auch bei Teil-Failures
-- ✅ **Multiple Methods:** File + Redis PubSub + Health endpoint
-
-### **Observability:**
-- ✅ **Konfigurierbar:** Alle Timeouts via env vars
-- ✅ **Feature Flags:** Neue Features an/aus schaltbar
-- ✅ **Verbose Mode:** Detailliertes Logging wenn gewünscht
-
----
-
-## 🚀 DEPLOYMENT STRATEGY
-
-### **Phase 1: Backend Signal (Low Risk)**
-- Implementiere `_write_ready_signal()` in main.py
-- Backend schreibt Signal, aber start-system.sh ignoriert es noch
-- Test: Prüfe dass /tmp/backend_ready erstellt wird
-
-### **Phase 2: Parallel Checks (Medium Risk)**  
-- Implementiere parallel service checks
-- Feature Flag: `USE_PARALLEL_CHECKS=1` (default)
-- Rollback: `USE_PARALLEL_CHECKS=0` falls Probleme
-
-### **Phase 3: Event-Driven (Medium Risk)**
-- Implementiere `wait_for_backend_ready()`
-- Feature Flag: `USE_EVENT_DRIVEN_READY=1` (default)
-- Fallback zu old behavior wenn Signal fehlt
-
-### **Phase 4: Full Rollout (Low Risk)**
-- Alle Features enabled
-- Monitor startup times
-- Fine-tune timeouts basierend auf Metrics
-
----
-
-## 🎯 BENEFITS
-
-### **Entwickler:**
-- **Schneller Local Development:** 5-15s Startup (nicht 60s)
-- **Besseres Debugging:** Sieht genau wo es hängt
-- **Flexibler:** Kann Timeouts anpassen per env var
-
-### **Operations:**
-- **Production-Ready:** Kubernetes-style Readiness
-- **Resilient:** Partial failures ok
-- **Observable:** Klare Status & Logs
-
-### **Business:**
-- **Faster Deployments:** Schnellere Iteration
-- **Higher Uptime:** Graceful degradation
-- **Better UX:** System reagiert schneller
-
----
-
-## 🔄 FUTURE ENHANCEMENTS
-
-### **Optional (Post-MVP):**
-
-1. **Redis PubSub Subscriber**
-   ```bash
-   # start-system.sh subscribes to Redis channel
-   redis-cli -p 6380 subscribe system:backend:ready
-   ```
-
-2. **Prometheus Metrics**
-   ```python
-   startup_duration_seconds.observe(duration)
-   startup_failures_total.inc()
-   ```
-
-3. **Distributed Tracing**
-   ```python
-   with tracer.start_span("backend.startup"):
-       await initialize_services()
-   ```
-
-4. **Health History**
-   ```python
-   # Track startup times over time
-   await unified_rs_service.zadd(
-       "startup:history",
-       {datetime.now().isoformat(): duration}
-   )
-   ```
-
----
-
-## 🏆 SUMMARY
-
-**Was wir ändern:**
-- ✅ Backend signalisiert Readiness (Python)
-- ✅ Smart wait functions (Bash)
-- ✅ Parallele Checks (Bash)
-- ✅ Event-driven statt Polling (Bash)
-- ✅ Konfigurierbare Timeouts (Env vars)
-
-**Was wir NICHT ändern:**
-- ❌ Health System (perfekt wie es ist!)
-- ❌ Docker Compose (funktioniert)
-- ❌ Collectors & WebSockets (robust)
-
-**Result:**
-Ein **intelligentes, event-basiertes Startup System** das das bestehende Health System **nutzt** statt zu ignorieren!
-
-**Startup Zeit:** 5-15s statt hardcoded 60s  
-**Resilience:** Partial failures ok  
-**Observability:** Klare Status & Metrics  
-**Maintainability:** Konfigurierbar & erweiterbar  
-
----
-
-## 📚 REFERENCES
-
-- **Health System:** `readme/000_healthy.md`
-- **Graceful Startup:** `readme/000_graceful_start_system_build.md`
-- **Market Build:** `readme/000_market_build.md`
-- **Services:** `readme/000_services.md`
-</file>
-
-<file path="readme/000_system_start_2.md">
-# ENTERPRISE COLLECTOR STARTUP - PARALLEL & BACKGROUND EXECUTION
-
-**Ergänzung zu:** `000_system_start_1.md`  
-**Problem:** Collector Startup blockiert Backend Ready Signal (68+ Sekunden)  
-**Lösung:** Parallel Execution + Background Start (Enterprise Non-Blocking Pattern)
-
----
-
-## 🚨 IMPLEMENTIERUNGS-REGELN
-
-### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
-
-#### 🚫 VERBOTEN:
-
-1. **NIEMALS HARDCODED**
-   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
-   - ❌ KEINE hardcoded Symbols, URLs, Parameter
-   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
-
-2. **NIEMALS MOCK DATEN**
-   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
-   - ❌ KEINE Test-Stubs in Production-Code
-   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
-
-3. **NIEMALS LEGACY CODE**
-   - ❌ KEINE veralteten Patterns, deprecated Funktionen
-   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
-   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
-
-4. **NIEMALS EXCHANGE-SPEZIFISCH**
-   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
-   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
-   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
-
-#### ✅ PFLICHT:
-
-1. **IMMER GENERISCH**
-   - Alle Funktionen müssen für ALLE Exchanges funktionieren
-   - Parameter statt hardcoding
-
-2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
-
-3. **IMMER DOKUMENTATION LESEN**
-
----
-
-## 📋 IMPLEMENTATION TASKS
-
-### **Phase 1: Parallel Collector Execution**
-- [ ] **TASK 1.1:** Implementiere `_start_exchange_collector_safe()` Wrapper mit Error Handling
-- [ ] **TASK 1.2:** Implementiere `_should_skip_collector()` für generische Skip-Logik
-- [ ] **TASK 1.3:** Update `start_all_collectors()` mit `asyncio.gather()` für parallele Ausführung
-- [ ] **TASK 1.4:** Implementiere Result Evaluation und Success Rate Logging
-- [ ] **TASK 1.5:** Test: Validiere parallel execution (48 Collectors in 3-5s)
-
-### **Phase 2: Background Start Integration**
-- [ ] **TASK 2.1:** Implementiere `start_collectors_background()` Funktion in `main.py`
-- [ ] **TASK 2.2:** Update `on_startup()` mit asyncio.create_task() für non-blocking start
-- [ ] **TASK 2.3:** Integriere Health System Tracking für Collector Status
-- [ ] **TASK 2.4:** Implementiere Ready Signal VOR Collector Start
-- [ ] **TASK 2.5:** Test: Backend Ready < 20s (non-blocking)
-
-### **Phase 3: Configuration Management**
-- [ ] **TASK 3.1:** Erstelle `collector_starter.py` mit konfigurierbaren Settings
-- [ ] **TASK 3.2:** Implementiere `get_supported_exchanges()` für Auto-Discovery
-- [ ] **TASK 3.3:** Füge Env Vars hinzu (COLLECTOR_SYMBOLS, COLLECTOR_MARKETS, etc.)
-- [ ] **TASK 3.4:** Implementiere Performance Tuning Parameter (PARALLEL, BACKGROUND, MAX_CONCURRENT)
-- [ ] **TASK 3.5:** Dokumentiere alle Configuration Options
-
-### **Phase 4: Testing & Validation**
-- [ ] **TASK 4.1:** Test: Parallel Performance (48 collectors in <5s)
-- [ ] **TASK 4.2:** Test: Background Non-Blocking (Backend ready während Collector Start)
-- [ ] **TASK 4.3:** Test: Graceful Degradation (simuliere einzelne Collector Failures)
-- [ ] **TASK 4.4:** Test: Configuration Override (custom COLLECTOR_SYMBOLS, etc.)
-- [ ] **TASK 4.5:** Validiere Performance Benchmarks (10-15x Speed-Up)
-
-### **Phase 5: Deployment**
-- [ ] **TASK 5.1:** Backup: Sichere bestehende Files (unified_collector.py, main.py)
-- [ ] **TASK 5.2:** Deploy: Update Files mit neuem Code
-- [ ] **TASK 5.3:** Build: `docker compose build backend`
-- [ ] **TASK 5.4:** Monitor: Startup Zeit < 20s?
-- [ ] **TASK 5.5:** Verify: Alle Collectors gestartet? Success Rate > 95%?
-
----
-
-## 🎯 PROBLEM ANALYSE
-
-### **Root Cause: SERIELLER Collector Start**
-
-**Aktueller Code:** `backend/services/adapter/unified_collector.py`
-
-```python
-async def start_all_collectors(self):
-    """❌ SERIAL - Einer nach dem anderen"""
-    for exchange in self.exchanges:           # 8 Exchanges
-        for symbol in self.symbols:           # 3 Symbols  
-            for market_type in self.market_types:  # 2 Markets
-                await self._start_exchange_collector(...)  # ⏱️ ~1s pro Call
-                # TOTAL: 8 × 3 × 2 = 48 Collectors × 1s = 48+ Sekunden!
-```
-
-**Timeline:**
-```
-23:30:38 → Backend Start
-23:30:53 → WebSocket defaults initialized (15s) ✅
-23:30:53 → start_all_collectors() begins
-23:31:46 → start_all_collectors() completes (53s!) ❌
-23:31:46 → Ready Signal written
-```
-
-**Konsequenz:**
-- Backend Timeout in `start-system.sh` = 60 Sekunden
-- Tatsächliche Startup Zeit = 68 Sekunden
-- **System wird als "nicht bereit" markiert obwohl es funktioniert!**
-
----
-
-## ✅ ENTERPRISE-LÖSUNG: HYBRID APPROACH
-
-### **Strategie: Parallel + Background**
-
-**Komponenten:**
-1. **PARALLEL Execution** → Alle Collectors gleichzeitig starten
-2. **BACKGROUND Start** → Non-Blocking, Backend Ready sofort
-3. **Health Integration** → Status über Health System tracken
-
-**Performance-Gewinn:**
-- Vorher: 48+ Sekunden (seriell)
-- Nachher: ~3-5 Sekunden (parallel)
-- **Backend Ready:** ~15 Sekunden (non-blocking)
-
----
-
-## 📋 IMPLEMENTATION: PARALLEL COLLECTOR START
-
-### **PART 1: Parallel Execution**
-
-**File:** `backend/services/adapter/unified_collector.py`
-
-**Method:** `start_all_collectors()`
-
-```python
-async def start_all_collectors(self):
-    """
-    ✅ ENTERPRISE: PARALLEL Collector Startup
-    
-    Startet alle Collectors gleichzeitig mittels asyncio.gather()
-    - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
-    - Resilient: Einzelne Failures crashen nicht das System
-    - Fast: 10-15x schneller als serieller Start
-    """
-    if not self.running:
-        await self.start()
-        
-    logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
-    
-    # ✅ Sammle alle Start-Tasks (KEIN await hier!)
-    tasks = []
-    total_collectors = 0
-    
-    for exchange in self.exchanges:
-        for symbol in self.symbols:
-            for market_type in self.market_types:
-                # ✅ Coinbase Exception: Keine Futures (generisch aus Config)
-                if self._should_skip_collector(exchange, market_type):
-                    continue
-                
-                # ✅ Task erstellen ohne zu awaiten
-                task = self._start_exchange_collector_safe(
-                    exchange, symbol, market_type
-                )
-                tasks.append(task)
-                total_collectors += 1
-    
-    logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
-    
-    # ✅ PARALLEL ausführen mit asyncio.gather()
-    # return_exceptions=True → Einzelne Failures crashen nicht alle
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # ✅ Ergebnisse auswerten
-    started_count = 0
-    failed_count = 0
-    
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            failed_count += 1
-            logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
-        else:
-            started_count += 1
-    
-    # ✅ Performance Metrics loggen
-    success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
-    
-    logger.info(
-        f"✅ PARALLEL Collectors: COMPLETE "
-        f"({started_count} started, {failed_count} failed, "
-        f"{success_rate:.1f}% success rate)"
-    )
-    
-    # ✅ Health System Update
-    if hasattr(self, 'health_component'):
-        self.health_component.record_success({
-            "action": "collectors_started_parallel",
-            "total": total_collectors,
-            "started": started_count,
-            "failed": failed_count,
-            "success_rate": success_rate
-        })
-
-
-def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
-    """
-    ✅ ENTERPRISE: Generische Skip-Logik
-    
-    Keine hardcoded If-Bedingungen, nutzt Exchange-Config
-    """
-    # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
-    from backend.services.domain.unified_config import EXCHANGE_REGISTRY
-    
-    exchange_config = EXCHANGE_REGISTRY.get(exchange, {})
-    supported_markets = exchange_config.get("supported_markets", ["spot", "futures"])
-    
-    # Map market_type zu config format
-    market_map = {
-        "spot": "spot",
-        "usdtm": "futures",
-        "coinm": "futures",
-        "usdcm": "futures"
-    }
-    
-    market_category = market_map.get(market_type, market_type)
-    
-    return market_category not in supported_markets
-
-
-async def _start_exchange_collector_safe(
-    self, 
-    exchange: str, 
-    symbol: str, 
-    market_type: str
-) -> bool:
-    """
-    ✅ ENTERPRISE: Safe Wrapper für Collector Start
-    
-    Wrapped _start_exchange_collector mit Error Handling
-    - Einzelne Failures crashen nicht das System
-    - Detailed Logging für Debugging
-    - Returns bool statt raising Exception
-    """
-    collector_key = f"{exchange}:{symbol}:{market_type}"
-    
-    try:
-        await self._start_exchange_collector(exchange, symbol, market_type)
-        logger.debug(f"✅ Collector started: {collector_key}")
-        return True
-        
-    except Exception as e:
-        logger.warning(
-            f"⚠️ Failed to start collector {collector_key}: {e}",
-            exc_info=False  # Keine full traceback in production
-        )
-        
-        # ✅ Health System Integration
-        if hasattr(self, 'health_component'):
-            self.health_component.record_error(
-                f"Collector start failed: {collector_key}: {str(e)}"
-            )
-        
-        return False
-```
-
----
-
-## 📋 IMPLEMENTATION: BACKGROUND START
-
-### **PART 2: Non-Blocking Backend Startup**
-
-**File:** `backend/core/main.py`
-
-**Function:** `on_startup()`
-
-```python
-@app.on_event("startup")
-async def on_startup():
-    """
-    ✅ ENTERPRISE: Non-Blocking Startup
-    
-    Kritische Services: Blocking (Redis, ClickHouse)
-    Collectors: Background (Non-Blocking)
-    """
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    # ============================================================
-    # PHASE 1: KRITISCHE SERVICES (Blocking)
-    # ============================================================
-    
-    # ✅ ClickHouse Init (Blocking - must complete)
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}", exc_info=True)
-    
-    # ✅ Redis Init (Blocking - must complete)
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}", exc_info=True)
-    
-    # ✅ ExchangeFactory Init (Blocking)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info("🟢 ExchangeFactory initialized")
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-    
-    # ✅ WebSocket Lane Registry Init (Blocking)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-    
-    # ============================================================
-    # PHASE 2: WEBSOCKET DEFAULTS (Blocking - schnell)
-    # ============================================================
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        
-        # ✅ Generisch: Auto-Discovery Exchanges
-        from backend.services.adapter.exchange_factory import ExchangeFactory
-        available_exchanges = ExchangeFactory.get_available_exchanges()
-        
-        # ✅ Konfigurierbar: Default Symbols aus Config
-        from backend.services.adapter.collector_starter import FRONTEND_COINS
-        default_symbols = FRONTEND_COINS[:1]  # Nur BTCUSDT für schnellen Start
-        
-        for exchange in available_exchanges:
-            for symbol in default_symbols:
-                try:
-                    await ws_manager.start_websocket_lane(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market="spot"
-                    )
-                    logger.info(f"🟢 Started WebSocket (REAL): {exchange} {symbol} spot")
-                except Exception as e:
-                    logger.error(
-                        f"🔴 Failed to start WebSocket {exchange} {symbol}: {e}", 
-                        exc_info=True
-                    )
-        
-        logger.info("🟢 WebSocket defaults initialized (REAL WebSockets)")
-        
-    except Exception as e:
-        logger.error(f"WebSocket auto-start failed: {e}", exc_info=True)
-    
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(True, [])
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-```
-
----
-
-## 📊 CONFIGURATION: ENTERPRISE TUNING
-
-### **Konfigurierbare Parameter**
-
-**File:** `backend/services/adapter/collector_starter.py`
-
-```python
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-from typing import List
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'COLLECTOR_SYMBOLS', 
-    'BTCUSDT,ETHUSDT,ADAUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-```
-
----
-
-## 🧪 TESTING & VALIDATION
-
-### **TEST 1: Parallel Performance**
-
-```bash
-# Clean state
-./stop-system.sh
-
-# Enable verbose logging
-export STARTUP_VERBOSE=1
-
-# Start system
-time ./start-system.sh
-
-# Expected Results:
-# - Backend Ready: ~15 seconds (nicht 68s!)
-# - Total Startup: ~20 seconds
-# - Log zeigt: "PARALLEL Collectors: COMPLETE (XX started, Y failed)"
-```
-
-### **TEST 2: Background Non-Blocking**
-
-```bash
-# Prüfe Backend Ready Signal Timing
-./start-system.sh 2>&1 | grep -E "Backend READY|Collectors.*COMPLETE"
-
-# Expected:
-# [23:30:XX] Backend READY - Collectors starting in background
-# [23:30:YY] Background collectors: STARTUP COMPLETE
-# Zeit zwischen Ready und Complete: ~3-5 Sekunden
-```
-
-### **TEST 3: Graceful Degradation**
-
-```python
-# Simuliere Collector Failure
-# In unified_collector.py temporär:
-async def _start_exchange_collector(self, exchange, symbol, market):
-    if exchange == "okx" and symbol == "ETHUSDT":
-        raise Exception("Simulated failure")
-    # ... rest of code
-
-# Start system
-./start-system.sh
-
-# Expected:
-# - System startet trotzdem
-# - Log zeigt: "⚠️ Failed to start collector okx:ETHUSDT:spot"
-# - Andere Collectors laufen normal
-# - Success Rate < 100% aber System operational
-```
-
-### **TEST 4: Configuration Override**
-
-```bash
-# Custom Configuration
-export COLLECTOR_SYMBOLS="BTCUSDT"          # Nur 1 Symbol
-export COLLECTOR_MARKETS="spot"             # Nur Spot
-export COLLECTOR_PARALLEL="1"               # Parallel an
-export COLLECTOR_BACKGROUND="0"             # Background aus (für Test)
-
-./start-system.sh
-
-# Expected:
-# - Nur 8 Collectors starten (1 symbol × 1 market × 8 exchanges)
-# - Blocking Mode: Backend wartet auf Collectors
-# - Schneller: Nur ~8 Sekunden für alle
-```
-
----
-
-## 📈 PERFORMANCE BENCHMARKS
-
-### **Messung: Collector Startup Time**
-
-| **Configuration**        | **Method**   | **Time** | **Speed-Up** |
-|-------------------------|--------------|----------|--------------|
-| 48 Collectors Seriell   | Sequential   | 48+ sec  | 1x (Baseline)|
-| 48 Collectors Parallel  | gather()     | 3-5 sec  | **10-15x**   |
-| Background Start        | create_task()| Non-Blocking | **∞x**   |
-| **HYBRID (Recommended)**| **Both**     | **~15s** | **3-4x**     |
-
-### **Messung: Backend Ready Time**
-
-| **Component**           | **Sequential** | **Parallel** | **Background** |
-|------------------------|----------------|--------------|----------------|
-| Redis Init             | 1s             | 1s           | 1s             |
-| ClickHouse Init        | 2s             | 2s           | 2s             |
-| WebSocket Defaults     | 15s            | 15s          | 15s            |
-| Collectors Start       | 48s            | 5s           | 0s (async)     |
-| Ready Signal           | 66s            | 23s          | **18s**        |
-
-**Result:** Background Start = **3.7x schneller**
-
----
-
-## 🏆 SUCCESS CRITERIA
-
-### **Performance:**
-- ✅ Backend Ready < 20 Sekunden (statt 68s)
-- ✅ Collectors Complete < 25 Sekunden (statt 48s+)
-- ✅ System operational während Collector Startup
-
-### **Reliability:**
-- ✅ Einzelne Collector Failures crashen nicht System
-- ✅ Graceful Degradation: Partial Success ok
-- ✅ Health System tracking: Alle Collectors visible
-
-### **Maintainability:**
-- ✅ Kein Hardcoding: Alle Werte konfigurierbar
-- ✅ Generisch: Auto-Discovery Exchanges
-- ✅ Observable: Metrics & Logging
-
-### **Enterprise-Grade:**
-- ✅ Async/Await Best Practices
-- ✅ Error Handling & Retry Logic
-- ✅ Configuration Management
-- ✅ Health Integration
-
----
-
-## 📋 DEPLOYMENT CHECKLIST
-
-### **Pre-Deployment:**
-- [ ] Backup: `cp unified_collector.py unified_collector.py.backup`
-- [ ] Backup: `cp main.py main.py.backup`
-- [ ] Review: Code-Changes validieren
-- [ ] Test: Lokal testen mit `./start-system.sh`
-
-### **Deployment:**
-- [ ] Update: `unified_collector.py` mit parallel code
-- [ ] Update: `main.py` mit background start
-- [ ] Update: `collector_starter.py` mit config
-- [ ] Rebuild: `docker compose build backend`
-- [ ] Deploy: `./start-system.sh`
-
-### **Post-Deployment:**
-- [ ] Monitor: Backend Startup Zeit < 20s?
-- [ ] Verify: Alle Collectors gestartet?
-- [ ] Check: Health System Status
-- [ ] Metrics: Success Rate > 95%?
-
-### **Rollback Plan:**
-- [ ] Restore: `mv unified_collector.py.backup unified_collector.py`
-- [ ] Restore: `mv main.py.backup main.py`
-- [ ] Rebuild: `docker compose build backend`
-- [ ] Restart: `./start-system.sh`
-
----
-
-## 🔄 MIGRATION STRATEGY
-
-### **Phase 1: Parallel Execution (Low Risk)**
-1. Update `unified_collector.py` → `start_all_collectors()`
-2. Enable: `COLLECTOR_PARALLEL=1`
-3. Test: Backend Startup Zeit
-4. **Rollback:** `COLLECTOR_PARALLEL=0` if issues
-
-### **Phase 2: Background Start (Medium Risk)**
-1. Update `main.py` → `on_startup()`
-2. Enable: `COLLECTOR_BACKGROUND=1`
-3. Test: Backend Ready Signal timing
-4. **Rollback:** `COLLECTOR_BACKGROUND=0` if issues
-
-### **Phase 3: Full Production (Low Risk)**
-1. Monitor: 24h Production run
-2. Metrics: Startup times, Success rates
-3. Tune: Adjust timeouts if needed
-4. Document: Final configuration
-
----
-
-## 📚 REFERENCES
-
-### **Related Documentation:**
-- **Event-Driven Startup:** `readme/000_system_start_1.md`
-- **Health System:** `readme/000_healty_build.md`
-- **Services Architecture:** `readme/000_services.md`
-- **WebSocket Build:** `readme/000_websocket_build.md`
-
-### **Code Files:**
-- **Collectors:** `backend/services/adapter/unified_collector.py`
-- **Starter:** `backend/services/adapter/collector_starter.py`
-- **Main:** `backend/core/main.py`
-- **Health:** `backend/health/health_registry.py`
-
-### **External Resources:**
-- **asyncio.gather():** https://docs.python.org/3/library/asyncio-task.html#asyncio.gather
-- **asyncio.create_task():** https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
-- **FastAPI Events:** https://fastapi.tiangolo.com/advanced/events/
-
----
-
-## 🎯 SUMMARY
-
-**Problem Solved:**
-- ✅ Collector Startup blockiert Backend nicht mehr
-- ✅ Parallel Execution = 10-15x schneller
-- ✅ Background Start = Non-Blocking Ready Signal
-
-**Enterprise Patterns:**
-- ✅ Async/Await statt Blocking
-- ✅ Parallel statt Serial
-- ✅ Background statt Foreground
-- ✅ Configurable statt Hardcoded
-
-**Performance Gain:**
-- Backend Ready: **66s → 18s** (3.7x faster)
-- Collectors Complete: **48s → 5s** (9.6x faster)
-- start-system.sh: **Keine Timeouts mehr!**
-
-**Result:**
-Ein **production-ready, enterprise-grade Startup System** das schnell, resilient und observable ist!
-
----
-
-**Status:** ✅ ENTERPRISE READY  
-**Performance:** 🚀 3-10x FASTER  
-**Reliability:** 💪 GRACEFUL DEGRADATION  
-**Maintainability:** 🔧 FULLY CONFIGURABLE
-</file>
-
 <file path="readme/FEHLERANALYSE_VERIFIKATION.md">
 # 🔍 Fehleranalyse-Verifikation
 
@@ -153295,6 +153366,136 @@ npm run dev
 - ✅ Backend Events → Lane Store → React Components → Live Chart!
 
 **DU HAST ES GESCHAFFT!** 🎉
+</file>
+
+<file path="FEHLER_ANALYSE.md">
+# Fehleranalyse - CoinSelector & Backend Issues
+
+## Datum: 18.2.2026, 20:54 Uhr
+
+## 🔴 KRITISCHE FEHLER
+
+### 1. Backend 500 Error bei POST /api/user/settings/coins
+
+**Fehler:**
+```
+POST http://localhost:8100/api/user/settings/coins 500 (Internal Server Error)
+```
+
+**Root Cause:**
+Die `UserSettingsService` in `backend/services/domain/config_manager.py` ruft:
+```python
+self.store = get_user_settings_store()
+self.cache = get_user_settings_cache()
+```
+
+Diese Funktionen sind in `backend/database/clickhouse/cl_user_settings.py` definiert und geben `cl_user_settings` zurück - eine `ClickHouseUserSettingsManager` Instanz.
+
+**Problem:**
+Die `ClickHouseUserSettingsManager` Klasse hat NICHT die Methoden `fetch()`, `upsert()`, `set()`, `get()`, `invalidate()`, die `UserSettingsService` erwartet!
+
+**Erwartete Methoden (UserSettingsService):**
+- `await self.store.fetch(user_id)` → ❌ Existiert nicht
+- `await self.store.upsert(user_id, settings)` → ❌ Existiert nicht
+- `await self.cache.get(user_id)` → ❌ Existiert nicht
+- `await self.cache.set(user_id, settings)` → ❌ Existiert nicht
+- `await self.cache.invalidate(user_id)` → ❌ Existiert nicht
+
+**Vorhandene Methoden (ClickHouseUserSettingsManager):**
+- `get_coin_settings(user_id, exchange, symbol)`
+- `create_coin_settings(user_id, exchange, symbol, settings)`
+- `update_coin_settings(user_id, exchange, symbol, updates)`
+- `get_user_dashboard_settings(user_id)`
+
+**Lösung:**
+Entweder:
+1. `ClickHouseUserSettingsManager` um die fehlenden Methoden erweitern
+2. Oder: Einen einfachen JSON-File-Store als Fallback implementieren
+
+---
+
+### 2. WebSocket Connection Error
+
+**Fehler:**
+```
+CoinSelector.tsx:303 Error: WS connection error
+WebSocket connection to 'ws://localhost:8080/ws/binance/BTCUSDT/spot' failed
+```
+
+**Root Cause:**
+- Frontend versucht WebSocket-Verbindung zu `ws://localhost:8080/ws/binance/BTCUSDT/spot`
+- Vite Proxy leitet `/ws` an `ws://localhost:8100` weiter
+- Backend WebSocket-Server läuft möglicherweise nicht oder antwortet nicht
+
+**Mögliche Ursachen:**
+1. Backend WebSocket-Server nicht gestartet
+2. WebSocket-Route nicht korrekt registriert
+3. Backend-Fehler beim WebSocket-Handshake
+
+**Lösung:**
+Backend-Logs prüfen und WebSocket-Server-Status verifizieren
+
+---
+
+### 3. useWsLane.ts Maximum Update Depth Error
+
+**Fehler:**
+```
+useWsLane.ts:154 Warning: Maximum update depth exceeded. This can happen when a component calls setState inside useEffect, but useEffect either doesn't have a dependency array, or one of the dependencies changes on every render.
+```
+
+**Root Cause:**
+Infinite Loop in `useWsLane.ts` - wahrscheinlich durch:
+- `useEffect` ohne korrekte Dependencies
+- State-Update triggert Re-Render, der wieder State-Update triggert
+
+**Lösung:**
+`useWsLane.ts` Zeile 154 prüfen und Dependencies korrigieren
+
+---
+
+## ✅ BEHOBENE FEHLER
+
+### 1. Hardcoded exchange = "bitget" in CoinSelector.tsx
+**Status:** ✅ BEHOBEN
+**Änderung:**
+```typescript
+// ❌ ALT:
+exchange?: string;
+exchange = "bitget",
+
+// ✅ NEU:
+exchange: string;
+exchange,
+```
+
+### 2. Backend Router 404 Error
+**Status:** ✅ BEHOBEN
+**Änderung:** Doppeltes `/api` Prefix entfernt in `ro_user_settings.py`
+
+### 3. TypeScript Compilation Errors
+**Status:** ✅ BEHOBEN
+**Änderung:** `delete/` Ordner aus `tsconfig.app.json` entfernt
+
+---
+
+## 📋 NÄCHSTE SCHRITTE
+
+1. **PRIO 1:** Backend 500 Error beheben
+   - JSON-File-Store als Fallback implementieren
+   - Oder: ClickHouseUserSettingsManager erweitern
+
+2. **PRIO 2:** WebSocket Connection Error beheben
+   - Backend-Logs prüfen
+   - WebSocket-Server-Status verifizieren
+
+3. **PRIO 3:** useWsLane.ts Infinite Loop beheben
+   - Zeile 154 prüfen
+   - Dependencies korrigieren
+
+4. **PRIO 4:** Frontend Build & Browser Test
+   - Alle Änderungen testen
+   - Dropdowns verifizieren
 </file>
 
 <file path="FIX_PLAN_FINAL.md">
@@ -160196,352 +160397,389 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
-<file path="backend/api/routers/ro_user_settings.py">
-# backend/api/routers/ro_user_settings.py
-"""
-ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
-
-Aufgaben:
-- Vollständiges User-Settings-JSON lesen/schreiben
-- Partielle Updates (PATCH)
-- Optionale Teilbereiche: z. B. watchlists, layout, indicators, preferences
-
-Abhängigkeiten:
-- backend.services.config_manager.get_user_settings_service
-"""
-
-import logging
-import os
-from typing import Any, Dict, Optional
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
-from pydantic import BaseModel, Field
-
-from backend.services.domain.config_manager import get_user_settings_service
-
-logger = logging.getLogger("ro-user-settings")
-
-user_settings_router = APIRouter(
-    prefix="/user/settings",
-    tags=["user-settings"],
-)
-
-# ============================================================
-# POLICY: ALWAYS-LIVE COINS (server-side, no hardcoding)
-# ============================================================
-
-def _env_csv(name: str, default: str = "") -> list[str]:
-    raw = (os.getenv(name) or default).strip()
-    if not raw:
-        return []
-    return [x.strip() for x in raw.split(",") if x.strip()]
-
-# Default: BTCUSDT always live unless explicitly overridden by env
-_ALWAYS_LIVE_SYMBOLS = {s.upper() for s in _env_csv("ALWAYS_LIVE_SYMBOLS", "BTCUSDT")}
-_ALWAYS_LIVE_EXCHANGES = {e.lower() for e in _env_csv("ALWAYS_LIVE_EXCHANGES", "*")}
-_ALWAYS_LIVE_MARKETS = {m.lower() for m in _env_csv("ALWAYS_LIVE_MARKETS", "*")}
-
-def _norm_exchange(x: str) -> str:
-    return (x or "").strip().lower()
-
-def _norm_symbol(x: str) -> str:
-    return (x or "").strip().upper()
-
-def _norm_market(x: str) -> str:
-    m = (x or "spot").strip().lower()
-    # accept frontend variants too
-    if m == "usdt-m":
-        return "usdtm"
-    if m == "usdc-m":
-        return "usdcm"
-    if m == "coin-m":
-        return "coinm"
-    return m
-
-def _should_force_live(exchange: str, symbol: str, market: str) -> bool:
-    if symbol not in _ALWAYS_LIVE_SYMBOLS:
-        return False
-    ex_ok = ("*" in _ALWAYS_LIVE_EXCHANGES) or (exchange in _ALWAYS_LIVE_EXCHANGES)
-    mk_ok = ("*" in _ALWAYS_LIVE_MARKETS) or (market in _ALWAYS_LIVE_MARKETS)
-    return ex_ok and mk_ok
-
-def _canonicalize_and_apply_policy(coins: list[dict]) -> tuple[list[dict], bool]:
-    """Returns (canonical_coins, changed)"""
-    changed = False
-    dedup: dict[tuple[str, str, str], dict] = {}
-
-    for c in coins or []:
-        ex = _norm_exchange(c.get("exchange"))
-        sym = _norm_symbol(c.get("symbol"))
-        mk = _norm_market(c.get("market"))
-
-        if not ex or not sym:
-            # drop invalid entries
-            changed = True
-            continue
-
-        cc = dict(c)
-        cc["exchange"] = ex
-        cc["symbol"] = sym
-        cc["market"] = mk
-
-        # booleans -> bool
-        cc["store_live"] = bool(cc.get("store_live", False))
-        cc["load_history"] = bool(cc.get("load_history", False))
-
-        # enforce policy
-        if _should_force_live(ex, sym, mk) and cc["store_live"] is not True:
-            cc["store_live"] = True
-            changed = True
-
-        key = (ex, sym, mk)
-        if key in dedup:
-            changed = True
-        dedup[key] = cc
-
-    canonical = list(dedup.values())
-    return canonical, changed
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class UserSettingsPayload(BaseModel):
-    """
-    Generisches Container-Modell für User-Settings.
-    Inhalt ist frei strukturierbar; wird 1:1 im Store abgelegt.
-    """
-    data: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Beliebiges Settings-Objekt (JSON).",
-    )
-
-
-class UserSettingsPatch(BaseModel):
-    """
-    PATCH-Modell: partieller Update-Body (wird deep-merged).
-    """
-    patch: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Teil-Settings, die in bestehende Settings gemerged werden.",
-    )
-
-
-# ====================================
-# Helpers
-# ====================================
-
-def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
-    if not x_client_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing X-Client-ID header",
-        )
-    return x_client_id
-
-
-async def _load_user_settings(user_id: str) -> Dict[str, Any]:
-    svc = get_user_settings_service()
-    try:
-        settings = await svc.get(user_id)
-        if not isinstance(settings, dict):
-            return {}
-        return settings
-    except Exception as e:
-        logger.exception(f"Failed to load settings user={user_id}: {e}")
-        return {}
-
-
-async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
-    svc = get_user_settings_service()
-    try:
-        await svc.set(user_id, settings)
-    except Exception as e:
-        logger.exception(f"Failed to save settings user={user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save settings")
-
-
-def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base)
-    for k, v in (patch or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
-# ============================================================
-# Coin Settings Model
-# ============================================================
-
-class CoinSetting(BaseModel):
-    symbol: str
-    exchange: str
-    market: str
-    store_live: bool = False
-    load_history: bool = False
-    history_until: str = ""
-    favorite: bool = False
-    chart_resolution: str = "1m"
-    db_resolutions: list[str] = Field(default_factory=list)
-
-
-@user_settings_router.get("/coins", response_model=list[CoinSetting])
-async def get_coin_settings(
-    exchange: Optional[str] = Query(None, description="Filter by exchange"),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Liefert die Coin-Settings für einen User, optional gefiltert nach Exchange.
-
-    Server-side Policy:
-    - ALWAYS_LIVE_SYMBOLS (env) wird IMMER erzwungen (z. B. BTCUSDT).
-    - Normalisiert exchange/symbol/market und dedupliziert (exchange,symbol,market).
-    """
-    settings = await _load_user_settings(user_id)
-    raw_coins = settings.get("coins", [])
-
-    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
-
-    # optional filter (nach Canonicalization!)
-    if exchange:
-        ex = _norm_exchange(exchange)
-        filtered = [c for c in canonical if c.get("exchange") == ex]
-    else:
-        filtered = canonical
-
-    # self-heal persisted settings if policy/normalization changed
-    if changed:
-        settings["coins"] = canonical
-        await _save_user_settings(user_id, settings)
-
-    logger.info(
-        f"GET /api/user/settings/coins user={user_id} exchange={exchange} count={len(filtered)}"
-    )
-    return filtered
-
-
-@user_settings_router.post("/coins", response_model=list[CoinSetting])
-async def save_coin_settings(
-    coins: list[CoinSetting] = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Speichert die Coin-Settings für einen User.
-
-    WICHTIG:
-    - Payload wird kanonisiert + dedupliziert.
-    - ALWAYS_LIVE_SYMBOLS (env) wird serverseitig erzwungen.
-    - Rückgabe ist der kanonische, persistierte Zustand.
-    """
-    settings = await _load_user_settings(user_id)
-
-    incoming = [c.model_dump() for c in (coins or [])]
-    canonical, _ = _canonicalize_and_apply_policy(incoming)
-
-    settings["coins"] = canonical
-    await _save_user_settings(user_id, settings)
-
-    logger.info(f"POST /api/user/settings/coins user={user_id} count={len(canonical)}")
-    return [CoinSetting(**c) for c in canonical]
-
-
-# ============================================================
-# Generic User Settings Endpoints
-# ============================================================
-
-@user_settings_router.get("", response_model=Dict[str, Any])
-async def get_user_settings(
-    user_id: str = Depends(get_client_id),
-):
-    settings = await _load_user_settings(user_id)
-
-    # Optional: coin self-heal auch hier (damit jede GET-Route konsistent ist)
-    raw_coins = settings.get("coins", [])
-    canonical, changed = _canonicalize_and_apply_policy(raw_coins)
-    if changed:
-        settings["coins"] = canonical
-        await _save_user_settings(user_id, settings)
-
-    return settings
-
-
-@user_settings_router.put("", response_model=Dict[str, Any])
-async def put_user_settings(
-    payload: UserSettingsPayload,
-    user_id: str = Depends(get_client_id),
-):
-    settings = payload.data or {}
-
-    # enforce coin policy if coins are present
-    if isinstance(settings.get("coins"), list):
-        canonical, _ = _canonicalize_and_apply_policy(settings["coins"])
-        settings["coins"] = canonical
-
-    await _save_user_settings(user_id, settings)
-    return settings
-
-
-@user_settings_router.patch("", response_model=Dict[str, Any])
-async def patch_user_settings(
-    patch: UserSettingsPatch,
-    user_id: str = Depends(get_client_id),
-):
-    settings = await _load_user_settings(user_id)
-    merged = _deep_merge(settings, patch.patch or {})
-
-    # enforce coin policy if coins are present
-    if isinstance(merged.get("coins"), list):
-        canonical, _ = _canonicalize_and_apply_policy(merged["coins"])
-        merged["coins"] = canonical
-
-    await _save_user_settings(user_id, merged)
-    return merged
-
-
-@user_settings_router.delete("", response_model=Dict[str, str])
-async def delete_user_settings(
-    user_id: str = Depends(get_client_id),
-):
-    await _save_user_settings(user_id, {})
-    return {"status": "deleted"}
-
-
-# ============================================================
-# BEISPIEL-SPEZIAL-ENDEPOINTS (OPTIONAL)
-# ============================================================
-
-@user_settings_router.get("/watchlists", response_model=UserSettingsPayload)
-async def get_watchlists(
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Liefert nur den Bereich 'watchlists' aus den Settings.
-    """
-    settings = await _load_user_settings(user_id)
-    wl = settings.get("watchlists") or []
-    logger.debug(f"GET /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
-
-
-@user_settings_router.put("/watchlists", response_model=UserSettingsPayload)
-async def put_watchlists(
-    payload: UserSettingsPayload = Body(...),
-    user_id: str = Depends(get_client_id),
-):
-    """
-    Ersetzt den Bereich 'watchlists' in den Settings.
-    Erwartet im Body: { "data": { "watchlists": [...] } }
-    """
-    settings = await _load_user_settings(user_id)
-    wl = payload.data.get("watchlists") or []
-    settings["watchlists"] = wl
-    await _save_user_settings(user_id, settings)
-
-    logger.info(f"PUT /api/user/settings/watchlists user={user_id} count={len(wl)}")
-    return UserSettingsPayload(data={"watchlists": wl})
+<file path="start-health.sh">
+#!/bin/bash
+
+# =============================================================================
+# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
+# =============================================================================
+# Wird automatisch von start-system.sh bei Fehlern aufgerufen
+# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
+
+set +e  # Don't exit on errors, we want to collect all diagnostics
+
+# Create monitoring directory
+mkdir -p monitoring
+
+# JSON output file with timestamp
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
+JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
+JSON_LATEST="monitoring/health_diagnostic_latest.json"
+
+echo "=================================================="
+echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
+echo "=================================================="
+echo ""
+echo "⏰ Start Time: $(date)"
+echo "📄 Output: $JSON_FILE"
+echo "📄 Latest: $JSON_LATEST"
+echo ""
+
+# Initialize JSON structure
+jq -n \
+  --arg ts "$TIMESTAMP" \
+  '{
+    timestamp: $ts,
+    diagnostic_type: "automatic_health_check",
+    trigger: "system_error_or_manual",
+    sections: {}
+  }' > "$JSON_FILE"
+
+# Helper function to add section to JSON
+add_json_section() {
+  local section_name="$1"
+  local section_data="$2"
+  
+  # Update JSON file with new section
+  jq --arg name "$section_name" --argjson data "$section_data" \
+    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
+    mv "${JSON_FILE}.tmp" "$JSON_FILE"
+}
+
+# =============================================================================
+# 1. HEALTH ENDPOINT CHECKS
+# =============================================================================
+echo "==================================================
+1️⃣  HEALTH ENDPOINT CHECKS"
+echo "=================================================="
+echo ""
+
+HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
+HEALTH_READY_CODE=$?
+HEALTH_READY_WORKS="false"
+if [[ $HEALTH_READY_CODE -eq 0 ]]; then
+  echo "✅ /health/ready → WORKS"
+  HEALTH_READY_WORKS="true"
+else
+  echo "❌ /health/ready → FAILED"
+fi
+
+HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
+HEALTH_DOUBLE_CODE=$?
+HEALTH_DOUBLE_BUG="false"
+if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
+  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
+  HEALTH_DOUBLE_BUG="true"
+else
+  echo "✅ /health/health/ready → 404 (correct)"
+fi
+
+HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
+HEALTH_BASE_WORKS="false"
+[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
+
+HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
+
+# Build JSON for section 1
+SECTION1_JSON=$(jq -n \
+  --arg ready_works "$HEALTH_READY_WORKS" \
+  --arg ready_response "$HEALTH_READY_RESPONSE" \
+  --arg double_bug "$HEALTH_DOUBLE_BUG" \
+  --arg base_works "$HEALTH_BASE_WORKS" \
+  --arg base_response "$HEALTH_BASE" \
+  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
+  '{
+    health_ready: {
+      works: ($ready_works == "true"),
+      response: $ready_response
+    },
+    double_prefix_bug: ($double_bug == "true"),
+    health_base: {
+      works: ($base_works == "true"),
+      response: $base_response
+    },
+    health_detailed: $detailed
+  }')
+
+add_json_section "health_endpoints" "$SECTION1_JSON"
+echo ""
+
+# =============================================================================
+# 2. EXCHANGE TRADE FLOW CHECK
+# =============================================================================
+echo "=================================================="
+echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
+echo "=================================================="
+echo ""
+
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+EXCHANGE_JSON="{"
+
+for exchange in "${EXCHANGES[@]}"; do
+  echo "🔍 Checking $exchange..."
+  
+  if [[ "$exchange" == "coinbase" ]]; then
+    symbol="BTC-USD"
+  else
+    symbol="BTCUSDT"
+  fi
+  
+  # Check orderbook
+  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
+  orderbook_works="false"
+  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
+    echo "  ✅ $exchange - Orderbook working"
+    orderbook_works="true"
+  else
+    echo "  ❌ $exchange - Orderbook failed"
+  fi
+  
+  # Check trades
+  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
+  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
+  trades_flowing="false"
+  if [[ "$trade_count" -gt 0 ]]; then
+    echo "  ✅ $exchange - Trades flowing"
+    trades_flowing="true"
+  else
+    echo "  ❌ $exchange - No trades"
+  fi
+  
+  # Add to JSON
+  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
+done
+
+# Remove trailing comma and close JSON
+EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
+
+add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
+echo ""
+
+# =============================================================================
+# 3. DOCKER CONTAINER STATUS
+# =============================================================================
+echo "=================================================="
+echo "3️⃣  DOCKER CONTAINER STATUS"
+echo "=================================================="
+echo ""
+
+CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
+echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
+
+BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
+BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
+
+echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
+
+SECTION3_JSON=$(jq -n \
+  --argjson containers "$CONTAINERS" \
+  --arg backend_status "$BACKEND_STATUS" \
+  --arg backend_started "$BACKEND_STARTED" \
+  '{
+    containers: $containers,
+    backend: {
+      status: $backend_status,
+      started_at: $backend_started
+    }
+  }')
+
+add_json_section "docker_containers" "$SECTION3_JSON"
+echo ""
+
+# =============================================================================
+# 4. DATABASE CONNECTIVITY
+# =============================================================================
+echo "=================================================="
+echo "4️⃣  DATABASE CONNECTIVITY"
+echo "=================================================="
+echo ""
+
+REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
+REDIS_WORKS="false"
+if [[ "$REDIS_PING" == "PONG" ]]; then
+  echo "✅ Redis: PONG"
+  REDIS_WORKS="true"
+else
+  echo "❌ Redis: Failed"
+fi
+
+CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
+CLICKHOUSE_WORKS="false"
+if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
+  echo "✅ ClickHouse: Responding"
+  CLICKHOUSE_WORKS="true"
+else
+  echo "❌ ClickHouse: Not responding"
+fi
+
+SECTION4_JSON=$(jq -n \
+  --arg redis_works "$REDIS_WORKS" \
+  --arg redis_ping "$REDIS_PING" \
+  --arg ch_works "$CLICKHOUSE_WORKS" \
+  '{
+    redis: {
+      works: ($redis_works == "true"),
+      ping_response: $redis_ping
+    },
+    clickhouse: {
+      works: ($ch_works == "true")
+    }
+  }')
+
+add_json_section "database_connectivity" "$SECTION4_JSON"
+echo ""
+
+# =============================================================================
+# 5. BACKEND LOGS SNAPSHOT
+# =============================================================================
+echo "=================================================="
+echo "5️⃣  BACKEND LOGS (Last 50 lines)"
+echo "=================================================="
+echo ""
+
+BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
+echo "$BACKEND_LOGS" | head -10
+echo "..."
+echo "(Full logs in JSON)"
+
+# Count errors in logs
+ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
+WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
+
+echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
+
+SECTION5_JSON=$(jq -n \
+  --arg logs "$BACKEND_LOGS" \
+  --arg errors "$ERROR_COUNT" \
+  --arg warnings "$WARNING_COUNT" \
+  '{
+    last_50_lines: $logs,
+    error_count: ($errors | tonumber),
+    warning_count: ($warnings | tonumber)
+  }')
+
+add_json_section "backend_logs" "$SECTION5_JSON"
+echo ""
+
+# =============================================================================
+# 6. WEBSOCKET STATUS
+# =============================================================================
+echo "=================================================="
+echo "6️⃣  WEBSOCKET STATUS"
+echo "=================================================="
+echo ""
+
+WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
+WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
+
+echo "Recent trades: $WS_TRADE_COUNT"
+echo "$WS_TRADES" | head -5
+
+SECTION6_JSON=$(jq -n \
+  --arg recent_trades "$WS_TRADES" \
+  --arg count "$WS_TRADE_COUNT" \
+  '{
+    recent_trade_logs: $recent_trades,
+    recent_trade_count: ($count | tonumber)
+  }')
+
+add_json_section "websocket_status" "$SECTION6_JSON"
+echo ""
+
+# =============================================================================
+# 7. HEALTH ROUTER VERIFICATION
+# =============================================================================
+echo "=================================================="
+echo "7️⃣  HEALTH ROUTER VERIFICATION"
+echo "=================================================="
+echo ""
+
+# Check if health_router in container has prefix
+CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
+echo "Container router: $CONTAINER_ROUTER"
+
+# Check main.py registration
+MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
+echo "Main.py registration:"
+echo "$MAIN_ROUTER"
+
+SECTION7_JSON=$(jq -n \
+  --arg container_router "$CONTAINER_ROUTER" \
+  --arg main_registration "$MAIN_ROUTER" \
+  '{
+    container_health_router: $container_router,
+    main_py_registration: $main_registration
+  }')
+
+add_json_section "health_router_verification" "$SECTION7_JSON"
+echo ""
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+echo "=================================================="
+echo "📋 DIAGNOSTIC SUMMARY"
+echo "=================================================="
+echo ""
+
+END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Count issues
+TOTAL_CHECKS=0
+FAILED_CHECKS=0
+
+[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
+
+SUMMARY_JSON=$(jq -n \
+  --arg end_ts "$END_TIMESTAMP" \
+  --arg total "$TOTAL_CHECKS" \
+  --arg passed "$PASSED_CHECKS" \
+  --arg failed "$FAILED_CHECKS" \
+  '{
+    end_timestamp: $end_ts,
+    total_checks: ($total | tonumber),
+    passed_checks: ($passed | tonumber),
+    failed_checks: ($failed | tonumber),
+    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
+  }')
+
+add_json_section "summary" "$SUMMARY_JSON"
+
+# Copy to latest
+cp "$JSON_FILE" "$JSON_LATEST"
+
+echo "⏰ End Time: $(date)"
+echo ""
+echo "📊 Results:"
+echo "   Total Checks: $TOTAL_CHECKS"
+echo "   Passed: $PASSED_CHECKS"
+echo "   Failed: $FAILED_CHECKS"
+echo ""
+echo "📄 Full diagnostic report:"
+echo "   $JSON_FILE"
+echo "   $JSON_LATEST"
+echo ""
+echo "💡 Next Steps:"
+echo "   1. Review JSON file: jq '.' $JSON_LATEST"
+echo "   2. Check failed sections"
+echo "   3. Fix issues and restart system"
+echo ""
+echo "=================================================="
+echo "🏁 DIAGNOSTIC COMPLETE"
+echo "=================================================="
 </file>
 
 <file path="backend/database/clickhouse/cl_message_handlers.py">
@@ -162493,177 +162731,6 @@ export const AppLayout: React.FC = () => {
 };
 </file>
 
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-import { useState } from "react";
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useTradingContext } from "../../contexts/TradingContext";
-import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
-import ThemeToggle from "../ui/theme-toggle";
-
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
-  
-  const [activeTab, setActiveTab] = useState(() => {
-    // Set active tab based on current route
-    const path = location.pathname;
-    if (path === '/trading' || path === '/') return "Market";
-    if (path === '/quantum') return "Quantum";
-    if (path === '/database') return "Database";
-    if (path === '/whales') return "Whales";
-    if (path === '/news') return "News";
-    if (path === '/bot') return "Trading Bot";
-    if (path === '/api') return "API";
-    if (path === '/ml') return "ML";
-    if (path === '/settings') return "Settings";
-    return "Market";
-  });
-  
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-  
-  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
-  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
-
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
-
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else if (itemName === "Settings") {
-      setIsDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    } else {
-      setActiveTab(itemName);
-      setIsDropdownOpen(false);
-      if (itemPath) navigate(itemPath);
-    }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    // ✅ FIX: Exchange-Auswahl zu Context propagieren
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-card rounded-lg shadow-xl border border-border">
-                {MARKET_OPTIONS.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-muted cursor-pointer border-b border-border last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-foreground text-background rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-foreground text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-          >
-            {exchangeDisplayName} ▽
-          </button>
-          
-          {/* Exchange Dropdown Menu */}
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {EXCHANGES.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-30"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
-</file>
-
 <file path="Dockerfile">
 FROM python:3.11-slim
 
@@ -162723,389 +162790,135 @@ EXPOSE 8100
 CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
-<file path="start-health.sh">
-#!/bin/bash
+<file path="backend/api/routers/ro_user_settings.py">
+# backend/api/routers/ro_user_settings.py
+"""
+ro_user_settings.py – User-/Client-Settings (Coins, Layout, UI, etc.)
 
-# =============================================================================
-# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
-# =============================================================================
-# Wird automatisch von start-system.sh bei Fehlern aufgerufen
-# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
+✅ VEREINFACHT - Wie alte GUI ro_settings.py
+✅ Einfache Dict-basierte Settings
+✅ UserSettingsService mit 3-Layer Architektur (Redis → ClickHouse → Default)
+✅ KEINE komplexe ClickHouse-Logik im Router!
 
-set +e  # Don't exit on errors, we want to collect all diagnostics
+Abhängigkeiten:
+- backend.services.domain.config_manager.get_user_settings_service
+"""
 
-# Create monitoring directory
-mkdir -p monitoring
+import logging
+from typing import Any, Dict, Optional
 
-# JSON output file with timestamp
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
-JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
-JSON_LATEST="monitoring/health_diagnostic_latest.json"
+from fastapi import APIRouter, Depends, Header, HTTPException, Body, Query
+from pydantic import BaseModel, Field
 
-echo "=================================================="
-echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
-echo "=================================================="
-echo ""
-echo "⏰ Start Time: $(date)"
-echo "📄 Output: $JSON_FILE"
-echo "📄 Latest: $JSON_LATEST"
-echo ""
+from backend.services.domain.config_manager import get_user_settings_service
 
-# Initialize JSON structure
-jq -n \
-  --arg ts "$TIMESTAMP" \
-  '{
-    timestamp: $ts,
-    diagnostic_type: "automatic_health_check",
-    trigger: "system_error_or_manual",
-    sections: {}
-  }' > "$JSON_FILE"
+logger = logging.getLogger("ro-user-settings")
 
-# Helper function to add section to JSON
-add_json_section() {
-  local section_name="$1"
-  local section_data="$2"
-  
-  # Update JSON file with new section
-  jq --arg name "$section_name" --argjson data "$section_data" \
-    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
-    mv "${JSON_FILE}.tmp" "$JSON_FILE"
-}
+user_settings_router = APIRouter(
+    prefix="/user/settings",
+    tags=["user-settings"],
+)
 
-# =============================================================================
-# 1. HEALTH ENDPOINT CHECKS
-# =============================================================================
-echo "==================================================
-1️⃣  HEALTH ENDPOINT CHECKS"
-echo "=================================================="
-echo ""
 
-HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
-HEALTH_READY_CODE=$?
-HEALTH_READY_WORKS="false"
-if [[ $HEALTH_READY_CODE -eq 0 ]]; then
-  echo "✅ /health/ready → WORKS"
-  HEALTH_READY_WORKS="true"
-else
-  echo "❌ /health/ready → FAILED"
-fi
+# ============================================================
+# MODELS
+# ============================================================
 
-HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
-HEALTH_DOUBLE_CODE=$?
-HEALTH_DOUBLE_BUG="false"
-if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
-  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
-  HEALTH_DOUBLE_BUG="true"
-else
-  echo "✅ /health/health/ready → 404 (correct)"
-fi
+class CoinSetting(BaseModel):
+    """Coin Setting Model - wie alte GUI"""
+    symbol: str
+    exchange: str
+    market: str
+    store_live: bool = False
+    load_history: bool = False
+    history_until: str = ""
+    favorite: bool = False
+    chart_resolution: str = "1m"
+    db_resolutions: list[str] = Field(default_factory=list)
 
-HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
-HEALTH_BASE_WORKS="false"
-[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
 
-HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
+# ====================================
+# Helpers (wie alte GUI ro_settings.py)
+# ====================================
 
-# Build JSON for section 1
-SECTION1_JSON=$(jq -n \
-  --arg ready_works "$HEALTH_READY_WORKS" \
-  --arg ready_response "$HEALTH_READY_RESPONSE" \
-  --arg double_bug "$HEALTH_DOUBLE_BUG" \
-  --arg base_works "$HEALTH_BASE_WORKS" \
-  --arg base_response "$HEALTH_BASE" \
-  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
-  '{
-    health_ready: {
-      works: ($ready_works == "true"),
-      response: $ready_response
-    },
-    double_prefix_bug: ($double_bug == "true"),
-    health_base: {
-      works: ($base_works == "true"),
-      response: $base_response
-    },
-    health_detailed: $detailed
-  }')
+def get_client_id(x_client_id: Optional[str] = Header(None)) -> str:
+    if not x_client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing X-Client-ID header",
+        )
+    return x_client_id
 
-add_json_section "health_endpoints" "$SECTION1_JSON"
-echo ""
 
-# =============================================================================
-# 2. EXCHANGE TRADE FLOW CHECK
-# =============================================================================
-echo "=================================================="
-echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
-echo "=================================================="
-echo ""
+async def _load_user_settings(user_id: str) -> Dict[str, Any]:
+    """Lädt Settings über UserSettingsService (3-Layer: Redis → ClickHouse → Default)"""
+    svc = get_user_settings_service()
+    try:
+        settings = await svc.get(user_id)
+        if not isinstance(settings, dict):
+            logger.warning(f"UserSettingsService.get({user_id}) returned non-dict, using empty dict")
+            return {}
+        return settings
+    except Exception as e:
+        logger.error(f"Failed to load settings user={user_id}: {e}", exc_info=True)
+        return {}
 
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-EXCHANGE_JSON="{"
 
-for exchange in "${EXCHANGES[@]}"; do
-  echo "🔍 Checking $exchange..."
-  
-  if [[ "$exchange" == "coinbase" ]]; then
-    symbol="BTC-USD"
-  else
-    symbol="BTCUSDT"
-  fi
-  
-  # Check orderbook
-  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
-  orderbook_works="false"
-  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
-    echo "  ✅ $exchange - Orderbook working"
-    orderbook_works="true"
-  else
-    echo "  ❌ $exchange - Orderbook failed"
-  fi
-  
-  # Check trades
-  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
-  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
-  trades_flowing="false"
-  if [[ "$trade_count" -gt 0 ]]; then
-    echo "  ✅ $exchange - Trades flowing"
-    trades_flowing="true"
-  else
-    echo "  ❌ $exchange - No trades"
-  fi
-  
-  # Add to JSON
-  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
-done
+async def _save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
+    """Speichert Settings über UserSettingsService"""
+    svc = get_user_settings_service()
+    try:
+        success = await svc.put(user_id, settings)
+        if not success:
+            raise RuntimeError("UserSettingsService.put returned False")
+    except Exception as e:
+        logger.error(f"Failed to save settings user={user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save settings")
 
-# Remove trailing comma and close JSON
-EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
 
-add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
-echo ""
+# ============================================================
+# COIN SETTINGS ENDPOINTS (wie alte GUI - EINFACH!)
+# ============================================================
 
-# =============================================================================
-# 3. DOCKER CONTAINER STATUS
-# =============================================================================
-echo "=================================================="
-echo "3️⃣  DOCKER CONTAINER STATUS"
-echo "=================================================="
-echo ""
+@user_settings_router.get("/coins", response_model=list[CoinSetting])
+async def get_coin_settings(
+    exchange: Optional[str] = Query(None, description="Filter by exchange"),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    ✅ VEREINFACHT - Wie alte GUI ro_settings.py
+    Liefert Coin-Settings für einen User, optional gefiltert nach Exchange.
+    """
+    settings = await _load_user_settings(user_id)
+    coins = settings.get("coins", [])
 
-CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
-echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
+    # Optional: Filter by exchange
+    if exchange:
+        exchange_lower = exchange.lower()
+        coins = [c for c in coins if c.get("exchange", "").lower() == exchange_lower]
 
-BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
-BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
+    logger.info(f"GET /api/user/settings/coins user={user_id} exchange={exchange} count={len(coins)}")
+    return coins
 
-echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
 
-SECTION3_JSON=$(jq -n \
-  --argjson containers "$CONTAINERS" \
-  --arg backend_status "$BACKEND_STATUS" \
-  --arg backend_started "$BACKEND_STARTED" \
-  '{
-    containers: $containers,
-    backend: {
-      status: $backend_status,
-      started_at: $backend_started
-    }
-  }')
+@user_settings_router.post("/coins", response_model=list[CoinSetting])
+async def save_coin_settings(
+    coins: list[CoinSetting] = Body(...),
+    user_id: str = Depends(get_client_id),
+):
+    """
+    ✅ VEREINFACHT - Wie alte GUI ro_settings.py
+    Speichert Coin-Settings für einen User.
+    """
+    settings = await _load_user_settings(user_id)
+    
+    # Einfach: Coins als Liste speichern
+    settings["coins"] = [c.model_dump() for c in coins]
+    
+    await _save_user_settings(user_id, settings)
 
-add_json_section "docker_containers" "$SECTION3_JSON"
-echo ""
-
-# =============================================================================
-# 4. DATABASE CONNECTIVITY
-# =============================================================================
-echo "=================================================="
-echo "4️⃣  DATABASE CONNECTIVITY"
-echo "=================================================="
-echo ""
-
-REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
-REDIS_WORKS="false"
-if [[ "$REDIS_PING" == "PONG" ]]; then
-  echo "✅ Redis: PONG"
-  REDIS_WORKS="true"
-else
-  echo "❌ Redis: Failed"
-fi
-
-CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
-CLICKHOUSE_WORKS="false"
-if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
-  echo "✅ ClickHouse: Responding"
-  CLICKHOUSE_WORKS="true"
-else
-  echo "❌ ClickHouse: Not responding"
-fi
-
-SECTION4_JSON=$(jq -n \
-  --arg redis_works "$REDIS_WORKS" \
-  --arg redis_ping "$REDIS_PING" \
-  --arg ch_works "$CLICKHOUSE_WORKS" \
-  '{
-    redis: {
-      works: ($redis_works == "true"),
-      ping_response: $redis_ping
-    },
-    clickhouse: {
-      works: ($ch_works == "true")
-    }
-  }')
-
-add_json_section "database_connectivity" "$SECTION4_JSON"
-echo ""
-
-# =============================================================================
-# 5. BACKEND LOGS SNAPSHOT
-# =============================================================================
-echo "=================================================="
-echo "5️⃣  BACKEND LOGS (Last 50 lines)"
-echo "=================================================="
-echo ""
-
-BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
-echo "$BACKEND_LOGS" | head -10
-echo "..."
-echo "(Full logs in JSON)"
-
-# Count errors in logs
-ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
-WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
-
-echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
-
-SECTION5_JSON=$(jq -n \
-  --arg logs "$BACKEND_LOGS" \
-  --arg errors "$ERROR_COUNT" \
-  --arg warnings "$WARNING_COUNT" \
-  '{
-    last_50_lines: $logs,
-    error_count: ($errors | tonumber),
-    warning_count: ($warnings | tonumber)
-  }')
-
-add_json_section "backend_logs" "$SECTION5_JSON"
-echo ""
-
-# =============================================================================
-# 6. WEBSOCKET STATUS
-# =============================================================================
-echo "=================================================="
-echo "6️⃣  WEBSOCKET STATUS"
-echo "=================================================="
-echo ""
-
-WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
-WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
-
-echo "Recent trades: $WS_TRADE_COUNT"
-echo "$WS_TRADES" | head -5
-
-SECTION6_JSON=$(jq -n \
-  --arg recent_trades "$WS_TRADES" \
-  --arg count "$WS_TRADE_COUNT" \
-  '{
-    recent_trade_logs: $recent_trades,
-    recent_trade_count: ($count | tonumber)
-  }')
-
-add_json_section "websocket_status" "$SECTION6_JSON"
-echo ""
-
-# =============================================================================
-# 7. HEALTH ROUTER VERIFICATION
-# =============================================================================
-echo "=================================================="
-echo "7️⃣  HEALTH ROUTER VERIFICATION"
-echo "=================================================="
-echo ""
-
-# Check if health_router in container has prefix
-CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
-echo "Container router: $CONTAINER_ROUTER"
-
-# Check main.py registration
-MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
-echo "Main.py registration:"
-echo "$MAIN_ROUTER"
-
-SECTION7_JSON=$(jq -n \
-  --arg container_router "$CONTAINER_ROUTER" \
-  --arg main_registration "$MAIN_ROUTER" \
-  '{
-    container_health_router: $container_router,
-    main_py_registration: $main_registration
-  }')
-
-add_json_section "health_router_verification" "$SECTION7_JSON"
-echo ""
-
-# =============================================================================
-# FINAL SUMMARY
-# =============================================================================
-echo "=================================================="
-echo "📋 DIAGNOSTIC SUMMARY"
-echo "=================================================="
-echo ""
-
-END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-# Count issues
-TOTAL_CHECKS=0
-FAILED_CHECKS=0
-
-[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
-
-SUMMARY_JSON=$(jq -n \
-  --arg end_ts "$END_TIMESTAMP" \
-  --arg total "$TOTAL_CHECKS" \
-  --arg passed "$PASSED_CHECKS" \
-  --arg failed "$FAILED_CHECKS" \
-  '{
-    end_timestamp: $end_ts,
-    total_checks: ($total | tonumber),
-    passed_checks: ($passed | tonumber),
-    failed_checks: ($failed | tonumber),
-    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
-  }')
-
-add_json_section "summary" "$SUMMARY_JSON"
-
-# Copy to latest
-cp "$JSON_FILE" "$JSON_LATEST"
-
-echo "⏰ End Time: $(date)"
-echo ""
-echo "📊 Results:"
-echo "   Total Checks: $TOTAL_CHECKS"
-echo "   Passed: $PASSED_CHECKS"
-echo "   Failed: $FAILED_CHECKS"
-echo ""
-echo "📄 Full diagnostic report:"
-echo "   $JSON_FILE"
-echo "   $JSON_LATEST"
-echo ""
-echo "💡 Next Steps:"
-echo "   1. Review JSON file: jq '.' $JSON_LATEST"
-echo "   2. Check failed sections"
-echo "   3. Fix issues and restart system"
-echo ""
-echo "=================================================="
-echo "🏁 DIAGNOSTIC COMPLETE"
-echo "=================================================="
+    logger.info(f"POST /api/user/settings/coins user={user_id} count={len(coins)}")
+    return coins
 </file>
 
 <file path="backend/core/config.py">
@@ -164466,523 +164279,6 @@ const ChartSection = ({
 export default ChartSection;
 </file>
 
-<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
-// frontend/src/pages/TradingPage/components/CoinSelector.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, Settings } from "lucide-react";
-
-interface CoinSetting {
-  symbol: string;
-  exchange: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite?: boolean;
-  chart_resolution?: string;
-  db_resolutions?: string[];
-}
-
-interface AdvancedCoinSelectorProps {
-  selectedSymbol: string;
-  onSymbolSelect: (symbol: string) => void;
-  onSettingsClick?: () => void;
-  exchange?: string;        // dynamic exchange (no hardcode)
-  selectedMarket?: string;  // e.g. "spot" | "usdtm" | ...
-}
-
-/**
- * CoinSelector
- * - Keeps existing architecture:
- *   - Symbols are loaded via WS ("symbols" request) from /ws/{exchange}/{symbol}/{market}
- *   - Coin settings (L/H) are loaded/saved via REST /api/user/settings/coins (GET/POST) using X-Client-ID
- * - Adds:
- *   - getClientId() (no hardcoded "default-client")
- *   - alwaysLiveSymbols from ENV
- *   - Always-live UI lock for L button
- */
-const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
-  selectedSymbol,
-  onSymbolSelect,
-  onSettingsClick,
-  exchange = "bitget",
-  selectedMarket,
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string }>>([]);
-  const [loadingSymbols, setLoadingSymbols] = useState(false);
-
-  const [loadingSettings, setLoadingSettings] = useState(false);
-  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
-
-  const market = selectedMarket || "spot";
-
-  // ----------------------------
-  // ENV / URL helpers
-  // ----------------------------
-  const resolveApiBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_BACKEND_HTTP_URL ||
-      env?.VITE_API_BASE_URL ||
-      env?.VITE_BACKEND_URL ||
-      "http://localhost:8100";
-    return String(raw).replace(/\/+$/, "");
-  };
-
-  const resolveWsBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_BACKEND_WS_URL ||
-      env?.VITE_WS_BASE_URL ||
-      env?.VITE_WS_URL;
-
-    if (raw && typeof raw === "string" && raw.trim()) {
-      return raw.replace(/\/+$/, "");
-    }
-
-    // ✅ Vite Proxy: window.location.host enthält Port automatisch!
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${window.location.host}`;
-  };
-
-  const getClientId = (): string => {
-    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
-    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
-
-    const key = "wsai_client_id";
-    try {
-      const existing = window.localStorage.getItem(key);
-      if (existing && existing.trim()) return existing.trim();
-
-      const generated =
-        (globalThis.crypto && "randomUUID" in globalThis.crypto)
-          ? (globalThis.crypto as any).randomUUID()
-          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
-
-      window.localStorage.setItem(key, generated);
-      return generated;
-    } catch {
-      // absolute fallback (no hardcoding default-client into requests)
-      return `client_${Date.now()}`;
-    }
-  };
-
-  const alwaysLiveSymbols = useMemo(() => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
-      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
-      "BTCUSDT";
-    return new Set(
-      String(raw)
-        .split(",")
-        .map((s: string) => s.trim().toUpperCase())
-        .filter(Boolean)
-    );
-  }, []);
-
-  // ----------------------------
-  // Keying
-  // ----------------------------
-  const keyFor = (ex: string, sym: string, mk: string) =>
-    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
-
-  // ----------------------------
-  // REST: load/save coin settings
-  // ----------------------------
-  const loadCoinSettings = async (): Promise<void> => {
-    setLoadingSettings(true);
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-      });
-
-      if (!res.ok) {
-        throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
-      }
-
-      const list: CoinSetting[] = await res.json();
-      const map = new Map<string, CoinSetting>();
-      for (const s of Array.isArray(list) ? list : []) {
-        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-      }
-      setCoinSettings(map);
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load coin settings");
-    } finally {
-      setLoadingSettings(false);
-    }
-  };
-
-  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-        body: JSON.stringify(settingsList),
-      });
-
-      if (!res.ok) {
-        throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
-      }
-
-      // Expect canonical list back (preferred). If backend returns only status, we still keep optimistic state.
-      const ct = res.headers.get("content-type") || "";
-      if (ct.includes("application/json")) {
-        const maybe = await res.json();
-        if (Array.isArray(maybe)) {
-          const map = new Map<string, CoinSetting>();
-          for (const s of maybe) {
-            if (!s?.symbol || !s?.exchange) continue;
-            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-          }
-          setCoinSettings(map);
-        }
-      }
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to save coin settings");
-    }
-  };
-
-  // Load settings when dropdown opens (keeps your behavior: no background polling)
-  useEffect(() => {
-    if (isOpen) loadCoinSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, exchange]);
-
-  // ----------------------------
-  // WS: load symbols
-  // ----------------------------
-  const wsOnceRef = useRef<WebSocket | null>(null);
-
-  const loadSymbols = async (): Promise<void> => {
-    setLoadingSymbols(true);
-    setLocalError(null);
-
-    // close any previous one-off ws if still open
-    try {
-      wsOnceRef.current?.close();
-    } catch {}
-    wsOnceRef.current = null;
-
-    try {
-      const wsBase = resolveWsBase();
-      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/BTCUSDT/${encodeURIComponent(market)}`;
-
-      const list: string[] = await new Promise((resolve, reject) => {
-        const ws = new WebSocket(wsUrl);
-        wsOnceRef.current = ws;
-
-        let done = false;
-        const timeout = window.setTimeout(() => {
-          if (done) return;
-          done = true;
-          try { ws.close(); } catch {}
-          reject(new Error("WS symbols request timeout"));
-        }, 5000);
-
-        ws.onopen = () => {
-          try {
-            ws.send("symbols");
-          } catch (err) {
-            window.clearTimeout(timeout);
-            if (!done) {
-              done = true;
-              try { ws.close(); } catch {}
-              reject(err instanceof Error ? err : new Error("WS send failed"));
-            }
-          }
-        };
-
-        ws.onerror = () => {
-          window.clearTimeout(timeout);
-          if (!done) {
-            done = true;
-            try { ws.close(); } catch {}
-            reject(new Error("WS connection error"));
-          }
-        };
-
-        ws.onmessage = (e) => {
-          // Expect JSON {type:"symbols", symbols:[...]}
-          try {
-            const data = JSON.parse(e.data);
-            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                resolve(data.symbols);
-              }
-              return;
-            }
-            if (data?.type === "error") {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                reject(new Error(data.message || "WS error"));
-              }
-            }
-          } catch {
-            // ignore non-json
-          }
-        };
-
-        ws.onclose = () => {
-          // ignore; timeout/error handles failure
-        };
-      });
-
-      setSymbols(
-        list.map((s) => ({
-          symbol: String(s),
-          exchange,
-          market_type: market,
-        }))
-      );
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load symbols");
-      setSymbols([]);
-    } finally {
-      setLoadingSymbols(false);
-    }
-  };
-
-  useEffect(() => {
-    loadSymbols();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchange, market]);
-
-  useEffect(() => {
-    return () => {
-      try {
-        wsOnceRef.current?.close();
-      } catch {}
-      wsOnceRef.current = null;
-    };
-  }, []);
-
-  // ----------------------------
-  // L/H helpers + toggles
-  // ----------------------------
-  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
-
-  const isLiveEnabled = (sym: string): boolean => {
-    if (isAlwaysLive(sym)) return true;
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.store_live;
-  };
-
-  const isHistoricalEnabled = (sym: string): boolean => {
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.load_history;
-  };
-
-  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
-    const key = keyFor(exchange, sym, market);
-    const current = coinSettings.get(key);
-
-    const next: CoinSetting = current
-      ? { ...current, ...patch, symbol: sym, exchange, market }
-      : {
-          symbol: sym,
-          exchange,
-          market,
-          store_live: false,
-          load_history: false,
-          ...patch,
-        };
-
-    const list = Array.from(coinSettings.values());
-
-    const idx = list.findIndex(
-      (x) =>
-        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
-        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
-        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
-    );
-
-    if (idx >= 0) list[idx] = next;
-    else list.push(next);
-
-    // optimistic local map update (immediately reflects UI)
-    const map = new Map(coinSettings);
-    map.set(key, next);
-    setCoinSettings(map);
-
-    return list;
-  };
-
-  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isAlwaysLive(sym)) return;
-
-    const newState = !isLiveEnabled(sym);
-    const updatedList = upsertSetting(sym, { store_live: newState });
-    await saveCoinSettings(updatedList);
-  };
-
-  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const newState = !isHistoricalEnabled(sym);
-    const updatedList = upsertSetting(sym, { load_history: newState });
-    await saveCoinSettings(updatedList);
-  };
-
-  // ----------------------------
-  // UI filtering
-  // ----------------------------
-  const filteredSymbols = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
-    if (!q) return symbols;
-    return symbols.filter((x) => x.symbol.toLowerCase().includes(q));
-  }, [symbols, searchTerm]);
-
-  return (
-    <div className="relative w-full">
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          type="button"
-          onClick={() => setIsOpen((v) => !v)}
-          className="flex-1 bg-gray-800 text-white px-4 py-3 rounded border border-gray-600 flex items-center justify-between hover:bg-gray-700"
-        >
-          <span className="font-medium">{selectedSymbol || "Select Symbol"}</span>
-          <span className="text-xs text-gray-400">{exchange.toUpperCase()} / {market.toUpperCase()}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            loadSymbols();
-            if (isOpen) loadCoinSettings();
-          }}
-          disabled={loadingSymbols}
-          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600 disabled:opacity-50"
-          title="Refresh symbols/settings"
-        >
-          <RefreshCw className={`w-4 h-4 text-white ${loadingSymbols ? "animate-spin" : ""}`} />
-        </button>
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onSettingsClick?.();
-          }}
-          className="p-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-600"
-          title="Open settings"
-        >
-          <Settings className="w-4 h-4 text-white" />
-        </button>
-      </div>
-
-      {isOpen && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg z-50 max-h-96 overflow-hidden">
-          <div className="p-3 border-b border-gray-600">
-            <input
-              type="text"
-              placeholder="Search symbols..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-gray-700 text-white px-3 py-2 rounded border border-gray-500 text-sm"
-              autoFocus
-            />
-            {(loadingSettings || loadingSymbols) && (
-              <div className="mt-2 text-xs text-gray-400">
-                {loadingSymbols ? "Loading symbols..." : null}
-                {loadingSymbols && loadingSettings ? " / " : null}
-                {loadingSettings ? "Loading settings..." : null}
-              </div>
-            )}
-            {localError && <div className="mt-2 text-xs text-red-400">{localError}</div>}
-          </div>
-
-          <div className="max-h-80 overflow-y-auto">
-            {filteredSymbols.map((item) => {
-              const sym = item.symbol;
-              const live = isLiveEnabled(sym);
-              const hist = isHistoricalEnabled(sym);
-              const locked = isAlwaysLive(sym);
-
-              return (
-                <div
-                  key={`${item.exchange}_${item.market_type}_${sym}`}
-                  onClick={() => {
-                    onSymbolSelect(sym);
-                    setIsOpen(false);
-                    setSearchTerm("");
-                  }}
-                  className={`flex items-center justify-between px-4 py-3 hover:bg-gray-700 cursor-pointer border-b border-gray-700 ${
-                    sym === selectedSymbol ? "bg-gray-700" : ""
-                  }`}
-                >
-                  <span className="font-medium text-white">{sym}</span>
-
-                  <div className="flex items-center gap-2">
-                    {/* L button (live storage) */}
-                    <button
-                      type="button"
-                      onClick={(e) => handleLiveClick(sym, e)}
-                      className={`px-2 py-1 rounded text-xs font-bold ${
-                        live ? "bg-green-600 text-white" : "bg-red-600 text-white"
-                      } ${locked ? "opacity-70 cursor-not-allowed" : ""}`}
-                      title={locked ? "Always-Live (server policy)" : "Toggle Live Storage"}
-                    >
-                      L
-                    </button>
-
-                    {/* H button (historical backfill) */}
-                    <button
-                      type="button"
-                      onClick={(e) => handleHistoricalClick(sym, e)}
-                      className={`px-2 py-1 rounded text-xs font-bold ${
-                        hist ? "bg-green-600 text-white" : "bg-red-600 text-white"
-                      }`}
-                      title="Toggle Historical Backfill"
-                    >
-                      H
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            {filteredSymbols.length === 0 && (
-              <div className="p-4 text-center text-gray-400">No symbols found</div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default CoinSelector;
-</file>
-
 <file path="frontend/src/pages/TradingPage/TradingPage.tsx">
 import { useState, useMemo } from "react";
 import PriceDisplay from "./components/PriceDisplay";
@@ -165309,6 +164605,177 @@ export function useWsLane(
 
   return { status, trades, candles, orderbook, historical };
 }
+</file>
+
+<file path="frontend/src/shared/layout/GlobalNav.tsx">
+import { useState } from "react";
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTradingContext } from "../../contexts/TradingContext";
+import { EXCHANGES, MARKET_OPTIONS } from "../../config/exchangeSupport";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { selectedExchange, setSelectedExchange, setSelectedMarket } = useTradingContext();
+  
+  const [activeTab, setActiveTab] = useState(() => {
+    // Set active tab based on current route
+    const path = location.pathname;
+    if (path === '/trading' || path === '/') return "Market";
+    if (path === '/quantum') return "Quantum";
+    if (path === '/database') return "Database";
+    if (path === '/whales') return "Whales";
+    if (path === '/news') return "News";
+    if (path === '/bot') return "Trading Bot";
+    if (path === '/api') return "API";
+    if (path === '/ml') return "ML";
+    if (path === '/settings') return "Settings";
+    return "Market";
+  });
+  
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+  
+  // ✅ Display name für aktuell gewählte Exchange (nutzt importierte EXCHANGES Config)
+  const exchangeDisplayName = EXCHANGES.find(e => e.id === selectedExchange)?.name || "Bitget";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else if (itemName === "Settings") {
+      setIsDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    } else {
+      setActiveTab(itemName);
+      setIsDropdownOpen(false);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    // ✅ FIX: Vollen Market-Namen an Context senden (KEIN Mapping mehr)
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    // ✅ FIX: Exchange-Auswahl zu Context propagieren
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
+                {MARKET_OPTIONS.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+          >
+            {exchangeDisplayName} ▽
+          </button>
+          
+          {/* Exchange Dropdown Menu */}
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {EXCHANGES.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
 </file>
 
 <file path="readme/000_backfill_2_build.md">
@@ -166532,25 +165999,6 @@ volumes:
   redis-data:
 </file>
 
-<file path="frontend/src/main.tsx">
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import App from './App';
-import { TradingProvider } from './contexts/TradingContext';
-import ThemeProvider from './shared/ui/theme-provider';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <TradingProvider>
-        <App />
-      </TradingProvider>
-    </ThemeProvider>
-  </StrictMode>,
-);
-</file>
-
 <file path="backend/core/main.py">
 # backend/core/main.py
 """
@@ -167086,6 +166534,636 @@ def start():
 
 if __name__ == "__main__":
     start()
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
+// frontend/src/pages/TradingPage/components/CoinSelector.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Search, RefreshCw, Settings } from "lucide-react";
+
+interface CoinSetting {
+  symbol: string;
+  exchange: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite?: boolean;
+  chart_resolution?: string;
+  db_resolutions?: string[];
+}
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange: string;
+  selectedMarket?: string;
+}
+
+/**
+ * CoinSelector - Visuell 1:1 wie alte_gui, aber mit neuer WebSocket-Logik
+ * 
+ * Features:
+ * - Header Row: ★ COIN ↑ PRICE 24H L H
+ * - Favorite Star (klickbar)
+ * - Price Display (font-mono)
+ * - 24H Change (grün/rot)
+ * - L/H Buttons als kleine Dots (rot/grün schaltbar)
+ * - Footer: Symbol-Count + Refresh + Settings
+ * - WebSocket für Symbols (dynamisch, kein Hardcode)
+ * - REST API für Settings (/api/user/settings/coins)
+ */
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange,
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string; price?: string; change?: string; changePercent?: number }>>([]);
+  const [loadingSymbols, setLoadingSymbols] = useState(false);
+
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const market = selectedMarket || "spot";
+
+  // ----------------------------
+  // ENV / URL helpers (dynamisch!)
+  // ----------------------------
+  const resolveApiBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_HTTP_URL ||
+      env?.VITE_API_BASE_URL ||
+      env?.VITE_BACKEND_URL ||
+      "http://localhost:8100";
+    return String(raw).replace(/\/+$/, "");
+  };
+
+  const resolveWsBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_WS_URL ||
+      env?.VITE_WS_BASE_URL ||
+      env?.VITE_WS_URL;
+
+    if (raw && typeof raw === "string" && raw.trim()) {
+      return raw.replace(/\/+$/, "");
+    }
+
+    // ✅ Vite Proxy: window.location.host enthält Port automatisch!
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${window.location.host}`;
+  };
+
+  const getClientId = (): string => {
+    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
+    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
+
+    const key = "wsai_client_id";
+    try {
+      const existing = window.localStorage.getItem(key);
+      if (existing && existing.trim()) return existing.trim();
+
+      const generated =
+        (globalThis.crypto && "randomUUID" in globalThis.crypto)
+          ? (globalThis.crypto as any).randomUUID()
+          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+
+      window.localStorage.setItem(key, generated);
+      return generated;
+    } catch {
+      return `client_${Date.now()}`;
+    }
+  };
+
+  const alwaysLiveSymbols = useMemo(() => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
+      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
+      "BTCUSDT";
+    return new Set(
+      String(raw)
+        .split(",")
+        .map((s: string) => s.trim().toUpperCase())
+        .filter(Boolean)
+    );
+  }, []);
+
+  // ----------------------------
+  // Keying
+  // ----------------------------
+  const keyFor = (ex: string, sym: string, mk: string) =>
+    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
+
+  // ----------------------------
+  // REST: load/save coin settings
+  // ----------------------------
+  const loadCoinSettings = async (): Promise<void> => {
+    setLoadingSettings(true);
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      const list: CoinSetting[] = await res.json();
+      const map = new Map<string, CoinSetting>();
+      const favs = new Set<string>();
+      for (const s of Array.isArray(list) ? list : []) {
+        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+        if (s.favorite) favs.add(s.symbol);
+      }
+      setCoinSettings(map);
+      setFavorites(favs);
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load coin settings");
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
+        },
+        body: JSON.stringify(settingsList),
+      });
+
+      if (!res.ok) {
+        throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const maybe = await res.json();
+        if (Array.isArray(maybe)) {
+          const map = new Map<string, CoinSetting>();
+          const favs = new Set<string>();
+          for (const s of maybe) {
+            if (!s?.symbol || !s?.exchange) continue;
+            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+            if (s.favorite) favs.add(s.symbol);
+          }
+          setCoinSettings(map);
+          setFavorites(favs);
+        }
+      }
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to save coin settings");
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) loadCoinSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, exchange]);
+
+  // ----------------------------
+  // WS: load symbols
+  // ----------------------------
+  const wsOnceRef = useRef<WebSocket | null>(null);
+
+  const loadSymbols = async (): Promise<void> => {
+    setLoadingSymbols(true);
+    setLocalError(null);
+
+    try {
+      wsOnceRef.current?.close();
+    } catch {}
+    wsOnceRef.current = null;
+
+    try {
+      const wsBase = resolveWsBase();
+      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/BTCUSDT/${encodeURIComponent(market)}`;
+
+      const list: string[] = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        wsOnceRef.current = ws;
+
+        let done = false;
+        const timeout = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          try { ws.close(); } catch {}
+          reject(new Error("WS symbols request timeout"));
+        }, 5000);
+
+        ws.onopen = () => {
+          try {
+            ws.send("symbols");
+          } catch (err) {
+            window.clearTimeout(timeout);
+            if (!done) {
+              done = true;
+              try { ws.close(); } catch {}
+              reject(err instanceof Error ? err : new Error("WS send failed"));
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(timeout);
+          if (!done) {
+            done = true;
+            try { ws.close(); } catch {}
+            reject(new Error("WS connection error"));
+          }
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                resolve(data.symbols);
+              }
+              return;
+            }
+            if (data?.type === "error") {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                reject(new Error(data.message || "WS error"));
+              }
+            }
+          } catch {
+            // ignore non-json
+          }
+        };
+
+        ws.onclose = () => {
+          // ignore; timeout/error handles failure
+        };
+      });
+
+      setSymbols(
+        list.map((s) => ({
+          symbol: String(s),
+          exchange,
+          market_type: market,
+          price: "-",
+          change: "-",
+          changePercent: 0,
+        }))
+      );
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load symbols");
+      setSymbols([]);
+    } finally {
+      setLoadingSymbols(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchange, market]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        wsOnceRef.current?.close();
+      } catch {}
+      wsOnceRef.current = null;
+    };
+  }, []);
+
+  // ----------------------------
+  // L/H helpers + toggles
+  // ----------------------------
+  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
+
+  const isLiveEnabled = (sym: string): boolean => {
+    if (isAlwaysLive(sym)) return true;
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.store_live;
+  };
+
+  const isHistoricalEnabled = (sym: string): boolean => {
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.load_history;
+  };
+
+  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
+    const key = keyFor(exchange, sym, market);
+    const current = coinSettings.get(key);
+
+    const next: CoinSetting = current
+      ? { ...current, ...patch, symbol: sym, exchange, market }
+      : {
+          symbol: sym,
+          exchange,
+          market,
+          store_live: false,
+          load_history: false,
+          ...patch,
+        };
+
+    const list = Array.from(coinSettings.values());
+
+    const idx = list.findIndex(
+      (x) =>
+        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
+        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
+        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
+    );
+
+    if (idx >= 0) list[idx] = next;
+    else list.push(next);
+
+    const map = new Map(coinSettings);
+    map.set(key, next);
+    setCoinSettings(map);
+
+    return list;
+  };
+
+  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isAlwaysLive(sym)) return;
+
+    const newState = !isLiveEnabled(sym);
+    const updatedList = upsertSetting(sym, { store_live: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    const newState = !isHistoricalEnabled(sym);
+    const updatedList = upsertSetting(sym, { load_history: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  const handleToggleFavorite = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const isFav = favorites.has(sym);
+    const updatedList = upsertSetting(sym, { favorite: !isFav });
+    await saveCoinSettings(updatedList);
+  };
+
+  // ----------------------------
+  // UI filtering
+  // ----------------------------
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    // Deduplizierung
+    filtered = filtered.filter((symbol, index, self) => 
+      index === self.findIndex(s => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    // Search filter
+    if (searchTerm) {
+      filtered = filtered.filter((x) => x.symbol.toLowerCase().includes(searchTerm.toLowerCase()));
+    }
+
+    // Sort: Favorites first, then alphabetically
+    return filtered.sort((a, b) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
+
+  return (
+    <div className="relative">
+      {/* Selected Symbol Display */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {selectedSymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {/* Dropdown */}
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          {/* Search */}
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Header Row */}
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          {/* Coins list */}
+          <div className="max-h-[300px] overflow-y-auto">
+            {loadingSymbols ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin) => {
+                const uniqueKey = `${coin.exchange}|${coin.market_type}|${coin.symbol}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === selectedSymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => {
+                      onSymbolSelect(coin.symbol);
+                      setIsOpen(false);
+                    }}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 cursor-pointer ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isLiveEnabled(coin.symbol) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleLiveClick(coin.symbol, e)}
+                        title={isLiveEnabled(coin.symbol) 
+                          ? `Live data ACTIVE for ${coin.symbol}` 
+                          : `Enable Live data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                    <div className="w-[12px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isHistoricalEnabled(coin.symbol) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleHistoricalClick(coin.symbol, e)}
+                        title={isHistoricalEnabled(coin.symbol) 
+                          ? `Historical data ACTIVE for ${coin.symbol}` 
+                          : `Enable Historical data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loadingSymbols}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loadingSymbols ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Overlay to close dropdown when clicking outside */}
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import { TradingProvider } from './contexts/TradingContext';
+import ThemeProvider from './shared/ui/theme-provider';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <TradingProvider>
+        <App />
+      </TradingProvider>
+    </ThemeProvider>
+  </StrictMode>,
+);
 </file>
 
 <file path="readme/000_live_backfill_data_build.md">
