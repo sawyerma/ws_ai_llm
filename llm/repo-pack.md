@@ -156914,76 +156914,6 @@ class BackfillService:
         return trades
 </file>
 
-<file path="backend/services/usecases/unified_ohlc.py">
-from backend.database.clickhouse import get_clickhouse_client
-from backend.core.config import settings
-from datetime import datetime, timedelta
-import random
-async def get_ohlc_from_ch(
-    exchange: str, 
-    symbol: str,
-    interval_seconds: int, 
-    start: int = None, 
-    end: int = None, 
-    limit: int = 500
-):
-    # ✅ FIX: Nutze get_clickhouse_client() die echten ClickHouseClientWrapper zurückgibt
-    ch_client = get_clickhouse_client()
-    
-    # Standardzeitraum setzen
-    if end is None:
-        end = int(datetime.utcnow().timestamp() * 1000)
-    if start is None:
-        start = end - (limit * interval_seconds * 1000)
-    
-    # Parametrisierte Abfrage - ✅ FIX: Dynamischer Tabellenname {exchange}_trades
-    table_name = f"trading.{exchange}_trades"
-    
-    query = f"""
-        SELECT 
-            toStartOfInterval(timestamp, INTERVAL %(interval_seconds)s SECOND) AS ts,
-            argMin(price, timestamp) AS open,
-            max(price) AS high,
-            min(price) AS low,
-            argMax(price, timestamp) AS close,
-            sum(size) AS volume
-        FROM {table_name}
-        WHERE symbol = %(symbol)s
-          AND timestamp >= toDateTime64(%(start_ms)s / 1000, 3)
-          AND timestamp <= toDateTime64(%(end_ms)s / 1000, 3)
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-    """
-    
-    params = {
-        'interval_seconds': interval_seconds,
-        'exchange': exchange,
-        'symbol': symbol,
-        'start_ms': start,
-        'end_ms': end,
-        'limit': limit
-    }
-    
-    try:
-        result = await ch_client.execute(query, params)
-        if result:
-            return [{
-                'time': int(row[0].timestamp() * 1000),  # Frontend braucht 'time'
-                'open': str(row[1]),
-                'high': str(row[2]),
-                'low': str(row[3]),
-                'close': str(row[4]),
-                'volume': str(row[5])
-            } for row in result]
-    except Exception as e:
-        print(f"ClickHouse query failed: {e}")
-    
-    # 🚨 NO MOCK DATA - Return empty array when no real data available
-    print(f"No real trading data found for {exchange}:{symbol}, returning empty array")
-    return []
-</file>
-
 <file path="frontend/src/config/env.ts">
 // frontend/src/config/env.ts
 export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
@@ -157731,152 +157661,6 @@ const CandleChart: React.FC<CandleChartProps> = ({
 };
 
 export default CandleChart;
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
-/**
- * CandleChart Themes
- * ==================
- * 
- * Light/Dark theme presets for TradingView Lightweight Charts.
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, reagiert auf Theme-Wechsel
- * ✅ PRODUCTION-READY: Optimierte Farben für Lesbarkeit
- * ✅ KONSISTENT: Verwendet für alle Charts im System
- */
-
-import type { ChartTheme, CandlestickSeriesTheme } from './types';
-
-/**
- * Light Mode Theme
- * Optimiert für hellen Hintergrund
- */
-export const CHART_THEME_LIGHT: ChartTheme = {
-  layout: {
-    background: { color: 'transparent' },
-    textColor: '#111827', // Tailwind gray-900
-  },
-  grid: {
-    vertLines: { color: 'rgba(0, 0, 0, 0.08)' },
-    horzLines: { color: 'rgba(0, 0, 0, 0.08)' },
-  },
-  timeScale: {
-    borderColor: 'rgba(0, 0, 0, 0.15)',
-    timeVisible: true,
-    secondsVisible: false,
-    fixLeftEdge: true,
-    fixRightEdge: false,
-    rightOffset: 10,
-    barSpacing: 6,
-    minBarSpacing: 0.5,
-  },
-  rightPriceScale: {
-    borderColor: 'rgba(0, 0, 0, 0.15)',
-    autoScale: true,
-    scaleMargins: { top: 0.1, bottom: 0.1 },
-    mode: 0,
-  },
-  crosshair: {
-    vertLine: {
-      color: 'rgba(0, 0, 0, 0.20)',
-      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
-    },
-    horzLine: {
-      color: 'rgba(0, 0, 0, 0.20)',
-      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
-    },
-  },
-};
-
-/**
- * Dark Mode Theme
- * Optimiert für dunklen Hintergrund - HELLE TEXTE!
- */
-export const CHART_THEME_DARK: ChartTheme = {
-  layout: {
-    background: { color: 'transparent' },
-    textColor: '#e5e7eb', // Tailwind gray-200 - ✅ HELL für Dark Mode!
-  },
-  grid: {
-    vertLines: { color: 'rgba(255, 255, 255, 0.06)' },
-    horzLines: { color: 'rgba(255, 255, 255, 0.06)' },
-  },
-  timeScale: {
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    timeVisible: true,
-    secondsVisible: false,
-    fixLeftEdge: true,
-    fixRightEdge: false,
-    rightOffset: 10,
-    barSpacing: 6,
-    minBarSpacing: 0.5,
-  },
-  rightPriceScale: {
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    autoScale: true,
-    scaleMargins: { top: 0.1, bottom: 0.1 },
-    mode: 0,
-  },
-  crosshair: {
-    vertLine: {
-      color: 'rgba(255, 255, 255, 0.20)',
-      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
-    },
-    horzLine: {
-      color: 'rgba(255, 255, 255, 0.20)',
-      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
-    },
-  },
-};
-
-/**
- * Candlestick Series Theme (Light Mode)
- * Standard Grün/Rot Farben
- */
-export const SERIES_THEME_LIGHT: CandlestickSeriesTheme = {
-  upColor: '#26a69a', // Grün für Aufwärts-Candles
-  downColor: '#ef5350', // Rot für Abwärts-Candles
-  borderVisible: false,
-  wickUpColor: '#26a69a',
-  wickDownColor: '#ef5350',
-  priceLineVisible: true,
-};
-
-/**
- * Candlestick Series Theme (Dark Mode)
- * Gleiche Farben wie Light Mode (funktionieren auf beiden Hintergründen)
- */
-export const SERIES_THEME_DARK: CandlestickSeriesTheme = {
-  upColor: '#26a69a',
-  downColor: '#ef5350',
-  borderVisible: false,
-  wickUpColor: '#26a69a',
-  wickDownColor: '#ef5350',
-  priceLineVisible: true,
-};
-
-/**
- * Helper: Get Chart Theme based on current mode
- */
-export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
-  const theme = isDark ? CHART_THEME_DARK : CHART_THEME_LIGHT;
-  
-  // ✅ DYNAMISCH: secondsVisible basierend auf Interval
-  return {
-    ...theme,
-    timeScale: {
-      ...theme.timeScale,
-      secondsVisible: interval.includes('s'), // z.B. "1s", "5s", "15s"
-    },
-  };
-}
-
-/**
- * Helper: Get Series Theme based on current mode
- */
-export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
-  return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
-}
 </file>
 
 <file path="frontend/src/shared/components/CandleChart/types.ts">
@@ -162119,6 +161903,82 @@ class MultiResCandleAgg:
         return finished
 </file>
 
+<file path="backend/services/usecases/unified_ohlc.py">
+from backend.database.clickhouse import get_clickhouse_client
+from backend.core.config import settings
+from datetime import datetime, timedelta
+import random
+async def get_ohlc_from_ch(
+    exchange: str, 
+    symbol: str,
+    interval_seconds: int, 
+    start: int = None, 
+    end: int = None, 
+    limit: int = 500
+):
+    # ✅ FIX: Nutze get_clickhouse_client() die echten ClickHouseClientWrapper zurückgibt
+    ch_client = get_clickhouse_client()
+    
+    # Standardzeitraum setzen
+    if end is None:
+        end = int(datetime.utcnow().timestamp())
+    if start is None:
+        start = end - (limit * interval_seconds)
+    
+    # Parametrisierte Abfrage - ✅ FIX: Dynamischer Tabellenname {exchange}_trades
+    table_name = f"trading.{exchange}_trades"
+    
+    query = f"""
+        SELECT 
+            toStartOfInterval(timestamp, INTERVAL %(interval_seconds)s SECOND) AS ts,
+            argMin(price, timestamp) AS open,
+            max(price) AS high,
+            min(price) AS low,
+            argMax(price, timestamp) AS close,
+            sum(size) AS volume
+        FROM {table_name}
+        WHERE symbol = %(symbol)s
+          AND timestamp >= toDateTime(%(start_sec)s)
+          AND timestamp <= toDateTime(%(end_sec)s)
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT %(limit)s
+    """
+    
+    params = {
+        'interval_seconds': interval_seconds,
+        'symbol': symbol,
+        'start_sec': start,
+        'end_sec': end,
+        'limit': limit
+    }
+    
+    try:
+        print(f"[get_ohlc_from_ch] Query: {exchange}:{symbol}, interval={interval_seconds}s, start={start}, end={end}, limit={limit}")
+        result = await ch_client.execute(query, params)
+        print(f"[get_ohlc_from_ch] Result rows: {len(result) if result else 0}")
+        
+        if result:
+            candles = [{
+                'time': int(row[0].timestamp()),  # ✅ Sekunden, nicht Millisekunden!
+                'open': float(row[1]),
+                'high': float(row[2]),
+                'low': float(row[3]),
+                'close': float(row[4]),
+                'volume': float(row[5])
+            } for row in result]
+            print(f"[get_ohlc_from_ch] First candle: {candles[0] if candles else 'none'}")
+            return candles
+    except Exception as e:
+        print(f"[get_ohlc_from_ch] ClickHouse query failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # 🚨 NO MOCK DATA - Return empty array when no real data available
+    print(f"[get_ohlc_from_ch] No real trading data found for {exchange}:{symbol}, returning empty array")
+    return []
+</file>
+
 <file path="backend/websocket/ws_frontend_handler.py">
 """
 Frontend WebSocket broadcasting (client fan-out) – FINAL.
@@ -162894,52 +162754,6 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
-<file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
-/**
- * ChartView Component
- * ====================
- * 
- * ✅ REFACTORED: Nutzt jetzt die wiederverwendbare CandleChart Component
- * 
- * Diese Component ist jetzt nur noch ein Wrapper um die Shared CandleChart.
- * Alle Chart-Logik (Theme, Resize, Lazy-Loading) ist in CandleChart ausgelagert.
- * 
- * MIGRATION:
- * - Alte Implementierung → Shared CandleChart Component
- * - Dark Mode Fix inklusive
- * - Keine Code-Duplikation mehr
- */
-
-import React from "react";
-import CandleChart from '../../../shared/components/CandleChart';
-
-interface ChartViewProps {
-  symbol: string;
-  market: string;
-  exchange: string;
-  interval: string;
-}
-
-const ChartView: React.FC<ChartViewProps> = ({
-  symbol,
-  market,
-  exchange,
-  interval,
-}) => {
-  return (
-    <CandleChart
-      symbol={symbol}
-      exchange={exchange}
-      market={market}
-      interval={interval}
-      limit={100}
-    />
-  );
-};
-
-export default ChartView;
-</file>
-
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 // frontend/src/services/ws/WebSocketPool.ts
 import { WS_BASE_URL } from "../../config/env";
@@ -163160,6 +162974,152 @@ export class WebSocketPool {
       this.open(c);
     }, delay);
   }
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
+/**
+ * CandleChart Themes
+ * ==================
+ * 
+ * Light/Dark theme presets for TradingView Lightweight Charts.
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, reagiert auf Theme-Wechsel
+ * ✅ PRODUCTION-READY: Optimierte Farben für Lesbarkeit
+ * ✅ KONSISTENT: Verwendet für alle Charts im System
+ */
+
+import type { ChartTheme, CandlestickSeriesTheme } from './types';
+
+/**
+ * Light Mode Theme
+ * Optimiert für hellen Hintergrund
+ */
+export const CHART_THEME_LIGHT: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#111827', // Tailwind gray-900
+  },
+  grid: {
+    vertLines: { color: 'rgba(0, 0, 0, 0.08)' },
+    horzLines: { color: 'rgba(0, 0, 0, 0.08)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: false,
+    fixRightEdge: true,
+    rightOffset: 10,
+    barSpacing: 6,
+    minBarSpacing: 0.5,
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    autoScale: true,
+    scaleMargins: { top: 0.1, bottom: 0.1 },
+    mode: 0,
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+  },
+};
+
+/**
+ * Dark Mode Theme
+ * Optimiert für dunklen Hintergrund - HELLE TEXTE!
+ */
+export const CHART_THEME_DARK: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#e5e7eb', // Tailwind gray-200 - ✅ HELL für Dark Mode!
+  },
+  grid: {
+    vertLines: { color: 'rgba(255, 255, 255, 0.06)' },
+    horzLines: { color: 'rgba(255, 255, 255, 0.06)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: false,
+    fixRightEdge: true,
+    rightOffset: 10,
+    barSpacing: 6,
+    minBarSpacing: 0.5,
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    autoScale: true,
+    scaleMargins: { top: 0.1, bottom: 0.1 },
+    mode: 0,
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+  },
+};
+
+/**
+ * Candlestick Series Theme (Light Mode)
+ * Standard Grün/Rot Farben
+ */
+export const SERIES_THEME_LIGHT: CandlestickSeriesTheme = {
+  upColor: '#26a69a', // Grün für Aufwärts-Candles
+  downColor: '#ef5350', // Rot für Abwärts-Candles
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Candlestick Series Theme (Dark Mode)
+ * Gleiche Farben wie Light Mode (funktionieren auf beiden Hintergründen)
+ */
+export const SERIES_THEME_DARK: CandlestickSeriesTheme = {
+  upColor: '#26a69a',
+  downColor: '#ef5350',
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Helper: Get Chart Theme based on current mode
+ */
+export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
+  const theme = isDark ? CHART_THEME_DARK : CHART_THEME_LIGHT;
+  
+  // ✅ DYNAMISCH: secondsVisible basierend auf Interval
+  return {
+    ...theme,
+    timeScale: {
+      ...theme.timeScale,
+      secondsVisible: interval.includes('s'), // z.B. "1s", "5s", "15s"
+    },
+  };
+}
+
+/**
+ * Helper: Get Series Theme based on current mode
+ */
+export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
+  return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
 }
 </file>
 
@@ -164886,6 +164846,55 @@ const ChartSection = ({
 };
 
 export default ChartSection;
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/ChartView.tsx">
+/**
+ * ChartView Component
+ * ====================
+ * 
+ * ✅ REFACTORED: Nutzt jetzt die wiederverwendbare CandleChart Component
+ * 
+ * Diese Component ist jetzt nur noch ein Wrapper um die Shared CandleChart.
+ * Alle Chart-Logik (Theme, Resize, Lazy-Loading) ist in CandleChart ausgelagert.
+ * 
+ * MIGRATION:
+ * - Alte Implementierung → Shared CandleChart Component
+ * - Dark Mode Fix inklusive
+ * - Keine Code-Duplikation mehr
+ */
+
+import React from "react";
+import CandleChart from '../../../shared/components/CandleChart';
+
+interface ChartViewProps {
+  symbol: string;
+  market: string;
+  exchange: string;
+  interval: string;
+}
+
+const ChartView: React.FC<ChartViewProps> = ({
+  symbol,
+  market,
+  exchange,
+  interval,
+}) => {
+  return (
+    <div className="w-full h-full min-h-[500px]">
+      <CandleChart
+        symbol={symbol}
+        exchange={exchange}
+        market={market}
+        interval={interval}
+        limit={0}
+        className="h-full"
+      />
+    </div>
+  );
+};
+
+export default ChartView;
 </file>
 
 <file path="frontend/src/pages/TradingPage/TradingPage.tsx">
@@ -166899,258 +166908,6 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 export default CoinSelector;
 </file>
 
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function toSec(ts: unknown): number {
-  const n = Number(ts);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  
-  // ms vs sec heuristic
-  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
-  return Math.floor(n); // already sec
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string
-) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-
-  // ✅ Backend-defined limits (from connection message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-  }, [exchange, symbol, market, interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // ✅ Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const tSec = toSec(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
-        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw
-          .map((raw: any) => ({
-            exchange: msg.exchange,
-            symbol: msg.symbol,
-            market: (msg as any).market || market,
-            interval: (msg as any).interval || interval,
-            t: toSec(raw.time ?? raw.t),
-            o: toNum(raw.open ?? raw.o),
-            h: toNum(raw.high ?? raw.h),
-            l: toNum(raw.low ?? raw.l),
-            c: toNum(raw.close ?? raw.c),
-            v: toNum(raw.volume ?? raw.v),
-          }))
-          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
-        setHistorical(hist);
-        return;
-      }
-    });
-
-    return () => {
-      // React StrictMode kann Effects doppelt mounten/unmounten.
-      // Delay verhindert Race: Handler werden nicht während laufender WS-Pool-Dispatch entfernt.
-      window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
-      }, 100);
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  return { status, trades, candles, orderbook, historical };
-}
-</file>
-
 <file path="frontend/src/shared/layout/GlobalNav.tsx">
 // frontend/src/shared/layout/GlobalNav.tsx
 
@@ -167969,6 +167726,268 @@ def start():
 
 if __name__ == "__main__":
     start()
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toSec(ts: unknown): number {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  
+  // ms vs sec heuristic
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useWsLane(
+  exchange: string,
+  symbol: string,
+  market: string,
+  interval: string
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+
+  // ✅ Backend-defined limits (from connection message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+  }, [exchange, symbol, market, interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
+      setStatus(newStatus);
+      
+      // ✅ Request historical candles when connection opens
+      if (newStatus === "OPEN") {
+        // Wait a bit for connection message to arrive first
+        setTimeout(() => {
+          pool.send(exchange, symbol, market, `historical:${interval}:500`);
+        }, 100);
+      }
+    });
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // ✅ Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const tSec = toSec(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
+        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw
+          .map((raw: any) => ({
+            exchange: msg.exchange,
+            symbol: msg.symbol,
+            market: (msg as any).market || market,
+            interval: (msg as any).interval || interval,
+            t: toSec(raw.time ?? raw.t),
+            o: toNum(raw.open ?? raw.o),
+            h: toNum(raw.high ?? raw.h),
+            l: toNum(raw.low ?? raw.l),
+            c: toNum(raw.close ?? raw.c),
+            v: toNum(raw.volume ?? raw.v),
+          }))
+          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
+        setHistorical(hist);
+        return;
+      }
+    });
+
+    return () => {
+      // React StrictMode kann Effects doppelt mounten/unmounten.
+      // Delay verhindert Race: Handler werden nicht während laufender WS-Pool-Dispatch entfernt.
+      window.setTimeout(() => {
+        try { offStatus(); } catch {}
+        try { offMsg(); } catch {}
+      }, 100);
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  return { status, trades, candles, orderbook, historical };
+}
 </file>
 
 <file path="frontend/src/main.tsx">
