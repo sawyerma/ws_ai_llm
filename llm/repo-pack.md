@@ -629,6 +629,7 @@ frontend/
       CoinMonitor/
         components/
           AlertPanel.tsx
+          DataTable.tsx
         hook/
           usePriceAlerts.ts
         CoinMonitor.tsx
@@ -72564,6 +72565,712 @@ cp components/trading/TradingTerminal.tsx features/trading/components/TradingTer
 **🎯 NÄCHSTER SCHRITT:** Ausführung der Feature-basierten Architektur-Migration mit den **exakten** Kommandos aus der MASTER-LISTE!
 </file>
 
+<file path="readme/000_backfill_build.md">
+# AUTO-BACKFILL SYSTEM - ENV-BASED HISTORICAL DATA LOADING
+
+**Problem:** Backfill muss manuell gestartet werden - Kein auto-start für Standard-Coins  
+**Lösung:** ENV-basierte Auto-Backfill Config ermöglicht automatisches Laden von Historical Data beim System-Start
+
+---
+
+## 🚨 IMPLEMENTIERUNGS-REGELN
+
+### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
+
+#### 🚫 VERBOTEN:
+
+1. **NIEMALS HARDCODED**
+   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
+   - ❌ KEINE hardcoded Symbols, URLs, Parameter
+   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
+
+2. **NIEMALS MOCK DATEN**
+   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
+   - ❌ KEINE Test-Stubs in Production-Code
+   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
+
+3. **NIEMALS LEGACY CODE**
+   - ❌ KEINE veralteten Patterns, deprecated Funktionen
+   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
+   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
+
+4. **NIEMALS EXCHANGE-SPEZIFISCH**
+   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
+   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
+   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
+
+#### ✅ PFLICHT:
+
+1. **IMMER GENERISCH**
+   - Alle Funktionen müssen für ALLE Exchanges funktionieren
+   - Parameter statt hardcoding
+
+2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
+
+3. **IMMER DOKUMENTATION LESEN**
+
+---
+
+## 📋 IMPLEMENTATION TASKS
+
+### **Phase 1: ENV Configuration**
+- [ ] **TASK 1.1:** Füge AUTO_BACKFILL_* Variablen zu `backend/config/.env` hinzu
+- [ ] **TASK 1.2:** Dokumentiere ENV Format (Exchange:Symbol pairs)
+- [ ] **TASK 1.3:** Test: ENV vars werden korrekt gelesen
+
+### **Phase 2: Collector Starter Enhancement**
+- [ ] **TASK 2.1:** Implementiere `start_auto_backfill()` in `collector_starter.py`
+- [ ] **TASK 2.2:** Parse ENV Variables (AUTO_BACKFILL_COINS)
+- [ ] **TASK 2.3:** API Calls zu `/historical/backfill/start` für jeden Coin
+- [ ] **TASK 2.4:** Integration in `start_all_collectors()` (nach Collectors, vor Table)
+
+### **Phase 3: Testing & Validation**
+- [ ] **TASK 3.1:** Test: Binance BTCUSDT auto-start
+- [ ] **TASK 3.2:** Test: Multiple Coins (BTCUSDT, ETHUSDT)
+- [ ] **TASK 3.3:** Test: Disabled (AUTO_BACKFILL_ENABLED=0)
+- [ ] **TASK 3.4:** Validiere Monitor Table zeigt aktive Backfills
+
+---
+
+## 🎯 PROBLEM: KEIN AUTO-START FÜR BACKFILL
+
+### **Aktuelles System:**
+
+```python
+# backend/services/usecases/unified_historical.py
+class UnifiedHistoricalService:
+    # ✅ Backfill funktioniert perfekt
+    async def history(...):
+        # Rate-Limited, Batch Processing, Dual Storage
+
+# ❌ ABER: Muss MANUELL gestartet werden
+curl -X POST http://localhost:8100/historical/backfill/start -d '{...}'
+```
+
+**Probleme:**
+1. ❌ **Keine Auto-Start Option** - Nur manuell via API
+2. ❌ **Standard-Coins müssen immer manuell geladen werden**
+3. ❌ **Keine persistente Config** - Jedes Mal neu eintragen
+4. ❌ **Umständlich für Development** - Ständig Backfill starten
+
+**Use Case:**
+- **Binance BTCUSDT** soll IMMER automatisch historical data laden
+- **Andere Coins** weiterhin über Frontend (wie gewohnt)
+- **Flexibel konfigurierbar** via ENV (keine hardcoded Liste!)
+
+---
+
+## ✅ LÖSUNG: ENV-BASED AUTO-BACKFILL
+
+### **Was wir BEREITS haben:**
+
+```python
+# backend/services/usecases/unified_historical.py
+class UnifiedHistoricalService:
+    """🚀 UNIFIED HISTORICAL SERVICE - Rate-Limited Backfill"""
+    # ✅ Funktioniert bereits perfekt!
+    # ✅ Rate Limits respektiert
+    # ✅ Dual Storage (Redis + ClickHouse)
+    # ✅ Batch Processing
+
+# backend/api/routers/ro_historical.py
+@router.post("/historical/backfill/start")
+async def start_backfill(...):
+    """✅ API Endpoint existiert bereits!"""
+```
+
+**Backend lädt `.env` automatisch:**
+```python
+# backend/core/main.py
+from dotenv import load_dotenv
+load_dotenv("backend/config/.env")  # ✅ Automatisch beim Start
+```
+
+**Wir müssen nur NUTZEN was da ist!**
+
+---
+
+## 🏗️ ARCHITEKTUR: AUTO-BACKFILL FLOW
+
+### **FLOW:**
+
+```
+1. start-system.sh startet Docker + Backend
+   ↓
+2. Backend (main.py) lädt .env automatisch
+   ↓
+3. Backend startet Collectors (collector_starter.py)
+   ↓
+4. collector_starter.py ruft start_all_collectors() auf
+   ↓
+5. NACH Collectors: start_auto_backfill() (NEW!)
+   ↓  
+6. Parse AUTO_BACKFILL_COINS aus ENV
+   ↓
+7. Für jeden Coin: POST /historical/backfill/start
+   ↓
+8. Pipeline Table wird generiert
+   ↓
+9. Monitor zeigt Backfill = 1 (aktive tasks)
+```
+
+**Warum in collector_starter.py?**
+- ✅ **Python Code** (kann .env lesen via os.getenv)
+- ✅ **Richtige Phase** (nach Collectors, vor Table)
+- ✅ **Bereits initialisiert** (Backend, Redis, ClickHouse ready)
+- ✅ **Kein Bash nötig** (alles in Python!)
+
+---
+
+## 📋 IMPLEMENTATION DETAILS
+
+### **TASK 1: ENV Configuration**
+
+**File:** `backend/config/.env` (am Ende hinzufügen)
+
+```bash
+# =====================================
+# 🔄 Auto-Backfill Configuration
+# =====================================
+# Automatisches Laden von Historical Data beim System-Start
+#
+# Format: "exchange:symbol,exchange:symbol,..."
+# Beispiele:
+#   - Single:   "binance:BTCUSDT"
+#   - Multiple: "binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
+#
+# WICHTIG: 
+#   - Respektiert Rate Limits automatisch
+#   - Läuft nach Collectors (non-blocking)
+#   - Frontend kann zusätzlich weitere Coins laden
+
+AUTO_BACKFILL_ENABLED=0                          # 0=off, 1=on
+AUTO_BACKFILL_COINS="binance:BTCUSDT"           # Exchange:Symbol pairs (comma-separated)
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"           # Wie weit zurück laden? (YYYY-MM-DD)
+AUTO_BACKFILL_INTERVAL="1m"                      # Interval: 1m, 5m, 15m, 1h, 4h, 1d
+AUTO_BACKFILL_MARKET="spot"                      # Market: spot, usdtm, coinm
+```
+
+**Warum .env?**
+- ✅ **Python Backend liest automatisch** (python-dotenv)
+- ✅ **Zentrale Config** (alle Settings an einem Ort)
+- ✅ **Flexibel änderbar** (kein Code-Change nötig)
+- ✅ **Keine Hardcodings** (EnterprisePattern!)
+
+---
+
+### **TASK 2: collector_starter.py Enhancement**
+
+**File:** `backend/services/adapter/collector_starter.py`
+
+**Neue Funktion hinzufügen (am Ende):**
+
+```python
+async def start_auto_backfill():
+    """
+    🔄 AUTO-BACKFILL - ENV-based Historical Data Loading
+    
+    Startet automatisch Backfill für konfigurierte Coins beim System-Start.
+    Läuft NACH Collectors, damit WebSocket-Daten bereits fließen.
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD" (how far back)
+        AUTO_BACKFILL_INTERVAL: "1m", "5m", "15m", "1h", etc.
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+    
+    Example:
+        AUTO_BACKFILL_ENABLED=1
+        AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT"
+        AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+        
+    Flow:
+        1. Check if enabled
+        2. Parse coin pairs from ENV
+        3. For each pair: POST /historical/backfill/start
+        4. Non-blocking (background tasks)
+        5. Monitor shows active backfills
+    """
+    # Check if enabled
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0')
+    if enabled != '1':
+        logger.debug("Auto-Backfill disabled (AUTO_BACKFILL_ENABLED=0)")
+        return
+    
+    # Get configuration
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '')
+    until_date = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01')
+    interval = os.getenv('AUTO_BACKFILL_INTERVAL', '1m')
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot')
+    
+    if not coins_str:
+        logger.warning("AUTO_BACKFILL_ENABLED=1 but no coins configured (AUTO_BACKFILL_COINS empty)")
+        return
+    
+    logger.info(f"🔄 Starting Auto-Backfill: {coins_str}")
+    
+    # Parse coin pairs: "binance:BTCUSDT,gateio:ETHUSDT"
+    coin_pairs = [pair.strip() for pair in coins_str.split(',') if pair.strip()]
+    
+    # Start backfill for each coin (non-blocking)
+    for coin_pair in coin_pairs:
+        try:
+            # Parse exchange:symbol
+            if ':' not in coin_pair:
+                logger.error(f"Invalid coin pair format: {coin_pair} (expected 'exchange:symbol')")
+                continue
+            
+            exchange, symbol = coin_pair.split(':', 1)
+            exchange = exchange.strip().lower()
+            symbol = symbol.strip().upper()
+            
+            logger.info(f"📊 Auto-Backfill: {exchange} {symbol} → {until_date} ({interval})")
+            
+            # API Call via requests (non-blocking)
+            import requests
+            
+            response = requests.post(
+                "http://localhost:8100/historical/backfill/start",
+                json={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "until_date": until_date,
+                    "interval": interval,
+                    "market": market
+                },
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Auto-Backfill started: {exchange}:{symbol}")
+            else:
+                logger.error(f"❌ Auto-Backfill failed: {exchange}:{symbol} - HTTP {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"❌ Auto-Backfill error for {coin_pair}: {e}")
+            # Continue with next coin (graceful degradation)
+    
+    logger.info(f"✅ Auto-Backfill: {len(coin_pairs)} tasks initiated")
+```
+
+**Integration in start_all_collectors():**
+
+```python
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ EXISTING: Start collectors
+        await start_unified_collector_service()
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ NEW: Auto-Backfill (NACH Collectors, VOR Pipeline Table)
+        await start_auto_backfill()
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+```
+
+**Warum requests statt aiohttp?**
+- ✅ **Einfacher** (keine async session management)
+- ✅ **Non-blocking** (läuft im Background)
+- ✅ **Timeout** (5s max, dann continue)
+- ✅ **Graceful** (ein Fehler stoppt nicht das System)
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+### **TEST 1: Single Coin Auto-Start (Binance BTCUSDT)**
+
+**Config:**
+```bash
+# backend/config/.env
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_INTERVAL="1m"
+AUTO_BACKFILL_MARKET="spot"
+```
+
+**Execute:**
+```bash
+./start-system.sh
+```
+
+**Expected Logs:**
+```
+🚀 Starting WebSocket Collectors via Unified Collector Service...
+✅ Unified Collector Service: STARTED (48 collectors, 8 exchanges)
+🔄 Starting Auto-Backfill: binance:BTCUSDT
+📊 Auto-Backfill: binance BTCUSDT → 2024-01-01 (1m)
+✅ Auto-Backfill started: binance:BTCUSDT
+✅ Auto-Backfill: 1 tasks initiated
+```
+
+**Expected Monitor Table:**
+```
+Exchange   | Symbol  | Redis-Spot | Redis-USDTM | Backfill | Status
+--------------------------------------------------------------------
+Binance    | BTCUSDT |        652 |         519 |        1 | HEALTHY  ← Backfill aktiv!
+```
+
+**Validation:**
+```bash
+# Check backfill status via API
+curl -s http://localhost:8100/historical/backfill/status?exchange=binance | jq
+
+# Expected response:
+{
+  "total_tasks": 1,
+  "active_tasks": 1,
+  "completed_tasks": 0,
+  "tasks": [
+    {
+      "exchange": "binance",
+      "symbol": "BTCUSDT",
+      "status": "running",
+      "progress": "45%"
+    }
+  ]
+}
+```
+
+---
+
+### **TEST 2: Multiple Coins**
+
+**Config:**
+```bash
+# backend/config/.env
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-06-01"
+AUTO_BACKFILL_INTERVAL="5m"
+```
+
+**Expected Logs:**
+```
+🔄 Starting Auto-Backfill: binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT
+📊 Auto-Backfill: binance BTCUSDT → 2024-06-01 (5m)
+✅ Auto-Backfill started: binance:BTCUSDT
+📊 Auto-Backfill: binance ETHUSDT → 2024-06-01 (5m)
+✅ Auto-Backfill started: binance:ETHUSDT
+📊 Auto-Backfill: gateio BTCUSDT → 2024-06-01 (5m)
+✅ Auto-Backfill started: gateio:BTCUSDT
+✅ Auto-Backfill: 3 tasks initiated
+```
+
+**Expected Monitor Table:**
+```
+Exchange   | Symbol  | Backfill | Status
+------------------------------------------
+Binance    | BTCUSDT |        2 | HEALTHY  ← 2 tasks (BTC + ETH)
+Gate.io    | BTCUSDT |        1 | HEALTHY  ← 1 task (BTC)
+```
+
+---
+
+### **TEST 3: Disabled (Default)**
+
+**Config:**
+```bash
+# backend/config/.env
+AUTO_BACKFILL_ENABLED=0  # ← Disabled
+```
+
+**Expected Logs:**
+```
+🚀 Starting WebSocket Collectors via Unified Collector Service...
+✅ Unified Collector Service: STARTED (48 collectors, 8 exchanges)
+# ← Kein Auto-Backfill Log (wie erwartet)
+```
+
+**Expected Monitor Table:**
+```
+Exchange   | Symbol  | Backfill | Status
+------------------------------------------
+Binance    | BTCUSDT |        0 | HEALTHY  ← Keine Backfills
+```
+
+---
+
+### **TEST 4: Error Handling (Invalid Format)**
+
+**Config:**
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,INVALID_FORMAT,gateio:ETHUSDT"
+```
+
+**Expected Logs:**
+```
+🔄 Starting Auto-Backfill: binance:BTCUSDT,INVALID_FORMAT,gateio:ETHUSDT
+📊 Auto-Backfill: binance BTCUSDT → 2024-01-01 (1m)
+✅ Auto-Backfill started: binance:BTCUSDT
+❌ Invalid coin pair format: INVALID_FORMAT (expected 'exchange:symbol')
+📊 Auto-Backfill: gateio ETHUSDT → 2024-01-01 (1m)
+✅ Auto-Backfill started: gateio:ETHUSDT
+✅ Auto-Backfill: 3 tasks initiated (1 failed)
+```
+
+**Validation:** System continues gracefully (graceful degradation!)
+
+---
+
+## 📊 EXAMPLE CONFIGURATIONS
+
+### **Example 1: Development (Single Coin)**
+```bash
+# Schneller Start, nur BTCUSDT
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-11-01"  # 1 Monat
+AUTO_BACKFILL_INTERVAL="5m"             # Weniger Daten
+AUTO_BACKFILL_MARKET="spot"
+```
+
+### **Example 2: Production (Multiple Coins)**
+```bash
+# Mehrere Coins, längerer Zeitraum
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,binance:BNBUSDT,gateio:BTCUSDT,bybit:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"  # 1 Jahr
+AUTO_BACKFILL_INTERVAL="1m"             # Volle Granularität
+AUTO_BACKFILL_MARKET="spot"
+```
+
+### **Example 3: Testing (Disabled)**
+```bash
+# Kein Auto-Backfill für Tests
+AUTO_BACKFILL_ENABLED=0
+```
+
+### **Example 4: Futures Market**
+```bash
+# Futures statt Spot
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_INTERVAL="1m"
+AUTO_BACKFILL_MARKET="usdtm"  # ← Futures!
+```
+
+---
+
+## 🎯 USE CASES
+
+### **Use Case 1: Development Environment**
+**Problem:** Entwickler braucht immer BTCUSDT Daten für Tests  
+**Solution:** Auto-Backfill mit kurzem Zeitraum
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-11-01"
+AUTO_BACKFILL_INTERVAL="15m"
+```
+
+**Result:** System startet schnell, hat aber genug Daten für Tests
+
+---
+
+### **Use Case 2: Demo / Präsentation**
+**Problem:** Demo braucht mehrere Coins mit historischen Daten  
+**Solution:** Auto-Backfill für alle Demo-Coins
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-06-01"
+AUTO_BACKFILL_INTERVAL="5m"
+```
+
+**Result:** Demo-ready nach System-Start!
+
+---
+
+### **Use Case 3: Production (Standard-Coins)**
+**Problem:** Bestimmte Coins sollen IMMER historical data haben  
+**Solution:** Auto-Backfill für Top 5 Coins
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,binance:BNBUSDT,binance:SOLUSDT,binance:ADAUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_INTERVAL="1m"
+```
+
+**Result:** Standard-Coins immer verfügbar, andere via Frontend
+
+---
+
+## 📊 AFFECTED FILES
+
+### **Files to Modify:**
+
+1. **`backend/config/.env`**
+   - Add AUTO_BACKFILL_* variables
+   - Dokumentation in Comments
+
+2. **`backend/services/adapter/collector_starter.py`**
+   - Add `start_auto_backfill()` function
+   - Integrate in `start_all_collectors()`
+   - Import `requests` library
+
+### **Files that Access:**
+
+```
+backend/config/.env
+  ↓ (loaded by)
+backend/core/main.py (python-dotenv)
+  ↓ (env vars available in)
+backend/services/adapter/collector_starter.py
+  ↓ (calls API)
+backend/api/routers/ro_historical.py (/historical/backfill/start)
+  ↓ (uses)
+backend/services/usecases/unified_historical.py (UnifiedHistoricalService)
+  ↓ (writes to)
+backend/database/redis/unified_rs_service.py (Redis Cache)
+backend/database/clickhouse/unified_cl_service.py (ClickHouse Persistence)
+```
+
+### **Data Flow:**
+
+```
+1. .env (AUTO_BACKFILL_COINS="binance:BTCUSDT")
+   ↓
+2. collector_starter.py reads ENV via os.getenv()
+   ↓
+3. POST http://localhost:8100/historical/backfill/start
+   ↓
+4. ro_historical.py receives request
+   ↓
+5. Creates UnifiedHistoricalService instance
+   ↓
+6. UnifiedHistoricalService.history()
+   ↓  
+7. Fetches data from Exchange REST API (rate-limited)
+   ↓
+8. Stores in Redis (cache) + ClickHouse (persistence)
+   ↓
+9. Monitor shows Backfill = 1 (active task)
+```
+
+---
+
+## 🚀 DEPLOYMENT STRATEGY
+
+### **Phase 1: ENV Configuration (Low Risk)**
+1. Add AUTO_BACKFILL_* vars to `.env`
+2. Set `AUTO_BACKFILL_ENABLED=0` (disabled)
+3. Deploy & Test (no behavior change)
+
+### **Phase 2: Code Implementation (Medium Risk)**
+1. Implement `start_auto_backfill()` function
+2. Integrate in `start_all_collectors()`
+3. Deploy with `AUTO_BACKFILL_ENABLED=0` (still disabled)
+4. Test function manually via Python console
+
+### **Phase 3: Enable for Dev (Low Risk)**
+1. Set `AUTO_BACKFILL_ENABLED=1` in dev environment
+2. Configure single coin (BTCUSDT)
+3. Monitor logs & table
+4. Validate backfill works
+
+### **Phase 4: Production Rollout (Low Risk)**
+1. Enable for production with tested config
+2. Monitor backfill progress
+3. Validate data quality
+4. Adjust timeouts/intervals if needed
+
+---
+
+## 📈 SUCCESS METRICS
+
+### **Performance:**
+- ✅ **Backfill starts automatically** beim System-Start
+- ✅ **Non-blocking** (System ready in 5-15s, Backfill läuft im Background)
+- ✅ **Rate-Limited** (respektiert Exchange limits)
+
+### **Reliability:**
+- ✅ **Graceful Degradation** (ein Fehler stoppt nicht das System)
+- ✅ **Error Handling** (invalid formats werden geloggt, aber geskippt)
+- ✅ **Timeout Protection** (5s max per API call)
+
+### **Usability:**
+- ✅ **ENV-based Config** (keine Code-Changes nötig)
+- ✅ **Flexible** (multiple coins, exchanges, intervals)
+- ✅ **Transparent** (logs zeigen was passiert)
+
+---
+
+## 🎯 BENEFITS
+
+### **Entwickler:**
+- **Schnellerer Development** - Daten immer verfügbar
+- **Weniger manuelle Arbeit** - Kein Backfill-Command nötig
+- **Flexibler** - ENV vars einfach ändern
+
+### **Operations:**
+- **Automated Setup** - System ready-to-use
+- **Predictable** - Immer gleiche Daten nach Start
+- **Configurable** - Per ENV anpassbar
+
+### **Business:**
+- **Faster Onboarding** - Neue Entwickler sofort produktiv
+- **Better Demos** - Daten immer verfügbar
+- **Standard Baseline** - Konsistente Datengrundlage
+
+---
+
+## 🏆 SUMMARY
+
+**Was wir ändern:**
+- ✅ Neue ENV vars in `.env` (AUTO_BACKFILL_*)
+- ✅ Neue Funktion `start_auto_backfill()` in `collector_starter.py`
+- ✅ Integration in `start_all_collectors()` (nach Collectors)
+
+**Was wir NICHT ändern:**
+- ❌ UnifiedHistoricalService (perfekt wie es ist!)
+- ❌ Backfill API Endpoint (funktioniert bereits)
+- ❌ Rate Limiting (bereits implementiert)
+- ❌ Frontend (kann weiterhin Coins hinzufügen)
+
+**Result:**
+Ein **flexibles, ENV-basiertes Auto-Backfill System** das Standard-Coins automatisch lädt, aber Frontend-Control behält!
+
+**Auto-Backfill:** ENV-konfiguriert  
+**Frontend-Backfill:** User-gesteuert  
+**Best of Both:** Automatisch + Flexibel  
+
+---
+
+## 📚 REFERENCES
+
+- **Unified Historical Service:** `backend/services/usecases/unified_historical.py`
+- **Rate Limiting:** `backend/websocket/ws_rate_limiters.py`
+- **Collector System:** `readme/000_system_start_2.md`
+- **Services Architecture:** `readme/000_services.md`
+- **Database Tables:** `readme/000_table.md`
+</file>
+
 <file path="readme/000_clickhouse_build.md">
 # SCHLANKES cl_ LANE SYSTEM - DIREKTE IMPLEMENTIERUNG MIT cl_ KONSISTENZ
 **Enterprise ClickHouse-Management - 8x Duplikate → 1x Zentrales cl_ System**
@@ -139134,6 +139841,115 @@ export function AlertPanel({ alerts, currentPrice, onAdd, onRemove, onResetTrigg
 }
 </file>
 
+<file path="frontend/src/pages/CoinMonitor/components/DataTable.tsx">
+/**
+ * DataTable Component
+ * ===================
+ * 
+ * Generic reusable table component for debugging WebSocket data.
+ * 
+ * Features:
+ * - Sticky header
+ * - Scrollable body
+ * - Max rows limit
+ * - Type-safe columns
+ * 
+ * Usage:
+ * ```tsx
+ * <DataTable
+ *   title="Historical Candles"
+ *   columns={['Time', 'Open', 'High', 'Low', 'Close']}
+ *   data={candles}
+ *   renderRow={(candle) => (
+ *     <>
+ *       <td>{new Date(candle.time).toLocaleString()}</td>
+ *       <td>{candle.open}</td>
+ *       <td>{candle.high}</td>
+ *       <td>{candle.low}</td>
+ *       <td>{candle.close}</td>
+ *     </>
+ *   )}
+ *   maxRows={10}
+ * />
+ * ```
+ */
+
+import React from 'react';
+
+interface DataTableProps<T> {
+  title: string;
+  columns: string[];
+  data: T[];
+  renderRow: (item: T, index: number) => React.ReactNode;
+  maxRows?: number;
+  className?: string;
+}
+
+export function DataTable<T>({
+  title,
+  columns,
+  data,
+  renderRow,
+  maxRows = 10,
+  className = '',
+}: DataTableProps<T>) {
+  const displayData = maxRows > 0 ? data.slice(-maxRows) : data;
+
+  return (
+    <div className={`bg-card rounded-lg border border-border overflow-hidden ${className}`}>
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-border bg-muted/50">
+        <h3 className="text-sm font-semibold text-foreground">
+          {title}
+          <span className="ml-2 text-xs text-muted-foreground">
+            ({data.length} total, showing {displayData.length})
+          </span>
+        </h3>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-auto max-h-[400px]">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
+            <tr>
+              {columns.map((col, idx) => (
+                <th
+                  key={idx}
+                  className="px-3 py-2 text-left font-medium text-muted-foreground border-b border-border"
+                >
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {displayData.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  className="px-3 py-8 text-center text-muted-foreground"
+                >
+                  No data available
+                </td>
+              </tr>
+            ) : (
+              displayData.map((item, idx) => (
+                <tr
+                  key={idx}
+                  className="border-b border-border/50 hover:bg-muted/30 transition-colors"
+                >
+                  {renderRow(item, idx)}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/pages/CoinMonitor/hook/usePriceAlerts.ts">
 // frontend/src/pages/CoinMonitor/hooks/usePriceAlerts.ts
 import { useCallback, useEffect, useState } from "react";
@@ -139981,112 +140797,6 @@ const TradingTerminal = ({ className = "" }: TradingTerminalProps) => {
 export default TradingTerminal;
 </file>
 
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-/**
- * useChartView Hook - WebSocket-basiert (ANGEPASST)
- * ===================================================
- * 
- * ARCHITEKTUR:
- * - Nutzt useWsLane() für Historical + Live Candle-Updates
- * - Kein REST mehr - nur WebSocket!
- * - Kombiniert historical + live candles
- * 
- * VERWENDUNG:
- * const { chartData, loading, error } = useChartView(
- *   'BTCUSDT',  // symbol
- *   'spot',     // market
- *   'binance',  // exchange
- *   '1m',       // interval
- *   100         // limit
- * );
- */
-
-import { useState, useEffect, useMemo } from 'react';
-import { useWsLane } from '../../../services/ws/useWsLane';
-
-interface ChartCandle {
-  time: number;  // Unix timestamp in milliseconds
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-}
-
-/**
- * useChartView Hook mit WebSocket
- */
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit: number = 100
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  
-  // ✅ WebSocket Hook für Live-Daten
-  const { historical, candles } = useWsLane(exchange, symbol, market, interval);
-  
-  // Combine historical + live candles
-  const chartData = useMemo<ChartCandle[]>(() => {
-    const allCandles = [...(historical || []), ...(candles || [])];
-    
-    if (allCandles.length === 0) {
-      return [];
-    }
-    
-    // Remove duplicates by timestamp and sort
-    const uniqueMap = new Map<number, ChartCandle>();
-    
-    allCandles.forEach(candle => {
-      const timeMs = candle.t * 1000; // Convert seconds to milliseconds
-      
-      if (!uniqueMap.has(timeMs)) {
-        uniqueMap.set(timeMs, {
-          time: timeMs,
-          open: candle.o,
-          high: candle.h,
-          low: candle.l,
-          close: candle.c,
-          volume: candle.v
-        });
-      } else {
-        // Update with latest data (live candles override historical)
-        uniqueMap.set(timeMs, {
-          time: timeMs,
-          open: candle.o,
-          high: candle.h,
-          low: candle.l,
-          close: candle.c,
-          volume: candle.v
-        });
-      }
-    });
-    
-    // Convert to array and sort by time
-    const sorted = Array.from(uniqueMap.values())
-      .sort((a, b) => a.time - b.time)
-      .slice(-limit);
-    
-    return sorted;
-  }, [historical, candles, limit]);
-  
-  // Update loading state
-  useEffect(() => {
-    if (chartData.length > 0) {
-      setLoading(false);
-      setError(null);
-    } else {
-      setLoading(true);
-    }
-  }, [chartData]);
-  
-  return { chartData, loading, error };
-}
-</file>
-
 <file path="frontend/src/pages/TradingPage/hooks/useMarketData.ts">
 /**
  * useMarketData Hook - WebSocket-basiert (ANGEPASST)
@@ -140254,232 +140964,6 @@ export function useMarketTrades(
 export { default } from "./TradingPage";
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
-/**
- * CandleChart Component
- * =====================
- * 
- * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
- * 
- * Features:
- * - Lazy-Loading der TradingView Lightweight Charts Library
- * - Automatische Dark/Light Mode Synchronisation
- * - WebSocket Integration für Live-Daten
- * - Responsive Design
- * 
- * Usage:
- * ```tsx
- * <CandleChart 
- *   symbol="BTCUSDT"
- *   exchange="binance"
- *   market="spot"
- *   interval="1h"
- *   limit={100}
- * />
- * ```
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
- * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
- */
-
-import React, { useEffect, useRef } from 'react';
-import { useCandleChart } from './useCandleChart';
-import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
-import type { CandleChartProps } from './types';
-
-const CandleChart: React.FC<CandleChartProps> = ({
-  symbol,
-  exchange,
-  market,
-  interval,
-  limit = 100,
-  className = '',
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-
-  // ✅ Chart Hook (Init, Theme, Resize)
-  const { isChartReady, setChartData } = useCandleChart({
-    interval,
-    containerRef: chartContainerRef,
-  });
-
-  // ✅ Data Hook (WebSocket Integration)
-  const { chartData, loading, error } = useChartView(
-    symbol,
-    market,
-    exchange,
-    interval,
-    limit
-  );
-
-  // Load Chart Data when ready
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0) {
-      setChartData(chartData);
-    }
-  }, [isChartReady, chartData, setChartData]);
-
-  return (
-    <div
-      className={`chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden ${className}`}
-    >
-      {/* Chart Container */}
-      <div className="relative w-full h-full">
-        <div ref={chartContainerRef} className="chart-container w-full h-full" />
-
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
-              {error.message || String(error)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default CandleChart;
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
-/**
- * CandleChart Themes
- * ==================
- * 
- * Light/Dark theme presets for TradingView Lightweight Charts.
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, reagiert auf Theme-Wechsel
- * ✅ PRODUCTION-READY: Optimierte Farben für Lesbarkeit
- * ✅ KONSISTENT: Verwendet für alle Charts im System
- */
-
-import type { ChartTheme, CandlestickSeriesTheme } from './types';
-
-/**
- * Light Mode Theme
- * Optimiert für hellen Hintergrund
- */
-export const CHART_THEME_LIGHT: ChartTheme = {
-  layout: {
-    background: { color: 'transparent' },
-    textColor: '#111827', // Tailwind gray-900
-  },
-  grid: {
-    vertLines: { color: 'rgba(0, 0, 0, 0.08)' },
-    horzLines: { color: 'rgba(0, 0, 0, 0.08)' },
-  },
-  timeScale: {
-    borderColor: 'rgba(0, 0, 0, 0.15)',
-    timeVisible: true,
-    secondsVisible: false, // Wird dynamisch überschrieben
-  },
-  rightPriceScale: {
-    borderColor: 'rgba(0, 0, 0, 0.15)',
-  },
-  crosshair: {
-    vertLine: {
-      color: 'rgba(0, 0, 0, 0.20)',
-      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
-    },
-    horzLine: {
-      color: 'rgba(0, 0, 0, 0.20)',
-      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
-    },
-  },
-};
-
-/**
- * Dark Mode Theme
- * Optimiert für dunklen Hintergrund - HELLE TEXTE!
- */
-export const CHART_THEME_DARK: ChartTheme = {
-  layout: {
-    background: { color: 'transparent' },
-    textColor: '#e5e7eb', // Tailwind gray-200 - ✅ HELL für Dark Mode!
-  },
-  grid: {
-    vertLines: { color: 'rgba(255, 255, 255, 0.06)' },
-    horzLines: { color: 'rgba(255, 255, 255, 0.06)' },
-  },
-  timeScale: {
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    timeVisible: true,
-    secondsVisible: false, // Wird dynamisch überschrieben
-  },
-  rightPriceScale: {
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  crosshair: {
-    vertLine: {
-      color: 'rgba(255, 255, 255, 0.20)',
-      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
-    },
-    horzLine: {
-      color: 'rgba(255, 255, 255, 0.20)',
-      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
-    },
-  },
-};
-
-/**
- * Candlestick Series Theme (Light Mode)
- * Standard Grün/Rot Farben
- */
-export const SERIES_THEME_LIGHT: CandlestickSeriesTheme = {
-  upColor: '#26a69a', // Grün für Aufwärts-Candles
-  downColor: '#ef5350', // Rot für Abwärts-Candles
-  borderVisible: false,
-  wickUpColor: '#26a69a',
-  wickDownColor: '#ef5350',
-  priceLineVisible: true,
-};
-
-/**
- * Candlestick Series Theme (Dark Mode)
- * Gleiche Farben wie Light Mode (funktionieren auf beiden Hintergründen)
- */
-export const SERIES_THEME_DARK: CandlestickSeriesTheme = {
-  upColor: '#26a69a',
-  downColor: '#ef5350',
-  borderVisible: false,
-  wickUpColor: '#26a69a',
-  wickDownColor: '#ef5350',
-  priceLineVisible: true,
-};
-
-/**
- * Helper: Get Chart Theme based on current mode
- */
-export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
-  const theme = isDark ? CHART_THEME_DARK : CHART_THEME_LIGHT;
-  
-  // ✅ DYNAMISCH: secondsVisible basierend auf Interval
-  return {
-    ...theme,
-    timeScale: {
-      ...theme.timeScale,
-      secondsVisible: interval.includes('s'), // z.B. "1s", "5s", "15s"
-    },
-  };
-}
-
-/**
- * Helper: Get Series Theme based on current mode
- */
-export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
-  return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
-}
-</file>
-
 <file path="frontend/src/shared/components/CandleChart/index.ts">
 /**
  * CandleChart Module Exports
@@ -140500,215 +140984,6 @@ export { default as CandleChart } from './CandleChart';
 export { useCandleChart } from './useCandleChart';
 export * from './types';
 export * from './chartThemes';
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/types.ts">
-/**
- * CandleChart Types
- * =================
- * 
- * Shared TypeScript interfaces for the reusable CandleChart component.
- * Used across all pages (TradingPage, Quantum, etc.)
- */
-
-export interface CandleChartProps {
-  symbol: string;
-  exchange: string;
-  market: string;
-  interval: string;
-  limit?: number;
-  className?: string;
-}
-
-export interface CandleData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-}
-
-export interface ChartTheme {
-  layout: {
-    background: { color: string };
-    textColor: string;
-  };
-  grid: {
-    vertLines: { color: string };
-    horzLines: { color: string };
-  };
-  timeScale: {
-    borderColor: string;
-    timeVisible: boolean;
-    secondsVisible: boolean;
-  };
-  rightPriceScale: {
-    borderColor: string;
-  };
-  crosshair?: {
-    vertLine?: {
-      color: string;
-      labelBackgroundColor: string;
-    };
-    horzLine?: {
-      color: string;
-      labelBackgroundColor: string;
-    };
-  };
-}
-
-export interface CandlestickSeriesTheme {
-  upColor: string;
-  downColor: string;
-  borderVisible: boolean;
-  wickUpColor: string;
-  wickDownColor: string;
-  priceLineVisible?: boolean;
-}
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-/**
- * useCandleChart Hook
- * ===================
- * 
- * Custom React Hook für TradingView Lightweight Charts Integration.
- * 
- * Features:
- * - Lazy-Loading der Chart-Library
- * - Automatische Theme-Synchronisation (Dark/Light Mode)
- * - Responsive Resize Handling
- * - Cleanup bei Unmount
- * 
- * ✅ DYNAMISCH: Reagiert auf Theme-Wechsel via MutationObserver
- * ✅ WIEDERVERWENDBAR: Kann in allen Pages genutzt werden
- */
-
-import { useEffect, useRef, useState } from 'react';
-import { createLazyChart } from '../../../lib/chartLazyLoader';
-import { useTheme } from '../../ui/theme-provider';
-import { getChartTheme, getSeriesTheme } from './chartThemes';
-import type { CandleData } from './types';
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
-}
-
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-  setChartData: (data: CandleData[]) => void;
-}
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-
-  // Initialize Chart
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        const isDark = actualTheme === 'dark';
-        const chartTheme = getChartTheme(isDark, interval);
-        const seriesTheme = getSeriesTheme(isDark);
-
-        // ✅ Lazy-Load Chart Library
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          ...chartTheme,
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
-
-        setIsChartReady(true);
-
-        // ✅ Resize Observer
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        // ✅ Theme-Wechsel Observer (reagiert auf <html class="dark">)
-        const themeObserver = new MutationObserver(() => {
-          if (chartInstance.current && seriesInstance.current) {
-            const isDarkNow = document.documentElement.classList.contains('dark');
-            const newChartTheme = getChartTheme(isDarkNow, interval);
-            const newSeriesTheme = getSeriesTheme(isDarkNow);
-
-            chartInstance.current.applyOptions(newChartTheme);
-            seriesInstance.current.applyOptions(newSeriesTheme);
-          }
-        });
-        themeObserver.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ['class'],
-        });
-
-        // Cleanup
-        return () => {
-          resizeObserver.disconnect();
-          themeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error('[useCandleChart] Failed to initialize chart:', err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval, actualTheme, containerRef]);
-
-  // Helper: Set Chart Data
-  const setChartData = (data: CandleData[]) => {
-    if (isChartReady && seriesInstance.current && data.length > 0) {
-      const formattedData = data.map((d) => ({
-        time: Math.floor(d.time / 1000), // ✅ Millisekunden → Sekunden
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-      }));
-      seriesInstance.current.setData(formattedData);
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-  };
-}
 </file>
 
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
@@ -141443,712 +141718,6 @@ interface ImportMeta {
     "vite": "^5.4.10"
   }
 }
-</file>
-
-<file path="readme/000_backfill_build.md">
-# AUTO-BACKFILL SYSTEM - ENV-BASED HISTORICAL DATA LOADING
-
-**Problem:** Backfill muss manuell gestartet werden - Kein auto-start für Standard-Coins  
-**Lösung:** ENV-basierte Auto-Backfill Config ermöglicht automatisches Laden von Historical Data beim System-Start
-
----
-
-## 🚨 IMPLEMENTIERUNGS-REGELN
-
-### **WICHTIG:** Bei JEDER Implementierung in diesem System MÜSSEN folgende Regeln befolgt werden:
-
-#### 🚫 VERBOTEN:
-
-1. **NIEMALS HARDCODED**
-   - ❌ KEINE hardcoded Exchange-Listen wie `["binance", "gateio", "mexc"]`
-   - ❌ KEINE hardcoded Symbols, URLs, Parameter
-   - ✅ IMMER Auto-Discovery, Config-Files, Registry-Pattern
-
-2. **NIEMALS MOCK DATEN**
-   - ❌ KEINE Mock-Daten, Fake-Daten, Simulationen
-   - ❌ KEINE Test-Stubs in Production-Code
-   - ✅ IMMER echte API-Calls, echte WebSocket-Verbindungen
-
-3. **NIEMALS LEGACY CODE**
-   - ❌ KEINE veralteten Patterns, deprecated Funktionen
-   - ❌ KEINE direkten Client-Imports (redis.Redis(), clickhouse.Client())
-   - ✅ IMMER Lane System (unified_rs_service, unified_cl_service, ws_manager)
-
-4. **NIEMALS EXCHANGE-SPEZIFISCH**
-   - ❌ KEINE If-Bedingungen wie `if exchange == "binance"`
-   - ❌ KEINE Exchange-spezifischen Dateien für generische Logik
-   - ✅ IMMER Factory Pattern, Parametrisierung, Generische Funktionen
-
-#### ✅ PFLICHT:
-
-1. **IMMER GENERISCH**
-   - Alle Funktionen müssen für ALLE Exchanges funktionieren
-   - Parameter statt hardcoding
-
-2. **IMMER STRIKT AN DIE ARCHITEKTUR HALTEN**
-
-3. **IMMER DOKUMENTATION LESEN**
-
----
-
-## 📋 IMPLEMENTATION TASKS
-
-### **Phase 1: ENV Configuration**
-- [ ] **TASK 1.1:** Füge AUTO_BACKFILL_* Variablen zu `backend/config/.env` hinzu
-- [ ] **TASK 1.2:** Dokumentiere ENV Format (Exchange:Symbol pairs)
-- [ ] **TASK 1.3:** Test: ENV vars werden korrekt gelesen
-
-### **Phase 2: Collector Starter Enhancement**
-- [ ] **TASK 2.1:** Implementiere `start_auto_backfill()` in `collector_starter.py`
-- [ ] **TASK 2.2:** Parse ENV Variables (AUTO_BACKFILL_COINS)
-- [ ] **TASK 2.3:** API Calls zu `/historical/backfill/start` für jeden Coin
-- [ ] **TASK 2.4:** Integration in `start_all_collectors()` (nach Collectors, vor Table)
-
-### **Phase 3: Testing & Validation**
-- [ ] **TASK 3.1:** Test: Binance BTCUSDT auto-start
-- [ ] **TASK 3.2:** Test: Multiple Coins (BTCUSDT, ETHUSDT)
-- [ ] **TASK 3.3:** Test: Disabled (AUTO_BACKFILL_ENABLED=0)
-- [ ] **TASK 3.4:** Validiere Monitor Table zeigt aktive Backfills
-
----
-
-## 🎯 PROBLEM: KEIN AUTO-START FÜR BACKFILL
-
-### **Aktuelles System:**
-
-```python
-# backend/services/usecases/unified_historical.py
-class UnifiedHistoricalService:
-    # ✅ Backfill funktioniert perfekt
-    async def history(...):
-        # Rate-Limited, Batch Processing, Dual Storage
-
-# ❌ ABER: Muss MANUELL gestartet werden
-curl -X POST http://localhost:8100/historical/backfill/start -d '{...}'
-```
-
-**Probleme:**
-1. ❌ **Keine Auto-Start Option** - Nur manuell via API
-2. ❌ **Standard-Coins müssen immer manuell geladen werden**
-3. ❌ **Keine persistente Config** - Jedes Mal neu eintragen
-4. ❌ **Umständlich für Development** - Ständig Backfill starten
-
-**Use Case:**
-- **Binance BTCUSDT** soll IMMER automatisch historical data laden
-- **Andere Coins** weiterhin über Frontend (wie gewohnt)
-- **Flexibel konfigurierbar** via ENV (keine hardcoded Liste!)
-
----
-
-## ✅ LÖSUNG: ENV-BASED AUTO-BACKFILL
-
-### **Was wir BEREITS haben:**
-
-```python
-# backend/services/usecases/unified_historical.py
-class UnifiedHistoricalService:
-    """🚀 UNIFIED HISTORICAL SERVICE - Rate-Limited Backfill"""
-    # ✅ Funktioniert bereits perfekt!
-    # ✅ Rate Limits respektiert
-    # ✅ Dual Storage (Redis + ClickHouse)
-    # ✅ Batch Processing
-
-# backend/api/routers/ro_historical.py
-@router.post("/historical/backfill/start")
-async def start_backfill(...):
-    """✅ API Endpoint existiert bereits!"""
-```
-
-**Backend lädt `.env` automatisch:**
-```python
-# backend/core/main.py
-from dotenv import load_dotenv
-load_dotenv("backend/config/.env")  # ✅ Automatisch beim Start
-```
-
-**Wir müssen nur NUTZEN was da ist!**
-
----
-
-## 🏗️ ARCHITEKTUR: AUTO-BACKFILL FLOW
-
-### **FLOW:**
-
-```
-1. start-system.sh startet Docker + Backend
-   ↓
-2. Backend (main.py) lädt .env automatisch
-   ↓
-3. Backend startet Collectors (collector_starter.py)
-   ↓
-4. collector_starter.py ruft start_all_collectors() auf
-   ↓
-5. NACH Collectors: start_auto_backfill() (NEW!)
-   ↓  
-6. Parse AUTO_BACKFILL_COINS aus ENV
-   ↓
-7. Für jeden Coin: POST /historical/backfill/start
-   ↓
-8. Pipeline Table wird generiert
-   ↓
-9. Monitor zeigt Backfill = 1 (aktive tasks)
-```
-
-**Warum in collector_starter.py?**
-- ✅ **Python Code** (kann .env lesen via os.getenv)
-- ✅ **Richtige Phase** (nach Collectors, vor Table)
-- ✅ **Bereits initialisiert** (Backend, Redis, ClickHouse ready)
-- ✅ **Kein Bash nötig** (alles in Python!)
-
----
-
-## 📋 IMPLEMENTATION DETAILS
-
-### **TASK 1: ENV Configuration**
-
-**File:** `backend/config/.env` (am Ende hinzufügen)
-
-```bash
-# =====================================
-# 🔄 Auto-Backfill Configuration
-# =====================================
-# Automatisches Laden von Historical Data beim System-Start
-#
-# Format: "exchange:symbol,exchange:symbol,..."
-# Beispiele:
-#   - Single:   "binance:BTCUSDT"
-#   - Multiple: "binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
-#
-# WICHTIG: 
-#   - Respektiert Rate Limits automatisch
-#   - Läuft nach Collectors (non-blocking)
-#   - Frontend kann zusätzlich weitere Coins laden
-
-AUTO_BACKFILL_ENABLED=0                          # 0=off, 1=on
-AUTO_BACKFILL_COINS="binance:BTCUSDT"           # Exchange:Symbol pairs (comma-separated)
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"           # Wie weit zurück laden? (YYYY-MM-DD)
-AUTO_BACKFILL_INTERVAL="1m"                      # Interval: 1m, 5m, 15m, 1h, 4h, 1d
-AUTO_BACKFILL_MARKET="spot"                      # Market: spot, usdtm, coinm
-```
-
-**Warum .env?**
-- ✅ **Python Backend liest automatisch** (python-dotenv)
-- ✅ **Zentrale Config** (alle Settings an einem Ort)
-- ✅ **Flexibel änderbar** (kein Code-Change nötig)
-- ✅ **Keine Hardcodings** (EnterprisePattern!)
-
----
-
-### **TASK 2: collector_starter.py Enhancement**
-
-**File:** `backend/services/adapter/collector_starter.py`
-
-**Neue Funktion hinzufügen (am Ende):**
-
-```python
-async def start_auto_backfill():
-    """
-    🔄 AUTO-BACKFILL - ENV-based Historical Data Loading
-    
-    Startet automatisch Backfill für konfigurierte Coins beim System-Start.
-    Läuft NACH Collectors, damit WebSocket-Daten bereits fließen.
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD" (how far back)
-        AUTO_BACKFILL_INTERVAL: "1m", "5m", "15m", "1h", etc.
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-    
-    Example:
-        AUTO_BACKFILL_ENABLED=1
-        AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT"
-        AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-        
-    Flow:
-        1. Check if enabled
-        2. Parse coin pairs from ENV
-        3. For each pair: POST /historical/backfill/start
-        4. Non-blocking (background tasks)
-        5. Monitor shows active backfills
-    """
-    # Check if enabled
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0')
-    if enabled != '1':
-        logger.debug("Auto-Backfill disabled (AUTO_BACKFILL_ENABLED=0)")
-        return
-    
-    # Get configuration
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '')
-    until_date = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01')
-    interval = os.getenv('AUTO_BACKFILL_INTERVAL', '1m')
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot')
-    
-    if not coins_str:
-        logger.warning("AUTO_BACKFILL_ENABLED=1 but no coins configured (AUTO_BACKFILL_COINS empty)")
-        return
-    
-    logger.info(f"🔄 Starting Auto-Backfill: {coins_str}")
-    
-    # Parse coin pairs: "binance:BTCUSDT,gateio:ETHUSDT"
-    coin_pairs = [pair.strip() for pair in coins_str.split(',') if pair.strip()]
-    
-    # Start backfill for each coin (non-blocking)
-    for coin_pair in coin_pairs:
-        try:
-            # Parse exchange:symbol
-            if ':' not in coin_pair:
-                logger.error(f"Invalid coin pair format: {coin_pair} (expected 'exchange:symbol')")
-                continue
-            
-            exchange, symbol = coin_pair.split(':', 1)
-            exchange = exchange.strip().lower()
-            symbol = symbol.strip().upper()
-            
-            logger.info(f"📊 Auto-Backfill: {exchange} {symbol} → {until_date} ({interval})")
-            
-            # API Call via requests (non-blocking)
-            import requests
-            
-            response = requests.post(
-                "http://localhost:8100/historical/backfill/start",
-                json={
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "until_date": until_date,
-                    "interval": interval,
-                    "market": market
-                },
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                logger.info(f"✅ Auto-Backfill started: {exchange}:{symbol}")
-            else:
-                logger.error(f"❌ Auto-Backfill failed: {exchange}:{symbol} - HTTP {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"❌ Auto-Backfill error for {coin_pair}: {e}")
-            # Continue with next coin (graceful degradation)
-    
-    logger.info(f"✅ Auto-Backfill: {len(coin_pairs)} tasks initiated")
-```
-
-**Integration in start_all_collectors():**
-
-```python
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ EXISTING: Start collectors
-        await start_unified_collector_service()
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ NEW: Auto-Backfill (NACH Collectors, VOR Pipeline Table)
-        await start_auto_backfill()
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-```
-
-**Warum requests statt aiohttp?**
-- ✅ **Einfacher** (keine async session management)
-- ✅ **Non-blocking** (läuft im Background)
-- ✅ **Timeout** (5s max, dann continue)
-- ✅ **Graceful** (ein Fehler stoppt nicht das System)
-
----
-
-## 🧪 TESTING & VALIDATION
-
-### **TEST 1: Single Coin Auto-Start (Binance BTCUSDT)**
-
-**Config:**
-```bash
-# backend/config/.env
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-AUTO_BACKFILL_INTERVAL="1m"
-AUTO_BACKFILL_MARKET="spot"
-```
-
-**Execute:**
-```bash
-./start-system.sh
-```
-
-**Expected Logs:**
-```
-🚀 Starting WebSocket Collectors via Unified Collector Service...
-✅ Unified Collector Service: STARTED (48 collectors, 8 exchanges)
-🔄 Starting Auto-Backfill: binance:BTCUSDT
-📊 Auto-Backfill: binance BTCUSDT → 2024-01-01 (1m)
-✅ Auto-Backfill started: binance:BTCUSDT
-✅ Auto-Backfill: 1 tasks initiated
-```
-
-**Expected Monitor Table:**
-```
-Exchange   | Symbol  | Redis-Spot | Redis-USDTM | Backfill | Status
---------------------------------------------------------------------
-Binance    | BTCUSDT |        652 |         519 |        1 | HEALTHY  ← Backfill aktiv!
-```
-
-**Validation:**
-```bash
-# Check backfill status via API
-curl -s http://localhost:8100/historical/backfill/status?exchange=binance | jq
-
-# Expected response:
-{
-  "total_tasks": 1,
-  "active_tasks": 1,
-  "completed_tasks": 0,
-  "tasks": [
-    {
-      "exchange": "binance",
-      "symbol": "BTCUSDT",
-      "status": "running",
-      "progress": "45%"
-    }
-  ]
-}
-```
-
----
-
-### **TEST 2: Multiple Coins**
-
-**Config:**
-```bash
-# backend/config/.env
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-06-01"
-AUTO_BACKFILL_INTERVAL="5m"
-```
-
-**Expected Logs:**
-```
-🔄 Starting Auto-Backfill: binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT
-📊 Auto-Backfill: binance BTCUSDT → 2024-06-01 (5m)
-✅ Auto-Backfill started: binance:BTCUSDT
-📊 Auto-Backfill: binance ETHUSDT → 2024-06-01 (5m)
-✅ Auto-Backfill started: binance:ETHUSDT
-📊 Auto-Backfill: gateio BTCUSDT → 2024-06-01 (5m)
-✅ Auto-Backfill started: gateio:BTCUSDT
-✅ Auto-Backfill: 3 tasks initiated
-```
-
-**Expected Monitor Table:**
-```
-Exchange   | Symbol  | Backfill | Status
-------------------------------------------
-Binance    | BTCUSDT |        2 | HEALTHY  ← 2 tasks (BTC + ETH)
-Gate.io    | BTCUSDT |        1 | HEALTHY  ← 1 task (BTC)
-```
-
----
-
-### **TEST 3: Disabled (Default)**
-
-**Config:**
-```bash
-# backend/config/.env
-AUTO_BACKFILL_ENABLED=0  # ← Disabled
-```
-
-**Expected Logs:**
-```
-🚀 Starting WebSocket Collectors via Unified Collector Service...
-✅ Unified Collector Service: STARTED (48 collectors, 8 exchanges)
-# ← Kein Auto-Backfill Log (wie erwartet)
-```
-
-**Expected Monitor Table:**
-```
-Exchange   | Symbol  | Backfill | Status
-------------------------------------------
-Binance    | BTCUSDT |        0 | HEALTHY  ← Keine Backfills
-```
-
----
-
-### **TEST 4: Error Handling (Invalid Format)**
-
-**Config:**
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,INVALID_FORMAT,gateio:ETHUSDT"
-```
-
-**Expected Logs:**
-```
-🔄 Starting Auto-Backfill: binance:BTCUSDT,INVALID_FORMAT,gateio:ETHUSDT
-📊 Auto-Backfill: binance BTCUSDT → 2024-01-01 (1m)
-✅ Auto-Backfill started: binance:BTCUSDT
-❌ Invalid coin pair format: INVALID_FORMAT (expected 'exchange:symbol')
-📊 Auto-Backfill: gateio ETHUSDT → 2024-01-01 (1m)
-✅ Auto-Backfill started: gateio:ETHUSDT
-✅ Auto-Backfill: 3 tasks initiated (1 failed)
-```
-
-**Validation:** System continues gracefully (graceful degradation!)
-
----
-
-## 📊 EXAMPLE CONFIGURATIONS
-
-### **Example 1: Development (Single Coin)**
-```bash
-# Schneller Start, nur BTCUSDT
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-11-01"  # 1 Monat
-AUTO_BACKFILL_INTERVAL="5m"             # Weniger Daten
-AUTO_BACKFILL_MARKET="spot"
-```
-
-### **Example 2: Production (Multiple Coins)**
-```bash
-# Mehrere Coins, längerer Zeitraum
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,binance:BNBUSDT,gateio:BTCUSDT,bybit:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"  # 1 Jahr
-AUTO_BACKFILL_INTERVAL="1m"             # Volle Granularität
-AUTO_BACKFILL_MARKET="spot"
-```
-
-### **Example 3: Testing (Disabled)**
-```bash
-# Kein Auto-Backfill für Tests
-AUTO_BACKFILL_ENABLED=0
-```
-
-### **Example 4: Futures Market**
-```bash
-# Futures statt Spot
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-AUTO_BACKFILL_INTERVAL="1m"
-AUTO_BACKFILL_MARKET="usdtm"  # ← Futures!
-```
-
----
-
-## 🎯 USE CASES
-
-### **Use Case 1: Development Environment**
-**Problem:** Entwickler braucht immer BTCUSDT Daten für Tests  
-**Solution:** Auto-Backfill mit kurzem Zeitraum
-
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-11-01"
-AUTO_BACKFILL_INTERVAL="15m"
-```
-
-**Result:** System startet schnell, hat aber genug Daten für Tests
-
----
-
-### **Use Case 2: Demo / Präsentation**
-**Problem:** Demo braucht mehrere Coins mit historischen Daten  
-**Solution:** Auto-Backfill für alle Demo-Coins
-
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,gateio:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-06-01"
-AUTO_BACKFILL_INTERVAL="5m"
-```
-
-**Result:** Demo-ready nach System-Start!
-
----
-
-### **Use Case 3: Production (Standard-Coins)**
-**Problem:** Bestimmte Coins sollen IMMER historical data haben  
-**Solution:** Auto-Backfill für Top 5 Coins
-
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT,binance:ETHUSDT,binance:BNBUSDT,binance:SOLUSDT,binance:ADAUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-AUTO_BACKFILL_INTERVAL="1m"
-```
-
-**Result:** Standard-Coins immer verfügbar, andere via Frontend
-
----
-
-## 📊 AFFECTED FILES
-
-### **Files to Modify:**
-
-1. **`backend/config/.env`**
-   - Add AUTO_BACKFILL_* variables
-   - Dokumentation in Comments
-
-2. **`backend/services/adapter/collector_starter.py`**
-   - Add `start_auto_backfill()` function
-   - Integrate in `start_all_collectors()`
-   - Import `requests` library
-
-### **Files that Access:**
-
-```
-backend/config/.env
-  ↓ (loaded by)
-backend/core/main.py (python-dotenv)
-  ↓ (env vars available in)
-backend/services/adapter/collector_starter.py
-  ↓ (calls API)
-backend/api/routers/ro_historical.py (/historical/backfill/start)
-  ↓ (uses)
-backend/services/usecases/unified_historical.py (UnifiedHistoricalService)
-  ↓ (writes to)
-backend/database/redis/unified_rs_service.py (Redis Cache)
-backend/database/clickhouse/unified_cl_service.py (ClickHouse Persistence)
-```
-
-### **Data Flow:**
-
-```
-1. .env (AUTO_BACKFILL_COINS="binance:BTCUSDT")
-   ↓
-2. collector_starter.py reads ENV via os.getenv()
-   ↓
-3. POST http://localhost:8100/historical/backfill/start
-   ↓
-4. ro_historical.py receives request
-   ↓
-5. Creates UnifiedHistoricalService instance
-   ↓
-6. UnifiedHistoricalService.history()
-   ↓  
-7. Fetches data from Exchange REST API (rate-limited)
-   ↓
-8. Stores in Redis (cache) + ClickHouse (persistence)
-   ↓
-9. Monitor shows Backfill = 1 (active task)
-```
-
----
-
-## 🚀 DEPLOYMENT STRATEGY
-
-### **Phase 1: ENV Configuration (Low Risk)**
-1. Add AUTO_BACKFILL_* vars to `.env`
-2. Set `AUTO_BACKFILL_ENABLED=0` (disabled)
-3. Deploy & Test (no behavior change)
-
-### **Phase 2: Code Implementation (Medium Risk)**
-1. Implement `start_auto_backfill()` function
-2. Integrate in `start_all_collectors()`
-3. Deploy with `AUTO_BACKFILL_ENABLED=0` (still disabled)
-4. Test function manually via Python console
-
-### **Phase 3: Enable for Dev (Low Risk)**
-1. Set `AUTO_BACKFILL_ENABLED=1` in dev environment
-2. Configure single coin (BTCUSDT)
-3. Monitor logs & table
-4. Validate backfill works
-
-### **Phase 4: Production Rollout (Low Risk)**
-1. Enable for production with tested config
-2. Monitor backfill progress
-3. Validate data quality
-4. Adjust timeouts/intervals if needed
-
----
-
-## 📈 SUCCESS METRICS
-
-### **Performance:**
-- ✅ **Backfill starts automatically** beim System-Start
-- ✅ **Non-blocking** (System ready in 5-15s, Backfill läuft im Background)
-- ✅ **Rate-Limited** (respektiert Exchange limits)
-
-### **Reliability:**
-- ✅ **Graceful Degradation** (ein Fehler stoppt nicht das System)
-- ✅ **Error Handling** (invalid formats werden geloggt, aber geskippt)
-- ✅ **Timeout Protection** (5s max per API call)
-
-### **Usability:**
-- ✅ **ENV-based Config** (keine Code-Changes nötig)
-- ✅ **Flexible** (multiple coins, exchanges, intervals)
-- ✅ **Transparent** (logs zeigen was passiert)
-
----
-
-## 🎯 BENEFITS
-
-### **Entwickler:**
-- **Schnellerer Development** - Daten immer verfügbar
-- **Weniger manuelle Arbeit** - Kein Backfill-Command nötig
-- **Flexibler** - ENV vars einfach ändern
-
-### **Operations:**
-- **Automated Setup** - System ready-to-use
-- **Predictable** - Immer gleiche Daten nach Start
-- **Configurable** - Per ENV anpassbar
-
-### **Business:**
-- **Faster Onboarding** - Neue Entwickler sofort produktiv
-- **Better Demos** - Daten immer verfügbar
-- **Standard Baseline** - Konsistente Datengrundlage
-
----
-
-## 🏆 SUMMARY
-
-**Was wir ändern:**
-- ✅ Neue ENV vars in `.env` (AUTO_BACKFILL_*)
-- ✅ Neue Funktion `start_auto_backfill()` in `collector_starter.py`
-- ✅ Integration in `start_all_collectors()` (nach Collectors)
-
-**Was wir NICHT ändern:**
-- ❌ UnifiedHistoricalService (perfekt wie es ist!)
-- ❌ Backfill API Endpoint (funktioniert bereits)
-- ❌ Rate Limiting (bereits implementiert)
-- ❌ Frontend (kann weiterhin Coins hinzufügen)
-
-**Result:**
-Ein **flexibles, ENV-basiertes Auto-Backfill System** das Standard-Coins automatisch lädt, aber Frontend-Control behält!
-
-**Auto-Backfill:** ENV-konfiguriert  
-**Frontend-Backfill:** User-gesteuert  
-**Best of Both:** Automatisch + Flexibel  
-
----
-
-## 📚 REFERENCES
-
-- **Unified Historical Service:** `backend/services/usecases/unified_historical.py`
-- **Rate Limiting:** `backend/websocket/ws_rate_limiters.py`
-- **Collector System:** `readme/000_system_start_2.md`
-- **Services Architecture:** `readme/000_services.md`
-- **Database Tables:** `readme/000_table.md`
 </file>
 
 <file path="readme/000_hardcoded_change.md">
@@ -157802,6 +157371,91 @@ export function TradesPanel({ trades }: Props) {
 }
 </file>
 
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from 'react';
+import { useWsLane } from '../../../services/ws/useWsLane';
+
+interface ChartCandle {
+  time: number; // ms
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+const DEFAULT_MAX_CANDLES = Number(import.meta.env.VITE_CHART_MAX_CANDLES ?? '0'); // 0 = unlimited
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit: number = DEFAULT_MAX_CANDLES
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status } = useWsLane(exchange, symbol, market, interval);
+
+  const chartData = useMemo<ChartCandle[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    const all = hist.concat(live);
+
+    if (all.length === 0) return [];
+
+    // candle.t MUST be seconds here -> convert to ms
+    const map = new Map<number, ChartCandle>();
+
+    for (const c of all) {
+      const timeMs = c.t * 1000;
+      if (!Number.isFinite(timeMs) || timeMs <= 0) continue;
+
+      map.set(timeMs, {
+        time: timeMs,
+        open: c.o,
+        high: c.h,
+        low: c.l,
+        close: c.c,
+        volume: c.v,
+      });
+    }
+
+    const merged = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    return limit > 0 ? merged.slice(-limit) : merged;
+  }, [historical, candles, limit]);
+
+  useEffect(() => {
+    if (status === 'OPEN') {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+    } else if (status === 'ERROR') {
+      setLoading(false);
+      setError(new Error('WebSocket connection failed'));
+    } else {
+      setLoading(true);
+    }
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta: {
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      status,
+    },
+  };
+}
+</file>
+
 <file path="frontend/src/pages/TradingPage/hooks/useOrderBook.ts">
 /**
  * useOrderBook Hook - WebSocket-basiert (ANGEPASST)
@@ -157977,6 +157631,495 @@ export function resetExchangeConfig() {
 
 export function resetMarketTypeConfig() {
   // ENV-only: nichts zu resetten
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
+/**
+ * CandleChart Component
+ * =====================
+ * 
+ * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
+ * 
+ * Features:
+ * - Lazy-Loading der TradingView Lightweight Charts Library
+ * - Automatische Dark/Light Mode Synchronisation
+ * - WebSocket Integration für Live-Daten
+ * - Responsive Design
+ * 
+ * Usage:
+ * ```tsx
+ * <CandleChart 
+ *   symbol="BTCUSDT"
+ *   exchange="binance"
+ *   market="spot"
+ *   interval="1h"
+ *   limit={100}
+ * />
+ * ```
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
+ * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
+ */
+
+import React, { useEffect, useRef } from 'react';
+import { useCandleChart } from './useCandleChart';
+import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
+import type { CandleChartProps } from './types';
+
+const DEFAULT_MAX_CANDLES = Number(import.meta.env.VITE_CHART_MAX_CANDLES ?? '0');
+
+const CandleChart: React.FC<CandleChartProps> = ({
+  symbol,
+  exchange,
+  market,
+  interval,
+  limit = DEFAULT_MAX_CANDLES,
+  className = '',
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // ✅ Chart Hook (Init, Theme, Resize)
+  const { isChartReady, setChartData, setInitialVisibleRangeOnce } = useCandleChart({
+    interval,
+    containerRef: chartContainerRef,
+  });
+
+  // ✅ Data Hook (WebSocket Integration)
+  const { chartData, loading, error } = useChartView(
+    symbol,
+    market,
+    exchange,
+    interval,
+    limit
+  );
+
+  // Load Chart Data when ready
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0) {
+      setChartData(chartData);
+      setInitialVisibleRangeOnce(chartData);
+    }
+  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
+
+  return (
+    <div
+      className={`chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden ${className}`}
+    >
+      {/* Chart Container */}
+      <div className="relative w-full h-full">
+        <div ref={chartContainerRef} className="chart-container w-full h-full" />
+
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
+              {error.message || String(error)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default CandleChart;
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
+/**
+ * CandleChart Themes
+ * ==================
+ * 
+ * Light/Dark theme presets for TradingView Lightweight Charts.
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, reagiert auf Theme-Wechsel
+ * ✅ PRODUCTION-READY: Optimierte Farben für Lesbarkeit
+ * ✅ KONSISTENT: Verwendet für alle Charts im System
+ */
+
+import type { ChartTheme, CandlestickSeriesTheme } from './types';
+
+/**
+ * Light Mode Theme
+ * Optimiert für hellen Hintergrund
+ */
+export const CHART_THEME_LIGHT: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#111827', // Tailwind gray-900
+  },
+  grid: {
+    vertLines: { color: 'rgba(0, 0, 0, 0.08)' },
+    horzLines: { color: 'rgba(0, 0, 0, 0.08)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: true,
+    fixRightEdge: false,
+    rightOffset: 10,
+    barSpacing: 6,
+    minBarSpacing: 0.5,
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    autoScale: true,
+    scaleMargins: { top: 0.1, bottom: 0.1 },
+    mode: 0,
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(0, 0, 0, 0.20)',
+      labelBackgroundColor: 'rgba(0, 0, 0, 0.20)',
+    },
+  },
+};
+
+/**
+ * Dark Mode Theme
+ * Optimiert für dunklen Hintergrund - HELLE TEXTE!
+ */
+export const CHART_THEME_DARK: ChartTheme = {
+  layout: {
+    background: { color: 'transparent' },
+    textColor: '#e5e7eb', // Tailwind gray-200 - ✅ HELL für Dark Mode!
+  },
+  grid: {
+    vertLines: { color: 'rgba(255, 255, 255, 0.06)' },
+    horzLines: { color: 'rgba(255, 255, 255, 0.06)' },
+  },
+  timeScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: true,
+    fixRightEdge: false,
+    rightOffset: 10,
+    barSpacing: 6,
+    minBarSpacing: 0.5,
+  },
+  rightPriceScale: {
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    autoScale: true,
+    scaleMargins: { top: 0.1, bottom: 0.1 },
+    mode: 0,
+  },
+  crosshair: {
+    vertLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+    horzLine: {
+      color: 'rgba(255, 255, 255, 0.20)',
+      labelBackgroundColor: 'rgba(255, 255, 255, 0.20)',
+    },
+  },
+};
+
+/**
+ * Candlestick Series Theme (Light Mode)
+ * Standard Grün/Rot Farben
+ */
+export const SERIES_THEME_LIGHT: CandlestickSeriesTheme = {
+  upColor: '#26a69a', // Grün für Aufwärts-Candles
+  downColor: '#ef5350', // Rot für Abwärts-Candles
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Candlestick Series Theme (Dark Mode)
+ * Gleiche Farben wie Light Mode (funktionieren auf beiden Hintergründen)
+ */
+export const SERIES_THEME_DARK: CandlestickSeriesTheme = {
+  upColor: '#26a69a',
+  downColor: '#ef5350',
+  borderVisible: false,
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceLineVisible: true,
+};
+
+/**
+ * Helper: Get Chart Theme based on current mode
+ */
+export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
+  const theme = isDark ? CHART_THEME_DARK : CHART_THEME_LIGHT;
+  
+  // ✅ DYNAMISCH: secondsVisible basierend auf Interval
+  return {
+    ...theme,
+    timeScale: {
+      ...theme.timeScale,
+      secondsVisible: interval.includes('s'), // z.B. "1s", "5s", "15s"
+    },
+  };
+}
+
+/**
+ * Helper: Get Series Theme based on current mode
+ */
+export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
+  return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/types.ts">
+/**
+ * CandleChart Types
+ * =================
+ * 
+ * Shared TypeScript interfaces for the reusable CandleChart component.
+ * Used across all pages (TradingPage, Quantum, etc.)
+ */
+
+export interface CandleChartProps {
+  symbol: string;
+  exchange: string;
+  market: string;
+  interval: string;
+  limit?: number;
+  className?: string;
+}
+
+export interface CandleData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface ChartTheme {
+  layout: {
+    background: { color: string };
+    textColor: string;
+  };
+  grid: {
+    vertLines: { color: string };
+    horzLines: { color: string };
+  };
+  timeScale: {
+    borderColor: string;
+    timeVisible: boolean;
+    secondsVisible: boolean;
+    fixLeftEdge?: boolean;
+    fixRightEdge?: boolean;
+    rightOffset?: number;
+    barSpacing?: number;
+    minBarSpacing?: number;
+  };
+  rightPriceScale: {
+    borderColor: string;
+    autoScale?: boolean;
+    scaleMargins?: { top: number; bottom: number };
+    mode?: number;
+  };
+  crosshair?: {
+    vertLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+    horzLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+  };
+}
+
+export interface CandlestickSeriesTheme {
+  upColor: string;
+  downColor: string;
+  borderVisible: boolean;
+  wickUpColor: string;
+  wickDownColor: string;
+  priceLineVisible?: boolean;
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+/**
+ * useCandleChart Hook
+ * ===================
+ * 
+ * Custom React Hook für TradingView Lightweight Charts Integration.
+ * 
+ * Features:
+ * - Lazy-Loading der Chart-Library
+ * - Automatische Theme-Synchronisation (Dark/Light Mode)
+ * - Responsive Resize Handling
+ * - Cleanup bei Unmount
+ * 
+ * ✅ DYNAMISCH: Reagiert auf Theme-Wechsel via MutationObserver
+ * ✅ WIEDERVERWENDBAR: Kann in allen Pages genutzt werden
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { createLazyChart } from '../../../lib/chartLazyLoader';
+import { useTheme } from '../../ui/theme-provider';
+import { getChartTheme, getSeriesTheme } from './chartThemes';
+import type { CandleData } from './types';
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? '500');
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  // Initialize Chart
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        const isDark = actualTheme === 'dark';
+        const chartTheme = getChartTheme(isDark, interval);
+        const seriesTheme = getSeriesTheme(isDark);
+
+        // ✅ Lazy-Load Chart Library
+        const chart = await createLazyChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          ...chartTheme,
+        });
+
+        if (!isMounted) {
+          chart.remove();
+          return;
+        }
+
+        chartInstance.current = chart;
+        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
+
+        setIsChartReady(true);
+
+        // ✅ Resize Observer
+        const resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && chartInstance.current) {
+            const { width, height } = entries[0].contentRect;
+            chartInstance.current.applyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+
+        // ✅ Theme-Wechsel Observer (reagiert auf <html class="dark">)
+        const themeObserver = new MutationObserver(() => {
+          if (chartInstance.current && seriesInstance.current) {
+            const isDarkNow = document.documentElement.classList.contains('dark');
+            const newChartTheme = getChartTheme(isDarkNow, interval);
+            const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+            chartInstance.current.applyOptions(newChartTheme);
+            seriesInstance.current.applyOptions(newSeriesTheme);
+          }
+        });
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ['class'],
+        });
+
+        // Cleanup
+        return () => {
+          resizeObserver.disconnect();
+          themeObserver.disconnect();
+        };
+      } catch (err) {
+        console.error('[useCandleChart] Failed to initialize chart:', err);
+      }
+    };
+
+    initChart();
+
+    return () => {
+      isMounted = false;
+      if (chartInstance.current) {
+        chartInstance.current.remove();
+        chartInstance.current = null;
+      }
+    };
+  }, [interval, actualTheme, containerRef]);
+
+  // Helper: Set Chart Data
+  const setChartData = (data: CandleData[]) => {
+    if (isChartReady && seriesInstance.current && data.length > 0) {
+      const formattedData = data.map((d) => ({
+        time: Math.floor(d.time / 1000), // ✅ Millisekunden → Sekunden
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+      }));
+      seriesInstance.current.setData(formattedData);
+    }
+  };
+
+  // Helper: Set Initial Visible Range ONCE
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    const lastIndex = data.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = data[firstIndex];
+    const lastCandle = data[lastIndex];
+    
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
+  };
 }
 </file>
 
@@ -164666,93 +164809,6 @@ export const useTradingContext = () => {
 export { TradingContext };
 </file>
 
-<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
-import React, { useMemo } from "react";
-import { useWsLane } from "../../services/ws/useWsLane";
-
-const SYMBOL = "BTCUSDT";
-const MARKET = "spot";
-const INTERVAL = "1s";
-
-// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
-// aber erst mal: harte Liste, damit es deterministisch läuft.
-const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
-
-function fmt(n: number | undefined, digits = 2) {
-  if (n === undefined || !Number.isFinite(n)) return "-";
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
-
-export default function BTCUSDTMonitor() {
-  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
-
-  return (
-    <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" }}>
-      <h1 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>
-        BTCUSDT Live Monitor (Hooks-only)
-      </h1>
-
-      <div style={{ marginBottom: 12, opacity: 0.85 }}>
-        Route: <code>/btcusdt</code> • Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
-      </div>
-
-      <div style={{ overflowX: "auto", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 8 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
-          <thead>
-            <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.04)" }}>
-              <th style={{ padding: 10 }}>Exchange</th>
-              <th style={{ padding: 10 }}>WS</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Trades</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Price</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Last Size</th>
-              <th style={{ padding: 10 }}>Side</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle O/H/L/C</th>
-              <th style={{ padding: 10, textAlign: "right" }}>Candle V</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((ex) => (
-              <Row key={ex} exchange={ex} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.04)", borderRadius: 8, fontSize: 13 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Diagnose</div>
-        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
-          <li><b>WS nicht OPEN</b> → Proxy/Backend-Route/URL falsch.</li>
-          <li><b>Trades ok, Candle leer</b> → Backend sendet keine candle-msgs, Fallback baut aus Trades.</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function Row({ exchange }: { exchange: string }) {
-  const { status, trades, candles } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
-
-  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
-  const lastCandle = candles.length ? candles[candles.length - 1] : undefined;
-
-  return (
-    <tr style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-      <td style={{ padding: 10, fontWeight: 800 }}>{exchange}</td>
-      <td style={{ padding: 10 }}>{status}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{trades.length}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.price, 8)}</td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastTrade?.size, 8)}</td>
-      <td style={{ padding: 10 }}>{lastTrade?.side ?? "-"}</td>
-      <td style={{ padding: 10, textAlign: "right", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
-        {lastCandle ? `${fmt(lastCandle.o, 8)} / ${fmt(lastCandle.h, 8)} / ${fmt(lastCandle.l, 8)} / ${fmt(lastCandle.c, 8)}` : "-"}
-      </td>
-      <td style={{ padding: 10, textAlign: "right" }}>{fmt(lastCandle?.v, 8)}</td>
-    </tr>
-  );
-}
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/ChartSection.tsx">
 import React, { useMemo } from "react";
 import {
@@ -164917,247 +164973,6 @@ const TradingPage = () => {
 };
 
 export default TradingPage;
-</file>
-
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string
-) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-
-  // ✅ Backend-defined limits (from connection message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-  }, [exchange, symbol, market, interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // ✅ Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        const m: any = msg;
-        const tSec = toNum(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
-        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw.map((raw: any) => ({
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: (msg as any).market || market,
-          interval: (msg as any).interval || interval,
-          t: Math.floor(toNum(raw.time) / 1000),
-          o: toNum(raw.open),
-          h: toNum(raw.high),
-          l: toNum(raw.low),
-          c: toNum(raw.close),
-          v: toNum(raw.volume),
-        }));
-        setHistorical(hist);
-        return;
-      }
-    });
-
-    return () => {
-      // React StrictMode kann Effects doppelt mounten/unmounten.
-      // Delay verhindert Race: Handler werden nicht während laufender WS-Pool-Dispatch entfernt.
-      window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
-      }, 100);
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  return { status, trades, candles, orderbook, historical };
-}
 </file>
 
 <file path="readme/000_backfill_2_build.md">
@@ -166294,6 +166109,185 @@ Nach Binance-Fix funktioniert:
 **SO MACHEN ES PROFIS!** 🏆
 </file>
 
+<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
+import React, { useMemo } from "react";
+import { useWsLane } from "../../services/ws/useWsLane";
+import { DataTable } from "./components/DataTable";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1h";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function fmtDate(ts: number | undefined) {
+  if (!ts) return "-";
+  return new Date(ts).toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div className="p-4 space-y-6 bg-background text-foreground">
+      <div className="space-y-2">
+        <h1 className="text-2xl font-bold">
+          BTCUSDT Live Monitor (WebSocket + Historical)
+        </h1>
+        <div className="text-sm text-muted-foreground">
+          Route: <code className="px-1 py-0.5 bg-muted rounded">/btcusdt</code> • 
+          Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+        </div>
+      </div>
+
+      {/* Live Status Table */}
+      <div className="overflow-x-auto border border-border rounded-lg">
+        <table className="w-full border-collapse min-w-[1200px]">
+          <thead>
+            <tr className="text-left bg-muted/50">
+              <th className="p-3 border-b border-border">Exchange</th>
+              <th className="p-3 border-b border-border">WS</th>
+              <th className="p-3 border-b border-border text-right">Trades</th>
+              <th className="p-3 border-b border-border text-right">Historical</th>
+              <th className="p-3 border-b border-border text-right">Live Candles</th>
+              <th className="p-3 border-b border-border text-right">Last Price</th>
+              <th className="p-3 border-b border-border text-right">Last Size</th>
+              <th className="p-3 border-b border-border">Side</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Debug Tables for first exchange */}
+      {exchanges.length > 0 && exchanges[0] && <DebugTables exchange={exchanges[0]} />}
+
+      {/* Diagnose Info */}
+      <div className="p-4 bg-muted/30 rounded-lg text-sm space-y-2">
+        <div className="font-semibold">Diagnose</div>
+        <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>Historical &gt; 0</b> → Backend sendet historical candles korrekt.</li>
+          <li><b>Timestamps nicht 1970</b> → Timestamp-Mapping funktioniert.</li>
+          <li><b>Live Candles wachsen</b> → Echtzeit-Updates funktionieren.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades, candles, historical } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+
+  return (
+    <tr className="border-t border-border/50 hover:bg-muted/20 transition-colors">
+      <td className="p-3 font-bold">{exchange}</td>
+      <td className="p-3">
+        <span className={status === "OPEN" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+          {status}
+        </span>
+      </td>
+      <td className="p-3 text-right">{trades.length}</td>
+      <td className="p-3 text-right font-semibold text-blue-600 dark:text-blue-400">
+        {historical.length}
+      </td>
+      <td className="p-3 text-right">{candles.length}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.price, 8)}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.size, 8)}</td>
+      <td className="p-3">{lastTrade?.side ?? "-"}</td>
+    </tr>
+  );
+}
+
+function DebugTables({ exchange }: { exchange: string }) {
+  const { historical, candles, trades } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-semibold">Debug Tables ({exchange})</h2>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Historical Candles */}
+        <DataTable
+          title="📊 Historical Candles"
+          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
+          data={historical}
+          renderRow={(candle) => (
+            <>
+              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
+            </>
+          )}
+          maxRows={10}
+        />
+
+        {/* Live Candles */}
+        <DataTable
+          title="🔴 Live Candles"
+          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
+          data={candles}
+          renderRow={(candle) => (
+            <>
+              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
+            </>
+          )}
+          maxRows={10}
+        />
+      </div>
+
+      {/* Trades Table */}
+      <DataTable
+        title="💹 Recent Trades"
+        columns={["Time", "Price", "Size", "Side"]}
+        data={trades}
+        renderRow={(trade) => (
+          <>
+            <td className="px-3 py-2 text-xs font-mono">{fmtDate(trade.ts)}</td>
+            <td className="px-3 py-2 text-xs text-right">{fmt(trade.price, 8)}</td>
+            <td className="px-3 py-2 text-xs text-right">{fmt(trade.size, 8)}</td>
+            <td className="px-3 py-2 text-xs">
+              <span className={trade.side === "buy" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {trade.side}
+              </span>
+            </td>
+          </>
+        )}
+        maxRows={15}
+      />
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
 // frontend/src/pages/TradingPage/components/CoinSelector.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -166903,6 +166897,258 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 };
 
 export default CoinSelector;
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toSec(ts: unknown): number {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  
+  // ms vs sec heuristic
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+export function useWsLane(
+  exchange: string,
+  symbol: string,
+  market: string,
+  interval: string
+) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+
+  // ✅ Backend-defined limits (from connection message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+  }, [exchange, symbol, market, interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const offStatus = pool.onStatus(exchange, symbol, market, setStatus);
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // ✅ Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const m: any = msg;
+        const tSec = toSec(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
+        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw
+          .map((raw: any) => ({
+            exchange: msg.exchange,
+            symbol: msg.symbol,
+            market: (msg as any).market || market,
+            interval: (msg as any).interval || interval,
+            t: toSec(raw.time ?? raw.t),
+            o: toNum(raw.open ?? raw.o),
+            h: toNum(raw.high ?? raw.h),
+            l: toNum(raw.low ?? raw.l),
+            c: toNum(raw.close ?? raw.c),
+            v: toNum(raw.volume ?? raw.v),
+          }))
+          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
+        setHistorical(hist);
+        return;
+      }
+    });
+
+    return () => {
+      // React StrictMode kann Effects doppelt mounten/unmounten.
+      // Delay verhindert Race: Handler werden nicht während laufender WS-Pool-Dispatch entfernt.
+      window.setTimeout(() => {
+        try { offStatus(); } catch {}
+        try { offMsg(); } catch {}
+      }, 100);
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  return { status, trades, candles, orderbook, historical };
+}
 </file>
 
 <file path="frontend/src/shared/layout/GlobalNav.tsx">
