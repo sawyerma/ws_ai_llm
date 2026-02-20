@@ -82243,6 +82243,391 @@ qasync>=0.25.0                # Async/Await Support für Qt
 aiohttp>=3.9.0                # Async HTTP für Desktop GUI
 </file>
 
+<file path="start-health.sh">
+#!/bin/bash
+
+# =============================================================================
+# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
+# =============================================================================
+# Wird automatisch von start-system.sh bei Fehlern aufgerufen
+# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
+
+set +e  # Don't exit on errors, we want to collect all diagnostics
+
+# Create monitoring directory
+mkdir -p monitoring
+
+# JSON output file with timestamp
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
+JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
+JSON_LATEST="monitoring/health_diagnostic_latest.json"
+
+echo "=================================================="
+echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
+echo "=================================================="
+echo ""
+echo "⏰ Start Time: $(date)"
+echo "📄 Output: $JSON_FILE"
+echo "📄 Latest: $JSON_LATEST"
+echo ""
+
+# Initialize JSON structure
+jq -n \
+  --arg ts "$TIMESTAMP" \
+  '{
+    timestamp: $ts,
+    diagnostic_type: "automatic_health_check",
+    trigger: "system_error_or_manual",
+    sections: {}
+  }' > "$JSON_FILE"
+
+# Helper function to add section to JSON
+add_json_section() {
+  local section_name="$1"
+  local section_data="$2"
+  
+  # Update JSON file with new section
+  jq --arg name "$section_name" --argjson data "$section_data" \
+    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
+    mv "${JSON_FILE}.tmp" "$JSON_FILE"
+}
+
+# =============================================================================
+# 1. HEALTH ENDPOINT CHECKS
+# =============================================================================
+echo "==================================================
+1️⃣  HEALTH ENDPOINT CHECKS"
+echo "=================================================="
+echo ""
+
+HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
+HEALTH_READY_CODE=$?
+HEALTH_READY_WORKS="false"
+if [[ $HEALTH_READY_CODE -eq 0 ]]; then
+  echo "✅ /health/ready → WORKS"
+  HEALTH_READY_WORKS="true"
+else
+  echo "❌ /health/ready → FAILED"
+fi
+
+HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
+HEALTH_DOUBLE_CODE=$?
+HEALTH_DOUBLE_BUG="false"
+if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
+  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
+  HEALTH_DOUBLE_BUG="true"
+else
+  echo "✅ /health/health/ready → 404 (correct)"
+fi
+
+HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
+HEALTH_BASE_WORKS="false"
+[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
+
+HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
+
+# Build JSON for section 1
+SECTION1_JSON=$(jq -n \
+  --arg ready_works "$HEALTH_READY_WORKS" \
+  --arg ready_response "$HEALTH_READY_RESPONSE" \
+  --arg double_bug "$HEALTH_DOUBLE_BUG" \
+  --arg base_works "$HEALTH_BASE_WORKS" \
+  --arg base_response "$HEALTH_BASE" \
+  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
+  '{
+    health_ready: {
+      works: ($ready_works == "true"),
+      response: $ready_response
+    },
+    double_prefix_bug: ($double_bug == "true"),
+    health_base: {
+      works: ($base_works == "true"),
+      response: $base_response
+    },
+    health_detailed: $detailed
+  }')
+
+add_json_section "health_endpoints" "$SECTION1_JSON"
+echo ""
+
+# =============================================================================
+# 2. EXCHANGE TRADE FLOW CHECK
+# =============================================================================
+echo "=================================================="
+echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
+echo "=================================================="
+echo ""
+
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+EXCHANGE_JSON="{"
+
+for exchange in "${EXCHANGES[@]}"; do
+  echo "🔍 Checking $exchange..."
+  
+  if [[ "$exchange" == "coinbase" ]]; then
+    symbol="BTC-USD"
+  else
+    symbol="BTCUSDT"
+  fi
+  
+  # Check orderbook
+  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
+  orderbook_works="false"
+  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
+    echo "  ✅ $exchange - Orderbook working"
+    orderbook_works="true"
+  else
+    echo "  ❌ $exchange - Orderbook failed"
+  fi
+  
+  # Check trades
+  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
+  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
+  trades_flowing="false"
+  if [[ "$trade_count" -gt 0 ]]; then
+    echo "  ✅ $exchange - Trades flowing"
+    trades_flowing="true"
+  else
+    echo "  ❌ $exchange - No trades"
+  fi
+  
+  # Add to JSON
+  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
+done
+
+# Remove trailing comma and close JSON
+EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
+
+add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
+echo ""
+
+# =============================================================================
+# 3. DOCKER CONTAINER STATUS
+# =============================================================================
+echo "=================================================="
+echo "3️⃣  DOCKER CONTAINER STATUS"
+echo "=================================================="
+echo ""
+
+CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
+echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
+
+BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
+BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
+
+echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
+
+SECTION3_JSON=$(jq -n \
+  --argjson containers "$CONTAINERS" \
+  --arg backend_status "$BACKEND_STATUS" \
+  --arg backend_started "$BACKEND_STARTED" \
+  '{
+    containers: $containers,
+    backend: {
+      status: $backend_status,
+      started_at: $backend_started
+    }
+  }')
+
+add_json_section "docker_containers" "$SECTION3_JSON"
+echo ""
+
+# =============================================================================
+# 4. DATABASE CONNECTIVITY
+# =============================================================================
+echo "=================================================="
+echo "4️⃣  DATABASE CONNECTIVITY"
+echo "=================================================="
+echo ""
+
+REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
+REDIS_WORKS="false"
+if [[ "$REDIS_PING" == "PONG" ]]; then
+  echo "✅ Redis: PONG"
+  REDIS_WORKS="true"
+else
+  echo "❌ Redis: Failed"
+fi
+
+CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
+CLICKHOUSE_WORKS="false"
+if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
+  echo "✅ ClickHouse: Responding"
+  CLICKHOUSE_WORKS="true"
+else
+  echo "❌ ClickHouse: Not responding"
+fi
+
+SECTION4_JSON=$(jq -n \
+  --arg redis_works "$REDIS_WORKS" \
+  --arg redis_ping "$REDIS_PING" \
+  --arg ch_works "$CLICKHOUSE_WORKS" \
+  '{
+    redis: {
+      works: ($redis_works == "true"),
+      ping_response: $redis_ping
+    },
+    clickhouse: {
+      works: ($ch_works == "true")
+    }
+  }')
+
+add_json_section "database_connectivity" "$SECTION4_JSON"
+echo ""
+
+# =============================================================================
+# 5. BACKEND LOGS SNAPSHOT
+# =============================================================================
+echo "=================================================="
+echo "5️⃣  BACKEND LOGS (Last 50 lines)"
+echo "=================================================="
+echo ""
+
+BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
+echo "$BACKEND_LOGS" | head -10
+echo "..."
+echo "(Full logs in JSON)"
+
+# Count errors in logs
+ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
+WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
+
+echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
+
+SECTION5_JSON=$(jq -n \
+  --arg logs "$BACKEND_LOGS" \
+  --arg errors "$ERROR_COUNT" \
+  --arg warnings "$WARNING_COUNT" \
+  '{
+    last_50_lines: $logs,
+    error_count: ($errors | tonumber),
+    warning_count: ($warnings | tonumber)
+  }')
+
+add_json_section "backend_logs" "$SECTION5_JSON"
+echo ""
+
+# =============================================================================
+# 6. WEBSOCKET STATUS
+# =============================================================================
+echo "=================================================="
+echo "6️⃣  WEBSOCKET STATUS"
+echo "=================================================="
+echo ""
+
+WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
+WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
+
+echo "Recent trades: $WS_TRADE_COUNT"
+echo "$WS_TRADES" | head -5
+
+SECTION6_JSON=$(jq -n \
+  --arg recent_trades "$WS_TRADES" \
+  --arg count "$WS_TRADE_COUNT" \
+  '{
+    recent_trade_logs: $recent_trades,
+    recent_trade_count: ($count | tonumber)
+  }')
+
+add_json_section "websocket_status" "$SECTION6_JSON"
+echo ""
+
+# =============================================================================
+# 7. HEALTH ROUTER VERIFICATION
+# =============================================================================
+echo "=================================================="
+echo "7️⃣  HEALTH ROUTER VERIFICATION"
+echo "=================================================="
+echo ""
+
+# Check if health_router in container has prefix
+CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
+echo "Container router: $CONTAINER_ROUTER"
+
+# Check main.py registration
+MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
+echo "Main.py registration:"
+echo "$MAIN_ROUTER"
+
+SECTION7_JSON=$(jq -n \
+  --arg container_router "$CONTAINER_ROUTER" \
+  --arg main_registration "$MAIN_ROUTER" \
+  '{
+    container_health_router: $container_router,
+    main_py_registration: $main_registration
+  }')
+
+add_json_section "health_router_verification" "$SECTION7_JSON"
+echo ""
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+echo "=================================================="
+echo "📋 DIAGNOSTIC SUMMARY"
+echo "=================================================="
+echo ""
+
+END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Count issues
+TOTAL_CHECKS=0
+FAILED_CHECKS=0
+
+[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
+TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+
+PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
+
+SUMMARY_JSON=$(jq -n \
+  --arg end_ts "$END_TIMESTAMP" \
+  --arg total "$TOTAL_CHECKS" \
+  --arg passed "$PASSED_CHECKS" \
+  --arg failed "$FAILED_CHECKS" \
+  '{
+    end_timestamp: $end_ts,
+    total_checks: ($total | tonumber),
+    passed_checks: ($passed | tonumber),
+    failed_checks: ($failed | tonumber),
+    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
+  }')
+
+add_json_section "summary" "$SUMMARY_JSON"
+
+# Copy to latest
+cp "$JSON_FILE" "$JSON_LATEST"
+
+echo "⏰ End Time: $(date)"
+echo ""
+echo "📊 Results:"
+echo "   Total Checks: $TOTAL_CHECKS"
+echo "   Passed: $PASSED_CHECKS"
+echo "   Failed: $FAILED_CHECKS"
+echo ""
+echo "📄 Full diagnostic report:"
+echo "   $JSON_FILE"
+echo "   $JSON_LATEST"
+echo ""
+echo "💡 Next Steps:"
+echo "   1. Review JSON file: jq '.' $JSON_LATEST"
+echo "   2. Check failed sections"
+echo "   3. Fix issues and restart system"
+echo ""
+echo "=================================================="
+echo "🏁 DIAGNOSTIC COMPLETE"
+echo "=================================================="
+</file>
+
 <file path="stop-system.sh">
 #!/bin/bash
 
@@ -155470,391 +155855,6 @@ final_path = "/api/historical" + "" + "/backfill/start"
 **Ende der Analyse** 🎉
 </file>
 
-<file path="start-health.sh">
-#!/bin/bash
-
-# =============================================================================
-# AUTOMATIC HEALTH DIAGNOSTIC SCRIPT - WITH JSON OUTPUT
-# =============================================================================
-# Wird automatisch von start-system.sh bei Fehlern aufgerufen
-# Schreibt strukturierte Diagnose in diagnose/health_diagnostic.json
-
-set +e  # Don't exit on errors, we want to collect all diagnostics
-
-# Create monitoring directory
-mkdir -p monitoring
-
-# JSON output file with timestamp
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")
-JSON_FILE="monitoring/health_diagnostic_${TIMESTAMP_FILE}.json"
-JSON_LATEST="monitoring/health_diagnostic_latest.json"
-
-echo "=================================================="
-echo "🏥 AUTOMATIC HEALTH DIAGNOSTIC"
-echo "=================================================="
-echo ""
-echo "⏰ Start Time: $(date)"
-echo "📄 Output: $JSON_FILE"
-echo "📄 Latest: $JSON_LATEST"
-echo ""
-
-# Initialize JSON structure
-jq -n \
-  --arg ts "$TIMESTAMP" \
-  '{
-    timestamp: $ts,
-    diagnostic_type: "automatic_health_check",
-    trigger: "system_error_or_manual",
-    sections: {}
-  }' > "$JSON_FILE"
-
-# Helper function to add section to JSON
-add_json_section() {
-  local section_name="$1"
-  local section_data="$2"
-  
-  # Update JSON file with new section
-  jq --arg name "$section_name" --argjson data "$section_data" \
-    '.sections[$name] = $data' "$JSON_FILE" > "${JSON_FILE}.tmp" && \
-    mv "${JSON_FILE}.tmp" "$JSON_FILE"
-}
-
-# =============================================================================
-# 1. HEALTH ENDPOINT CHECKS
-# =============================================================================
-echo "==================================================
-1️⃣  HEALTH ENDPOINT CHECKS"
-echo "=================================================="
-echo ""
-
-HEALTH_READY_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>&1)
-HEALTH_READY_CODE=$?
-HEALTH_READY_WORKS="false"
-if [[ $HEALTH_READY_CODE -eq 0 ]]; then
-  echo "✅ /health/ready → WORKS"
-  HEALTH_READY_WORKS="true"
-else
-  echo "❌ /health/ready → FAILED"
-fi
-
-HEALTH_DOUBLE_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/health/ready" 2>&1)
-HEALTH_DOUBLE_CODE=$?
-HEALTH_DOUBLE_BUG="false"
-if [[ $HEALTH_DOUBLE_CODE -eq 0 ]]; then
-  echo "⚠️  /health/health/ready → DOUBLE PREFIX BUG!"
-  HEALTH_DOUBLE_BUG="true"
-else
-  echo "✅ /health/health/ready → 404 (correct)"
-fi
-
-HEALTH_BASE=$(curl -sf --max-time 3 "http://localhost:8100/health" 2>&1)
-HEALTH_BASE_WORKS="false"
-[[ -n "$HEALTH_BASE" ]] && HEALTH_BASE_WORKS="true"
-
-HEALTH_DETAILED=$(curl -sf --max-time 3 "http://localhost:8100/health/detailed" 2>&1)
-
-# Build JSON for section 1
-SECTION1_JSON=$(jq -n \
-  --arg ready_works "$HEALTH_READY_WORKS" \
-  --arg ready_response "$HEALTH_READY_RESPONSE" \
-  --arg double_bug "$HEALTH_DOUBLE_BUG" \
-  --arg base_works "$HEALTH_BASE_WORKS" \
-  --arg base_response "$HEALTH_BASE" \
-  --argjson detailed "$(echo "$HEALTH_DETAILED" | jq -c '.' 2>/dev/null || echo 'null')" \
-  '{
-    health_ready: {
-      works: ($ready_works == "true"),
-      response: $ready_response
-    },
-    double_prefix_bug: ($double_bug == "true"),
-    health_base: {
-      works: ($base_works == "true"),
-      response: $base_response
-    },
-    health_detailed: $detailed
-  }')
-
-add_json_section "health_endpoints" "$SECTION1_JSON"
-echo ""
-
-# =============================================================================
-# 2. EXCHANGE TRADE FLOW CHECK
-# =============================================================================
-echo "=================================================="
-echo "2️⃣  EXCHANGE TRADE FLOW CHECK"
-echo "=================================================="
-echo ""
-
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-EXCHANGE_JSON="{"
-
-for exchange in "${EXCHANGES[@]}"; do
-  echo "🔍 Checking $exchange..."
-  
-  if [[ "$exchange" == "coinbase" ]]; then
-    symbol="BTC-USD"
-  else
-    symbol="BTCUSDT"
-  fi
-  
-  # Check orderbook
-  orderbook_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>&1)
-  orderbook_works="false"
-  if echo "$orderbook_response" | jq -e '.bids[0]' >/dev/null 2>&1; then
-    echo "  ✅ $exchange - Orderbook working"
-    orderbook_works="true"
-  else
-    echo "  ❌ $exchange - Orderbook failed"
-  fi
-  
-  # Check trades
-  trades_response=$(curl -sf --max-time 3 "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 2>&1)
-  trade_count=$(echo "$trades_response" | jq 'length' 2>/dev/null || echo "0")
-  trades_flowing="false"
-  if [[ "$trade_count" -gt 0 ]]; then
-    echo "  ✅ $exchange - Trades flowing"
-    trades_flowing="true"
-  else
-    echo "  ❌ $exchange - No trades"
-  fi
-  
-  # Add to JSON
-  EXCHANGE_JSON+="\"$exchange\":{\"symbol\":\"$symbol\",\"orderbook_works\":$orderbook_works,\"trades_flowing\":$trades_flowing,\"trade_count\":$trade_count},"
-done
-
-# Remove trailing comma and close JSON
-EXCHANGE_JSON="${EXCHANGE_JSON%,}}"
-
-add_json_section "exchange_trade_flow" "$EXCHANGE_JSON"
-echo ""
-
-# =============================================================================
-# 3. DOCKER CONTAINER STATUS
-# =============================================================================
-echo "=================================================="
-echo "3️⃣  DOCKER CONTAINER STATUS"
-echo "=================================================="
-echo ""
-
-CONTAINERS=$(docker compose ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo '[]')
-echo "📊 Containers: $(echo "$CONTAINERS" | jq 'length')"
-
-BACKEND_STATUS=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "not_found")
-BACKEND_STARTED=$(docker inspect 0_ws_ai-backend-1 --format='{{.State.StartedAt}}' 2>/dev/null || echo "unknown")
-
-echo "Backend: $BACKEND_STATUS (Started: $BACKEND_STARTED)"
-
-SECTION3_JSON=$(jq -n \
-  --argjson containers "$CONTAINERS" \
-  --arg backend_status "$BACKEND_STATUS" \
-  --arg backend_started "$BACKEND_STARTED" \
-  '{
-    containers: $containers,
-    backend: {
-      status: $backend_status,
-      started_at: $backend_started
-    }
-  }')
-
-add_json_section "docker_containers" "$SECTION3_JSON"
-echo ""
-
-# =============================================================================
-# 4. DATABASE CONNECTIVITY
-# =============================================================================
-echo "=================================================="
-echo "4️⃣  DATABASE CONNECTIVITY"
-echo "=================================================="
-echo ""
-
-REDIS_PING=$(redis-cli -p 6380 PING 2>/dev/null || echo "FAIL")
-REDIS_WORKS="false"
-if [[ "$REDIS_PING" == "PONG" ]]; then
-  echo "✅ Redis: PONG"
-  REDIS_WORKS="true"
-else
-  echo "❌ Redis: Failed"
-fi
-
-CLICKHOUSE_RESPONSE=$(curl -sf http://localhost:8124/ 2>/dev/null)
-CLICKHOUSE_WORKS="false"
-if [[ -n "$CLICKHOUSE_RESPONSE" ]]; then
-  echo "✅ ClickHouse: Responding"
-  CLICKHOUSE_WORKS="true"
-else
-  echo "❌ ClickHouse: Not responding"
-fi
-
-SECTION4_JSON=$(jq -n \
-  --arg redis_works "$REDIS_WORKS" \
-  --arg redis_ping "$REDIS_PING" \
-  --arg ch_works "$CLICKHOUSE_WORKS" \
-  '{
-    redis: {
-      works: ($redis_works == "true"),
-      ping_response: $redis_ping
-    },
-    clickhouse: {
-      works: ($ch_works == "true")
-    }
-  }')
-
-add_json_section "database_connectivity" "$SECTION4_JSON"
-echo ""
-
-# =============================================================================
-# 5. BACKEND LOGS SNAPSHOT
-# =============================================================================
-echo "=================================================="
-echo "5️⃣  BACKEND LOGS (Last 50 lines)"
-echo "=================================================="
-echo ""
-
-BACKEND_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | tail -50)
-echo "$BACKEND_LOGS" | head -10
-echo "..."
-echo "(Full logs in JSON)"
-
-# Count errors in logs
-ERROR_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "error" || echo "0")
-WARNING_COUNT=$(echo "$BACKEND_LOGS" | grep -ci "warning" || echo "0")
-
-echo "Errors: $ERROR_COUNT, Warnings: $WARNING_COUNT"
-
-SECTION5_JSON=$(jq -n \
-  --arg logs "$BACKEND_LOGS" \
-  --arg errors "$ERROR_COUNT" \
-  --arg warnings "$WARNING_COUNT" \
-  '{
-    last_50_lines: $logs,
-    error_count: ($errors | tonumber),
-    warning_count: ($warnings | tonumber)
-  }')
-
-add_json_section "backend_logs" "$SECTION5_JSON"
-echo ""
-
-# =============================================================================
-# 6. WEBSOCKET STATUS
-# =============================================================================
-echo "=================================================="
-echo "6️⃣  WEBSOCKET STATUS"
-echo "=================================================="
-echo ""
-
-WS_TRADES=$(docker logs 0_ws_ai-backend-1 2>&1 | grep "Trade parsed" | tail -10)
-WS_TRADE_COUNT=$(echo "$WS_TRADES" | wc -l | tr -d ' ')
-
-echo "Recent trades: $WS_TRADE_COUNT"
-echo "$WS_TRADES" | head -5
-
-SECTION6_JSON=$(jq -n \
-  --arg recent_trades "$WS_TRADES" \
-  --arg count "$WS_TRADE_COUNT" \
-  '{
-    recent_trade_logs: $recent_trades,
-    recent_trade_count: ($count | tonumber)
-  }')
-
-add_json_section "websocket_status" "$SECTION6_JSON"
-echo ""
-
-# =============================================================================
-# 7. HEALTH ROUTER VERIFICATION
-# =============================================================================
-echo "=================================================="
-echo "7️⃣  HEALTH ROUTER VERIFICATION"
-echo "=================================================="
-echo ""
-
-# Check if health_router in container has prefix
-CONTAINER_ROUTER=$(docker exec 0_ws_ai-backend-1 head -10 /app/backend/health/health_router.py 2>/dev/null | grep "APIRouter")
-echo "Container router: $CONTAINER_ROUTER"
-
-# Check main.py registration
-MAIN_ROUTER=$(grep -n "health_router" /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/core/main.py | head -5)
-echo "Main.py registration:"
-echo "$MAIN_ROUTER"
-
-SECTION7_JSON=$(jq -n \
-  --arg container_router "$CONTAINER_ROUTER" \
-  --arg main_registration "$MAIN_ROUTER" \
-  '{
-    container_health_router: $container_router,
-    main_py_registration: $main_registration
-  }')
-
-add_json_section "health_router_verification" "$SECTION7_JSON"
-echo ""
-
-# =============================================================================
-# FINAL SUMMARY
-# =============================================================================
-echo "=================================================="
-echo "📋 DIAGNOSTIC SUMMARY"
-echo "=================================================="
-echo ""
-
-END_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-# Count issues
-TOTAL_CHECKS=0
-FAILED_CHECKS=0
-
-[[ "$HEALTH_READY_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$HEALTH_DOUBLE_BUG" == "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$REDIS_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-[[ "$CLICKHOUSE_WORKS" != "true" ]] && FAILED_CHECKS=$((FAILED_CHECKS + 1))
-TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-
-PASSED_CHECKS=$((TOTAL_CHECKS - FAILED_CHECKS))
-
-SUMMARY_JSON=$(jq -n \
-  --arg end_ts "$END_TIMESTAMP" \
-  --arg total "$TOTAL_CHECKS" \
-  --arg passed "$PASSED_CHECKS" \
-  --arg failed "$FAILED_CHECKS" \
-  '{
-    end_timestamp: $end_ts,
-    total_checks: ($total | tonumber),
-    passed_checks: ($passed | tonumber),
-    failed_checks: ($failed | tonumber),
-    success_rate: (($passed | tonumber) / ($total | tonumber) * 100 | round)
-  }')
-
-add_json_section "summary" "$SUMMARY_JSON"
-
-# Copy to latest
-cp "$JSON_FILE" "$JSON_LATEST"
-
-echo "⏰ End Time: $(date)"
-echo ""
-echo "📊 Results:"
-echo "   Total Checks: $TOTAL_CHECKS"
-echo "   Passed: $PASSED_CHECKS"
-echo "   Failed: $FAILED_CHECKS"
-echo ""
-echo "📄 Full diagnostic report:"
-echo "   $JSON_FILE"
-echo "   $JSON_LATEST"
-echo ""
-echo "💡 Next Steps:"
-echo "   1. Review JSON file: jq '.' $JSON_LATEST"
-echo "   2. Check failed sections"
-echo "   3. Fix issues and restart system"
-echo ""
-echo "=================================================="
-echo "🏁 DIAGNOSTIC COMPLETE"
-echo "=================================================="
-</file>
-
 <file path="TEST_LLM_UPDATE.md">
 # LLM Auto-Update Test
 Timestamp: Sun Feb 15 19:22:45 CET 2026
@@ -161733,252 +161733,6 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="backend/services/adapter/stream_aggregator.py">
-import time
-import threading
-import logging
-from typing import Dict, Tuple
-
-from backend.core.utils.parse_resolution import parse_resolution
-
-logger = logging.getLogger("stream_aggregator")
-
-
-class ResolutionRegistry:
-    """
-    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
-
-    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
-    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
-    """
-
-    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
-        self.defaults = set(defaults)
-        self.ttl = ttl_sec
-        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
-        self.lock = threading.Lock()
-
-    def touch(self, ex: str, sym: str, res: str) -> None:
-        """
-        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
-        """
-        sec, norm = parse_resolution(res)
-        key = (ex, sym)
-        with self.lock:
-            self.active.setdefault(key, {})[norm] = {
-                "sec": sec,
-                "last": time.monotonic(),
-            }
-
-    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
-        """
-        Liefert alle relevanten Resolutions für (ex, sym):
-
-        - Basis-Resolutions aus defaults
-        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
-        """
-        key = (ex, sym)
-        now = time.monotonic()
-        with self.lock:
-            store = self.active.setdefault(key, {})
-
-            # Abgelaufene dynamische Resolutions entfernen
-            for r in list(store.keys()):
-                if now - store[r]["last"] > self.ttl:
-                    del store[r]
-
-            # Basis-Resolutions immer drin
-            out: Dict[str, Dict[str, float]] = {
-                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
-            }
-            # Dynamische Resolutions überschreiben ggf. defaults
-            out.update({r: {"sec": store[r]["sec"]} for r in store})
-
-        return out
-
-
-# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
-registry = ResolutionRegistry()
-
-
-class MultiResCandleAgg:
-    """
-    Multi-Resolution Candle-Aggregator.
-
-    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
-    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
-    """
-
-    def __init__(self):
-        # key: (ex, sym, res_str) → candle-state
-        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        self.last_cleanup = time.time()
-
-    def _cleanup_old_buckets(self) -> None:
-        """
-        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
-        Nur alle 5 Minuten aktiv.
-        """
-        current_time = time.time()
-        # Nur alle 5 Minuten bereinigen
-        if current_time - self.last_cleanup < 300:
-            return
-
-        current_time_ms = int(current_time * 1000)
-        # Lösche Candles älter als 1 Stunde
-        for key in list(self.state.keys()):
-            if current_time_ms - self.state[key]["timestamp"] > 3600000:
-                del self.state[key]
-
-        self.last_cleanup = current_time
-
-    @staticmethod
-    def _bucket(ts_ms: int, sec: int) -> int:
-        """
-        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
-        """
-        return (ts_ms // (sec * 1000)) * (sec * 1000)
-
-    def on_trade(
-        self,
-        ex: str,
-        sym: str,
-        market: str,
-        ts_ms: int,
-        price,
-        size,
-        resolutions: Dict[str, Dict[str, float]],
-    ):
-        """
-        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
-
-        Parameter:
-        - ex: Exchange-Name (z.B. 'binance')
-        - sym: Symbol (z.B. 'BTCUSDT')
-        - market: Markt-Typ (z.B. 'spot', 'usdtm')
-        - ts_ms: Timestamp in Millisekunden
-        - price: Preis (Decimal/float/str)
-        - size: Größe (Decimal/float/str)
-        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
-                       (kommt aus registry.list(ex, sym))
-
-        Rückgabe:
-        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
-          abgeschlossen wurden (Bucket-Wechsel).
-        """
-        self._cleanup_old_buckets()
-        finished = []
-
-        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
-        for res_str, meta in resolutions.items():
-            sec = meta["sec"]
-            key = (ex, sym, res_str)
-            b = self._bucket(ts_ms, sec)
-            c = self.state.get(key)
-
-            if c is None or c["timestamp"] != b:
-                # alter Bucket wird fertig, wenn vorhanden
-                if c:
-                    finished.append((res_str, c))
-                # neuen Candle-Bucket anlegen
-                self.state[key] = {
-                    "timestamp": b,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": size,
-                    "sec": sec,
-                    "market": market,
-                }
-            else:
-                # existierenden Candle-Bucket aktualisieren
-                c["c"] = price
-                c["v"] += size
-                if price > c["h"]:
-                    c["h"] = price
-                if price < c["l"]:
-                    c["l"] = price
-
-        return finished
-</file>
-
-<file path="backend/services/usecases/unified_ohlc.py">
-from backend.database.clickhouse import get_clickhouse_client
-from backend.core.config import settings
-from datetime import datetime, timedelta
-import random
-async def get_ohlc_from_ch(
-    exchange: str, 
-    symbol: str,
-    interval_seconds: int, 
-    start: int = None, 
-    end: int = None, 
-    limit: int = 500
-):
-    # ✅ FIX: Nutze get_clickhouse_client() die echten ClickHouseClientWrapper zurückgibt
-    ch_client = get_clickhouse_client()
-    
-    # Standardzeitraum setzen
-    if end is None:
-        end = int(datetime.utcnow().timestamp())
-    if start is None:
-        start = end - (limit * interval_seconds)
-    
-    # Parametrisierte Abfrage - ✅ FIX: Dynamischer Tabellenname {exchange}_trades
-    table_name = f"trading.{exchange}_trades"
-    
-    query = f"""
-        SELECT 
-            toStartOfInterval(timestamp, INTERVAL %(interval_seconds)s SECOND) AS ts,
-            argMin(price, timestamp) AS open,
-            max(price) AS high,
-            min(price) AS low,
-            argMax(price, timestamp) AS close,
-            sum(size) AS volume
-        FROM {table_name}
-        WHERE symbol = %(symbol)s
-          AND timestamp >= toDateTime(%(start_sec)s)
-          AND timestamp <= toDateTime(%(end_sec)s)
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-    """
-    
-    params = {
-        'interval_seconds': interval_seconds,
-        'symbol': symbol,
-        'start_sec': start,
-        'end_sec': end,
-        'limit': limit
-    }
-    
-    try:
-        print(f"[get_ohlc_from_ch] Query: {exchange}:{symbol}, interval={interval_seconds}s, start={start}, end={end}, limit={limit}")
-        result = await ch_client.execute(query, params)
-        print(f"[get_ohlc_from_ch] Result rows: {len(result) if result else 0}")
-        
-        if result:
-            candles = [{
-                'time': int(row[0].timestamp()),  # ✅ Sekunden, nicht Millisekunden!
-                'open': float(row[1]),
-                'high': float(row[2]),
-                'low': float(row[3]),
-                'close': float(row[4]),
-                'volume': float(row[5])
-            } for row in result]
-            print(f"[get_ohlc_from_ch] First candle: {candles[0] if candles else 'none'}")
-            return candles
-    except Exception as e:
-        print(f"[get_ohlc_from_ch] ClickHouse query failed: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # 🚨 NO MOCK DATA - Return empty array when no real data available
-    print(f"[get_ohlc_from_ch] No real trading data found for {exchange}:{symbol}, returning empty array")
-    return []
-</file>
-
 <file path="backend/websocket/ws_frontend_handler.py">
 """
 Frontend WebSocket broadcasting (client fan-out) – FINAL.
@@ -162285,473 +162039,6 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: d
         "server_iso": datetime.utcnow().isoformat(),
     }
     await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                
-                # ✅ TRADE PARSING
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                # ✅ ORDERBOOK PARSING
-                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
-                
-                # Wenn weder Trade noch Orderbook, return
-                if not trade_data and not orderbook_data:
-                    return
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data and trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ TRADE DATA PROCESSING
-                if trade_data:
-                    # Redis Stream über rs_ Lane System
-                    from backend.database.redis import unified_rs_service
-                    
-                    success = await unified_rs_service.add_trade(
-                        exchange, symbol, trade_data, market
-                    )
-                    
-                    if not success:
-                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                    
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="trade_data",
-                        data=trade_data
-                    )
-                
-                # 3. ✅ ORDERBOOK DATA PROCESSING
-                if orderbook_data:
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="orderbook_data",
-                        data=orderbook_data
-                    )
-                
-                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
-                if trade_data:
-                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg
-                    from backend.core.config import config
-                    
-                    # Aggregator pro Lane erstellen (einmalig)
-                    if not hasattr(lane, 'candle_agg'):
-                        # ✅ DYNAMISCH: Resolutions aus ENV
-                        lane.candle_agg = MultiResCandleAgg(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            resolutions=config.ws_candle_resolutions
-                        )
-                    
-                    # Trade zu Candles aggregieren
-                    finished_candles = lane.candle_agg.on_trade(trade_data)
-                    
-                    # Finished Candles broadcasten
-                    for candle in finished_candles:
-                        await self.broadcast_to_frontend(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            message_type="candle_data",
-                            data=candle
-                        )
-                
-                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, data, market_type=market)
-            elif message_type == "orderbook_data":
-                await broadcast_orderbook_data(exchange, symbol, data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -163540,113 +162827,6 @@ __all__ = [
 ]
 </file>
 
-<file path="backend/database/clickhouse/cl_config.py">
-import os
-from typing import Dict, Any, Set
-
-# cl_ Database Patterns für alle 8 Exchanges  
-CL_DATABASE_PATTERNS: Dict[str, str] = {
-    "trades": "trading.{exchange}_trades",
-    "candles": "trading.{exchange}_bars", 
-    "orderbook": "trading.{exchange}_orderbook",
-    "user_settings": "trading.user_coin_settings",
-    "indicators": "trading.user_indicator_settings",
-    "health": "monitoring.{component}_health"
-}
-
-# cl_ Connection Settings - zentral für alle Exchanges
-# Only params supported by clickhouse_connect.get_client() HTTP API
-# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
-CL_CONNECTION: Dict[str, Any] = {
-    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
-    "database": os.getenv("CLICKHOUSE_DB", "trading"),
-    "username": os.getenv("CLICKHOUSE_USER", "admin"),
-    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
-    "connect_timeout": 5,
-    "send_receive_timeout": 30
-}
-
-# cl_ Performance Settings
-CL_PERFORMANCE: Dict[str, int] = {
-    "batch_size": 1000,
-    "queue_maxsize": 5000,
-    "processing_timeout": 10,
-    "health_check_interval": 60,
-    "connection_pool_size": 10,
-    "max_concurrent_inserts": 5
-}
-
-# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
-def _get_critical_cl_components() -> Set[str]:
-    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
-    
-    components = {
-        "cl.unified-manager",
-        "cl.schema-manager",
-        "cl.connection-pool"
-    }
-    
-    # Nur erste 2 Exchanges als kritisch markieren
-    for ex in exchanges[:2]:
-        components.add(f"cl.{ex}-manager")
-    
-    return components
-
-CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
-
-# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
-def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
-    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    configs = {}
-    for i, exchange in enumerate(exchanges):
-        # Erste 2 = high priority, rest = medium
-        priority = "high" if i < 2 else "medium"
-        batch_size = 1000 if i < 2 else 800
-        
-        configs[exchange] = {
-            "database": exchange,
-            "priority": priority,
-            "batch_size": batch_size,
-            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
-        }
-    
-    return configs
-
-EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
-
-# cl_ Health Thresholds
-CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
-    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
-    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
-    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
-    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
-}
-
-# cl_ Schema Definitions
-CL_SCHEMAS: Dict[str, Dict[str, str]] = {
-    "trades": {
-        "table_suffix": "_trades",
-        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "candles": {
-        "table_suffix": "_bars", 
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "orderbook": {
-        "table_suffix": "_orderbook",
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
-        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    }
-}
-</file>
-
 <file path="backend/exchanges/binance/services/rest_api.py">
 #!/usr/bin/env python3
 """
@@ -164370,158 +163550,798 @@ class BinanceRestAPI:
             self._session = None
 </file>
 
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
+<file path="backend/services/adapter/stream_aggregator.py">
+import time
+import threading
+import logging
+from typing import Dict, Tuple
+
+from backend.core.utils.parse_resolution import parse_resolution
+
+logger = logging.getLogger("stream_aggregator")
+
+
+class ResolutionRegistry:
+    """
+    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+
+    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
+    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
+    """
+
+    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
+        self.defaults = set(defaults)
+        self.ttl = ttl_sec
+        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+        self.lock = threading.Lock()
+
+    def touch(self, ex: str, sym: str, res: str) -> None:
+        """
+        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
+        """
+        sec, norm = parse_resolution(res)
+        key = (ex, sym)
+        with self.lock:
+            self.active.setdefault(key, {})[norm] = {
+                "sec": sec,
+                "last": time.monotonic(),
+            }
+
+    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
+        """
+        Liefert alle relevanten Resolutions für (ex, sym):
+
+        - Basis-Resolutions aus defaults
+        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
+        """
+        key = (ex, sym)
+        now = time.monotonic()
+        with self.lock:
+            store = self.active.setdefault(key, {})
+
+            # Abgelaufene dynamische Resolutions entfernen
+            for r in list(store.keys()):
+                if now - store[r]["last"] > self.ttl:
+                    del store[r]
+
+            # Basis-Resolutions immer drin
+            out: Dict[str, Dict[str, float]] = {
+                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
+            }
+            # Dynamische Resolutions überschreiben ggf. defaults
+            out.update({r: {"sec": store[r]["sec"]} for r in store})
+
+        return out
+
+
+# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
+registry = ResolutionRegistry()
+
+
+class MultiResCandleAgg:
+    """
+    Multi-Resolution Candle-Aggregator.
+
+    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
+    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
+    """
+
+    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
+        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
+        self.exchange = exchange
+        self.symbol = symbol
+        self.market = market
+        self.resolutions = resolutions or []
+        
+        # key: (ex, sym, res_str) → candle-state
+        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+        self.last_cleanup = time.time()
+
+    def _cleanup_old_buckets(self) -> None:
+        """
+        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
+        Nur alle 5 Minuten aktiv.
+        """
+        current_time = time.time()
+        # Nur alle 5 Minuten bereinigen
+        if current_time - self.last_cleanup < 300:
+            return
+
+        current_time_ms = int(current_time * 1000)
+        # Lösche Candles älter als 1 Stunde
+        for key in list(self.state.keys()):
+            if current_time_ms - self.state[key]["timestamp"] > 3600000:
+                del self.state[key]
+
+        self.last_cleanup = current_time
+
+    @staticmethod
+    def _bucket(ts_ms: int, sec: int) -> int:
+        """
+        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
+        """
+        return (ts_ms // (sec * 1000)) * (sec * 1000)
+
+    def on_trade(
+        self,
+        ex: str,
+        sym: str,
+        market: str,
+        ts_ms: int,
+        price,
+        size,
+        resolutions: Dict[str, Dict[str, float]],
+    ):
+        """
+        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
+
+        Parameter:
+        - ex: Exchange-Name (z.B. 'binance')
+        - sym: Symbol (z.B. 'BTCUSDT')
+        - market: Markt-Typ (z.B. 'spot', 'usdtm')
+        - ts_ms: Timestamp in Millisekunden
+        - price: Preis (Decimal/float/str)
+        - size: Größe (Decimal/float/str)
+        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
+                       (kommt aus registry.list(ex, sym))
+
+        Rückgabe:
+        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
+          abgeschlossen wurden (Bucket-Wechsel).
+        """
+        self._cleanup_old_buckets()
+        finished = []
+
+        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
+        for res_str, meta in resolutions.items():
+            sec = meta["sec"]
+            key = (ex, sym, res_str)
+            b = self._bucket(ts_ms, sec)
+            c = self.state.get(key)
+
+            if c is None or c["timestamp"] != b:
+                # alter Bucket wird fertig, wenn vorhanden
+                if c:
+                    finished.append((res_str, c))
+                # neuen Candle-Bucket anlegen
+                self.state[key] = {
+                    "timestamp": b,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": size,
+                    "sec": sec,
+                    "market": market,
+                }
+            else:
+                # existierenden Candle-Bucket aktualisieren
+                c["c"] = price
+                c["v"] += size
+                if price > c["h"]:
+                    c["h"] = price
+                if price < c["l"]:
+                    c["l"] = price
+
+        return finished
+</file>
+
+<file path="backend/services/usecases/unified_ohlc.py">
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
+async def get_ohlc_from_ch(
+    exchange: str,
+    symbol: str,
+    market: str,
+    interval_seconds: int,
+    start: int | None = None,
+    end: int | None = None,
+    limit: int = 500,
+):
+    """
+    100% REAL DATA. No mocks.
+    Returns candles with `time` in UNIX SECONDS.
+    """
 
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+    # ---- sanitize numbers (avoid SQL injection + CH parameter limitations for INTERVAL/LIMIT)
+    interval_seconds = int(interval_seconds)
+    limit = int(limit)
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be > 0")
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
 
+    # ---- time window
+    if end is None:
+        end = int(datetime.utcnow().timestamp())
+    if start is None:
+        start = end - (limit * interval_seconds)
 
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+    # ---- ensure clickhouse is initialized and get a client
+    # IMPORTANT: you must actually GET a client object here
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
 
+    if not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
 
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
+    # This returns the wrapper that ultimately executes queries.
+    # (If pool init is still broken, this will still throw -> then the pool init code must be fixed in the container.)
+    ch_client = get_clickhouse_client()
+
+    table_name = f"trading.{exchange}_trades"
+
+    # NOTE: interval_seconds + limit as literals (ClickHouse often does NOT support binding them)
+    query = f"""
+        SELECT
+            toStartOfInterval(timestamp, INTERVAL {interval_seconds} SECOND) AS ts,
+            argMin(price, timestamp) AS open,
+            max(price) AS high,
+            min(price) AS low,
+            argMax(price, timestamp) AS close,
+            sum(size) AS volume
+        FROM {table_name}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND timestamp >= toDateTime(%(start_sec)s)
+          AND timestamp <= toDateTime(%(end_sec)s)
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT {limit}
+    """
+
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "market": market,
+        "start_sec": int(start),
+        "end_sec": int(end),
+    }
 
     try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+        print(f"[get_ohlc_from_ch] Query: {exchange}:{symbol}:{market}, interval={interval_seconds}s, start={start}, end={end}, limit={limit}")
+        result = await ch_client.execute(query, params)
+        print(f"[get_ohlc_from_ch] Result rows: {len(result) if result else 0}")
 
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
+        if not result:
+            print(f"[get_ohlc_from_ch] No real trading data found for {exchange}:{symbol}:{market}, returning empty array")
+            return []
+
+        candles = []
+        for row in result:
+            ts_dt = row[0]  # DateTime
+            candles.append(
+                {
+                    "time": int(ts_dt.timestamp()),  # ✅ seconds
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5]),
+                }
+            )
+
+        print(f"[get_ohlc_from_ch] First candle: {candles[0] if candles else 'none'}")
+        return candles
+
+    except Exception as e:
+        print(f"[get_ohlc_from_ch] ClickHouse query failed: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"[get_ohlc_from_ch] returning empty array (no mock)")
+        return []
+</file>
+
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_event(data: dict | tuple | list) -> dict:
+    """
+    ✅ DEFENSIVE: Normalisiert Tuple/List zu Dict für Frontend-Broadcast
+    
+    Manche Parser/Redis-Streams liefern Tuples statt Dicts.
+    Frontend erwartet immer Dict mit .get() Zugriff.
+    """
+    if isinstance(data, dict):
+        return data
+    
+    if isinstance(data, (tuple, list)):
+        # Tuple/List → Dict mit generischen Keys
+        # Annahme: (price, size, timestamp, ...) oder ähnlich
+        if len(data) >= 3:
+            return {
+                "price": data[0],
+                "size": data[1],
+                "timestamp": data[2],
+                "side": data[3] if len(data) > 3 else None,
             }
-        })
+        else:
+            logger.warning(f"Tuple/List zu kurz für Normalisierung: {data}")
+            return {}
+    
+    # Fallback für andere Typen
+    logger.error(f"Unerwarteter Datentyp für Broadcast: {type(data)}")
+    return {}
 
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
             
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
                 
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                # ✅ TRADE PARSING
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                # ✅ ORDERBOOK PARSING
+                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
+                
+                # Wenn weder Trade noch Orderbook, return
+                if not trade_data and not orderbook_data:
+                    return
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data and trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ TRADE DATA PROCESSING
+                if trade_data:
+                    # Redis Stream über rs_ Lane System
+                    from backend.database.redis import unified_rs_service
                     
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        interval_seconds=interval_seconds,
-                        limit=limit
+                    success = await unified_rs_service.add_trade(
+                        exchange, symbol, trade_data, market
                     )
                     
-                    await websocket.send_json({
-                        "type": "historical",
+                    if not success:
+                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                    
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="trade_data",
+                        data=trade_data
+                    )
+                
+                # 3. ✅ ORDERBOOK DATA PROCESSING
+                if orderbook_data:
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="orderbook_data",
+                        data=orderbook_data
+                    )
+                
+                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
+                if trade_data:
+                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+                    from backend.core.config import config
+                    
+                    # Aggregator pro Lane erstellen (einmalig)
+                    if not hasattr(lane, 'candle_agg'):
+                        # ✅ DYNAMISCH: Resolutions aus ENV
+                        lane.candle_agg = MultiResCandleAgg(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            resolutions=config.ws_candle_resolutions
+                        )
+                    
+                    # ✅ FIX: on_trade() benötigt alle Parameter!
+                    # Hole Resolutions aus Registry
+                    resolutions = registry.list(exchange, symbol)
+                    
+                    # Trade zu Candles aggregieren
+                    finished_candles = lane.candle_agg.on_trade(
+                        ex=exchange,
+                        sym=symbol,
+                        market=market,
+                        ts_ms=int(trade_data.get('timestamp', time.time() * 1000)),
+                        price=float(trade_data.get('price', 0)),
+                        size=float(trade_data.get('size', 0)),
+                        resolutions=resolutions
+                    )
+                    
+                    # Finished Candles broadcasten
+                    for candle in finished_candles:
+                        await self.broadcast_to_frontend(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            message_type="candle_data",
+                            data=candle
+                        )
+                
+                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
                         "exchange": exchange,
                         "symbol": symbol,
-                        "market": market,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
                     })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    mk = (market or "spot").lower()
-
-                    # Robust mapping (keine Annahmen über extra Enum-Members)
-                    if mk == "spot":
-                        market_enum = Market.SPOT
-                    elif mk in ("usdtm", "usdt", "futures"):
-                        market_enum = Market.USDTM
-                    else:
-                        market_enum = Market.SPOT
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
-                    symbols = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": mk,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
         try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
         try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
+            # ✅ NEU: Normalisiere data zu Dict (Tuple→Dict Fix)
+            normalized_data = _normalize_event(data)
+            
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, normalized_data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, normalized_data, market_type=market)
+            elif message_type == "orderbook_data":
+                await broadcast_orderbook_data(exchange, symbol, normalized_data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
 </file>
 
 <file path="frontend/src/config/exchangeSupport.ts">
@@ -166116,6 +165936,272 @@ Nach Binance-Fix funktioniert:
 - ✅ Production-Ready
 
 **SO MACHEN ES PROFIS!** 🏆
+</file>
+
+<file path="backend/database/clickhouse/cl_config.py">
+import os
+from typing import Dict, Any, Set
+
+# cl_ Database Patterns für alle 8 Exchanges  
+CL_DATABASE_PATTERNS: Dict[str, str] = {
+    "trades": "trading.{exchange}_trades",
+    "candles": "trading.{exchange}_bars", 
+    "orderbook": "trading.{exchange}_orderbook",
+    "user_settings": "trading.user_coin_settings",
+    "indicators": "trading.user_indicator_settings",
+    "health": "monitoring.{component}_health"
+}
+
+# cl_ Connection Settings - zentral für alle Exchanges
+# Only params supported by clickhouse_connect.get_client() HTTP API
+# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
+CL_CONNECTION: Dict[str, Any] = {
+    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
+    "database": os.getenv("CLICKHOUSE_DB", "trading"),
+    "username": os.getenv("CLICKHOUSE_USER", "admin"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
+    "connect_timeout": 5,
+    "send_receive_timeout": 30
+}
+
+# cl_ Performance Settings
+CL_PERFORMANCE: Dict[str, int] = {
+    "batch_size": 1000,
+    "queue_maxsize": 5000,
+    "processing_timeout": 10,
+    "health_check_interval": 60,
+    "connection_pool_size": 10,
+    "max_concurrent_inserts": 5
+}
+
+# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
+def _get_critical_cl_components() -> Set[str]:
+    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
+    
+    components = {
+        "cl.unified-manager",
+        "cl.schema-manager",
+        "cl.connection-pool"
+    }
+    
+    # Nur erste 2 Exchanges als kritisch markieren
+    for ex in exchanges[:2]:
+        components.add(f"cl.{ex}-manager")
+    
+    return components
+
+CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+
+# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
+def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
+    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    configs = {}
+    for i, exchange in enumerate(exchanges):
+        # Erste 2 = high priority, rest = medium
+        priority = "high" if i < 2 else "medium"
+        batch_size = 1000 if i < 2 else 800
+        
+        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
+        configs[exchange] = {
+            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
+            "priority": priority,
+            "batch_size": batch_size,
+            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
+        }
+    
+    return configs
+
+EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+
+# cl_ Health Thresholds
+CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
+    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
+    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
+    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
+    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
+}
+
+# cl_ Schema Definitions
+CL_SCHEMAS: Dict[str, Dict[str, str]] = {
+    "trades": {
+        "table_suffix": "_trades",
+        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "candles": {
+        "table_suffix": "_bars", 
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "orderbook": {
+        "table_suffix": "_orderbook",
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
+        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    }
+}
+</file>
+
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
+                    market_safe = market if market else "spot"
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market_safe,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market_safe,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    mk = (market or "spot").lower()
+
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
 </file>
 
 <file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
@@ -171625,15 +171711,16 @@ fi
 gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
 show_success "Vite Cache - Cleaned"
 
-gum_spin "Frontend - Starting" bash -c '
-  cd frontend || exit 1
-  nohup npm run dev > ../logs/frontend.log 2>&1 &
-  pid=$!
-  echo "$pid" > ../pids/frontend.pid
-  sleep 1
-  kill -0 "$pid" 2>/dev/null
-'
-show_success "Frontend - Started"
+# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
+echo "🚀 Starting Frontend in new terminal window..."
+osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
+  echo "⚠️  Could not open new terminal - trying background mode"
+  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  echo "$FRONTEND_PID" > ../pids/frontend.pid
+  cd ..
+}
+show_success "Frontend - Started in new terminal"
 
 echo ""
 echo "=================================================="
