@@ -358,6 +358,7 @@ backend/
       cl_unified.py
       cl_user_settings.py
       init.sql
+      threadsafe_client.py
     redis/
       __init__.py
       rs_checker.py
@@ -125761,6 +125762,42 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
+<file path="backend/database/clickhouse/threadsafe_client.py">
+from __future__ import annotations
+
+import threading
+import clickhouse_connect
+
+from backend.database.clickhouse.cl_config import CL_CONNECTION
+
+_thread_local = threading.local()
+
+
+def _make_client():
+    return clickhouse_connect.get_client(
+        host=CL_CONNECTION["host"],
+        port=CL_CONNECTION["port"],
+        username=CL_CONNECTION.get("username", "default"),
+        password=CL_CONNECTION.get("password", ""),
+        database=CL_CONNECTION.get("database", "default"),
+        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
+        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
+    )
+
+
+def get_thread_client():
+    """
+    Thread-sicher:
+    - pro Thread genau 1 ClickHouse-Client
+    - keine geteilte Session zwischen Threads
+    """
+    c = getattr(_thread_local, "client", None)
+    if c is None:
+        c = _make_client()
+        _thread_local.client = c
+    return c
+</file>
+
 <file path="backend/database/redis/rs_config.py">
 import os
 from typing import Dict, Any, Set
@@ -160097,902 +160134,6 @@ await UserSettingsAPI.getSettings(); // Funktioniert ✅
 **Status: ✅ PRODUKTIONSBEREIT** - Alle 167+ Fehler behoben, 100% Konformität erreicht.
 </file>
 
-<file path="readme/the_backfill_system_01_26_v1.md">
-# THE BACKFILL SYSTEM - VOLLSTÄNDIGE DOKUMENTATION
-
-**Version:** 1.0  
-**Datum:** 20.02.2026  
-**Status:** ETAPPE 1 - SYSTEM-ARCHITEKTUR
-
----
-
-## 📋 INHALTSVERZEICHNIS
-
-1. [System-Architektur](#1-system-architektur)
-2. [Exchange-System](#2-exchange-system)
-3. [Datenbank-Schema](#3-datenbank-schema)
-4. [Backfill-Loop](#4-backfill-loop)
-5. [Gap-Detection](#5-gap-detection)
-6. [Autofill-System](#6-autofill-system)
-7. [2-Phasen-Implementierung](#7-2-phasen-implementierung)
-8. [Gefundene Fehler](#8-gefundene-fehler)
-
----
-
-## 1. SYSTEM-ARCHITEKTUR
-
-### 1.1 Überblick
-
-Das Backfill-System lädt historische Trade-Daten von Exchange-APIs in ClickHouse. Es besteht aus mehreren Komponenten, die zusammenarbeiten:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    BACKFILL SYSTEM                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────────┐      ┌──────────────────┐           │
-│  │ BackfillLoop     │─────▶│ UnifiedHistorical│           │
-│  │ Service          │      │ Service          │           │
-│  └──────────────────┘      └──────────────────┘           │
-│         │                           │                      │
-│         │ Gap-Detection             │ API Calls            │
-│         ▼                           ▼                      │
-│  ┌──────────────────┐      ┌──────────────────┐           │
-│  │ ClickHouse       │      │ Exchange REST    │           │
-│  │ (Expected-       │      │ API (Binance,    │           │
-│  │  Buckets)        │      │  GateIO, etc.)   │           │
-│  └──────────────────┘      └──────────────────┘           │
-│         │                           │                      │
-│         └───────────┬───────────────┘                      │
-│                     ▼                                      │
-│            ┌──────────────────┐                            │
-│            │ ClickHouse       │                            │
-│            │ {exchange}_trades│                            │
-│            └──────────────────┘                            │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 1.2 Komponenten
-
-#### 1.2.1 BackfillLoopService
-**Datei:** `backend/services/usecases/backfill_loop_service.py`
-
-**Aufgaben:**
-- Orchestriert kontinuierlichen Backfill-Prozess
-- Implementiert Gap-Detection (Expected-Buckets Algorithmus)
-- Priorisiert Gap-Filling vor normalem Backfill
-- Auto-Resume nach System-Restart (liest Progress aus ClickHouse)
-
-**Wichtige Methoden:**
-```python
-async def run(self) -> None:
-    # Hauptloop: Gap-Scan → Gap-Fill → Normal-Backfill
-    
-async def _find_gaps_in_window(self) -> List[GapWindow]:
-    # Expected-Buckets Gap-Detection
-    
-async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-    # Progress-Tracking aus ClickHouse
-```
-
-#### 1.2.2 UnifiedHistoricalService
-**Datei:** `backend/services/usecases/unified_historical.py`
-
-**Aufgaben:**
-- Lädt historische Trades von Exchange-APIs
-- Generisch für alle 8 Exchanges (Binance, GateIO, Bybit, MEXC, Bitget, OKX, HTX, Coinbase)
-- Rückwärts-Loading: Von Gegenwart zu Vergangenheit
-- Batch-Processing mit Rate-Limiting
-
-**Wichtige Methoden:**
-```python
-async def history(
-    symbol: str,
-    market_type: str,
-    end_date: datetime,      # INKLUSIV lower bound
-    interval: str = "1m",
-    limit: int = 1000,
-    to_date: Optional[datetime] = None  # EXKLUSIV upper bound (Cursor)
-) -> int:
-    # Lädt Trades im Zeitfenster [end_date, to_date)
-```
-
-#### 1.2.3 Exchange REST API Wrapper
-**Beispiel:** `backend/exchanges/binance/services/rest_api.py`
-
-**Aufgaben:**
-- Wrapper für Exchange-spezifische REST APIs
-- Normalisiert Responses zu UNIFIED Format
-- Implementiert Rate-Limiting
-- Unterstützt zeit-basiertes Backfill (startTime/endTime)
-
-**Wichtige Methoden:**
-```python
-async def fetch_spot_trades(
-    symbol: str,
-    limit: int = 100,
-    startTime: int = None,  # Für zeit-basiertes Backfill
-    endTime: int = None     # Für zeit-basiertes Backfill
-) -> List[Dict]:
-    # Returns UNIFIED trade format
-```
-
-### 1.3 Datenfluss
-
-```
-START: collector_starter.py
-  │
-  ├─▶ start_auto_backfill_gap_loop()
-  │     │
-  │     ├─▶ BackfillLoopService.run()
-  │     │     │
-  │     │     ├─▶ 1) Gap-Scan (ClickHouse Expected-Buckets)
-  │     │     │     └─▶ _find_gaps_in_window()
-  │     │     │
-  │     │     ├─▶ 2) Gap-Fill (Priority)
-  │     │     │     └─▶ UnifiedHistoricalService.history(gap.start, gap.end)
-  │     │     │           └─▶ Exchange REST API (fetch_spot_trades)
-  │     │     │                 └─▶ ClickHouse INSERT (source='rest_backfill')
-  │     │     │
-  │     │     └─▶ 3) Normal Backfill (Rückwärts)
-  │     │           └─▶ UnifiedHistoricalService.history(until_date, cursor_to)
-  │     │                 └─▶ Exchange REST API (fetch_spot_trades)
-  │     │                       └─▶ ClickHouse INSERT (source='rest_backfill')
-  │     │
-  │     └─▶ Loop bis until_date erreicht
-  │
-END: Alle historischen Daten in ClickHouse
-```
-
-### 1.4 Pfade und Speicherung
-
-**Code-Pfade:**
-- Backfill Loop: `backend/services/usecases/backfill_loop_service.py`
-- Historical Service: `backend/services/usecases/unified_historical.py`
-- Exchange APIs: `backend/exchanges/{exchange}/services/rest_api.py`
-- ClickHouse Service: `backend/database/clickhouse/unified_cl_service.py`
-- Startup: `backend/services/adapter/collector_starter.py`
-
-**Datenbank-Pfade:**
-- ClickHouse Database: `trading`
-- Trade Tables: `trading.{exchange}_trades` (z.B. `trading.binance_trades`)
-- Schema: `backend/database/clickhouse/init.sql`
-
-**Konfiguration:**
-- ENV Vars: `.env` Datei im Root
-- Exchange Configs: `backend/exchanges/{exchange}/config.py`
-
----
-
----
-
-## 2. EXCHANGE-SYSTEM
-
-### 2.1 Binance API-Struktur
-
-Binance bietet verschiedene API-Endpunkte für historische Daten:
-
-#### 2.1.1 Trades API
-**Endpoint:** `/api/v3/trades`
-- **Zweck:** Recent trades (letzte ~1000 Trades)
-- **Parameter:** `symbol`, `limit`
-- **Limitation:** KEINE Zeit-Parameter (startTime/endTime)
-- **Use Case:** Live-Daten, nicht für Backfill geeignet
-
-#### 2.1.2 AggTrades API (BACKFILL)
-**Endpoint:** `/api/v3/aggTrades`
-- **Zweck:** Aggregierte Trades mit Zeit-Filterung
-- **Parameter:** `symbol`, `limit`, `startTime`, `endTime`
-- **Limitation:** Zeit-basiertes Backfill möglich
-- **Use Case:** **PRIMÄR FÜR BACKFILL**
-
-**Wichtig:** UnifiedHistoricalService nutzt aggTrades für zeit-basiertes Backfill!
-
-```python
-# backend/exchanges/binance/services/rest_api.py
-async def fetch_spot_trades(
-    symbol: str,
-    limit: int = 100,
-    startTime: int = None,   # ✅ Für aggTrades
-    endTime: int = None      # ✅ Für aggTrades
-) -> List[Dict]:
-    # Zeit-Parameter vorhanden? → aggTrades
-    if startTime is not None or endTime is not None:
-        raw_trades = await self._request("/api/v3/aggTrades", params)
-    else:
-        # Fallback: Recent trades
-        raw_trades = await self._request("/api/v3/trades", params)
-```
-
-### 2.2 Binance Account-Typen
-
-#### 2.2.1 Free Account (Standard)
-**Zeitauflösung:** 1 Minute (1m)
-- aggTrades liefert Trades in 1-Minuten-Auflösung
-- Keine Sub-Minute Daten verfügbar
-- Rate Limit: 1200 requests/minute (Weight-basiert)
-
-**Beispiel ENV:**
-```bash
-BINANCE_IS_PREMIUM=0
-BINANCE_MIN_INTERVAL=1m
-```
-
-#### 2.2.2 Premium Account (VIP)
-**Zeitauflösung:** 1 Sekunde (1s)
-- aggTrades liefert Trades in 1-Sekunden-Auflösung
-- Höhere Rate Limits
-- Kleinere Zeit-Fenster für präzisere Daten
-
-**Beispiel ENV:**
-```bash
-BINANCE_IS_PREMIUM=1
-BINANCE_MIN_INTERVAL=1s
-```
-
-### 2.3 Rate Limits
-
-#### 2.3.1 Binance Rate Limit System
-Binance nutzt ein **Weight-basiertes** System:
-- Jeder Endpoint hat ein Weight (z.B. aggTrades = 1)
-- Limit: 1200 Weight pro Minute
-- Bei Überschreitung: HTTP 429 (Rate Limit Exceeded)
-
-**Implementierung:**
-```python
-# backend/websocket/ws_rate_limiters.py
-class WebSocketRateLimiter:
-    def __init__(self, config: RateLimitConfig):
-        self.rate_limiter = RateLimiter(
-            max_calls=config.max_calls,
-            period=config.period
-        )
-    
-    async def acquire(self):
-        await self.rate_limiter.acquire()
-```
-
-#### 2.3.2 Backfill Rate Limiting
-**ENV Konfiguration:**
-```bash
-BACKFILL_PAUSE_SECONDS=2        # Pause zwischen Batches (global)
-BACKFILL_PAUSE_BINANCE=1        # Exchange-spezifisch
-BACKFILL_BATCH_SIZE=5000        # Trades pro Batch
-```
-
-**Implementierung:**
-```python
-# backend/services/usecases/backfill_loop_service.py
-def _pause_for_exchange(self) -> int:
-    env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-    v = os.getenv(env_key)
-    if v:
-        return max(0, int(v))
-    return self.pause_seconds  # Fallback zu global
-```
-
-### 2.4 Andere Exchanges
-
-Das System ist **generisch** für alle 8 Exchanges:
-
-| Exchange | Trades Endpoint | Zeit-Parameter | Min Interval |
-|----------|----------------|----------------|--------------|
-| Binance  | /api/v3/aggTrades | ✅ startTime/endTime | 1m (Free), 1s (Premium) |
-| GateIO   | /spot/trades | ✅ from/to | 1m |
-| Bybit    | /v5/market/recent-trade | ❌ Keine Zeit-Parameter | Recent only |
-| MEXC     | /api/v3/aggTrades | ✅ startTime/endTime | 1m |
-| Bitget   | /api/spot/v1/market/fills | ✅ startTime/endTime | 1m |
-| OKX      | /api/v5/market/trades | ❌ Keine Zeit-Parameter | Recent only |
-| HTX      | /market/history/trade | ❌ Keine Zeit-Parameter | Recent only |
-| Coinbase | /products/{id}/trades | ❌ Keine Zeit-Parameter | Recent only |
-
-**Wichtig:** Nur Exchanges mit Zeit-Parametern sind für Backfill geeignet!
-
-### 2.5 Dynamic Exchange Detection
-
-Das System erkennt automatisch, welche Exchanges Backfill unterstützen:
-
-```python
-# backend/services/usecases/unified_historical.py
-async def history(self, ...):
-    try:
-        if market_type == "spot":
-            if not hasattr(self.rest_api, 'fetch_spot_trades'):
-                self._report_not_implemented("fetch_spot_trades", market_type, symbol)
-                return 0  # Graceful exit
-            response = await self.rest_api.fetch_spot_trades(**params)
-    except AttributeError as e:
-        self._report_not_implemented(str(e), market_type, symbol)
-        return 0
-```
-
-**Keine Hardcodes!** System prüft zur Laufzeit, ob Methode existiert.
-
----
-
----
-
-## 3. DATENBANK-SCHEMA
-
-### 3.1 ClickHouse Struktur
-
-#### 3.1.1 Database
-**Name:** `trading`
-**Zweck:** Zentrale Datenbank für alle Trading-Daten
-
-#### 3.1.2 Trade Tables
-**Naming Pattern:** `{exchange}_trades`
-
-**Beispiele:**
-- `trading.binance_trades`
-- `trading.gateio_trades`
-- `trading.bybit_trades`
-- `trading.mexc_trades`
-- `trading.bitget_trades`
-- `trading.okx_trades`
-- `trading.htx_trades`
-- `trading.coinbase_trades`
-
-### 3.2 Schema Definition
-
-**Datei:** `backend/database/clickhouse/init.sql`
-
-```sql
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    price Decimal(76,38),
-    size Decimal(76,38), 
-    side Enum8('buy' = 1, 'sell' = 2),
-    timestamp DateTime64(3, 'UTC'),
-    trade_id UInt64 MATERIALIZED cityHash64(
-        symbol, market, toString(timestamp), toString(price), toString(size)
-    )
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (symbol, market, timestamp, trade_id)
-TTL timestamp + INTERVAL 6 MONTH
-SETTINGS index_granularity = 8192;
-```
-
-**Wichtig:** `init.sql` ist **OUTDATED** - fehlt `source` Feld!
-
-### 3.3 Live Schema (ACTUAL)
-
-Das **tatsächliche** Schema in der laufenden Datenbank hat ein zusätzliches Feld:
-
-```sql
--- ✅ LIVE SCHEMA (via ALTER TABLE hinzugefügt)
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    price Decimal(76,38),
-    size Decimal(76,38), 
-    side Enum8('buy' = 1, 'sell' = 2),
-    timestamp DateTime64(3, 'UTC'),
-    source LowCardinality(String) DEFAULT 'live_ws',  -- ✅ NEU!
-    trade_id UInt64 MATERIALIZED cityHash64(...)
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (symbol, market, timestamp, trade_id)
-TTL timestamp + INTERVAL 6 MONTH
-SETTINGS index_granularity = 8192;
-```
-
-### 3.4 Source Flag
-
-**Zweck:** Unterscheidung zwischen Live-Daten und Backfill-Daten
-
-**Werte:**
-- `'live_ws'` - Daten von WebSocket (Live-Streaming)
-- `'rest_backfill'` - Daten von REST API (Historisches Backfill)
-
-**Verwendung:**
-
-```python
-# backend/services/usecases/unified_historical.py
-async def _store_batch(self, symbol: str, market_type: str, trades: List[Dict]):
-    for trade in trades:
-        trade_data = {
-            "symbol": trade.get("symbol", symbol),
-            "market": trade.get("market", market_type),
-            "price": str(trade["price"]),
-            "size": str(trade["size"]),
-            "side": trade["side"],
-            "timestamp": int(trade["timestamp"]),
-            "source": "rest_backfill",  # ✅ Markiert als Backfill
-        }
-        await unified_cl_service.insert_trades(self.exchange_name, trade_data)
-```
-
-### 3.5 Schema-Eigenschaften
-
-#### 3.5.1 Engine
-**MergeTree:** Optimiert für Zeit-Serien-Daten
-- Effiziente Kompression
-- Schnelle Aggregationen
-- Partitionierung nach Datum
-
-#### 3.5.2 Partitionierung
-**PARTITION BY toYYYYMMDD(timestamp)**
-- Tägliche Partitionen
-- Schnelles Löschen alter Daten
-- Optimierte Queries auf Zeitbereiche
-
-#### 3.5.3 Sortierung
-**ORDER BY (symbol, market, timestamp, trade_id)**
-- Primärindex für schnelle Lookups
-- Optimiert für Symbol-basierte Queries
-- Zeitliche Sortierung für Range-Queries
-
-#### 3.5.4 TTL (Time To Live)
-**TTL timestamp + INTERVAL 6 MONTH**
-- Automatisches Löschen alter Daten nach 6 Monaten
-- **PROBLEM:** Löscht auch Backfill-Daten!
-
-**Lösung:** TTL entfernen für permanente Speicherung:
-```sql
-ALTER TABLE trading.binance_trades REMOVE TTL;
-```
-
-#### 3.5.5 Trade ID
-**MATERIALIZED cityHash64(...)**
-- Automatisch generiert (nicht vom Client gesendet!)
-- Deterministisch: Gleiche Daten → Gleiche ID
-- Verhindert Duplikate durch Deduplication
-
-### 3.6 Daten-Typen
-
-| Feld | Typ | Zweck |
-|------|-----|-------|
-| symbol | LowCardinality(String) | Speicher-Optimierung für wiederholte Werte |
-| market | LowCardinality(String) | spot/futures/usdtm/coinm |
-| price | Decimal(76,38) | Financial-Grade Präzision |
-| size | Decimal(76,38) | Volumen ohne Rundungsfehler |
-| side | Enum8 | buy=1, sell=2 (1 Byte statt String) |
-| timestamp | DateTime64(3, 'UTC') | Millisekunden-Präzision |
-| source | LowCardinality(String) | live_ws / rest_backfill |
-| trade_id | UInt64 | Hash-basierte ID |
-
-### 3.7 Storage-Pfade
-
-**ClickHouse Data Directory:**
-```
-/var/lib/clickhouse/data/trading/
-├── binance_trades/
-│   ├── 20260101_1_1_0/     # Partition 2026-01-01
-│   ├── 20260102_1_1_0/     # Partition 2026-01-02
-│   └── ...
-├── gateio_trades/
-└── ...
-```
-
-**Partition-Struktur:**
-- Jede Partition = 1 Tag
-- Format: `YYYYMMDD_min_max_level`
-- Automatisches Merging durch ClickHouse
-
-### 3.8 Query-Beispiele
-
-#### 3.8.1 Backfill Progress prüfen
-```sql
-SELECT 
-    MIN(timestamp) AS oldest,
-    MAX(timestamp) AS newest,
-    COUNT(*) AS total_trades
-FROM trading.binance_trades
-WHERE source = 'rest_backfill'
-  AND symbol = 'BTCUSDT'
-  AND market = 'spot';
-```
-
-#### 3.8.2 Gap Detection
-```sql
--- Expected-Buckets Algorithmus (siehe Etappe 5)
-WITH
-    toDateTime(%(t_from_s)s) AS t_from,
-    toDateTime(%(t_to_s)s) AS t_to,
-    toUInt32(%(step)s) AS step
-SELECT exp.bucket
-FROM (
-    SELECT toStartOfInterval(t_from + toIntervalSecond(number * step), toIntervalSecond(step)) AS bucket
-    FROM system.numbers
-    LIMIT intDiv(toUnixTimestamp(t_to) - toUnixTimestamp(t_from), step) + 1
-) AS exp
-LEFT JOIN (
-    SELECT toStartOfInterval(timestamp, toIntervalSecond(step)) AS bucket
-    FROM trading.binance_trades
-    WHERE symbol = 'BTCUSDT' AND source IN ('live_ws', 'rest_backfill')
-    GROUP BY bucket
-) AS pres ON exp.bucket = pres.bucket
-WHERE pres.bucket IS NULL
-ORDER BY exp.bucket DESC;
-```
-
-#### 3.8.3 Source-Verteilung
-```sql
-SELECT 
-    source,
-    COUNT(*) AS count,
-    MIN(timestamp) AS oldest,
-    MAX(timestamp) AS newest
-FROM trading.binance_trades
-WHERE symbol = 'BTCUSDT'
-GROUP BY source;
-```
-
----
-
----
-
-## 4. BACKFILL-LOOP
-
-### 4.1 Konzept: Backward Loading
-
-Das System lädt Daten **rückwärts** von der Gegenwart in die Vergangenheit:
-
-```
-GEGENWART (now)                    VERGANGENHEIT (until_date)
-     │                                      │
-     ├──────────────────────────────────────┤
-     │         BACKFILL RICHTUNG            │
-     │◄──────────────────────────────────────│
-     │                                      │
-   to_date                              end_date
-  (Cursor)                           (Target)
-```
-
-**Warum rückwärts?**
-1. **Aktuelle Daten zuerst:** Neueste Daten sind meist wichtiger
-2. **Kontinuität:** Nahtloser Übergang von Live-Daten zu Backfill
-3. **Unterbrechbar:** Kann jederzeit gestoppt und resumed werden
-4. **Progress-Tracking:** `oldest_ts` in ClickHouse zeigt Fortschritt
-
-### 4.2 Deterministischer Cursor
-
-**Problem:** `datetime.now()` ist nicht-deterministisch → Duplikate möglich
-
-**Lösung:** `to_date` Parameter als Cursor
-
-```python
-# backend/services/usecases/unified_historical.py
-async def history(
-    symbol: str,
-    market_type: str,
-    end_date: datetime,      # INKLUSIV lower bound (Target)
-    interval: str = "1m",
-    limit: int = 1000,
-    to_date: Optional[datetime] = None  # EXKLUSIV upper bound (Cursor)
-) -> int:
-    # Zeitfenster: [end_date, to_date)
-    # end_date: INKLUSIV (lädt ab diesem Zeitpunkt)
-    # to_date: EXKLUSIV (lädt bis, aber nicht inklusive, diesem Zeitpunkt)
-```
-
-**Beispiel:**
-```python
-# Fenster 1: 2024-01-01 00:00:00 bis 2024-01-01 01:00:00
-await history(
-    symbol="BTCUSDT",
-    end_date=datetime(2024, 1, 1, 0, 0, 0),
-    to_date=datetime(2024, 1, 1, 1, 0, 0)
-)
-# Lädt: 00:00:00.000 bis 00:59:59.999 (nicht 01:00:00.000!)
-
-# Fenster 2: 2023-12-31 23:00:00 bis 2024-01-01 00:00:00
-await history(
-    symbol="BTCUSDT",
-    end_date=datetime(2023, 12, 31, 23, 0, 0),
-    to_date=datetime(2024, 1, 1, 0, 0, 0)
-)
-# Lädt: 23:00:00.000 bis 23:59:59.999 (keine Überlappung!)
-```
-
-### 4.3 Zeitfenster-Logik
-
-#### 4.3.1 Fenster-Größe
-**Standard:** 1 Stunde (3600 Sekunden)
-
-```python
-# backend/services/usecases/unified_historical.py
-window_size = 3600 * 1000  # 1 Stunde in Millisekunden
-t_end = int(to_date.timestamp() * 1000)  # Cursor-Ende
-t_start = max(t_end - window_size, until_timestamp)  # Fenster-Start
-```
-
-**Warum 1 Stunde?**
-- Balance zwischen API-Calls und Daten-Menge
-- Binance aggTrades: ~1000 Trades pro Call
-- 1 Stunde ≈ 500-2000 Trades (je nach Symbol)
-
-#### 4.3.2 Fenster-Verschiebung (Rückwärts)
-
-```python
-# backend/services/usecases/unified_historical.py
-while t_end > until_timestamp and total_trades < limit:
-    # API Call für aktuelles Fenster
-    response = await self.rest_api.fetch_spot_trades(**params)
-    
-    # Fenster RÜCKWÄRTS verschieben
-    t_end = t_start
-    t_start = max(t_end - window_size, until_timestamp)
-    
-    # Params für nächste Iteration aktualisieren
-    params["startTime"] = t_start
-    params["endTime"] = t_end - 1  # ✅ exklusiv garantiert
-```
-
-**Visualisierung:**
-```
-Iteration 1: [23:00:00, 00:00:00)  ← Cursor bei 00:00:00
-Iteration 2: [22:00:00, 23:00:00)  ← Cursor bei 23:00:00
-Iteration 3: [21:00:00, 22:00:00)  ← Cursor bei 22:00:00
-...
-```
-
-### 4.4 Batch-Processing
-
-#### 4.4.1 Batch-Größe
-**Standard:** 500 Trades pro Batch
-
-```python
-# backend/services/usecases/unified_historical.py
-self.batch_size = 500  # Optimiert für Bulk-Inserts
-
-# Batch voll? Speichern und leeren
-if len(all_trades) >= self.batch_size:
-    await self._store_batch(symbol, market_type, all_trades)
-    batch_count += 1
-    all_trades = []
-```
-
-**Warum Batching?**
-- **Performance:** Bulk-Inserts sind schneller als einzelne Inserts
-- **Netzwerk:** Weniger Round-Trips zu ClickHouse
-- **Memory:** Verhindert unbegrenztes Wachstum der Trade-Liste
-
-#### 4.4.2 Batch-Storage
-
-```python
-# backend/services/usecases/unified_historical.py
-async def _store_batch(
-    self,
-    symbol: str,
-    market_type: str,
-    trades: List[Dict[str, Any]],
-):
-    clickhouse_tasks = []
-    
-    for trade in trades:
-        trade_data = {
-            "symbol": trade.get("symbol", symbol),
-            "market": trade.get("market", market_type),
-            "price": str(trade["price"]),
-            "size": str(trade["size"]),
-            "side": trade["side"],
-            "timestamp": int(trade["timestamp"]),
-            "source": "rest_backfill",  # ✅ Markiert als Backfill
-        }
-        
-        clickhouse_tasks.append(
-            unified_cl_service.insert_trades(
-                self.exchange_name, trade_data
-            )
-        )
-    
-    # Parallel execution
-    await asyncio.gather(*clickhouse_tasks, return_exceptions=True)
-```
-
-### 4.5 Rate Limiting
-
-#### 4.5.1 Pause zwischen Batches
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-async def run(self) -> None:
-    while self._running:
-        # ... Backfill-Logik ...
-        
-        # Pause nach jedem Batch
-        await asyncio.sleep(self._pause_for_exchange())
-```
-
-**ENV Konfiguration:**
-```bash
-BACKFILL_PAUSE_SECONDS=2        # Global default
-BACKFILL_PAUSE_BINANCE=1        # Exchange-spezifisch
-BACKFILL_BATCH_SIZE=5000        # Trades pro Batch
-```
-
-#### 4.5.2 Exchange-spezifische Pausen
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-def _pause_for_exchange(self) -> int:
-    # Prüfe exchange-spezifische ENV Var
-    env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-    v = os.getenv(env_key)
-    if v:
-        try:
-            return max(0, int(v))
-        except Exception:
-            pass
-    
-    # Fallback zu global
-    try:
-        return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
-    except Exception:
-        return self.pause_seconds
-```
-
-### 4.6 Progress-Tracking
-
-#### 4.6.1 Oldest Timestamp aus ClickHouse
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-    table_name = f"{self.exchange}_trades"
-    query = f"""
-        SELECT MIN(timestamp) AS oldest
-        FROM trading.{table_name}
-        WHERE source = 'rest_backfill'
-          AND symbol = %(symbol)s
-          AND market = %(market)s
-    """
-    
-    client = self._get_ch_client_sync()
-    res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
-    
-    if not res.result_rows:
-        return None
-    
-    oldest = res.result_rows[0][0]
-    return _utc(oldest) if isinstance(oldest, datetime) else None
-```
-
-#### 4.6.2 Progress-Berechnung
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-def _calculate_progress(self, current_oldest: Optional[datetime]) -> float:
-    if not current_oldest:
-        return 0.0
-    
-    now = datetime.now(timezone.utc)
-    total = (now - self.until_date).total_seconds()
-    
-    if total <= 0:
-        return 0.0
-    
-    covered = (now - current_oldest).total_seconds()
-    
-    if covered <= 0:
-        return 0.0
-    if covered >= total:
-        return 100.0
-    
-    return (covered / total) * 100.0
-```
-
-**Beispiel-Output:**
-```
-📦 BATCH #1 | +5000 | total=5,000 | progress=1.23% | oldest=2024-01-15 12:00:00
-📦 BATCH #2 | +5000 | total=10,000 | progress=2.46% | oldest=2024-01-14 08:00:00
-📦 BATCH #3 | +5000 | total=15,000 | progress=3.69% | oldest=2024-01-13 04:00:00
-```
-
-### 4.7 Auto-Resume
-
-**Problem:** System-Restart → Backfill von vorne?
-
-**Lösung:** Progress aus ClickHouse lesen
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-async def run(self) -> None:
-    # ✅ Init global_oldest aus ClickHouse (Resume nach Restart)
-    self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-    
-    if self._global_oldest_ts:
-        logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
-    
-    while self._running:
-        # Cursor-Berechnung nutzt global_oldest
-        cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-        
-        # ... Backfill-Logik ...
-```
-
-**Beispiel:**
-```
-# Erster Start
-🔄 BACKFILL GAP-LOOP START | ex=binance sym=BTCUSDT until=2024-01-01
-📦 BATCH #1 | oldest=2024-02-19 12:00:00
-📦 BATCH #2 | oldest=2024-02-18 08:00:00
-🛑 SYSTEM STOP
-
-# Restart
-🔄 BACKFILL GAP-LOOP START | ex=binance sym=BTCUSDT until=2024-01-01
-📍 RESUME | existing backfill detected | oldest=2024-02-18 08:00:00
-📦 BATCH #3 | oldest=2024-02-17 04:00:00  ← Fortsetzung!
-```
-
-### 4.8 Loop-Bedingungen
-
-#### 4.8.1 Stop-Bedingungen
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-async def run(self) -> None:
-    while self._running:
-        # 1) Target erreicht?
-        if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
-            logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()}")
-            break
-        
-        # 2) Keine Daten mehr?
-        if trades_loaded <= 0:
-            logger.warning("⚠️ loaded<=0 → stop loop (API end / no data)")
-            break
-        
-        # 3) External stop?
-        if not self._running:
-            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
-            break
-```
-
-#### 4.8.2 Loop-Iteration
-
-```python
-# backend/services/usecases/backfill_loop_service.py
-async def run(self) -> None:
-    while self._running:
-        # 1) Gap-Scan (Priority)
-        gaps = await self._find_gaps_in_window()
-        
-        if gaps:
-            # Gap-Fill
-            g = gaps[0]  # Newest gap first
-            trades_loaded = await self._historical.history(
-                symbol=self.symbol,
-                market_type=self.market,
-                end_date=g.start,
-                to_date=g.end,
-                limit=self.batch_size,
-            )
-        else:
-            # 2) Normal Backfill (Rückwärts)
-            cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-            
-            trades_loaded = await self._historical.history(
-                symbol=self.symbol,
-                market_type=self.market,
-                end_date=self.until_date,
-                to_date=cursor_to,
-                interval="1m",
-                limit=self.batch_size,
-            )
-        
-        # 3) Update Progress
-        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-        
-        # 4) Pause
-        await asyncio.sleep(self._pause_for_exchange())
-```
-
----
-
-## ETAPPE 4 ABGESCHLOSSEN
-
-Die nächsten Etappen werden folgen:
-- Etappe 5: Gap-Detection (Expected-Buckets, Dynamic Resolution)
-- Etappe 6: Autofill-System (Gap Priority, Auto-Discovery)
-- Etappe 7: 2-Phasen-Implementierung (Phase 1: Fixes, Phase 2: Enterprise)
-- Etappe 8: Gefundene Fehler (4 kritische Fehler mit Zeilennummern)
-</file>
-
 <file path=".repomixignore">
 # Repomix Ignore - Große/unwichtige Ordner für LLM-Pack ausschließen
 
@@ -165118,6 +164259,433 @@ export function useCandleChart({
 }
 </file>
 
+<file path="readme/the_backfill_system_01_26_v1.md">
+# README — Backfill + Gap-Fill Autodetect (Trades-SoT, ClickHouse, ENV-driven)
+
+**Projekt:** `0_WS_AI`
+**Datum:** 2026-02-21
+**Ziel:** Rohdaten (Trades) als Single Source of Truth in ClickHouse speichern, Candles daraus ableiten, und **zu jeder Zeit** Datenlücken automatisch erkennen und nachladen (Gap-Fill).
+
+---
+
+## 1) Systemvertrag
+
+### 1.1 Single Source of Truth
+
+**SoT ist immer die Trades-Tabelle** pro Exchange:
+
+* `trading.<exchange>_trades` (z. B. `trading.binance_trades`)
+
+Schema (Beispiel Binance, bestätigt per `DESCRIBE TABLE`):
+
+* `symbol LowCardinality(String)`
+* `market LowCardinality(String)`
+* `price Decimal(76,38)`
+* `size Decimal(76,38)`
+* `side Enum8('buy'=1,'sell'=2)`
+* `timestamp DateTime64(3,'UTC')`
+* `trade_id UInt64 MATERIALIZED cityHash64(...)`
+* `source LowCardinality(String) DEFAULT 'live_ws'`
+
+### 1.2 Quelle/Markierung der Daten (source)
+
+`source` beschreibt **nur**, woher ein **echter Trade** stammt:
+
+* `live_ws` → Live-Stream
+* `rest_backfill` → Backfill (historisch nachgeladen)
+
+**Wichtig:** `source` ist **kein Gap-Marker**. Gaps werden nicht durch Fake-Rows markiert, sondern durch SQL-Expected-Buckets Scan.
+
+---
+
+## 2) Komponenten & Pfade
+
+### 2.1 Auto-Start des Backfill-Loops
+
+**Pfad:** `backend/services/adapter/collector_starter.py`
+**Funktion:** `start_auto_backfill_gap_loop()`
+
+* liest `AUTO_BACKFILL_*` ENV
+* startet pro Coin (`exchange:symbol`) einen Task `BackfillLoopService.run()`
+
+### 2.2 Gap-Detection + Gap-Fill (Autodetect & Nachladen)
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+**Klasse:** `BackfillLoopService`
+
+Funktional:
+
+1. **Gap-Scan** (Expected-Buckets über ClickHouse)
+2. **Gap-Fill**: neuestes GapWindow wird sofort nachgeladen
+3. **Normal-Backfill**: wenn keine Gaps existieren, rückwärts bis `AUTO_BACKFILL_UNTIL_DATE`
+
+### 2.3 Historical Backfill (Trades-only, enterprise)
+
+**Pfad:** `backend/services/usecases/unified_historical.py`
+**Klasse:** `UnifiedHistoricalService`
+
+Eigenschaften:
+
+* **Trades-only** (keine Candles im Backfill)
+* **deterministischer Cursor** mit `to_date` (EXKLUSIV)
+* **kein Datenverlust bei liquiden Märkten**: Cursor bewegt sich anhand **ältestem zurückgelieferten Trade** (kein stumpfer “1h-hop”)
+* komplett **ENV/Policy-driven** (Fenstergröße, API-Limit, Methodennamen)
+
+---
+
+## 3) Wie Gap-Detection genau funktioniert (Expected-Buckets)
+
+**Definition:** Ein Bucket gilt als “vorhanden”, wenn in diesem Bucket **mindestens 1 Trade** existiert.
+Fehlende Buckets = Expected − Present.
+
+Mechanik:
+
+* Scan-Fenster: `[now - GAP_SCAN_DAYS, now]`
+* Bucketgröße: `GAP_BUCKET_SECONDS` (z. B. 60)
+* Expected-Buckets: `system.numbers` erzeugt Zeitraster
+* Present-Buckets: `toStartOfInterval(timestamp, step)` aus Trades
+* Missing: left join expected vs present where present is null
+* Missing buckets werden in Python zu **GapWindow(start,end_exklusiv)** segmentiert
+* `BackfillLoopService.run()` priorisiert `gaps[0]` (neuester Gap) und lädt exakt `[start,end)` nach
+
+---
+
+## 4) Gap-Fill / Auto-Nachladen (zu jeder Zeit)
+
+### 4.1 Dauerbetrieb (kritischer Fix)
+
+Damit “dauerhaft prüfen und nachladen” wirklich dauerhaft ist, darf der Loop **nicht** stoppen, wenn eine Iteration 0 Trades liefert.
+
+**Regel:**
+
+* `trades_loaded <= 0` → **sleep + continue**
+* niemals `break` (sonst endet das Autogap-System bei leeren Fenstern/temporären API-Problemen)
+
+---
+
+## 5) UnifiedHistoricalService (Enterprise, dynamisch, nicht hardcoded)
+
+### 5.1 Warum der Cursor-Fix zwingend war
+
+Bei BTCUSDT können in 1h weit mehr als 1000 Trades existieren.
+Wenn man pro 1h-Fenster nur 1000 lädt und dann stumpf 1h zurückspringt, gehen Daten verloren.
+
+**Enterprise-Lösung:**
+
+* Nach jedem Fetch wird `t_end` auf den **ältesten zurückgelieferten Trade** gesetzt
+* so “scrollt” der Cursor rückwärts durch das Fenster, bis es wirklich abgearbeitet ist
+
+### 5.2 Keine Hardcodes: ENV steuert alles
+
+Methoden-Namen und Policies werden über ENV gesetzt:
+
+* Spot-Fetch-Methode: `HIST_FETCH_METHOD_SPOT`
+* Futures-Fetch-Methode: `HIST_FETCH_METHOD_FUTURES`
+* Fenstergröße: `HIST_WINDOW_SECONDS`
+* API per-call limit: `HIST_PER_CALL_LIMIT`
+* Flush batch: `HIST_FLUSH_BATCH_SIZE`
+* Stagnation: `HIST_MAX_STAGNANT`, `HIST_CURSOR_BACKOFF_MS`
+
+Der Service versucht zusätzlich Fallbacks (z. B. `fetch_trades`, `fetch_spot_trades`) und meldet “not implemented”, wenn ein Exchange keinen Time-Backfill unterstützt.
+
+---
+
+## 6) ENV-Konfiguration (relevante Keys)
+
+### 6.1 Auto-Backfill
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_MARKET="spot"
+BACKFILL_READY_TIMEOUT=120
+```
+
+### 6.2 Gap-Scan / Autodetect
+
+```bash
+GAP_SCAN_DAYS=30
+GAP_BUCKET_SECONDS=60
+GAP_SOURCE_FILTER=live_ws,rest_backfill
+```
+
+**Interpretation:**
+
+* Scan prüft letzte 30 Tage in 60s Buckets
+* Buckets zählen als vorhanden, wenn Trades mit source in `{live_ws, rest_backfill}` vorhanden sind
+
+### 6.3 Enterprise Historical Policies (Trades-only)
+
+```bash
+HIST_WINDOW_SECONDS=3600
+HIST_PER_CALL_LIMIT=1000
+HIST_FLUSH_BATCH_SIZE=500
+HIST_FETCH_METHOD_SPOT=fetch_trades
+HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
+HIST_MAX_STAGNANT=3
+HIST_CURSOR_BACKOFF_MS=1
+```
+
+---
+
+## 7) Betriebslogik im Klartext
+
+1. System startet → `collector_starter` spawnt BackfillLoop Tasks pro `AUTO_BACKFILL_COINS`.
+2. Jeder Loop:
+
+   * scannt Gaps (Expected-Buckets)
+   * wenn Gap gefunden → lädt dieses GapWindow per `UnifiedHistoricalService.history([start,end))`
+   * sonst → normaler Backfill rückwärts Richtung `AUTO_BACKFILL_UNTIL_DATE`
+3. Loop läuft weiter, auch wenn eine Iteration mal 0 Trades liefert (sleep+continue).
+4. ClickHouse bleibt Single Source of Truth, Candles werden daraus abgeleitet.
+
+---
+
+## 8) Ergebnis / Garantie
+
+* Keine synthetischen Daten (kein Interpolieren, keine Fake-Trades)
+* Trades sind SoT, Candles sind abgeleitet
+* Gap-Detection + Nachladen arbeitet automatisch und dauerhaft
+* Historischer Backfill ist robust auch bei sehr hoher Trade-Dichte (kein 1h-hop Datenverlust)
+* Konfiguration ist vollständig ENV-gesteuert, keine Hardcodes in der Logik
+
+---
+
+## 9) Frontend: Historical Data Updates (Fix 2026-02-21)
+
+### 9.1 Problem: Historical Count blieb bei 1267 stecken
+
+**Symptom:**
+- Frontend zeigte "Historical 1267" und aktualisierte nicht, obwohl Backfill kontinuierlich neue Daten lud
+- ClickHouse enthielt 5123+ Candles, aber Frontend zeigte nur 1267
+
+**Root Cause:**
+`frontend/src/services/ws/useWsLane.ts` verwendete `setHistorical(hist)`, was bei jedem neuen WebSocket-Message die kompletten historical Daten **ersetzte** statt zu **mergen**.
+
+### 9.2 Lösung: Merge-Logik für Historical Updates
+
+**Pfad:** `frontend/src/services/ws/useWsLane.ts`
+
+**Vorher (FALSCH):**
+```typescript
+if (msg.type === "historical") {
+  const hist: LiveCandle[] = /* ... parse ... */;
+  setHistorical(hist); // ❌ Ersetzt alle Daten
+}
+```
+
+**Nachher (KORREKT):**
+```typescript
+if (msg.type === "historical") {
+  const hist: LiveCandle[] = /* ... parse ... */;
+  
+  // ✅ FIX: Merge new historical data instead of replacing
+  setHistorical((prev) => {
+    // Create map of existing candles by timestamp
+    const map = new Map<number, LiveCandle>();
+    for (const c of prev) {
+      map.set(c.t, c);
+    }
+    // Add/update with new candles
+    for (const c of hist) {
+      map.set(c.t, c);
+    }
+    // Return sorted array
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  });
+}
+```
+
+**Effekt:**
+- Historical Daten werden **inkrementell erweitert** statt ersetzt
+- Backfill kann kontinuierlich neue Candles hinzufügen
+- Frontend zeigt wachsenden Historical Count (1267 → 5123+)
+- Keine Duplikate durch Map-basierte Deduplication
+
+---
+
+## 10) Backend: ClickHouse Thread-Safety (Fix 2026-02-21)
+
+### 10.1 Problem: Concurrent Query Session Error
+
+**Symptom:**
+```
+❌ CLICKHOUSE oldest query FAILED | error=Attempt to execute concurrent queries within the same session
+⚠️ [GAPSCAN] scan failed | Attempt to execute concurrent queries within the same session
+```
+
+**Root Cause:**
+- `BackfillLoopService` und `GapScanService` verwendeten **denselben ClickHouse-Client** (shared session)
+- Parallele Queries in verschiedenen Threads → Session-Konflikt
+- `asyncio.to_thread()` führte Queries in Thread-Pool aus, aber mit shared Client
+
+### 10.2 Lösung: Thread-Local ClickHouse Clients
+
+**Neue Datei:** `backend/database/clickhouse/threadsafe_client.py`
+
+```python
+from __future__ import annotations
+
+import threading
+import clickhouse_connect
+
+from backend.database.clickhouse.cl_config import CL_CONNECTION
+
+_thread_local = threading.local()
+
+
+def _make_client():
+    return clickhouse_connect.get_client(
+        host=CL_CONNECTION["host"],
+        port=CL_CONNECTION["port"],
+        username=CL_CONNECTION.get("username", "default"),
+        password=CL_CONNECTION.get("password", ""),
+        database=CL_CONNECTION.get("database", "default"),
+        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
+        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
+    )
+
+
+def get_thread_client():
+    """
+    Thread-safe ClickHouse client:
+    - exactly one clickhouse_connect client per OS thread
+    - prevents "concurrent queries within the same session"
+    """
+    c = getattr(_thread_local, "client", None)
+    if c is None:
+        c = _make_client()
+        _thread_local.client = c
+    return c
+```
+
+**Wichtig:**
+- **Keine doppelte Konfiguration**: Nutzt zentrale `CL_CONNECTION` aus `cl_config.py`
+- **Thread-Local Storage**: Jeder Thread bekommt seinen eigenen Client
+- **Lazy Initialization**: Client wird erst bei Bedarf erstellt
+
+### 10.3 Integration in BackfillLoopService
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+
+**Import hinzugefügt:**
+```python
+from backend.database.clickhouse.threadsafe_client import get_thread_client
+```
+
+**Methode vereinfacht:**
+```python
+def _get_ch_client_sync(self):
+    """
+    THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+    """
+    return get_thread_client()
+```
+
+**Effekt:**
+- Jede `asyncio.to_thread(_run)` Query bekommt eigenen Client
+- Keine Session-Konflikte mehr
+- BackfillLoop und GapScan können parallel laufen
+
+### 10.4 Integration in GapScanService
+
+**Pfad:** `backend/services/usecases/gap_scan_service.py`
+
+Gleiche Umstellung:
+- Import `get_thread_client`
+- Verwendung statt shared Pool/Client
+
+**Resultat:**
+- ✅ BackfillLoop läuft ohne ClickHouse-Fehler
+- ✅ GapScan funktioniert parallel
+- ✅ Keine "concurrent queries" Errors mehr
+
+---
+
+## 11) Zusammenfassung der Fixes (2026-02-21)
+
+### Frontend Fix
+- **Problem**: Historical Count blieb bei 1267 stecken
+- **Lösung**: Merge-Logik in `useWsLane.ts` statt Replace
+- **Datei**: `frontend/src/services/ws/useWsLane.ts`
+
+### Backend Fix
+- **Problem**: ClickHouse Session-Konflikte bei parallelen Queries
+- **Lösung**: Thread-Local Clients via `threadsafe_client.py`
+- **Dateien**: 
+  - `backend/database/clickhouse/threadsafe_client.py` (neu)
+  - `backend/services/usecases/backfill_loop_service.py` (angepasst)
+  - `backend/services/usecases/gap_scan_service.py` (angepasst)
+
+### Ergebnis
+- ✅ Historical Daten wachsen kontinuierlich im Frontend
+- ✅ Backfill läuft ohne ClickHouse-Fehler
+- ✅ Gap-Detection funktioniert parallel
+- ✅ System ist produktionsreif
+
+---
+</file>
+
+<file path="Dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ============================================================
+# LAYER 1: System Dependencies (CACHED solange unverändert)
+# ============================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    tar \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
+# ============================================================
+# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
+COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
+COPY vendor/system/file_linux/config.guess ./config.guess
+COPY vendor/system/file_linux/config.sub ./config.sub
+
+RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
+ && cd ta-lib/ \
+ && cp ../config.guess ../config.sub . \
+ && chmod +x config.guess config.sub \
+ && ./configure --prefix=/usr \
+ && (make -j$(nproc) || make) \
+ && make install \
+ && cd .. \
+ && rm -rf ta-lib* config.guess config.sub \
+ && ldconfig
+
+# ============================================================
+# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
+# ============================================================
+COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
+COPY vendor/backend/file_linux/ ./wheels/
+
+RUN pip install --no-cache-dir --no-index --find-links ./wheels \
+    -r backend_requirements.lock
+
+# ============================================================
+# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
+# ============================================================
+COPY backend ./backend
+
+# ENV für Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Port exposen
+EXPOSE 8100
+
+# Start der App
+CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
+</file>
+
 <file path="backend/database/clickhouse/cl_message_handlers.py">
 import asyncio
 import logging
@@ -166136,65 +165704,6 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
-</file>
-
-<file path="Dockerfile">
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# ============================================================
-# LAYER 1: System Dependencies (CACHED solange unverändert)
-# ============================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    wget \
-    tar \
-    curl \
- && rm -rf /var/lib/apt/lists/*
-
-# ============================================================
-# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
-# ============================================================
-# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
-COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
-COPY vendor/system/file_linux/config.guess ./config.guess
-COPY vendor/system/file_linux/config.sub ./config.sub
-
-RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
- && cd ta-lib/ \
- && cp ../config.guess ../config.sub . \
- && chmod +x config.guess config.sub \
- && ./configure --prefix=/usr \
- && (make -j$(nproc) || make) \
- && make install \
- && cd .. \
- && rm -rf ta-lib* config.guess config.sub \
- && ldconfig
-
-# ============================================================
-# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
-# ============================================================
-COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
-COPY vendor/backend/file_linux/ ./wheels/
-
-RUN pip install --no-cache-dir --no-index --find-links ./wheels \
-    -r backend_requirements.lock
-
-# ============================================================
-# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
-# ============================================================
-COPY backend ./backend
-
-# ENV für Python
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Port exposen
-EXPOSE 8100
-
-# Start der App
-CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
 </file>
 
 <file path="backend/api/routers/ro_user_settings.py">
@@ -167846,6 +167355,1593 @@ services:
 volumes:
   clickhouse-data:
   redis-data:
+</file>
+
+<file path="start-system.sh">
+#!/bin/bash
+
+# =============================================================================
+# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
+# =============================================================================
+
+# Strict Bash Setup - Production Hardening for Apple Silicon
+set -euo pipefail
+set +m    # keine Job-Control Meldungen
+IFS=$'\n\t'
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+echo "=================================================="
+echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
+echo "=================================================="
+echo ""
+
+# =============================================================================
+# INTERACTIVE VERBOSE MODE SELECTION
+# =============================================================================
+
+# Check if already set via env var
+if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
+  echo "🔧 Startup Logging Mode:"
+  echo "  1) Normal  - Standard output (recommended)"
+  echo "  2) Verbose - Detailed logs & all steps visible"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " mode_choice
+  
+  case "${mode_choice:-1}" in
+    2)
+      export STARTUP_VERBOSE=1
+      echo "✅ VERBOSE MODE activated - all logs visible"
+      ;;
+    *)
+      export STARTUP_VERBOSE=0
+      echo "✅ NORMAL MODE activated - standard output"
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# BUILD MODE SELECTION
+# =============================================================================
+
+# Interactive build mode selection (unless --clean flag was used)
+CLEAN_BUILD_MODE=0
+if [[ "${1:-}" == "--clean" ]]; then
+  CLEAN_BUILD_MODE=1
+  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
+  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
+  echo ""
+else
+  echo "🏗️  Docker Build Mode:"
+  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
+  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
+  echo ""
+  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " build_choice
+  
+  case "${build_choice:-1}" in
+    2)
+      CLEAN_BUILD_MODE=1
+      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
+      echo "   This will take 10-15 minutes..."
+      ;;
+    *)
+      CLEAN_BUILD_MODE=0
+      echo "✅ FAST START MODE activated - using existing images"
+      echo "   Starting in 10-30 seconds..."
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# DEPENDENCY MANAGEMENT
+# =============================================================================
+
+# Critical dependency checker
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: Missing required dependency: $1"
+    exit 1
+  }
+}
+
+# Check required dependencies
+need jq
+need redis-cli
+need curl
+need nc
+need python3
+need docker
+
+# Robust timeout wrapper with macOS compatibility
+with_timeout() {
+  local s="$1"; shift
+  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
+  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
+  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
+  fi
+}
+
+# Docker Compose V2 compatibility wrapper
+dc() {
+  if command -v docker >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    echo "ERROR: Docker not found"
+    exit 1
+  fi
+}
+
+# Safe pkill wrapper - prevents set -e from killing script when no process found
+safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
+
+# WS-CAT soft fallback - graceful handling with vendor support
+if ! command -v wscat >/dev/null 2>&1; then
+  # Try to install from vendor if available
+  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
+    echo "Installing wscat from vendor..."
+    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
+  fi
+
+  # Check again after potential install
+  if ! command -v wscat >/dev/null 2>&1; then
+    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
+    WS_CAT_SKIP=1
+  else
+    WS_CAT_SKIP=0
+  fi
+else
+  WS_CAT_SKIP=0
+fi
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# TTY-sichere Farben
+isatty() { [[ -t 1 ]]; }
+if isatty; then
+  readonly GREEN=$'\033[0;32m'
+  readonly CYAN=$'\033[0;36m'
+  readonly YELLOW=$'\033[1;33m'
+  readonly RED=$'\033[0;31m'
+  readonly NC=$'\033[0m'
+else
+  readonly GREEN=
+  readonly CYAN=
+  readonly YELLOW=
+  readonly RED=
+  readonly NC=
+fi
+
+# Exchange Configuration
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+SPOT_SYMBOL_DEFAULT="BTCUSDT"
+COINBASE_SPOT_SYMBOL="BTC-USD"
+
+# GUM SPINNER SYSTEM - Professional and stable with vendor support
+if ! command -v gum >/dev/null 2>&1; then
+  # Try to install from vendor if available (future-ready)
+  if [[ -f "vendor/system/file_linux/gum" ]]; then
+    echo "Installing gum from vendor..."
+    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
+    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
+    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
+  fi
+
+  # Fallback to brew if still not available
+  if ! command -v gum >/dev/null 2>&1; then
+    echo "Installing gum via homebrew..."
+    brew install gum >/dev/null 2>&1 || {
+      echo "⚠ gum installation failed - using simple spinner fallback"
+      GUM_AVAILABLE=0
+    }
+  fi
+fi
+
+# Check if gum is available after installation attempts
+if command -v gum >/dev/null 2>&1; then
+  GUM_AVAILABLE=1
+  gum_spin() {  # gum_spin "Titel" CMD...
+    local title="$1"; shift
+    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
+      gum spin --title "$title" -- "$@"
+  }
+else
+  GUM_AVAILABLE=0
+  # Fallback spinner function using simple dots
+  gum_spin() {
+    local title="$1"; shift
+    printf "⠋ %s..." "$title"
+    "$@" >/dev/null 2>&1
+    local result=$?
+    printf "\r"
+    return $result
+  }
+fi
+
+# Professional Status Symbols
+readonly SYMBOL_SUCCESS="✔"
+readonly SYMBOL_FAILURE="✖"
+readonly SYMBOL_WARNING="⚠"
+readonly SYMBOL_INFO="ℹ"
+readonly SYMBOL_SKIP="○"
+
+# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
+ucfirst() {
+  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
+}
+
+# Status display functions
+show_success() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
+}
+show_failure() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
+}
+show_warning() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
+}
+
+show_skip() {
+  local message="$1"
+  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
+}
+
+# Timing Windows (configurable via environment)
+REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
+CH_GROW_WIN="${CH_GROW_WIN:-30}"
+BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
+COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
+RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
+
+# =============================================================================
+# INTELLIGENT STARTUP CONFIGURATION
+# =============================================================================
+
+# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
+export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
+export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
+export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
+export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
+
+# ✅ Feature Flags (enable/disable new behavior)
+export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
+export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
+export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
+
+# ✅ Observability
+export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
+
+# Log configuration
+if [[ "$STARTUP_VERBOSE" == "1" ]]; then
+  echo "=================================================="
+  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
+  echo "=================================================="
+  echo ""
+  echo "📊 Retry & Timeout Configuration:"
+  echo "   MAX_RETRIES=$MAX_RETRIES"
+  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
+  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
+  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
+  echo ""
+  echo "🎯 Feature Flags:"
+  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
+  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
+  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
+  echo ""
+  echo "🚀 Collector Configuration:"
+  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
+  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
+  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
+  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
+  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
+  echo ""
+  echo "📍 System Paths:"
+  echo "   Working Directory: $(pwd)"
+  echo "   Python: $(which python3)"
+  echo "   Docker: $(which docker)"
+  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
+  echo ""
+  echo "=================================================="
+  echo ""
+  
+  # Enable bash command tracing for full visibility
+  echo "🔍 Enabling bash command tracing (set -x)..."
+  echo "   All commands will be printed before execution"
+  echo ""
+  set -x  # Print commands as they execute
+fi
+
+# Optional Features (configurable via environment)
+SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
+RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
+
+# =============================================================================
+# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
+# =============================================================================
+
+# Präzise Latenz-Messung aus pipeline_test.sh
+CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
+CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
+
+# Warm-Up Function
+warm_up() {
+  local url="$1"
+  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
+}
+
+# Präzise Latenzermittlung
+measure_latency() {
+  local url="$1"
+  local timeout="${2:-5}"
+  local tmpfile
+  tmpfile="$(mktemp -t resp.XXXXXX)"
+
+  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
+  local line
+  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
+  local http_code ttfb_s total_s
+  read -r http_code ttfb_s total_s <<<"$line"
+
+  # Convert to milliseconds
+  local ttfb_ms total_ms
+  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
+  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
+
+  # Body for validation
+  local body
+  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
+  rm -f "$tmpfile" 2>/dev/null || true
+
+  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
+  printf "%s" "$body"
+}
+
+# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
+get_available_symbols() {
+  local exchange="$1"
+  local market="${2:-spot}"  # Default to spot market
+  local limit="${3:-5}"      # Default top 5 symbols
+  
+  # Query SymbolRegistry for real available symbols
+  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
+    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
+    head -n "$limit" || echo ""
+}
+
+# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
+get_test_symbols() {
+  local exchange="$1"
+  
+  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
+  local symbols_output
+  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
+  
+  if [[ -n "$symbols_output" ]]; then
+    echo "$symbols_output"
+  else
+    case "$exchange" in
+      coinbase) 
+        echo "BTC-USD"
+        echo "ETH-USD"
+        ;;
+      *) 
+        echo "BTCUSDT"
+        echo "ETHUSDT"
+        ;;
+    esac
+  fi
+}
+
+# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
+test_symbol_api() {
+  local exchange="$1" symbol="$2" market="${3:-spot}"
+  local endpoint_suffix
+  
+  case "$market" in
+    spot) endpoint_suffix="spot" ;;
+    futures) endpoint_suffix="futures" ;;
+    *) endpoint_suffix="spot" ;;
+  esac
+  
+  local response1 response2 h1 h2 a1 a2
+  
+  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
+  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
+  
+  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
+  a1=$(echo "$response1" | tail -n+2)
+  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
+  a2=$(echo "$response2" | tail -n+2)
+  
+  local trades_count=0 orderbook_ok=0
+  
+  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
+    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
+  fi
+  
+  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
+    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
+      orderbook_ok=1
+    fi
+  fi
+  
+  echo $((trades_count + orderbook_ok))
+}
+
+# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
+fetch_multi_symbol_counts() {
+  local exchange="$1"
+  local total_api_count=0 successful_symbols=0 working_symbols=()
+  local symbol_count=0
+  
+  while IFS= read -r symbol; do
+    [[ -z "$symbol" ]] && continue
+    [[ $symbol_count -ge 3 ]] && break
+    
+    local spot_score futures_score=0
+    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
+    
+    if [[ "$exchange" != "coinbase" ]]; then
+      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
+    fi
+    
+    local symbol_total=$((spot_score + futures_score))
+    if [[ $symbol_total -gt 0 ]]; then
+      total_api_count=$((total_api_count + symbol_total))
+      successful_symbols=$((successful_symbols + 1))
+      working_symbols+=("$symbol")
+    fi
+    
+    symbol_count=$((symbol_count + 1))
+  done < <(get_test_symbols "$exchange")
+  
+  local working_list
+  if [[ ${#working_symbols[@]} -gt 0 ]]; then
+    working_list=$(IFS=,; echo "${working_symbols[*]}")
+  else
+    working_list=""
+  fi
+  echo "$total_api_count:$successful_symbols:$working_list"
+}
+
+# LEGACY FUNCTION - Kept for backward compatibility
+fetch_api_counts() {
+  local ex="$1" spot_sym="$2" fut_sym="$3"
+  local result
+  result=$(fetch_multi_symbol_counts "$ex")
+  echo "${result%%:*}"
+}
+
+# Enhanced API health check with multiple fallback patterns
+api_spot_ok() {
+  local exchange="$1"
+  local symbol="$2"
+
+  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
+  local meta body http_status
+  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
+  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
+  body="$(echo "$meta" | awk 'NR>1{print}')"
+
+  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
+}
+
+# =============================================================================
+# REDIS FUNCTIONS - SCAN-based for production
+# =============================================================================
+
+keys_count() {
+  local pattern="$1"
+  local cursor=0
+  local count=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    local new_cursor
+    local batch=0
+
+    if [[ -n "$scan_result" ]]; then
+      local first_line=true
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          [[ -n "$line" ]] && batch=$((batch + 1))
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+      count=$((count + batch))
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$count"
+}
+
+sum_xlen_pattern() {
+  local pattern="$1"
+  local cursor=0
+  local total=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    if [[ -n "$scan_result" ]]; then
+      local new_cursor
+      local first_line=true
+
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          if [[ -n "$line" ]]; then
+            local length
+            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
+            total=$((total + length))
+          fi
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$total"
+}
+
+growth_window() {
+  local pattern="$1"
+  local window="${2:-$REDIS_GROW_WIN}"
+  local before after
+
+  before=$(sum_xlen_pattern "$pattern")
+  sleep "$window"
+  after=$(sum_xlen_pattern "$pattern")
+  echo $((after - before))
+}
+
+persist_growth() {
+  local exchange="$1"
+  local window="${2:-$CH_GROW_WIN}"
+  local before after
+
+  before=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$before" =~ ^[0-9]+$ ]] || before=0
+
+  sleep 10
+
+  after=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$after" =~ ^[0-9]+$ ]] || after=0
+
+  echo $((after - before))
+}
+
+# =============================================================================
+# WEBSOCKET TEST FUNCTIONS
+# =============================================================================
+
+ws_test_coinbase_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
+    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
+    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
+}
+
+ws_test_mexc_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
+    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
+    head -n 3 | grep -q '"code":0' 2>/dev/null
+}
+
+ws_test_mexc_futures() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
+    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
+    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
+}
+
+# =============================================================================
+# SYSTEM INITIALIZATION
+# =============================================================================
+
+mkdir -p logs pids
+
+if [[ ! -f .deps_installed ]]; then
+  echo "Installing Python dependencies..."
+  if [[ -d "vendor/backend" ]]; then
+    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
+  fi
+
+  echo "Installing System dependencies..."
+  if [[ -d "vendor/system" ]]; then
+    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
+
+    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
+      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
+    fi
+  fi
+
+  echo "Installing Frontend dependencies..."
+  if [[ -d "frontend" ]]; then
+    (cd frontend && npm install --silent)
+  fi
+
+  echo "Installing project in editable mode..."
+  pip3 install --break-system-packages -e .
+
+  touch .deps_installed
+  echo "Dependencies installed."
+fi
+
+if [[ ! -d "frontend/node_modules" ]]; then
+  echo "Installing missing frontend dependencies..."
+  (cd frontend && npm install --silent)
+fi
+
+if [[ -f backend/config/.env ]]; then
+  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
+elif [[ -f backend/.env ]]; then
+  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
+else
+  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
+  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
+fi
+
+# =============================================================================
+# GRACEFUL SHUTDOWN SEQUENCE
+# =============================================================================
+
+echo ""
+echo "🛑 Stopping existing processes..."
+echo ""
+
+if nc -z localhost 8100 >/dev/null 2>&1; then
+  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
+else
+  show_skip "Collectors - Backend not running"
+fi
+
+gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
+show_success "Frontend - Stopped"
+
+gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
+show_success "Backend - Stopped"
+
+gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
+show_success "Desktop GUI - Stopped"
+
+gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker - Stopped"
+
+gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker Cache - Cleaned"
+
+echo ""
+
+# =============================================================================
+# SERVICE STARTUP SEQUENCE
+# =============================================================================
+
+echo "Starting Docker services..."
+
+# ✅ START SERVICES - Conditional Build based on user selection
+if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
+  echo "🔨 Building Docker images from scratch (--no-cache)..."
+  echo "   This will take 10-15 minutes - downloading & compiling everything"
+  echo ""
+  dc build --no-cache
+  dc up -d --no-build
+else
+  echo "⚡ Using existing Docker images (fast start)..."
+  echo "   Starting in 10-30 seconds"
+  echo ""
+  dc up -d --no-build
+fi
+
+echo "🔄 Waiting for Docker Services..."
+echo ""
+
+wait_for_service() {
+  local service=$1
+  local host=$2
+  local port=$3
+
+  gum_spin "$service - Service Ready" bash -c "
+    for i in {1..30}; do
+      nc -z $host $port >/dev/null 2>&1 && exit 0
+      sleep 1
+    done
+    exit 1
+  "
+
+  if [[ $? -eq 0 ]]; then
+    show_success "$service - Service" "Ready"
+    return 0
+  else
+    show_failure "$service - Service" "Timeout"
+    return 1
+  fi
+}
+
+wait_for_service "Redis" localhost 6380
+wait_for_service "ClickHouse" localhost 8124
+wait_for_service "Backend API" localhost 8100
+
+echo ""
+
+# =============================================================================
+# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
+# =============================================================================
+
+# ✅ Exponential Backoff Retry Logic
+wait_for_service_smart() {
+    local service_name=$1
+    local check_cmd=$2
+    local max_retries=${3:-$MAX_RETRIES}
+    local initial_delay=${4:-$INITIAL_DELAY}
+    
+    local retry=0
+    local delay=$initial_delay
+    
+    echo "⏳ Waiting for $service_name..."
+    
+    while (( retry < max_retries )); do
+        if eval "$check_cmd" >/dev/null 2>&1; then
+            echo "✅ $service_name ready after $retry retries"
+            return 0
+        fi
+        
+        if (( retry < max_retries - 1 )); then
+            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
+            sleep "$delay"
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            delay=$((delay * 2))
+        fi
+        
+        retry=$((retry + 1))
+    done
+    
+    echo "❌ $service_name failed after $max_retries retries"
+    return 1
+}
+
+# ✅ Parallele Service Checks
+wait_for_all_services_parallel() {
+    local services=("redis:6380" "clickhouse:8124" "backend:8100")
+    local pids=()
+    local temp_dir=$(mktemp -d)
+    
+    echo "🔄 Starting parallel service checks..."
+    
+    # Starte alle Checks parallel
+    for service in "${services[@]}"; do
+        IFS=':' read -r name port <<< "$service"
+        (
+            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
+                echo "0" > "$temp_dir/check_${name}.status"
+            else
+                echo "1" > "$temp_dir/check_${name}.status"
+            fi
+        ) &
+        pids+=($!)
+    done
+    
+    # Warte auf alle (mit Gesamttimeout)
+    local timeout=$SERVICE_CHECK_TIMEOUT
+    local elapsed=0
+    local all_done=false
+    
+    while (( elapsed < timeout )); do
+        all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        
+        [[ "$all_done" == "true" ]] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    # Kill stragglers
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+    done
+    
+    # Prüfe Ergebnisse
+    local failed=0
+    for service in "${services[@]}"; do
+        IFS=':' read -r name _ <<< "$service"
+        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
+        if [[ "$status" != "0" ]]; then
+            echo "❌ $name check failed"
+            failed=$((failed + 1))
+        else
+            echo "✅ $name check passed"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    return $failed
+}
+
+# ✅ Event-driven Backend Ready Check - DOCKER AWARE
+wait_for_backend_ready() {
+    local timeout=$BACKEND_READY_TIMEOUT
+    local elapsed=0
+    
+    echo "⏳ Waiting for backend ready signal..."
+    
+    # Docker-aware check: Poll /health/ready endpoint directly
+    while (( elapsed < timeout )); do
+        # Check if health endpoint is responding
+        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
+        
+        if [[ -n "$health_response" ]]; then
+            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
+            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
+            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
+            
+            # Accept if:
+            # 1. ready=true (ideal), OR
+            # 2. At least 50% components healthy (degraded but operational)
+            if [[ "$ready_bool" == "true" ]]; then
+                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
+                return 0
+            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
+                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
+                return 0
+            else
+                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
+            fi
+        fi
+        
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    
+    echo "❌ Backend ready timeout after ${timeout}s"
+    echo ""
+    echo "🏥 Starting automatic health diagnostic..."
+    echo ""
+    ./start-health.sh
+    return 1
+}
+
+wait_for_backend() {
+  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
+  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
+    if wait_for_all_services_parallel; then
+      echo "✅ All services responding"
+    else
+      echo "⚠️ Some services failed - continuing with resilient mode"
+    fi
+  else
+    # Legacy: Serial checks
+    echo "Using legacy serial checks..."
+  fi
+  
+  echo ""
+  
+  # ✅ STEP 2: Event-driven backend ready check
+  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
+    if wait_for_backend_ready; then
+      echo "✅ Backend fully initialized"
+    else
+      echo "⚠️ Backend timeout - checking resilient health"
+      
+      # Fallback: Check resilient health endpoint
+      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+        echo "✅ Backend operational in degraded mode"
+      else
+        echo "❌ Backend not responding"
+        echo ""
+        echo "🏥 Starting automatic health diagnostic..."
+        echo ""
+        ./start-health.sh
+        return 1
+      fi
+    fi
+  else
+    # Legacy: Polling-based check
+    echo "Using legacy polling-based check..."
+    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
+      for i in {1..60}; do
+        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
+        sleep 1
+      done
+      exit 1
+    '; then
+      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
+    else
+      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
+      return 1
+    fi
+  fi
+  
+  echo ""
+  echo "🚀 Backend startup complete"
+  echo ""
+  
+  # ✅ STEP 3: Warm-up exchanges (non-blocking)
+  echo "🔄 Warming up exchanges (background)..."
+  for exchange in "${EXCHANGES[@]}"; do
+    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
+  done
+  
+  # Give exchanges a moment to respond, but don't block
+  sleep 3
+  
+  # Continue with collector verification (existing code)
+  local collector_success=0
+  local collector_failed=0
+
+  for exchange in "${EXCHANGES[@]}"; do
+      case "$exchange" in
+        "binance") display_name="Binance" ;;
+        "bitget") display_name="Bitget" ;;
+        "mexc") display_name="MEXC" ;;
+        "gateio") display_name="Gate.io" ;;
+        "bybit") display_name="Bybit" ;;
+        "okx") display_name="OKX" ;;
+        "htx") display_name="HTX" ;;
+        "coinbase") display_name="Coinbase" ;;
+        *) display_name="$(ucfirst "$exchange")" ;;
+      esac
+
+      formatted_name=$(printf "%-8s" "$display_name")
+
+      local working_symbol="" symbol_count=0
+      
+      while IFS= read -r symbol; do
+        [[ -z "$symbol" ]] && continue
+        [[ $symbol_count -ge 2 ]] && break
+        
+        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
+        
+        if [[ "$http_test" == "200" ]]; then
+          working_symbol="$symbol"
+          break
+        fi
+        
+        symbol_count=$((symbol_count + 1))
+      done < <(get_test_symbols "$exchange")
+      
+      if [[ -z "$working_symbol" ]]; then
+        case "$exchange" in
+          coinbase) working_symbol="BTC-USD" ;;
+          *) working_symbol="BTCUSDT" ;;
+        esac
+      fi
+
+      echo "🔄 $formatted_name - Collector Starting (background)"
+      
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
+      
+      local started=false
+      if [[ "$http_code" == "200" ]]; then
+        echo "✅ $formatted_name - Collector Started (API accessible)"
+        collector_success=$((collector_success + 1))
+        started=true
+      else
+        echo "⚠️  $formatted_name - Collector Started (API warming up)"
+        started=true
+      fi
+
+      if [[ "$started" == "false" ]]; then
+        collector_failed=$((collector_failed + 1))
+        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
+      fi
+    done
+
+    if [[ $collector_failed -gt 0 ]]; then
+      echo ""
+      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
+    fi
+
+    echo ""
+    echo "✅ All Exchange Collectors: STARTED"
+    echo "ℹ️  Background Health Monitoring: ACTIVE" 
+    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
+    echo ""
+    return 0
+}
+
+wait_for_backend
+
+auto_enable_test_coins() {
+  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
+  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
+  
+  for coin in "${test_coins[@]}"; do
+    for exchange in "${EXCHANGES[@]}"; do
+      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
+        -X POST -H "Content-Type: application/json" \
+        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
+        >/dev/null 2>&1 || true
+    done
+  done
+  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
+}
+
+auto_enable_test_coins
+
+echo ""
+
+gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
+if [[ -f monitor-backend.sh ]]; then
+  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
+  MONITOR_PID=$!
+  echo $MONITOR_PID > pids/backend_monitor.pid
+  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
+else
+  show_warning "Backend Monitor - Not found"
+fi
+
+gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
+show_success "Vite Cache - Cleaned"
+
+# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
+echo "🚀 Starting Frontend in new terminal window..."
+osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
+  echo "⚠️  Could not open new terminal - trying background mode"
+  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  echo "$FRONTEND_PID" > ../pids/frontend.pid
+  cd ..
+}
+show_success "Frontend - Started in new terminal"
+
+echo ""
+echo "=================================================="
+echo "SYSTEM STATUS"
+echo "=================================================="
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+echo "🔍 Docker Container Status..."
+echo ""
+
+DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
+
+for service in "${DOCKER_SERVICES[@]}"; do
+  case "$service" in
+    "backend") display_name="Backend" ;;
+    "clickhouse") display_name="ClickHouse" ;;
+    "redis") display_name="Redis" ;;
+    "trade-router") display_name="Trade-Router" ;;
+    "unified-aggregator") display_name="Unified-Agg" ;;
+    *) display_name="$(ucfirst "$service")" ;;
+  esac
+
+  status=$(gum_spin "$display_name - Container Checking" bash -c "
+    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
+  ")
+
+  if [[ "$status" == "running" ]]; then
+    show_success "$display_name - Container" "Running"
+  elif [[ "$status" == "not found" ]]; then
+    show_failure "$display_name - Container" "Not Found"
+  else
+    show_warning "$display_name - Container" "$status"
+  fi
+done
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
+# =============================================================================
+
+pipeline_table_snapshot() {
+  echo ""
+  echo "=================================================="
+  echo "PIPELINE DATA FLOW SNAPSHOT"
+  echo "=================================================="
+  echo ""
+  
+  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
+  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
+    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
+  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
+  
+  local h=0 p=0 f=0
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Display-Name
+    local display_name
+    case "$exchange" in
+      "binance")  display_name="Binance" ;;
+      "bitget")   display_name="Bitget" ;;
+      "mexc")     display_name="MEXC" ;;
+      "gateio")   display_name="Gate.io" ;;
+      "bybit")    display_name="Bybit" ;;
+      "okx")      display_name="OKX" ;;
+      "htx")      display_name="HTX" ;;
+      "coinbase") display_name="Coinbase" ;;
+      *)          display_name="$(ucfirst "$exchange")" ;;
+    esac
+    
+    # Test-Symbol pro Exchange
+    local test_symbol
+    if [[ "$exchange" == "coinbase" ]]; then
+      test_symbol="BTC-USD"
+    else
+      test_symbol="BTCUSDT"
+    fi
+    
+    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
+    local redis_spot redis_usdtm redis_coinm redis_usdcm
+
+    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
+    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
+    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
+    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
+
+    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
+    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
+    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
+    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
+    
+    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
+    
+    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
+    local api_response api_trades api_latency
+    api_response=$(
+      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
+        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
+      || echo -e "[]\n0"
+    )
+
+    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
+    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
+
+    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
+    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
+    
+    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
+    local ch_trades_5min
+    ch_trades_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
+    
+    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
+    local ch_candles_5min
+    ch_candles_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE timestamp > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
+    )
+    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
+    
+    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
+    local ch_backfill
+    ch_backfill=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
+    
+    # 6) GW-API Status
+    local gw_status
+    if (( api_trades > 0 )); then
+      gw_status="✓"
+    else
+      gw_status="✗"
+    fi
+    
+    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
+    local ws_status
+    if (( redis_total > 0 )); then
+      ws_status="✓"
+    else
+      ws_status="✗"
+    fi
+    
+    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
+    local ch_write_status
+    if (( ch_trades_5min > 0 )); then
+      ch_write_status="✓"
+    else
+      ch_write_status="✗"
+    fi
+    
+    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
+    local status="FAILED"
+    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
+      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
+    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
+      status="PARTIAL"
+    fi
+
+    case "$status" in
+      HEALTHY) ((h++)) ;;
+      PARTIAL) ((p++)) ;;
+      *)       ((f++)) ;;
+    esac
+    
+    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
+    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
+      "$display_name" "$test_symbol" \
+      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
+      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
+  done
+  
+  echo "-------------------------------------------------------------------------------------------------------------------------------"
+  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
+  echo ""
+  
+  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
+  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Skip if no backfill data
+    local bf_count
+    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
+    
+    if [[ "$bf_count" -gt 0 ]]; then
+      local bf_oldest bf_newest
+      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      
+      printf "  %-10s: %10s trades | Range: %s → %s\n" \
+        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
+    fi
+  done
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "=================================================="
+}
+
+# =============================================================================
+# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
+echo "=================================================="
+echo ""
+
+# Health-Block darf das Script nicht killen → Fehler explizit abfangen
+set +e
+
+# /health/ready – Kubernetes Readiness Probe
+HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
+HEALTH_READY_CODE="$HEALTH_READY_RAW"
+if [[ "$HEALTH_READY_CODE" == "" ]]; then
+  HEALTH_READY_CODE="000"
+fi
+
+# /health/detailed – System-Gesamtstatus
+HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
+
+# /health/components – alle Health-Lanes
+HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
+
+# /health/critical – nur kritische Komponenten
+HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
+
+# Default-Werte
+total_components=0
+healthy_components=0
+degraded_components=0
+unhealthy_components=0
+stale_components=0
+offline_components=0
+
+critical_total=0
+critical_healthy=0
+
+# Komponenten zählen (effective_status basiert)
+if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
+
+  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
+  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
+  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
+  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
+  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
+  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
+fi
+
+# Kritische Komponenten
+if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
+  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
+  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
+fi
+
+# Detaillierter Systemstatus
+system_status="unknown"
+readiness_message=""
+
+if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
+  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
+fi
+
+echo "Health Endpoints:"
+echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
+echo "  /health/detailed   → system_status=$system_status"
+echo "  /health/components → components=$total_components"
+echo "  /health/critical   → critical=$critical_healthy/$critical_total"
+echo ""
+
+echo "Component Status Breakdown (effective_status):"
+printf "  healthy:   %3d\n" "$healthy_components"
+printf "  degraded:  %3d\n" "$degraded_components"
+printf "  unhealthy: %3d\n" "$unhealthy_components"
+printf "  stale:     %3d\n" "$stale_components"
+printf "  offline:   %3d\n" "$offline_components"
+echo ""
+
+
+# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
+HEALTH_SUMMARY_HEALTHY="$healthy_components"
+HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
+HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
+
+export HEALTH_SUMMARY_HEALTHY
+export HEALTH_SUMMARY_PARTIAL
+export HEALTH_SUMMARY_FAILED
+set -e  # ab hier wieder strikt
+
+# =============================================================================
+# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
+# =============================================================================
+
+echo ""
+if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
+  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
+  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+  echo ""
+  echo "🔍 PROBLEMATIC COMPONENTS:"
+  echo ""
+  
+  # Tabellenkopf für problematische Komponenten
+  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
+  echo "------------------------------------------------------------------------------------------------"
+  
+  # Zeige NUR problematische Komponenten (effective_status != healthy)
+  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
+    while read -r comp; do
+      c_name=$(echo "$comp"   | jq -r '.name // "-"')
+      c_type=$(echo "$comp"   | jq -r '.type // "-"')
+      c_crit=$(echo "$comp"   | jq -r '.critical // false')
+      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
+      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
+      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
+      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
+      c_stale=$(echo "$comp"  | jq -r '.stale // false')
+      
+      m_summary=$(echo "$comp" | jq -r '
+        .metrics as $m |
+        (if ($m | type) == "object" and ($m | length) > 0
+         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
+         else "-"
+         end
+        )
+      ' 2>/dev/null || echo "-")
+      m_short=$(printf '%.50s' "$m_summary")
+      
+      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
+    done
+  fi
+  
+  echo "------------------------------------------------------------------------------------------------"
+else
+  # ✅ ALLES OK - Kompakte Anzeige
+  echo "✅ ALL COMPONENTS HEALTHY"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+fi
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
+# =============================================================================
+
+# Error handling for pipeline snapshot
+set +e  # Don't exit on errors in pipeline snapshot
+pipeline_table_snapshot
+set -e  # Re-enable strict error handling
+
+echo ""
+
+# =============================================
+# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
+# =============================================
+ENTERPRISE_DIAG="enterprise_diag.py"
+if [[ -f "$ENTERPRISE_DIAG" ]]; then
+  mkdir -p logs diag_py
+  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
+  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
+  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
+else
+  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
+fi
+
+# =============================================
+# PROFESSIONAL PIPELINE TEST SYSTEM
+# =============================================
+PIPELINE_TEST="test/pipeline_test.py"
+if [[ -f "$PIPELINE_TEST" ]]; then
+  echo ""
+  echo "🔧 Running Professional Pipeline Tests..."
+  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
+  
+  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
+    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
+  else
+    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
+  fi
+else
+  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
+fi
+
+# =============================================================================
+# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
+echo "=================================================="
+echo ""
+
+# Hole neueste Backfill-Loop Logs aus Docker
+BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
+  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
+  tail -10 2>/dev/null || echo "")
+
+if [[ -n "$BACKFILL_LOGS" ]]; then
+  echo "📜 Recent Backfill Activity:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$BACKFILL_LOGS"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+else
+  echo "⚠️  No backfill activity detected yet"
+  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
+fi
+
+echo ""
+
+# =============================================================================
+# FINAL SYSTEM STATUS & EXIT
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "System Information:"
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+failed_count=${HEALTH_SUMMARY_FAILED:-0}
+partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
+ready_http="$HEALTH_READY_CODE"
+
+# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
+if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
+  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
+  exit_code=0
+elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
+  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
+  exit_code=2
+else
+  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
+  echo ""
+  echo "🏥 Starting automatic health diagnostic..."
+  echo ""
+  ./start-health.sh
+  exit_code=1
+fi
+
+echo ""
+echo "=================================================="
+echo "STARTUP COMPLETED"
+echo "=================================================="
+echo ""
+echo "🔄 Starting Continuous System Monitor..."
+echo "   Monitor will refresh every 10 seconds"
+echo "   Check: logs/monitor/system_monitor.log"
+echo ""
+
+# ✅ Write Health Diagnostic Report
+mkdir -p monitoring
+curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
+  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
+
+echo "📊 Health Diagnostic Report:"
+echo "   Latest: monitoring/health_diagnostic_latest.json"
+if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
+  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
+  echo "   Time: $LATEST_TIMESTAMP"
+fi
+echo ""
+
+# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
+if ! pgrep -f "monitor-system.sh" > /dev/null; then
+  echo "✅ Starting Live Monitor in new terminal window..."
+  echo "   Updates every 10 seconds"
+  echo "   Press Ctrl+C in monitor window to stop"
+  echo ""
+  
+  # Open new Terminal window with monitor script (macOS)
+  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
+    echo "⚠️  Could not open new terminal - starting monitor in background"
+    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
+    echo "   Monitor logs: logs/monitor_console.log"
+  }
+  
+  sleep 1
+else
+  echo "ℹ️  Monitor already running - check other terminal"
+fi
+
+echo ""
+echo "=================================================="
+echo "✅ STARTUP COMPLETE - Monitor running in separate window"
+echo "=================================================="
+echo ""
+
+exit $exit_code
 </file>
 
 <file path="backend/api/routers/ro_historical.py">
@@ -170270,1593 +171366,6 @@ while true; do
 done
 </file>
 
-<file path="start-system.sh">
-#!/bin/bash
-
-# =============================================================================
-# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
-# =============================================================================
-
-# Strict Bash Setup - Production Hardening for Apple Silicon
-set -euo pipefail
-set +m    # keine Job-Control Meldungen
-IFS=$'\n\t'
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
-
-echo "=================================================="
-echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
-echo "=================================================="
-echo ""
-
-# =============================================================================
-# INTERACTIVE VERBOSE MODE SELECTION
-# =============================================================================
-
-# Check if already set via env var
-if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
-  echo "🔧 Startup Logging Mode:"
-  echo "  1) Normal  - Standard output (recommended)"
-  echo "  2) Verbose - Detailed logs & all steps visible"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " mode_choice
-  
-  case "${mode_choice:-1}" in
-    2)
-      export STARTUP_VERBOSE=1
-      echo "✅ VERBOSE MODE activated - all logs visible"
-      ;;
-    *)
-      export STARTUP_VERBOSE=0
-      echo "✅ NORMAL MODE activated - standard output"
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# BUILD MODE SELECTION
-# =============================================================================
-
-# Interactive build mode selection (unless --clean flag was used)
-CLEAN_BUILD_MODE=0
-if [[ "${1:-}" == "--clean" ]]; then
-  CLEAN_BUILD_MODE=1
-  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
-  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
-  echo ""
-else
-  echo "🏗️  Docker Build Mode:"
-  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
-  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
-  echo ""
-  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " build_choice
-  
-  case "${build_choice:-1}" in
-    2)
-      CLEAN_BUILD_MODE=1
-      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
-      echo "   This will take 10-15 minutes..."
-      ;;
-    *)
-      CLEAN_BUILD_MODE=0
-      echo "✅ FAST START MODE activated - using existing images"
-      echo "   Starting in 10-30 seconds..."
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# DEPENDENCY MANAGEMENT
-# =============================================================================
-
-# Critical dependency checker
-need() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "ERROR: Missing required dependency: $1"
-    exit 1
-  }
-}
-
-# Check required dependencies
-need jq
-need redis-cli
-need curl
-need nc
-need python3
-need docker
-
-# Robust timeout wrapper with macOS compatibility
-with_timeout() {
-  local s="$1"; shift
-  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
-  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
-  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
-  fi
-}
-
-# Docker Compose V2 compatibility wrapper
-dc() {
-  if command -v docker >/dev/null 2>&1; then
-    docker compose "$@"
-  else
-    echo "ERROR: Docker not found"
-    exit 1
-  fi
-}
-
-# Safe pkill wrapper - prevents set -e from killing script when no process found
-safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
-
-# WS-CAT soft fallback - graceful handling with vendor support
-if ! command -v wscat >/dev/null 2>&1; then
-  # Try to install from vendor if available
-  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
-    echo "Installing wscat from vendor..."
-    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
-  fi
-
-  # Check again after potential install
-  if ! command -v wscat >/dev/null 2>&1; then
-    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
-    WS_CAT_SKIP=1
-  else
-    WS_CAT_SKIP=0
-  fi
-else
-  WS_CAT_SKIP=0
-fi
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# TTY-sichere Farben
-isatty() { [[ -t 1 ]]; }
-if isatty; then
-  readonly GREEN=$'\033[0;32m'
-  readonly CYAN=$'\033[0;36m'
-  readonly YELLOW=$'\033[1;33m'
-  readonly RED=$'\033[0;31m'
-  readonly NC=$'\033[0m'
-else
-  readonly GREEN=
-  readonly CYAN=
-  readonly YELLOW=
-  readonly RED=
-  readonly NC=
-fi
-
-# Exchange Configuration
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-SPOT_SYMBOL_DEFAULT="BTCUSDT"
-COINBASE_SPOT_SYMBOL="BTC-USD"
-
-# GUM SPINNER SYSTEM - Professional and stable with vendor support
-if ! command -v gum >/dev/null 2>&1; then
-  # Try to install from vendor if available (future-ready)
-  if [[ -f "vendor/system/file_linux/gum" ]]; then
-    echo "Installing gum from vendor..."
-    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
-    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
-    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
-  fi
-
-  # Fallback to brew if still not available
-  if ! command -v gum >/dev/null 2>&1; then
-    echo "Installing gum via homebrew..."
-    brew install gum >/dev/null 2>&1 || {
-      echo "⚠ gum installation failed - using simple spinner fallback"
-      GUM_AVAILABLE=0
-    }
-  fi
-fi
-
-# Check if gum is available after installation attempts
-if command -v gum >/dev/null 2>&1; then
-  GUM_AVAILABLE=1
-  gum_spin() {  # gum_spin "Titel" CMD...
-    local title="$1"; shift
-    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
-      gum spin --title "$title" -- "$@"
-  }
-else
-  GUM_AVAILABLE=0
-  # Fallback spinner function using simple dots
-  gum_spin() {
-    local title="$1"; shift
-    printf "⠋ %s..." "$title"
-    "$@" >/dev/null 2>&1
-    local result=$?
-    printf "\r"
-    return $result
-  }
-fi
-
-# Professional Status Symbols
-readonly SYMBOL_SUCCESS="✔"
-readonly SYMBOL_FAILURE="✖"
-readonly SYMBOL_WARNING="⚠"
-readonly SYMBOL_INFO="ℹ"
-readonly SYMBOL_SKIP="○"
-
-# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
-ucfirst() {
-  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
-}
-
-# Status display functions
-show_success() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
-}
-show_failure() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
-}
-show_warning() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
-}
-
-show_skip() {
-  local message="$1"
-  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
-}
-
-# Timing Windows (configurable via environment)
-REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
-CH_GROW_WIN="${CH_GROW_WIN:-30}"
-BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
-COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
-RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
-
-# =============================================================================
-# INTELLIGENT STARTUP CONFIGURATION
-# =============================================================================
-
-# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
-export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
-export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
-export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
-export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
-
-# ✅ Feature Flags (enable/disable new behavior)
-export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
-export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
-export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
-
-# ✅ Observability
-export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
-
-# Log configuration
-if [[ "$STARTUP_VERBOSE" == "1" ]]; then
-  echo "=================================================="
-  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
-  echo "=================================================="
-  echo ""
-  echo "📊 Retry & Timeout Configuration:"
-  echo "   MAX_RETRIES=$MAX_RETRIES"
-  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
-  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
-  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
-  echo ""
-  echo "🎯 Feature Flags:"
-  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
-  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
-  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
-  echo ""
-  echo "🚀 Collector Configuration:"
-  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
-  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
-  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
-  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
-  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
-  echo ""
-  echo "📍 System Paths:"
-  echo "   Working Directory: $(pwd)"
-  echo "   Python: $(which python3)"
-  echo "   Docker: $(which docker)"
-  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
-  echo ""
-  echo "=================================================="
-  echo ""
-  
-  # Enable bash command tracing for full visibility
-  echo "🔍 Enabling bash command tracing (set -x)..."
-  echo "   All commands will be printed before execution"
-  echo ""
-  set -x  # Print commands as they execute
-fi
-
-# Optional Features (configurable via environment)
-SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
-RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
-
-# =============================================================================
-# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
-# =============================================================================
-
-# Präzise Latenz-Messung aus pipeline_test.sh
-CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
-CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
-
-# Warm-Up Function
-warm_up() {
-  local url="$1"
-  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
-}
-
-# Präzise Latenzermittlung
-measure_latency() {
-  local url="$1"
-  local timeout="${2:-5}"
-  local tmpfile
-  tmpfile="$(mktemp -t resp.XXXXXX)"
-
-  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
-  local line
-  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
-  local http_code ttfb_s total_s
-  read -r http_code ttfb_s total_s <<<"$line"
-
-  # Convert to milliseconds
-  local ttfb_ms total_ms
-  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
-  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
-
-  # Body for validation
-  local body
-  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
-  rm -f "$tmpfile" 2>/dev/null || true
-
-  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
-  printf "%s" "$body"
-}
-
-# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
-get_available_symbols() {
-  local exchange="$1"
-  local market="${2:-spot}"  # Default to spot market
-  local limit="${3:-5}"      # Default top 5 symbols
-  
-  # Query SymbolRegistry for real available symbols
-  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
-    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
-    head -n "$limit" || echo ""
-}
-
-# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
-get_test_symbols() {
-  local exchange="$1"
-  
-  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
-  local symbols_output
-  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
-  
-  if [[ -n "$symbols_output" ]]; then
-    echo "$symbols_output"
-  else
-    case "$exchange" in
-      coinbase) 
-        echo "BTC-USD"
-        echo "ETH-USD"
-        ;;
-      *) 
-        echo "BTCUSDT"
-        echo "ETHUSDT"
-        ;;
-    esac
-  fi
-}
-
-# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
-test_symbol_api() {
-  local exchange="$1" symbol="$2" market="${3:-spot}"
-  local endpoint_suffix
-  
-  case "$market" in
-    spot) endpoint_suffix="spot" ;;
-    futures) endpoint_suffix="futures" ;;
-    *) endpoint_suffix="spot" ;;
-  esac
-  
-  local response1 response2 h1 h2 a1 a2
-  
-  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
-  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
-  
-  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
-  a1=$(echo "$response1" | tail -n+2)
-  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
-  a2=$(echo "$response2" | tail -n+2)
-  
-  local trades_count=0 orderbook_ok=0
-  
-  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
-    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
-  fi
-  
-  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
-    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
-      orderbook_ok=1
-    fi
-  fi
-  
-  echo $((trades_count + orderbook_ok))
-}
-
-# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
-fetch_multi_symbol_counts() {
-  local exchange="$1"
-  local total_api_count=0 successful_symbols=0 working_symbols=()
-  local symbol_count=0
-  
-  while IFS= read -r symbol; do
-    [[ -z "$symbol" ]] && continue
-    [[ $symbol_count -ge 3 ]] && break
-    
-    local spot_score futures_score=0
-    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
-    
-    if [[ "$exchange" != "coinbase" ]]; then
-      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
-    fi
-    
-    local symbol_total=$((spot_score + futures_score))
-    if [[ $symbol_total -gt 0 ]]; then
-      total_api_count=$((total_api_count + symbol_total))
-      successful_symbols=$((successful_symbols + 1))
-      working_symbols+=("$symbol")
-    fi
-    
-    symbol_count=$((symbol_count + 1))
-  done < <(get_test_symbols "$exchange")
-  
-  local working_list
-  if [[ ${#working_symbols[@]} -gt 0 ]]; then
-    working_list=$(IFS=,; echo "${working_symbols[*]}")
-  else
-    working_list=""
-  fi
-  echo "$total_api_count:$successful_symbols:$working_list"
-}
-
-# LEGACY FUNCTION - Kept for backward compatibility
-fetch_api_counts() {
-  local ex="$1" spot_sym="$2" fut_sym="$3"
-  local result
-  result=$(fetch_multi_symbol_counts "$ex")
-  echo "${result%%:*}"
-}
-
-# Enhanced API health check with multiple fallback patterns
-api_spot_ok() {
-  local exchange="$1"
-  local symbol="$2"
-
-  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
-  local meta body http_status
-  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
-  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
-  body="$(echo "$meta" | awk 'NR>1{print}')"
-
-  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
-}
-
-# =============================================================================
-# REDIS FUNCTIONS - SCAN-based for production
-# =============================================================================
-
-keys_count() {
-  local pattern="$1"
-  local cursor=0
-  local count=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    local new_cursor
-    local batch=0
-
-    if [[ -n "$scan_result" ]]; then
-      local first_line=true
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          [[ -n "$line" ]] && batch=$((batch + 1))
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-      count=$((count + batch))
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$count"
-}
-
-sum_xlen_pattern() {
-  local pattern="$1"
-  local cursor=0
-  local total=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    if [[ -n "$scan_result" ]]; then
-      local new_cursor
-      local first_line=true
-
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          if [[ -n "$line" ]]; then
-            local length
-            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
-            total=$((total + length))
-          fi
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$total"
-}
-
-growth_window() {
-  local pattern="$1"
-  local window="${2:-$REDIS_GROW_WIN}"
-  local before after
-
-  before=$(sum_xlen_pattern "$pattern")
-  sleep "$window"
-  after=$(sum_xlen_pattern "$pattern")
-  echo $((after - before))
-}
-
-persist_growth() {
-  local exchange="$1"
-  local window="${2:-$CH_GROW_WIN}"
-  local before after
-
-  before=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$before" =~ ^[0-9]+$ ]] || before=0
-
-  sleep 10
-
-  after=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$after" =~ ^[0-9]+$ ]] || after=0
-
-  echo $((after - before))
-}
-
-# =============================================================================
-# WEBSOCKET TEST FUNCTIONS
-# =============================================================================
-
-ws_test_coinbase_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
-    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
-    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
-}
-
-ws_test_mexc_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
-    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
-    head -n 3 | grep -q '"code":0' 2>/dev/null
-}
-
-ws_test_mexc_futures() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
-    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
-    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
-}
-
-# =============================================================================
-# SYSTEM INITIALIZATION
-# =============================================================================
-
-mkdir -p logs pids
-
-if [[ ! -f .deps_installed ]]; then
-  echo "Installing Python dependencies..."
-  if [[ -d "vendor/backend" ]]; then
-    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
-  fi
-
-  echo "Installing System dependencies..."
-  if [[ -d "vendor/system" ]]; then
-    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
-
-    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
-      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
-    fi
-  fi
-
-  echo "Installing Frontend dependencies..."
-  if [[ -d "frontend" ]]; then
-    (cd frontend && npm install --silent)
-  fi
-
-  echo "Installing project in editable mode..."
-  pip3 install --break-system-packages -e .
-
-  touch .deps_installed
-  echo "Dependencies installed."
-fi
-
-if [[ ! -d "frontend/node_modules" ]]; then
-  echo "Installing missing frontend dependencies..."
-  (cd frontend && npm install --silent)
-fi
-
-if [[ -f backend/config/.env ]]; then
-  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
-elif [[ -f backend/.env ]]; then
-  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
-else
-  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
-  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
-fi
-
-# =============================================================================
-# GRACEFUL SHUTDOWN SEQUENCE
-# =============================================================================
-
-echo ""
-echo "🛑 Stopping existing processes..."
-echo ""
-
-if nc -z localhost 8100 >/dev/null 2>&1; then
-  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
-else
-  show_skip "Collectors - Backend not running"
-fi
-
-gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
-show_success "Frontend - Stopped"
-
-gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
-show_success "Backend - Stopped"
-
-gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
-show_success "Desktop GUI - Stopped"
-
-gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker - Stopped"
-
-gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker Cache - Cleaned"
-
-echo ""
-
-# =============================================================================
-# SERVICE STARTUP SEQUENCE
-# =============================================================================
-
-echo "Starting Docker services..."
-
-# ✅ START SERVICES - Conditional Build based on user selection
-if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
-  echo "🔨 Building Docker images from scratch (--no-cache)..."
-  echo "   This will take 10-15 minutes - downloading & compiling everything"
-  echo ""
-  dc build --no-cache
-  dc up -d --no-build
-else
-  echo "⚡ Using existing Docker images (fast start)..."
-  echo "   Starting in 10-30 seconds"
-  echo ""
-  dc up -d --no-build
-fi
-
-echo "🔄 Waiting for Docker Services..."
-echo ""
-
-wait_for_service() {
-  local service=$1
-  local host=$2
-  local port=$3
-
-  gum_spin "$service - Service Ready" bash -c "
-    for i in {1..30}; do
-      nc -z $host $port >/dev/null 2>&1 && exit 0
-      sleep 1
-    done
-    exit 1
-  "
-
-  if [[ $? -eq 0 ]]; then
-    show_success "$service - Service" "Ready"
-    return 0
-  else
-    show_failure "$service - Service" "Timeout"
-    return 1
-  fi
-}
-
-wait_for_service "Redis" localhost 6380
-wait_for_service "ClickHouse" localhost 8124
-wait_for_service "Backend API" localhost 8100
-
-echo ""
-
-# =============================================================================
-# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
-# =============================================================================
-
-# ✅ Exponential Backoff Retry Logic
-wait_for_service_smart() {
-    local service_name=$1
-    local check_cmd=$2
-    local max_retries=${3:-$MAX_RETRIES}
-    local initial_delay=${4:-$INITIAL_DELAY}
-    
-    local retry=0
-    local delay=$initial_delay
-    
-    echo "⏳ Waiting for $service_name..."
-    
-    while (( retry < max_retries )); do
-        if eval "$check_cmd" >/dev/null 2>&1; then
-            echo "✅ $service_name ready after $retry retries"
-            return 0
-        fi
-        
-        if (( retry < max_retries - 1 )); then
-            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
-            sleep "$delay"
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            delay=$((delay * 2))
-        fi
-        
-        retry=$((retry + 1))
-    done
-    
-    echo "❌ $service_name failed after $max_retries retries"
-    return 1
-}
-
-# ✅ Parallele Service Checks
-wait_for_all_services_parallel() {
-    local services=("redis:6380" "clickhouse:8124" "backend:8100")
-    local pids=()
-    local temp_dir=$(mktemp -d)
-    
-    echo "🔄 Starting parallel service checks..."
-    
-    # Starte alle Checks parallel
-    for service in "${services[@]}"; do
-        IFS=':' read -r name port <<< "$service"
-        (
-            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
-                echo "0" > "$temp_dir/check_${name}.status"
-            else
-                echo "1" > "$temp_dir/check_${name}.status"
-            fi
-        ) &
-        pids+=($!)
-    done
-    
-    # Warte auf alle (mit Gesamttimeout)
-    local timeout=$SERVICE_CHECK_TIMEOUT
-    local elapsed=0
-    local all_done=false
-    
-    while (( elapsed < timeout )); do
-        all_done=true
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-                break
-            fi
-        done
-        
-        [[ "$all_done" == "true" ]] && break
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    # Kill stragglers
-    for pid in "${pids[@]}"; do
-        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
-    done
-    
-    # Prüfe Ergebnisse
-    local failed=0
-    for service in "${services[@]}"; do
-        IFS=':' read -r name _ <<< "$service"
-        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
-        if [[ "$status" != "0" ]]; then
-            echo "❌ $name check failed"
-            failed=$((failed + 1))
-        else
-            echo "✅ $name check passed"
-        fi
-    done
-    
-    rm -rf "$temp_dir"
-    
-    return $failed
-}
-
-# ✅ Event-driven Backend Ready Check - DOCKER AWARE
-wait_for_backend_ready() {
-    local timeout=$BACKEND_READY_TIMEOUT
-    local elapsed=0
-    
-    echo "⏳ Waiting for backend ready signal..."
-    
-    # Docker-aware check: Poll /health/ready endpoint directly
-    while (( elapsed < timeout )); do
-        # Check if health endpoint is responding
-        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
-        
-        if [[ -n "$health_response" ]]; then
-            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
-            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
-            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
-            
-            # Accept if:
-            # 1. ready=true (ideal), OR
-            # 2. At least 50% components healthy (degraded but operational)
-            if [[ "$ready_bool" == "true" ]]; then
-                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
-                return 0
-            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
-                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
-                return 0
-            else
-                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
-            fi
-        fi
-        
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    
-    echo "❌ Backend ready timeout after ${timeout}s"
-    echo ""
-    echo "🏥 Starting automatic health diagnostic..."
-    echo ""
-    ./start-health.sh
-    return 1
-}
-
-wait_for_backend() {
-  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
-  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
-    if wait_for_all_services_parallel; then
-      echo "✅ All services responding"
-    else
-      echo "⚠️ Some services failed - continuing with resilient mode"
-    fi
-  else
-    # Legacy: Serial checks
-    echo "Using legacy serial checks..."
-  fi
-  
-  echo ""
-  
-  # ✅ STEP 2: Event-driven backend ready check
-  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
-    if wait_for_backend_ready; then
-      echo "✅ Backend fully initialized"
-    else
-      echo "⚠️ Backend timeout - checking resilient health"
-      
-      # Fallback: Check resilient health endpoint
-      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-        echo "✅ Backend operational in degraded mode"
-      else
-        echo "❌ Backend not responding"
-        echo ""
-        echo "🏥 Starting automatic health diagnostic..."
-        echo ""
-        ./start-health.sh
-        return 1
-      fi
-    fi
-  else
-    # Legacy: Polling-based check
-    echo "Using legacy polling-based check..."
-    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
-      for i in {1..60}; do
-        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
-        sleep 1
-      done
-      exit 1
-    '; then
-      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
-    else
-      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
-      return 1
-    fi
-  fi
-  
-  echo ""
-  echo "🚀 Backend startup complete"
-  echo ""
-  
-  # ✅ STEP 3: Warm-up exchanges (non-blocking)
-  echo "🔄 Warming up exchanges (background)..."
-  for exchange in "${EXCHANGES[@]}"; do
-    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
-  done
-  
-  # Give exchanges a moment to respond, but don't block
-  sleep 3
-  
-  # Continue with collector verification (existing code)
-  local collector_success=0
-  local collector_failed=0
-
-  for exchange in "${EXCHANGES[@]}"; do
-      case "$exchange" in
-        "binance") display_name="Binance" ;;
-        "bitget") display_name="Bitget" ;;
-        "mexc") display_name="MEXC" ;;
-        "gateio") display_name="Gate.io" ;;
-        "bybit") display_name="Bybit" ;;
-        "okx") display_name="OKX" ;;
-        "htx") display_name="HTX" ;;
-        "coinbase") display_name="Coinbase" ;;
-        *) display_name="$(ucfirst "$exchange")" ;;
-      esac
-
-      formatted_name=$(printf "%-8s" "$display_name")
-
-      local working_symbol="" symbol_count=0
-      
-      while IFS= read -r symbol; do
-        [[ -z "$symbol" ]] && continue
-        [[ $symbol_count -ge 2 ]] && break
-        
-        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
-        
-        if [[ "$http_test" == "200" ]]; then
-          working_symbol="$symbol"
-          break
-        fi
-        
-        symbol_count=$((symbol_count + 1))
-      done < <(get_test_symbols "$exchange")
-      
-      if [[ -z "$working_symbol" ]]; then
-        case "$exchange" in
-          coinbase) working_symbol="BTC-USD" ;;
-          *) working_symbol="BTCUSDT" ;;
-        esac
-      fi
-
-      echo "🔄 $formatted_name - Collector Starting (background)"
-      
-      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
-      
-      local started=false
-      if [[ "$http_code" == "200" ]]; then
-        echo "✅ $formatted_name - Collector Started (API accessible)"
-        collector_success=$((collector_success + 1))
-        started=true
-      else
-        echo "⚠️  $formatted_name - Collector Started (API warming up)"
-        started=true
-      fi
-
-      if [[ "$started" == "false" ]]; then
-        collector_failed=$((collector_failed + 1))
-        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
-      fi
-    done
-
-    if [[ $collector_failed -gt 0 ]]; then
-      echo ""
-      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
-    fi
-
-    echo ""
-    echo "✅ All Exchange Collectors: STARTED"
-    echo "ℹ️  Background Health Monitoring: ACTIVE" 
-    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
-    echo ""
-    return 0
-}
-
-wait_for_backend
-
-auto_enable_test_coins() {
-  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
-  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
-  
-  for coin in "${test_coins[@]}"; do
-    for exchange in "${EXCHANGES[@]}"; do
-      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
-        -X POST -H "Content-Type: application/json" \
-        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
-        >/dev/null 2>&1 || true
-    done
-  done
-  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
-}
-
-auto_enable_test_coins
-
-echo ""
-
-gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
-if [[ -f monitor-backend.sh ]]; then
-  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
-  MONITOR_PID=$!
-  echo $MONITOR_PID > pids/backend_monitor.pid
-  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
-else
-  show_warning "Backend Monitor - Not found"
-fi
-
-gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
-show_success "Vite Cache - Cleaned"
-
-# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
-echo "🚀 Starting Frontend in new terminal window..."
-osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
-  echo "⚠️  Could not open new terminal - trying background mode"
-  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
-  FRONTEND_PID=$!
-  echo "$FRONTEND_PID" > ../pids/frontend.pid
-  cd ..
-}
-show_success "Frontend - Started in new terminal"
-
-echo ""
-echo "=================================================="
-echo "SYSTEM STATUS"
-echo "=================================================="
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-echo "🔍 Docker Container Status..."
-echo ""
-
-DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
-
-for service in "${DOCKER_SERVICES[@]}"; do
-  case "$service" in
-    "backend") display_name="Backend" ;;
-    "clickhouse") display_name="ClickHouse" ;;
-    "redis") display_name="Redis" ;;
-    "trade-router") display_name="Trade-Router" ;;
-    "unified-aggregator") display_name="Unified-Agg" ;;
-    *) display_name="$(ucfirst "$service")" ;;
-  esac
-
-  status=$(gum_spin "$display_name - Container Checking" bash -c "
-    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
-  ")
-
-  if [[ "$status" == "running" ]]; then
-    show_success "$display_name - Container" "Running"
-  elif [[ "$status" == "not found" ]]; then
-    show_failure "$display_name - Container" "Not Found"
-  else
-    show_warning "$display_name - Container" "$status"
-  fi
-done
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
-# =============================================================================
-
-pipeline_table_snapshot() {
-  echo ""
-  echo "=================================================="
-  echo "PIPELINE DATA FLOW SNAPSHOT"
-  echo "=================================================="
-  echo ""
-  
-  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
-  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
-    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
-  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
-  
-  local h=0 p=0 f=0
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Display-Name
-    local display_name
-    case "$exchange" in
-      "binance")  display_name="Binance" ;;
-      "bitget")   display_name="Bitget" ;;
-      "mexc")     display_name="MEXC" ;;
-      "gateio")   display_name="Gate.io" ;;
-      "bybit")    display_name="Bybit" ;;
-      "okx")      display_name="OKX" ;;
-      "htx")      display_name="HTX" ;;
-      "coinbase") display_name="Coinbase" ;;
-      *)          display_name="$(ucfirst "$exchange")" ;;
-    esac
-    
-    # Test-Symbol pro Exchange
-    local test_symbol
-    if [[ "$exchange" == "coinbase" ]]; then
-      test_symbol="BTC-USD"
-    else
-      test_symbol="BTCUSDT"
-    fi
-    
-    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
-    local redis_spot redis_usdtm redis_coinm redis_usdcm
-
-    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
-    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
-    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
-    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
-
-    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
-    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
-    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
-    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
-    
-    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
-    
-    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
-    local api_response api_trades api_latency
-    api_response=$(
-      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
-        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
-      || echo -e "[]\n0"
-    )
-
-    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
-    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
-
-    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
-    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
-    
-    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
-    local ch_trades_5min
-    ch_trades_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
-    
-    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
-    local ch_candles_5min
-    ch_candles_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE timestamp > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
-    )
-    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
-    
-    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
-    local ch_backfill
-    ch_backfill=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
-    
-    # 6) GW-API Status
-    local gw_status
-    if (( api_trades > 0 )); then
-      gw_status="✓"
-    else
-      gw_status="✗"
-    fi
-    
-    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
-    local ws_status
-    if (( redis_total > 0 )); then
-      ws_status="✓"
-    else
-      ws_status="✗"
-    fi
-    
-    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
-    local ch_write_status
-    if (( ch_trades_5min > 0 )); then
-      ch_write_status="✓"
-    else
-      ch_write_status="✗"
-    fi
-    
-    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
-    local status="FAILED"
-    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
-      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
-    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
-      status="PARTIAL"
-    fi
-
-    case "$status" in
-      HEALTHY) ((h++)) ;;
-      PARTIAL) ((p++)) ;;
-      *)       ((f++)) ;;
-    esac
-    
-    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
-    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
-      "$display_name" "$test_symbol" \
-      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
-      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
-  done
-  
-  echo "-------------------------------------------------------------------------------------------------------------------------------"
-  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
-  echo ""
-  
-  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
-  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Skip if no backfill data
-    local bf_count
-    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
-    
-    if [[ "$bf_count" -gt 0 ]]; then
-      local bf_oldest bf_newest
-      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      
-      printf "  %-10s: %10s trades | Range: %s → %s\n" \
-        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
-    fi
-  done
-  
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "=================================================="
-}
-
-# =============================================================================
-# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
-echo "=================================================="
-echo ""
-
-# Health-Block darf das Script nicht killen → Fehler explizit abfangen
-set +e
-
-# /health/ready – Kubernetes Readiness Probe
-HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
-HEALTH_READY_CODE="$HEALTH_READY_RAW"
-if [[ "$HEALTH_READY_CODE" == "" ]]; then
-  HEALTH_READY_CODE="000"
-fi
-
-# /health/detailed – System-Gesamtstatus
-HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
-
-# /health/components – alle Health-Lanes
-HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
-
-# /health/critical – nur kritische Komponenten
-HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
-
-# Default-Werte
-total_components=0
-healthy_components=0
-degraded_components=0
-unhealthy_components=0
-stale_components=0
-offline_components=0
-
-critical_total=0
-critical_healthy=0
-
-# Komponenten zählen (effective_status basiert)
-if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
-
-  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
-  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
-  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
-  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
-  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
-  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
-fi
-
-# Kritische Komponenten
-if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
-  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
-  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
-fi
-
-# Detaillierter Systemstatus
-system_status="unknown"
-readiness_message=""
-
-if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
-  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
-fi
-
-echo "Health Endpoints:"
-echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
-echo "  /health/detailed   → system_status=$system_status"
-echo "  /health/components → components=$total_components"
-echo "  /health/critical   → critical=$critical_healthy/$critical_total"
-echo ""
-
-echo "Component Status Breakdown (effective_status):"
-printf "  healthy:   %3d\n" "$healthy_components"
-printf "  degraded:  %3d\n" "$degraded_components"
-printf "  unhealthy: %3d\n" "$unhealthy_components"
-printf "  stale:     %3d\n" "$stale_components"
-printf "  offline:   %3d\n" "$offline_components"
-echo ""
-
-
-# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
-HEALTH_SUMMARY_HEALTHY="$healthy_components"
-HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
-HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
-
-export HEALTH_SUMMARY_HEALTHY
-export HEALTH_SUMMARY_PARTIAL
-export HEALTH_SUMMARY_FAILED
-set -e  # ab hier wieder strikt
-
-# =============================================================================
-# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
-# =============================================================================
-
-echo ""
-if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
-  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
-  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-  echo ""
-  echo "🔍 PROBLEMATIC COMPONENTS:"
-  echo ""
-  
-  # Tabellenkopf für problematische Komponenten
-  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
-  echo "------------------------------------------------------------------------------------------------"
-  
-  # Zeige NUR problematische Komponenten (effective_status != healthy)
-  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
-    while read -r comp; do
-      c_name=$(echo "$comp"   | jq -r '.name // "-"')
-      c_type=$(echo "$comp"   | jq -r '.type // "-"')
-      c_crit=$(echo "$comp"   | jq -r '.critical // false')
-      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
-      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
-      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
-      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
-      c_stale=$(echo "$comp"  | jq -r '.stale // false')
-      
-      m_summary=$(echo "$comp" | jq -r '
-        .metrics as $m |
-        (if ($m | type) == "object" and ($m | length) > 0
-         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
-         else "-"
-         end
-        )
-      ' 2>/dev/null || echo "-")
-      m_short=$(printf '%.50s' "$m_summary")
-      
-      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
-    done
-  fi
-  
-  echo "------------------------------------------------------------------------------------------------"
-else
-  # ✅ ALLES OK - Kompakte Anzeige
-  echo "✅ ALL COMPONENTS HEALTHY"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-fi
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
-# =============================================================================
-
-# Error handling for pipeline snapshot
-set +e  # Don't exit on errors in pipeline snapshot
-pipeline_table_snapshot
-set -e  # Re-enable strict error handling
-
-echo ""
-
-# =============================================
-# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
-# =============================================
-ENTERPRISE_DIAG="enterprise_diag.py"
-if [[ -f "$ENTERPRISE_DIAG" ]]; then
-  mkdir -p logs diag_py
-  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
-  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
-  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
-else
-  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
-fi
-
-# =============================================
-# PROFESSIONAL PIPELINE TEST SYSTEM
-# =============================================
-PIPELINE_TEST="test/pipeline_test.py"
-if [[ -f "$PIPELINE_TEST" ]]; then
-  echo ""
-  echo "🔧 Running Professional Pipeline Tests..."
-  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
-  
-  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
-    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
-  else
-    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
-  fi
-else
-  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
-fi
-
-# =============================================================================
-# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
-echo "=================================================="
-echo ""
-
-# Hole neueste Backfill-Loop Logs aus Docker
-BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
-  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
-  tail -10 2>/dev/null || echo "")
-
-if [[ -n "$BACKFILL_LOGS" ]]; then
-  echo "📜 Recent Backfill Activity:"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "$BACKFILL_LOGS"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-else
-  echo "⚠️  No backfill activity detected yet"
-  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
-fi
-
-echo ""
-
-# =============================================================================
-# FINAL SYSTEM STATUS & EXIT
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "System Information:"
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-failed_count=${HEALTH_SUMMARY_FAILED:-0}
-partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
-ready_http="$HEALTH_READY_CODE"
-
-# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
-if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
-  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
-  exit_code=0
-elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
-  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
-  exit_code=2
-else
-  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
-  echo ""
-  echo "🏥 Starting automatic health diagnostic..."
-  echo ""
-  ./start-health.sh
-  exit_code=1
-fi
-
-echo ""
-echo "=================================================="
-echo "STARTUP COMPLETED"
-echo "=================================================="
-echo ""
-echo "🔄 Starting Continuous System Monitor..."
-echo "   Monitor will refresh every 10 seconds"
-echo "   Check: logs/monitor/system_monitor.log"
-echo ""
-
-# ✅ Write Health Diagnostic Report
-mkdir -p monitoring
-curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
-  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
-
-echo "📊 Health Diagnostic Report:"
-echo "   Latest: monitoring/health_diagnostic_latest.json"
-if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
-  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
-  echo "   Time: $LATEST_TIMESTAMP"
-fi
-echo ""
-
-# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
-if ! pgrep -f "monitor-system.sh" > /dev/null; then
-  echo "✅ Starting Live Monitor in new terminal window..."
-  echo "   Updates every 10 seconds"
-  echo "   Press Ctrl+C in monitor window to stop"
-  echo ""
-  
-  # Open new Terminal window with monitor script (macOS)
-  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
-    echo "⚠️  Could not open new terminal - starting monitor in background"
-    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
-    echo "   Monitor logs: logs/monitor_console.log"
-  }
-  
-  sleep 1
-else
-  echo "ℹ️  Monitor already running - check other terminal"
-fi
-
-echo ""
-echo "=================================================="
-echo "✅ STARTUP COMPLETE - Monitor running in separate window"
-echo "=================================================="
-echo ""
-
-exit $exit_code
-</file>
-
 <file path="backend/core/main.py">
 # backend/core/main.py
 """
@@ -173517,10 +173026,41 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import ThemeProvider from './shared/ui/theme-provider';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
+  </StrictMode>,
+);
+</file>
+
 <file path="frontend/src/services/ws/useWsLane.ts">
 // frontend/src/services/ws/useWsLane.ts
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
+
+function clampInt(n: number, def: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
 
 export type LiveTrade = {
   exchange: string;
@@ -173537,7 +173077,7 @@ export type LiveCandle = {
   symbol: string;
   market: string;
   interval: string;
-  t: number;
+  t: number; // seconds
   o: number;
   h: number;
   l: number;
@@ -173560,8 +173100,6 @@ function toNum(x: any): number {
 function toSec(ts: unknown): number {
   const n = Number(ts);
   if (!Number.isFinite(n) || n <= 0) return 0;
-  
-  // ms vs sec heuristic
   if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
   return Math.floor(n); // already sec
 }
@@ -173583,24 +173121,60 @@ function bucketStartFromMs(tsMs: number, sec: number): number {
   return Math.floor(t / sec) * sec;
 }
 
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string
-) {
+function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
+  if (!incoming.length) return prev;
+
+  const map = new Map<number, LiveCandle>();
+  for (const c of prev) map.set(c.t, c);
+
+  let changed = false;
+  for (const c of incoming) {
+    const old = map.get(c.t);
+    if (
+      !old ||
+      old.o !== c.o ||
+      old.h !== c.h ||
+      old.l !== c.l ||
+      old.c !== c.c ||
+      old.v !== c.v
+    ) {
+      map.set(c.t, c);
+      changed = true;
+    }
+  }
+
+  if (!changed) return prev;
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
+}
+
+export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
   const [status, setStatus] = useState<WsStatus>("INIT");
   const [trades, setTrades] = useState<LiveTrade[]>([]);
   const [candles, setCandles] = useState<LiveCandle[]>([]);
   const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
   const [historical, setHistorical] = useState<LiveCandle[]>([]);
 
-  // ✅ Backend-defined limits (from connection message)
+  // Backend limits (from "connection" message)
   const maxTradesRef = useRef<number>(500);
   const maxCandlesRef = useRef<number>(2000);
 
+  // Historical request policy (client-side, ENV-driven)
+  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
+  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
+  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
+  const histLastCountRef = useRef<number>(0);
+  const histNoGrowthRef = useRef<number>(0);
+  const histTimerRef = useRef<number | null>(null);
+  const histInFlightRef = useRef<boolean>(false);
+  const histLastReqAtRef = useRef<number>(0);
+
   const sec = useMemo(() => intervalToSec(interval), [interval]);
 
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  // Reset state on lane key change
   useEffect(() => {
     setTrades([]);
     setCandles([]);
@@ -173608,33 +173182,84 @@ export function useWsLane(
     setHistorical([]);
     lastCandleRef.current = null;
     pendingTrades.current = [];
-  }, [exchange, symbol, market, interval]);
 
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
+    histLastCountRef.current = 0;
+    histNoGrowthRef.current = 0;
+    histInFlightRef.current = false;
+    histLastReqAtRef.current = 0;
+
+    if (histTimerRef.current !== null) {
+      window.clearInterval(histTimerRef.current);
+      histTimerRef.current = null;
+    }
+  }, [exchange, symbol, market, interval]);
 
   useEffect(() => {
     const pool = WebSocketPool.instance;
 
+    const requestHistorical = () => {
+      // throttle: avoid spamming
+      const now = Date.now();
+      if (histInFlightRef.current) return;
+      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
+
+      histInFlightRef.current = true;
+      histLastReqAtRef.current = now;
+
+      // Protocol: "historical:<interval>:<limit>"
+      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
+    };
+
+    const stopHistoricalPolling = () => {
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+    };
+
+    const startHistoricalPolling = () => {
+      if (histTimerRef.current !== null) return;
+
+      // initial request immediately
+      requestHistorical();
+
+      // then poll until stable (no growth)
+      histTimerRef.current = window.setInterval(() => {
+        // stop condition: stable data for N cycles
+        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
+          stopHistoricalPolling();
+          return;
+        }
+        requestHistorical();
+      }, histPollMsRef.current);
+    };
+
     const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
       setStatus(newStatus);
-      
-      // ✅ Request historical candles when connection opens
+
       if (newStatus === "OPEN") {
-        // Wait a bit for connection message to arrive first
-        setTimeout(() => {
-          pool.send(exchange, symbol, market, `historical:${interval}:500`);
-        }, 100);
+        // start polling historical (works even if backend doesn't push)
+        startHistoricalPolling();
+      }
+
+      if (newStatus === "CLOSED" || newStatus === "ERROR") {
+        stopHistoricalPolling();
       }
     });
 
     const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // ✅ Connection message with limits
+      // Connection message with limits
       if (msg.type === "connection") {
         const limits = (msg as any).limits || {};
         maxTradesRef.current = limits.maxTrades || 500;
         maxCandlesRef.current = limits.maxCandles || 2000;
+
+        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
+        const hl = Number((limits as any).historicalLimit);
+        const hp = Number((limits as any).historicalPollMs);
+        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
+        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
+
         return;
       }
 
@@ -173649,6 +173274,7 @@ export function useWsLane(
           ts: toNum((msg as any).ts) || undefined,
         };
 
+        // trades buffer (RAF)
         pendingTrades.current.push(t);
         if (rafTrades.current === null) {
           rafTrades.current = window.requestAnimationFrame(() => {
@@ -173656,6 +173282,7 @@ export function useWsLane(
             const batch = pendingTrades.current;
             pendingTrades.current = [];
             if (!batch.length) return;
+
             setTrades((prev) => {
               const next = prev.concat(batch);
               const max = maxTradesRef.current;
@@ -173664,6 +173291,7 @@ export function useWsLane(
           });
         }
 
+        // build live candle from trades (client-side agg)
         const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
         const bucket = bucketStartFromMs(tsMs, sec);
 
@@ -173671,7 +173299,12 @@ export function useWsLane(
         if (!cur || cur.t !== bucket) {
           const fresh: LiveCandle = {
             exchange, symbol, market, interval,
-            t: bucket, o: t.price, h: t.price, l: t.price, c: t.price, v: t.size || 0,
+            t: bucket,
+            o: t.price,
+            h: t.price,
+            l: t.price,
+            c: t.price,
+            v: t.size || 0,
           };
           lastCandleRef.current = fresh;
           setCandles((prev) => {
@@ -173700,6 +173333,7 @@ export function useWsLane(
       }
 
       if (msg.type === "candle") {
+        // optional backend candle stream; keep compatible
         const m: any = msg;
         const tSec = toSec(m.t);
         if (!tSec) return;
@@ -173745,11 +173379,14 @@ export function useWsLane(
       }
 
       if (msg.type === "historical") {
+        // mark request as completed
+        histInFlightRef.current = false;
+
         const candlesRaw = (msg as any).candles || [];
         const hist: LiveCandle[] = candlesRaw
           .map((raw: any) => ({
-            exchange: msg.exchange,
-            symbol: msg.symbol,
+            exchange: msg.exchange || exchange,
+            symbol: msg.symbol || symbol,
             market: (msg as any).market || market,
             interval: (msg as any).interval || interval,
             t: toSec(raw.time ?? raw.t),
@@ -173760,14 +173397,35 @@ export function useWsLane(
             v: toNum(raw.volume ?? raw.v),
           }))
           .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
-        setHistorical(hist);
+
+        setHistorical((prev) => mergeCandles(prev, hist));
+
+        // stop heuristic: if total historical size does not grow for N polls, stop polling
+        // (works even if backend always returns same "last N" window)
+        const incomingCount = hist.length;
+        const prevTotal = histLastCountRef.current;
+
+        // we need the full state size, but we only have incoming; use a conservative heuristic:
+        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
+        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
+        if (incomingCount <= 0) {
+          histNoGrowthRef.current += 1;
+        } else if (incomingCount === prevTotal) {
+          histNoGrowthRef.current += 1;
+        } else {
+          histNoGrowthRef.current = 0;
+          histLastCountRef.current = incomingCount;
+        }
+
         return;
       }
     });
 
     return () => {
-      // React StrictMode kann Effects doppelt mounten/unmounten.
-      // Delay verhindert Race: Handler werden nicht während laufender WS-Pool-Dispatch entfernt.
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
       window.setTimeout(() => {
         try { offStatus(); } catch {}
         try { offMsg(); } catch {}
@@ -173775,27 +173433,17 @@ export function useWsLane(
     };
   }, [exchange, symbol, market, interval, sec]);
 
-  return { status, trades, candles, orderbook, historical };
+  // ✅ Chart series must include historical + live
+  // Live should overwrite historical at same t (more recent values)
+  const mergedSeries = useMemo(() => {
+    const map = new Map<number, LiveCandle>();
+    for (const c of historical) map.set(c.t, c);
+    for (const c of candles) map.set(c.t, c); // live overwrites
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  }, [historical, candles]);
+
+  return { status, trades, candles: mergedSeries, orderbook, historical };
 }
-</file>
-
-<file path="frontend/src/main.tsx">
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import ThemeProvider from './shared/ui/theme-provider';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <App />
-      </BrowserRouter>
-    </ThemeProvider>
-  </StrictMode>,
-);
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
@@ -174564,285 +174212,6 @@ async def start_auto_backfill_gap_loop():
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
-<file path="backend/services/usecases/backfill_loop_service.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional
-
-from backend.services.usecases.unified_historical import UnifiedHistoricalService
-from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
-
-logger = logging.getLogger(__name__)
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class BackfillLoopService:
-    """
-    Enterprise Backfill LOOP
-
-    Eigenschaften:
-    - ClickHouse als Single Source of Truth (oldest_ts)
-    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
-    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus CH)
-    - Keine Hardcodes (Exchange/Symbol per ENV)
-    """
-
-    def __init__(
-        self,
-        exchange: str,
-        symbol: str,
-        until_date: datetime,
-        market: str = "spot",
-        batch_size: int = 5000,
-        pause_seconds: int = 2,
-        gap_scan_days: int = 7,
-        gap_bucket_seconds: int = 60,
-        gap_sources_csv: str = "live_ws,rest_backfill",
-    ):
-        self.exchange = exchange.strip().lower()
-        self.symbol = symbol.strip().upper()
-        self.until_date = _utc(until_date)
-        self.market = market.strip().lower()
-
-        self.batch_size = int(batch_size)
-        self.pause_seconds = int(pause_seconds)
-
-        # Coarse scan defaults (werden später durch ENV überschrieben, wenn gesetzt)
-        self.gap_scan_days = int(gap_scan_days)
-        self.gap_bucket_seconds = int(gap_bucket_seconds)
-        self.gap_sources = [s.strip() for s in gap_sources_csv.split(",") if s.strip()]
-
-        self._historical = UnifiedHistoricalService(self.exchange)
-
-        self._running = False
-        self._total_trades = 0
-        self._batch_count = 0
-
-        # Stateful oldest tracking
-        self._global_oldest_ts: Optional[datetime] = None
-
-        # Fine-scan ENV
-        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
-        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
-        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
-        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
-
-        # override coarse from ENV if present
-        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(self.gap_scan_days)))
-        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(self.gap_bucket_seconds)))
-
-        env_sources = os.getenv("GAP_SOURCE_FILTER")
-        if env_sources:
-            self.gap_sources = [s.strip() for s in env_sources.split(",") if s.strip()]
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _pause_for_exchange(self) -> int:
-        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-        v = os.getenv(env_key)
-        if v:
-            try:
-                return max(0, int(v))
-            except Exception:
-                pass
-        try:
-            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
-        except Exception:
-            return self.pause_seconds
-
-    def _get_ch_client_sync(self):
-        """
-        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-        """
-        from backend.database.clickhouse import unified_cl_service
-        import asyncio as _asyncio
-
-        try:
-            if hasattr(unified_cl_service, "get_client_sync"):
-                return unified_cl_service.get_client_sync()
-
-            loop = _asyncio.new_event_loop()
-            _asyncio.set_event_loop(loop)
-            try:
-                if not unified_cl_service.is_initialized:
-                    loop.run_until_complete(unified_cl_service.initialize())
-
-                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
-                if pool is None:
-                    raise RuntimeError("unified_cl_service returned None pool")
-
-                if not pool.is_initialized:
-                    loop.run_until_complete(pool.initialize())
-
-                client = pool.get_client()
-                if client is None:
-                    raise RuntimeError("pool.get_client() returned None")
-                return client
-            finally:
-                loop.close()
-        except Exception as e:
-            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
-
-    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-        table_name = f"{self.exchange}_trades"
-        query = f"""
-            SELECT MIN(timestamp) AS oldest
-            FROM trading.{table_name}
-            WHERE source = 'rest_backfill'
-              AND symbol = %(symbol)s
-              AND market = %(market)s
-        """
-
-        try:
-            def _run():
-                client = self._get_ch_client_sync()
-                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
-                if not res.result_rows:
-                    return None
-                v = res.result_rows[0][0]
-                return v if isinstance(v, datetime) else None
-
-            oldest = await asyncio.to_thread(_run)
-            return _utc(oldest) if oldest else None
-        except Exception as e:
-            logger.error(
-                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
-                exc_info=True,
-            )
-            return None
-
-    def _calculate_progress(self, current_oldest: Optional[datetime]) -> float:
-        if not current_oldest:
-            return 0.0
-        now = datetime.now(timezone.utc)
-        total = (now - self.until_date).total_seconds()
-        if total <= 0:
-            return 0.0
-        covered = (now - current_oldest).total_seconds()
-        if covered <= 0:
-            return 0.0
-        if covered >= total:
-            return 100.0
-        return (covered / total) * 100.0
-
-    async def _find_gaps(self) -> List[GapWindow]:
-        scanner = GapScanService(
-            exchange=self.exchange,
-            symbol=self.symbol,
-            market=self.market,
-            gap_scan_days=self.gap_scan_days,
-            gap_bucket_seconds=self.gap_bucket_seconds,
-            gap_sources=self.gap_sources,
-            fine_scan_minutes=self._fine_scan_minutes,
-            fine_bucket_seconds=self._fine_bucket_seconds,
-            max_missing_buckets=self._max_missing_buckets,
-            max_windows=self._max_windows,
-        )
-        return await scanner.scan()
-
-    async def run(self) -> None:
-        self._running = True
-        self._total_trades = 0
-        self._batch_count = 0
-
-        logger.info(
-            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
-            f"market={self.market} until={self.until_date.date().isoformat()} "
-            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
-            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
-            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
-            f"sources={','.join(self.gap_sources)}"
-        )
-
-        # Resume oldest
-        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-        if self._global_oldest_ts:
-            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
-
-        try:
-            while self._running:
-                # 1) Gap-Scan (prio) – fine+coarse
-                gaps = await self._find_gaps()
-
-                if gaps:
-                    g = gaps[0]  # newest gap first (scanner liefert newest-first)
-                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=g.start,     # inklusiv
-                        to_date=g.end,        # exklusiv
-                        limit=self.batch_size,
-                    )
-                else:
-                    # 2) Normaler Backfill rückwärts
-                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
-                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
-                        break
-
-                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=self.until_date,   # lower bound
-                        to_date=cursor_to,          # upper bound (cursor)
-                        interval="1m",              # tolerated for legacy signature; trades-backfill ignores interval
-                        limit=self.batch_size,
-                    )
-
-                # ✅ Enterprise: niemals dauerhaft stoppen bei loaded<=0
-                if trades_loaded <= 0:
-                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
-                    await asyncio.sleep(self._pause_for_exchange())
-                    continue
-
-                self._total_trades += trades_loaded
-                self._batch_count += 1
-
-                # Update global_oldest monotonic
-                batch_oldest = await self._get_oldest_backfill_timestamp()
-                if batch_oldest is not None:
-                    if self._global_oldest_ts is None:
-                        self._global_oldest_ts = batch_oldest
-                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
-                    elif batch_oldest < self._global_oldest_ts:
-                        self._global_oldest_ts = batch_oldest
-                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
-
-                progress = self._calculate_progress(self._global_oldest_ts)
-
-                logger.info(
-                    f"📦 BATCH #{self._batch_count} | +{trades_loaded} | total={self._total_trades:,} "
-                    f"| progress={progress:.2f}% | oldest={self._global_oldest_ts.isoformat() if self._global_oldest_ts else 'INIT'}"
-                )
-
-                await asyncio.sleep(self._pause_for_exchange())
-
-        except asyncio.CancelledError:
-            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
-        finally:
-            self._running = False
-            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
-</file>
-
 <file path="backend/services/usecases/unified_historical.py">
 # /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
 
@@ -175341,6 +174710,289 @@ export default function App() {
     </TradingProvider>
   );
 }
+</file>
+
+<file path="backend/services/usecases/backfill_loop_service.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from backend.services.usecases.unified_historical import UnifiedHistoricalService
+from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
+from backend.database.clickhouse.threadsafe_client import get_thread_client
+
+
+logger = logging.getLogger(__name__)
+
+def _get_ch_client_sync(self):
+    return get_thread_client()
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class BackfillLoopService:
+    """
+    Enterprise Backfill LOOP
+
+    Eigenschaften:
+    - ClickHouse als Single Source of Truth (oldest_ts)
+    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
+    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus CH)
+    - Keine Hardcodes (Exchange/Symbol per ENV)
+    """
+
+    def __init__(
+        self,
+        exchange: str,
+        symbol: str,
+        until_date: datetime,
+        market: str = "spot",
+        batch_size: int = 5000,
+        pause_seconds: int = 2,
+        gap_scan_days: int = 7,
+        gap_bucket_seconds: int = 60,
+        gap_sources_csv: str = "live_ws,rest_backfill",
+    ):
+        self.exchange = exchange.strip().lower()
+        self.symbol = symbol.strip().upper()
+        self.until_date = _utc(until_date)
+        self.market = market.strip().lower()
+
+        self.batch_size = int(batch_size)
+        self.pause_seconds = int(pause_seconds)
+
+        # Coarse scan defaults (werden später durch ENV überschrieben, wenn gesetzt)
+        self.gap_scan_days = int(gap_scan_days)
+        self.gap_bucket_seconds = int(gap_bucket_seconds)
+        self.gap_sources = [s.strip() for s in gap_sources_csv.split(",") if s.strip()]
+
+        self._historical = UnifiedHistoricalService(self.exchange)
+
+        self._running = False
+        self._total_trades = 0
+        self._batch_count = 0
+
+        # Stateful oldest tracking
+        self._global_oldest_ts: Optional[datetime] = None
+
+        # Fine-scan ENV
+        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
+        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
+        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
+        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
+
+        # override coarse from ENV if present
+        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(self.gap_scan_days)))
+        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(self.gap_bucket_seconds)))
+
+        env_sources = os.getenv("GAP_SOURCE_FILTER")
+        if env_sources:
+            self.gap_sources = [s.strip() for s in env_sources.split(",") if s.strip()]
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _pause_for_exchange(self) -> int:
+        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
+        v = os.getenv(env_key)
+        if v:
+            try:
+                return max(0, int(v))
+            except Exception:
+                pass
+        try:
+            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
+        except Exception:
+            return self.pause_seconds
+
+    def _get_ch_client_sync(self):
+        """
+        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+        """
+        from backend.database.clickhouse import unified_cl_service
+        import asyncio as _asyncio
+
+        try:
+            if hasattr(unified_cl_service, "get_client_sync"):
+                return unified_cl_service.get_client_sync()
+
+            loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(loop)
+            try:
+                if not unified_cl_service.is_initialized:
+                    loop.run_until_complete(unified_cl_service.initialize())
+
+                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
+                if pool is None:
+                    raise RuntimeError("unified_cl_service returned None pool")
+
+                if not pool.is_initialized:
+                    loop.run_until_complete(pool.initialize())
+
+                client = pool.get_client()
+                if client is None:
+                    raise RuntimeError("pool.get_client() returned None")
+                return client
+            finally:
+                loop.close()
+        except Exception as e:
+            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
+
+    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
+        table_name = f"{self.exchange}_trades"
+        query = f"""
+            SELECT MIN(timestamp) AS oldest
+            FROM trading.{table_name}
+            WHERE source = 'rest_backfill'
+              AND symbol = %(symbol)s
+              AND market = %(market)s
+        """
+
+        try:
+            def _run():
+                client = self._get_ch_client_sync()
+                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
+                if not res.result_rows:
+                    return None
+                v = res.result_rows[0][0]
+                return v if isinstance(v, datetime) else None
+
+            oldest = await asyncio.to_thread(_run)
+            return _utc(oldest) if oldest else None
+        except Exception as e:
+            logger.error(
+                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
+                exc_info=True,
+            )
+            return None
+
+    def _calculate_progress(self, current_oldest: Optional[datetime]) -> float:
+        if not current_oldest:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        total = (now - self.until_date).total_seconds()
+        if total <= 0:
+            return 0.0
+        covered = (now - current_oldest).total_seconds()
+        if covered <= 0:
+            return 0.0
+        if covered >= total:
+            return 100.0
+        return (covered / total) * 100.0
+
+    async def _find_gaps(self) -> List[GapWindow]:
+        scanner = GapScanService(
+            exchange=self.exchange,
+            symbol=self.symbol,
+            market=self.market,
+            gap_scan_days=self.gap_scan_days,
+            gap_bucket_seconds=self.gap_bucket_seconds,
+            gap_sources=self.gap_sources,
+            fine_scan_minutes=self._fine_scan_minutes,
+            fine_bucket_seconds=self._fine_bucket_seconds,
+            max_missing_buckets=self._max_missing_buckets,
+            max_windows=self._max_windows,
+        )
+        return await scanner.scan()
+
+    async def run(self) -> None:
+        self._running = True
+        self._total_trades = 0
+        self._batch_count = 0
+
+        logger.info(
+            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
+            f"market={self.market} until={self.until_date.date().isoformat()} "
+            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
+            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
+            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
+            f"sources={','.join(self.gap_sources)}"
+        )
+
+        # Resume oldest
+        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
+        if self._global_oldest_ts:
+            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
+
+        try:
+            while self._running:
+                # 1) Gap-Scan (prio) – fine+coarse
+                gaps = await self._find_gaps()
+
+                if gaps:
+                    g = gaps[0]  # newest gap first (scanner liefert newest-first)
+                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=g.start,     # inklusiv
+                        to_date=g.end,        # exklusiv
+                        limit=self.batch_size,
+                    )
+                else:
+                    # 2) Normaler Backfill rückwärts
+                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
+                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
+                        break
+
+                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=self.until_date,   # lower bound
+                        to_date=cursor_to,          # upper bound (cursor)
+                        interval="1m",              # tolerated for legacy signature; trades-backfill ignores interval
+                        limit=self.batch_size,
+                    )
+
+                # ✅ Enterprise: niemals dauerhaft stoppen bei loaded<=0
+                if trades_loaded <= 0:
+                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
+                    await asyncio.sleep(self._pause_for_exchange())
+                    continue
+
+                self._total_trades += trades_loaded
+                self._batch_count += 1
+
+                # Update global_oldest monotonic
+                batch_oldest = await self._get_oldest_backfill_timestamp()
+                if batch_oldest is not None:
+                    if self._global_oldest_ts is None:
+                        self._global_oldest_ts = batch_oldest
+                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
+                    elif batch_oldest < self._global_oldest_ts:
+                        self._global_oldest_ts = batch_oldest
+                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
+
+                progress = self._calculate_progress(self._global_oldest_ts)
+
+                logger.info(
+                    f"📦 BATCH #{self._batch_count} | +{trades_loaded} | total={self._total_trades:,} "
+                    f"| progress={progress:.2f}% | oldest={self._global_oldest_ts.isoformat() if self._global_oldest_ts else 'INIT'}"
+                )
+
+                await asyncio.sleep(self._pause_for_exchange())
+
+        except asyncio.CancelledError:
+            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
+        finally:
+            self._running = False
+            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
 </files>
