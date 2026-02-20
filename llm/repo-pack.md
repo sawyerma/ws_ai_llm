@@ -133493,286 +133493,6 @@ def create_endpoint_mapper(app: FastAPI) -> EndpointMapper:
     return mapper
 </file>
 
-<file path="backend/database/clickhouse/cl_manager.py">
-import asyncio
-import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from .cl_lanes import cl_lane, cl_status
-from .cl_registry import cl_registry_instance
-from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
-
-logger = logging.getLogger(__name__)
-
-class cl_manager:
-    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.registry = cl_registry_instance
-        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
-        self.connection_pool = None
-        self.is_initialized = False
-        self.startup_time = datetime.now()
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "manager")
-        except ImportError:
-            logger.warning("Health system not available for cl_manager")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_manager initialized")
-    
-    async def initialize(self):
-        """Initialize ClickHouse connection pool and basic infrastructure"""
-        if self.is_initialized:
-            return
-        
-        try:
-            # Initialize connection pool (will be implemented when we have clickhouse-connect)
-            await self._setup_connection_pool()
-            
-            # Register core lanes for all exchanges
-            await self._register_core_lanes()
-            
-            self.is_initialized = True
-            
-            if self.health_component:
-                self.health_component.record_success({"action": "manager_initialized"})
-                
-            logger.info("ClickHouse cl_manager successfully initialized")
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize cl_manager: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-            raise
-    
-    async def _setup_connection_pool(self):
-        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            self.connection_pool = get_clickhouse_connection_pool()
-            
-            logger.info("ClickHouse connection pool setup - REAL CONNECTION!")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
-            raise
-    
-    async def _register_core_lanes(self):
-        """Register core lanes for all 8 exchanges"""
-        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
-        operations = ["trades", "candles", "orderbook"]
-        
-        for exchange in exchanges:
-            for operation in operations:
-                try:
-                    lane = self.registry.register_lane(exchange, operation)
-                    # Set REAL ClickHouse connection reference
-                    lane.clickhouse_connection = self.connection_pool
-                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
-    
-    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
-        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
-        if not self.is_initialized:
-            await self.initialize()
-        
-        try:
-            # Get or register lane
-            lane = self.registry.get_lane(exchange, operation_type)
-            if not lane:
-                lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            
-            # Setup ClickHouse connection for this lane
-            await self._setup_lane_connection(lane)
-            
-            # Update lane status to connecting
-            lane.status = cl_status.CONNECTING
-            
-            # Test connection and set to connected
-            if await self._test_lane_connection(lane):
-                lane.record_operation_success(0.0, {"action": "lane_started"})
-                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
-            else:
-                lane.record_operation_error("Connection test failed")
-                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
-            
-            return lane
-            
-        except Exception as e:
-            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
-            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
-            
-            # Create error lane
-            lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            lane.record_operation_error(error_msg)
-            
-            raise
-    
-    async def _setup_lane_connection(self, lane: cl_lane):
-        """Setup ClickHouse connection for specific lane"""
-        try:
-            # Get exchange-specific config
-            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
-            
-            # Create lane-specific connection metadata
-            connection_info = {
-                "exchange": lane.exchange,
-                "operation": lane.operation_type,
-                "database": exchange_config.get("database", lane.exchange),
-                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
-                "tables": exchange_config.get("tables", []),
-                "priority": exchange_config.get("priority", "medium")
-            }
-            
-            # Set REAL connection reference
-            lane.clickhouse_connection = connection_info
-            
-            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
-            raise
-    
-    async def _test_lane_connection(self, lane: cl_lane) -> bool:
-        """Test ClickHouse connection for lane - ECHTER Test!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                logger.error(f"ClickHouse client not available for {lane.exchange}.{lane.operation_type}")
-                return False
-            
-            # ECHTER ClickHouse Ping
-            result = client.command("SELECT 1")
-            
-            if result == 1:
-                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
-                return True
-            else:
-                logger.error(f"Unexpected result from ClickHouse: {result}")
-                return False
-            
-        except Exception as e:
-            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
-            return False
-    
-    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
-        """Insert data into ClickHouse via lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            logger.error(f"No lane found for {exchange}.{operation_type}")
-            return False
-        
-        try:
-            start_time = datetime.now()
-            
-            # ✅ REAL ClickHouse INSERT using cl_unified_manager
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                raise Exception("ClickHouse client not available")
-            
-            # Determine table name based on operation_type
-            table_map = {
-                "trades": f"{exchange}_trades",
-                "candles": f"{exchange}_kline", 
-                "orderbook": f"{exchange}_orderbook"
-            }
-            
-            table_name = table_map.get(operation_type)
-            if not table_name:
-                raise Exception(f"Unknown operation type: {operation_type}")
-            
-            # Build INSERT query
-            full_table = f"trading.{table_name}"
-            columns = list(data.keys())
-            values = list(data.values())
-            
-            # Execute INSERT
-            client.insert(full_table, [values], column_names=columns)
-            
-            end_time = datetime.now()
-            latency_ms = (end_time - start_time).total_seconds() * 1000
-            
-            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
-            
-            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
-            return True
-            
-        except Exception as e:
-            error_msg = f"Insert failed: {str(e)}"
-            lane.record_operation_error(error_msg)
-            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
-            return False
-    
-    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
-        """Get status for specific lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            return None
-        
-        return lane.get_health()
-    
-    def get_all_lane_status(self) -> List[Dict[str, Any]]:
-        """Get status for all lanes"""
-        return self.registry.get_lane_health_details()
-    
-    def get_manager_health(self) -> Dict[str, Any]:
-        """Get manager health status"""
-        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
-        
-        return {
-            "component": "clickhouse.manager",
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "connection_pool": self.connection_pool,
-            "active_connections": len(self.connections),
-            "registry_health": self.registry.get_system_health()
-        }
-    
-    async def shutdown(self):
-        """Graceful shutdown of all ClickHouse operations"""
-        logger.info("Shutting down ClickHouse cl_manager...")
-        
-        try:
-            # Shutdown all lanes
-            await self.registry.shutdown_all()
-            
-            # Close connection pool - cl_unified_manager handles cleanup
-            if self.connection_pool:
-                self.connection_pool = None
-            
-            # Clear connections
-            self.connections.clear()
-            
-            self.is_initialized = False
-            
-            logger.info("ClickHouse cl_manager shutdown complete")
-            
-        except Exception as e:
-            logger.error(f"Error during cl_manager shutdown: {str(e)}")
-            raise
-
-
-# Global cl_manager instance
-cl_manager_instance = cl_manager()
-</file>
-
 <file path="backend/database/clickhouse/cl_schema_migration.py">
 import asyncio
 import logging
@@ -136639,69 +136359,6 @@ class HTXOrderbookService:
                 }
         except Exception as e:
             logger.error(f"HTX orderbook parsing error: {e}")
-        
-        return None
-</file>
-
-<file path="backend/exchanges/mexc/services/orderbook.py">
-#!/usr/bin/env python3
-"""
-MEXC WebSocket Orderbook Service
-=================================
-
-ENTERPRISE-GRADE WebSocket Orderbook Parsing für MEXC
-Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
-"""
-
-import json
-import logging
-from typing import Dict, Any, Optional, Union
-
-logger = logging.getLogger(__name__)
-
-
-def normalize_to_unified(native_symbol: str, exchange: str) -> str:
-    """Konvertiert Exchange-natives Symbol zu Unified-Format"""
-    if not native_symbol:
-        return ""
-    return str(native_symbol).strip().upper()
-
-
-class MEXCOrderbookService:
-    """WebSocket Orderbook Parsing Service für MEXC"""
-    
-    def __init__(self):
-        self.exchange = "mexc"
-    
-    async def parse_ws_orderbook(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
-        """
-        Parse MEXC WebSocket Orderbook Message
-        
-        Args:
-            raw_message: Raw WebSocket message (JSON string oder bytes)
-            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
-            
-        Returns:
-            Standardisiertes Orderbook Format
-        """
-        try:
-            # MEXC orderbook ist meist JSON (nicht Protobuf)
-            if isinstance(raw_message, bytes):
-                raw_message = raw_message.decode('utf-8')
-            
-            data = json.loads(raw_message)
-            
-            # MEXC depth channel format
-            if "d" in data and "asks" in data["d"] and "bids" in data["d"]:
-                return {
-                    "bids": [[str(b["p"]), str(b["v"])] for b in data["d"].get("bids", [])[:20]],
-                    "asks": [[str(a["p"]), str(a["v"])] for a in data["d"].get("asks", [])[:20]],
-                    "timestamp": int(data.get("t", 0)),
-                    "symbol": normalize_to_unified(data.get("s", ""), self.exchange),
-                    "market": market
-                }
-        except Exception as e:
-            logger.error(f"MEXC orderbook parsing error: {e}")
         
         return None
 </file>
@@ -156521,6 +156178,389 @@ cl_handlers = cl_handlers_instance
 unified_clickhouse = unified_cl_service
 </file>
 
+<file path="backend/database/clickhouse/cl_manager.py">
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from .cl_lanes import cl_lane, cl_status
+from .cl_registry import cl_registry_instance
+from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
+
+logger = logging.getLogger(__name__)
+
+class cl_manager:
+    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.registry = cl_registry_instance
+        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
+        self.connection_pool = None
+        self.is_initialized = False
+        self.startup_time = datetime.now()
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "manager")
+        except ImportError:
+            logger.warning("Health system not available for cl_manager")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_manager initialized")
+    
+    async def initialize(self):
+        """Initialize ClickHouse connection pool and basic infrastructure"""
+        if self.is_initialized:
+            return
+        
+        try:
+            # Initialize connection pool (will be implemented when we have clickhouse-connect)
+            await self._setup_connection_pool()
+            
+            # Register core lanes for all exchanges
+            await self._register_core_lanes()
+            
+            self.is_initialized = True
+            
+            if self.health_component:
+                self.health_component.record_success({"action": "manager_initialized"})
+                
+            logger.info("ClickHouse cl_manager successfully initialized")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize cl_manager: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+            raise
+    
+    async def _setup_connection_pool(self):
+        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
+            
+            # ✅ 1) Pool holen
+            self.connection_pool = get_clickhouse_connection_pool()
+            
+            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
+            ok = await initialize_clickhouse_foundation()
+            if not ok:
+                raise RuntimeError("ClickHouse foundation initialization failed")
+            
+            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
+            client = self.connection_pool.get_client()
+            if not client:
+                raise RuntimeError("ClickHouse client not available after initialization")
+            
+            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
+            raise
+    
+    async def _register_core_lanes(self):
+        """Register core lanes for all 8 exchanges"""
+        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
+        operations = ["trades", "candles", "orderbook"]
+        
+        for exchange in exchanges:
+            for operation in operations:
+                try:
+                    lane = self.registry.register_lane(exchange, operation)
+                    # Set REAL ClickHouse connection reference
+                    lane.clickhouse_connection = self.connection_pool
+                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
+    
+    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
+        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
+        if not self.is_initialized:
+            await self.initialize()
+        
+        try:
+            # Get or register lane
+            lane = self.registry.get_lane(exchange, operation_type)
+            if not lane:
+                lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            
+            # Setup ClickHouse connection for this lane
+            await self._setup_lane_connection(lane)
+            
+            # Update lane status to connecting
+            lane.status = cl_status.CONNECTING
+            
+            # Test connection and set to connected
+            if await self._test_lane_connection(lane):
+                lane.record_operation_success(0.0, {"action": "lane_started"})
+                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
+            else:
+                lane.record_operation_error("Connection test failed")
+                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
+            
+            return lane
+            
+        except Exception as e:
+            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
+            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
+            
+            # Create error lane
+            lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            lane.record_operation_error(error_msg)
+            
+            raise
+    
+    async def _setup_lane_connection(self, lane: cl_lane):
+        """Setup ClickHouse connection for specific lane"""
+        try:
+            # Get exchange-specific config
+            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
+            
+            # Create lane-specific connection metadata
+            connection_info = {
+                "exchange": lane.exchange,
+                "operation": lane.operation_type,
+                "database": exchange_config.get("database", lane.exchange),
+                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
+                "tables": exchange_config.get("tables", []),
+                "priority": exchange_config.get("priority", "medium")
+            }
+            
+            # Set REAL connection reference
+            lane.clickhouse_connection = connection_info
+            
+            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
+            raise
+    
+    async def _test_lane_connection(self, lane: cl_lane) -> bool:
+        """Test ClickHouse connection for lane - ECHTER Test!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            client = pool.get_client()
+            
+            if not client:
+                logger.error(f"ClickHouse client not available for {lane.exchange}.{lane.operation_type}")
+                return False
+            
+            # ECHTER ClickHouse Ping
+            result = client.command("SELECT 1")
+            
+            if result == 1:
+                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
+                return True
+            else:
+                logger.error(f"Unexpected result from ClickHouse: {result}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
+            return False
+    
+    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
+        """Insert data into ClickHouse via lane"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            logger.error(f"No lane found for {exchange}.{operation_type}")
+            return False
+        
+        try:
+            start_time = datetime.now()
+            
+            # ✅ REAL ClickHouse INSERT using cl_unified_manager
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            client = pool.get_client()
+            
+            if not client:
+                raise Exception("ClickHouse client not available")
+            
+            # Determine table name based on operation_type
+            table_map = {
+                "trades": f"{exchange}_trades",
+                "candles": f"{exchange}_kline", 
+                "orderbook": f"{exchange}_orderbook"
+            }
+            
+            table_name = table_map.get(operation_type)
+            if not table_name:
+                raise Exception(f"Unknown operation type: {operation_type}")
+            
+            # Build INSERT query
+            full_table = f"trading.{table_name}"
+            columns = list(data.keys())
+            values = list(data.values())
+            
+            # Execute INSERT
+            client.insert(full_table, [values], column_names=columns)
+            
+            end_time = datetime.now()
+            latency_ms = (end_time - start_time).total_seconds() * 1000
+            
+            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
+            
+            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Insert failed: {str(e)}"
+            lane.record_operation_error(error_msg)
+            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
+            return False
+    
+    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
+        """Get status for specific lane"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            return None
+        
+        return lane.get_health()
+    
+    def get_all_lane_status(self) -> List[Dict[str, Any]]:
+        """Get status for all lanes"""
+        return self.registry.get_lane_health_details()
+    
+    def get_manager_health(self) -> Dict[str, Any]:
+        """Get manager health status"""
+        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
+        
+        return {
+            "component": "clickhouse.manager",
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_pool": self.connection_pool,
+            "active_connections": len(self.connections),
+            "registry_health": self.registry.get_system_health()
+        }
+    
+    async def shutdown(self):
+        """Graceful shutdown of all ClickHouse operations"""
+        logger.info("Shutting down ClickHouse cl_manager...")
+        
+        try:
+            # Shutdown all lanes
+            await self.registry.shutdown_all()
+            
+            # Close connection pool - cl_unified_manager handles cleanup
+            if self.connection_pool:
+                self.connection_pool = None
+            
+            # Clear connections
+            self.connections.clear()
+            
+            self.is_initialized = False
+            
+            logger.info("ClickHouse cl_manager shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during cl_manager shutdown: {str(e)}")
+            raise
+
+
+# Global cl_manager instance
+cl_manager_instance = cl_manager()
+</file>
+
+<file path="backend/exchanges/mexc/services/orderbook.py">
+#!/usr/bin/env python3
+"""
+MEXC WebSocket Orderbook Service
+=================================
+
+ENTERPRISE-GRADE WebSocket Orderbook Parsing für MEXC
+Unterstützt ALLE Markets: spot, usdtm, coinm, usdcm
+"""
+
+import json
+import gzip
+import logging
+from typing import Dict, Any, Optional, Union
+
+logger = logging.getLogger(__name__)
+
+
+def _bytes_to_json_if_possible(raw: bytes) -> Optional[Dict[str, Any]]:
+    """
+    Defensive Bytes→JSON Konvertierung für MEXC.
+    Unterstützt gzip, JSON, ignoriert Protobuf (kein Crash).
+    """
+    # gzip magic
+    if len(raw) >= 2 and raw[0] == 0x1F and raw[1] == 0x8B:
+        try:
+            raw = gzip.decompress(raw)
+        except Exception as e:
+            logger.error(f"MEXC gzip decompress failed: {e}")
+            return None
+
+    try:
+        # Protobuf → wird hier i.d.R. NICHT parsebar sein; wir wollen aber keinen Crash.
+        s = raw.decode("utf-8", errors="ignore").strip()
+        if not s or s[0] not in "{[":
+            return None
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def normalize_to_unified(native_symbol: str, exchange: str) -> str:
+    """Konvertiert Exchange-natives Symbol zu Unified-Format"""
+    if not native_symbol:
+        return ""
+    return str(native_symbol).strip().upper()
+
+
+class MEXCOrderbookService:
+    """WebSocket Orderbook Parsing Service für MEXC"""
+    
+    def __init__(self):
+        self.exchange = "mexc"
+    
+    async def parse_ws_orderbook(self, raw_message: Union[str, bytes], market: str = "spot") -> Optional[Dict[str, Any]]:
+        """
+        Parse MEXC WebSocket Orderbook Message
+        
+        Args:
+            raw_message: Raw WebSocket message (JSON string oder bytes)
+            market: Market type (spot, usdtm, coinm, usdcm) - DYNAMISCH!
+            
+        Returns:
+            Standardisiertes Orderbook Format
+        """
+        try:
+            # ✅ DEFENSIVE: Bytes→JSON mit gzip/protobuf-Schutz
+            if isinstance(raw_message, (bytes, bytearray)):
+                obj = _bytes_to_json_if_possible(bytes(raw_message))
+                if obj is None:
+                    # ✅ no crash, just ignore until real protobuf parser exists
+                    return None
+                data = obj
+            else:
+                data = json.loads(raw_message)
+            
+            # MEXC depth channel format
+            if "d" in data and "asks" in data["d"] and "bids" in data["d"]:
+                return {
+                    "bids": [[str(b["p"]), str(b["v"])] for b in data["d"].get("bids", [])[:20]],
+                    "asks": [[str(a["p"]), str(a["v"])] for a in data["d"].get("asks", [])[:20]],
+                    "timestamp": int(data.get("t", 0)),
+                    "symbol": normalize_to_unified(data.get("s", ""), self.exchange),
+                    "market": market
+                }
+        except Exception as e:
+            logger.error(f"MEXC orderbook parsing error: {e}")
+        
+        return None
+</file>
+
 <file path="backend/services/delete/unified_aggregator_entrypoint.py">
 import asyncio
 from ..adapter.unified_aggregator import run_unified_aggregator
@@ -161733,314 +161773,6 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
-        }
-
-
-ws_manager = PerformantWebSocketManager()
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: dict, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: dict, market_type: str) -> None:
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: dict, market_type: str) -> None:
-    """
-    ✅ Broadcast Orderbook Updates to Frontend
-    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
-    """
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "orderbook",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
-        "market": market,
-        "bids": orderbook_data.get("bids", []),
-        "asks": orderbook_data.get("asks", []),
-        "timestamp": orderbook_data.get("timestamp"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 // frontend/src/services/ws/WebSocketPool.ts
 import { WS_BASE_URL } from "../../config/env";
@@ -163831,6 +163563,388 @@ async def get_ohlc_from_ch(
         traceback.print_exc()
         print(f"[get_ohlc_from_ch] returning empty array (no mock)")
         return []
+</file>
+
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Any
+from collections.abc import Mapping
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
+    """
+    Trade erwartet dict wegen .get().
+    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
+        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
+            return {
+                "price": x[0],
+                "size": x[1],
+                "timestamp": x[2],
+                "side": x[3] if len(x) > 3 else None,
+            }
+        return {}
+
+    return {}
+
+
+def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
+    """
+    Candle erwartet time/open/high/low/close/(volume).
+    Unterstützt Tuple/List: (time, open, high, low, close[, volume])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 5:
+            d = {
+                "time": x[0],
+                "open": x[1],
+                "high": x[2],
+                "low": x[3],
+                "close": x[4],
+            }
+            if len(x) > 5:
+                d["volume"] = x[5]
+            return d
+        return {}
+
+    return {}
+
+
+def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
+    """
+    Orderbook erwartet dict (bids/asks etc.).
+    Unterstützt Tuple/List: (bids, asks[, timestamp])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 2:
+            d = {"bids": x[0], "asks": x[1]}
+            if len(x) > 2:
+                d["timestamp"] = x[2]
+            return d
+        return {}
+
+    return {}
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(payloads)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
+    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
+    """
+    ✅ Broadcast Orderbook Updates to Frontend
+    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
+    """
+    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
+        "market": market,
+        "bids": orderbook_data.get("bids", []),
+        "asks": orderbook_data.get("asks", []),
+        "timestamp": orderbook_data.get("timestamp"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="backend/websocket/ws_manager.py">
@@ -165938,6 +166052,551 @@ Nach Binance-Fix funktioniert:
 **SO MACHEN ES PROFIS!** 🏆
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+logger_env = logging.getLogger("main.env")
+
+# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
+# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
+if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
+    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+    else:
+        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
+else:
+    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse init failed: {e}")
+        startup_errors.append(f"clickhouse: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="backend/database/clickhouse/cl_config.py">
 import os
 from typing import Dict, Any, Set
@@ -167267,551 +167926,6 @@ services:
 volumes:
   clickhouse-data:
   redis-data:
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-logger_env = logging.getLogger("main.env")
-
-# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
-# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
-if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
-    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
-    if env_path.exists():
-        load_dotenv(env_path)
-        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-    else:
-        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
-else:
-    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse init failed: {e}")
-        startup_errors.append(f"clickhouse: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
 </file>
 
 <file path="frontend/src/services/ws/useWsLane.ts">
@@ -169818,6 +169932,578 @@ curl -s "http://localhost:8100/api/historical/backfill/status?exchange=binance&s
 **ETA:** 2-3 Stunden für kompletten Umbau + Testing
 
 ---
+</file>
+
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
@@ -172240,578 +172926,6 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
-</file>
-
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
