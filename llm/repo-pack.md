@@ -131473,22 +131473,6 @@ export function VirtualizedList<T>({
 }
 </file>
 
-<file path="frontend/src/vite-env.d.ts">
-/// <reference types="vite/client" />
-
-interface ImportMetaEnv {
-  readonly VITE_WS_BASE_URL: string;
-  readonly VITE_API_BASE_URL: string;
-  readonly VITE_BACKEND_WS_URL: string;
-  readonly VITE_BACKEND_BASE: string;
-  readonly VITE_DEV_PORT: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
-</file>
-
 <file path="frontend/package.json">
 {
   "name": "trading-dashboard",
@@ -163096,91 +163080,6 @@ export function TradesPanel({ trades }: Props) {
 }
 </file>
 
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from 'react';
-import { useWsLane } from '../../../services/ws/useWsLane';
-
-interface ChartCandle {
-  time: number; // ms
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-}
-
-const DEFAULT_MAX_CANDLES = Number(import.meta.env.VITE_CHART_MAX_CANDLES ?? '0'); // 0 = unlimited
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit: number = DEFAULT_MAX_CANDLES
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status } = useWsLane(exchange, symbol, market, interval);
-
-  const chartData = useMemo<ChartCandle[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    const all = hist.concat(live);
-
-    if (all.length === 0) return [];
-
-    // candle.t MUST be seconds here -> convert to ms
-    const map = new Map<number, ChartCandle>();
-
-    for (const c of all) {
-      const timeMs = c.t * 1000;
-      if (!Number.isFinite(timeMs) || timeMs <= 0) continue;
-
-      map.set(timeMs, {
-        time: timeMs,
-        open: c.o,
-        high: c.h,
-        low: c.l,
-        close: c.c,
-        volume: c.v,
-      });
-    }
-
-    const merged = Array.from(map.values()).sort((a, b) => a.time - b.time);
-    return limit > 0 ? merged.slice(-limit) : merged;
-  }, [historical, candles, limit]);
-
-  useEffect(() => {
-    if (status === 'OPEN') {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
-      }
-    } else if (status === 'ERROR') {
-      setLoading(false);
-      setError(new Error('WebSocket connection failed'));
-    } else {
-      setLoading(true);
-    }
-  }, [status, chartData.length]);
-
-  return {
-    chartData,
-    loading,
-    error,
-    meta: {
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      status,
-    },
-  };
-}
-</file>
-
 <file path="frontend/src/pages/TradingPage/hooks/useOrderBook.ts">
 /**
  * useOrderBook Hook - WebSocket-basiert (ANGEPASST)
@@ -163359,272 +163258,34 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
-/**
- * CandleChart Component
- * =====================
- * 
- * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
- * 
- * Features:
- * - Lazy-Loading der TradingView Lightweight Charts Library
- * - Automatische Dark/Light Mode Synchronisation
- * - WebSocket Integration für Live-Daten
- * - Responsive Design
- * 
- * Usage:
- * ```tsx
- * <CandleChart 
- *   symbol="BTCUSDT"
- *   exchange="binance"
- *   market="spot"
- *   interval="1h"
- *   limit={100}
- * />
- * ```
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
- * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
- */
+<file path="frontend/src/vite-env.d.ts">
+/// <reference types="vite/client" />
 
-import React, { useEffect, useRef } from 'react';
-import { useCandleChart } from './useCandleChart';
-import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
-import type { CandleChartProps } from './types';
-
-const DEFAULT_MAX_CANDLES = Number(import.meta.env.VITE_CHART_MAX_CANDLES ?? '0');
-
-const CandleChart: React.FC<CandleChartProps> = ({
-  symbol,
-  exchange,
-  market,
-  interval,
-  limit = DEFAULT_MAX_CANDLES,
-  className = '',
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-
-  // ✅ Chart Hook (Init, Theme, Resize)
-  const { isChartReady, setChartData, setInitialVisibleRangeOnce } = useCandleChart({
-    interval,
-    containerRef: chartContainerRef,
-  });
-
-  // ✅ Data Hook (WebSocket Integration)
-  const { chartData, loading, error } = useChartView(
-    symbol,
-    market,
-    exchange,
-    interval,
-    limit
-  );
-
-  // Load Chart Data when ready
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0) {
-      setChartData(chartData);
-      setInitialVisibleRangeOnce(chartData);
-    }
-  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
-
-  return (
-    <div
-      className={`chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden ${className}`}
-    >
-      {/* Chart Container */}
-      <div className="relative w-full h-full">
-        <div ref={chartContainerRef} className="chart-container w-full h-full" />
-
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
-              {error.message || String(error)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default CandleChart;
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-/**
- * useCandleChart Hook
- * ===================
- * 
- * Custom React Hook für TradingView Lightweight Charts Integration.
- * 
- * Features:
- * - Lazy-Loading der Chart-Library
- * - Automatische Theme-Synchronisation (Dark/Light Mode)
- * - Responsive Resize Handling
- * - Cleanup bei Unmount
- * 
- * ✅ DYNAMISCH: Reagiert auf Theme-Wechsel via MutationObserver
- * ✅ WIEDERVERWENDBAR: Kann in allen Pages genutzt werden
- */
-
-import { useEffect, useRef, useState } from 'react';
-import { createLazyChart } from '../../../lib/chartLazyLoader';
-import { useTheme } from '../../ui/theme-provider';
-import { getChartTheme, getSeriesTheme } from './chartThemes';
-import type { CandleData } from './types';
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
+interface ImportMetaEnv {
+  readonly VITE_WS_BASE_URL: string;
+  readonly VITE_API_BASE_URL: string;
+  readonly VITE_BACKEND_WS_URL: string;
+  readonly VITE_BACKEND_BASE: string;
+  readonly VITE_DEV_PORT: string;
+  
+  // Chart Configuration
+  readonly VITE_CHART_MAX_REAL_CANDLES?: string;
+  readonly VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP?: string;
+  readonly VITE_CHART_INITIAL_VISIBLE?: string;
+  
+  // WebSocket Historical Polling
+  readonly VITE_WS_HIST_LIMIT?: string;
+  readonly VITE_WS_HIST_POLL_MS?: string;
+  readonly VITE_WS_HIST_NO_GROWTH_STOP?: string;
+  
+  // Coalescing Feature-Flags
+  readonly VITE_FE_COALESCE_ENABLED?: string;
+  readonly VITE_FE_COALESCE_BUDGET_MS?: string;
+  readonly VITE_FE_120HZ_OPT_IN?: string;
 }
 
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-  setChartData: (data: CandleData[]) => void;
-  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
-}
-
-const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? '500');
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-  const initialRangeSetRef = useRef(false);
-
-  // Initialize Chart
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        const isDark = actualTheme === 'dark';
-        const chartTheme = getChartTheme(isDark, interval);
-        const seriesTheme = getSeriesTheme(isDark);
-
-        // ✅ Lazy-Load Chart Library
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          ...chartTheme,
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
-
-        setIsChartReady(true);
-
-        // ✅ Resize Observer
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        // ✅ Theme-Wechsel Observer (reagiert auf <html class="dark">)
-        const themeObserver = new MutationObserver(() => {
-          if (chartInstance.current && seriesInstance.current) {
-            const isDarkNow = document.documentElement.classList.contains('dark');
-            const newChartTheme = getChartTheme(isDarkNow, interval);
-            const newSeriesTheme = getSeriesTheme(isDarkNow);
-
-            chartInstance.current.applyOptions(newChartTheme);
-            seriesInstance.current.applyOptions(newSeriesTheme);
-          }
-        });
-        themeObserver.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ['class'],
-        });
-
-        // Cleanup
-        return () => {
-          resizeObserver.disconnect();
-          themeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error('[useCandleChart] Failed to initialize chart:', err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval, actualTheme, containerRef]);
-
-  // Helper: Set Chart Data
-  const setChartData = (data: CandleData[]) => {
-    if (isChartReady && seriesInstance.current && data.length > 0) {
-      const formattedData = data.map((d) => ({
-        time: Math.floor(d.time / 1000), // ✅ Millisekunden → Sekunden
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-      }));
-      seriesInstance.current.setData(formattedData);
-    }
-  };
-
-  // Helper: Set Initial Visible Range ONCE
-  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
-    if (!isChartReady || !chartInstance.current || data.length === 0) return;
-    if (initialRangeSetRef.current) return;
-
-    const lastIndex = data.length - 1;
-    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
-
-    const firstCandle = data[firstIndex];
-    const lastCandle = data[lastIndex];
-    
-    if (!firstCandle || !lastCandle) return;
-
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
-
-    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
-      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
-      initialRangeSetRef.current = true;
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-    setInitialVisibleRangeOnce,
-  };
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
 }
 </file>
 
@@ -164709,6 +164370,219 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated ("kein Interpolieren")
+ * - fully ENV driven (no hardcoded behavior)
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+// default real-candle limit from ENV (0 = unlimited)
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+
+// max whitespace points inserted per single gap
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
+  if (u === "M") return n * 2592000;
+
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+/**
+ * Inserts Whitespace points between REAL points to visualize missing buckets.
+ * Never generates OHLC -> no interpolation.
+ *
+ * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
+ */
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies real-candle limit (N), WITHOUT counting whitespace.
+ * Returns last N real candles, then injects whitespace gaps inside that window.
+ */
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit?: number
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+
+    // ✅ limit counts ONLY real candles
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
+    const whitespaceCount = chartData.length - realCount;
+    return {
+      status,
+      interval,
+      stepSec,
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+      maxRealCandles: maxReal,
+      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
+    };
+  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+    if (status === "ERROR") {
+      setLoading(false);
+      setError(new Error("WebSocket connection failed"));
+      return;
+    }
+    setLoading(true);
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+  };
+}
+</file>
+
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 // frontend/src/services/ws/WebSocketPool.ts
 import { WS_BASE_URL } from "../../config/env";
@@ -164932,6 +164806,112 @@ export class WebSocketPool {
 }
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
+/**
+ * CandleChart Component
+ * =====================
+ * 
+ * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
+ * 
+ * Features:
+ * - Lazy-Loading der TradingView Lightweight Charts Library
+ * - Automatische Dark/Light Mode Synchronisation
+ * - WebSocket Integration für Live-Daten
+ * - Responsive Design
+ * 
+ * Usage:
+ * ```tsx
+ * <CandleChart 
+ *   symbol="BTCUSDT"
+ *   exchange="binance"
+ *   market="spot"
+ *   interval="1h"
+ *   limit={100}
+ * />
+ * ```
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
+ * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
+ */
+
+import React, { useEffect, useRef } from 'react';
+import { useCandleChart } from './useCandleChart';
+import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
+import type { CandleChartProps } from './types';
+
+const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
+
+const CandleChart: React.FC<CandleChartProps> = ({
+  symbol,
+  exchange,
+  market,
+  interval,
+  limit = DEFAULT_LIMIT,
+  className = '',
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // ✅ Chart Hook (Init, Theme, Resize)
+  const { isChartReady, setChartData, setInitialVisibleRangeOnce } = useCandleChart({
+    interval,
+    containerRef: chartContainerRef,
+  });
+
+  // ✅ Data Hook (WebSocket Integration)
+  const { chartData, loading, error, meta } = useChartView(
+    symbol,
+    market,
+    exchange,
+    interval,
+    limit
+  );
+
+  // Load Chart Data when ready
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0) {
+      setChartData(chartData);
+      setInitialVisibleRangeOnce(chartData);
+    }
+  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
+
+  return (
+    <div className={`flex flex-col gap-2 ${className}`}>
+      <div className="text-xs opacity-70">
+        Historical: {meta.historicalCount} | Live: {meta.liveCount} | TotalPoints:{" "}
+        {meta.totalCount} | Real: {meta.realCount} | Whitespace: {meta.whitespaceCount}
+      </div>
+
+      <div
+        className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden"
+      >
+        {/* Chart Container */}
+        <div className="relative w-full h-full">
+          <div ref={chartContainerRef} className="chart-container w-full h-full" />
+
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+
+          {/* Error State */}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
+                {error.message || String(error)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CandleChart;
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
 /**
  * CandleChart Themes
@@ -165078,77 +165058,183 @@ export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
 }
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/types.ts">
-/**
- * CandleChart Types
- * =================
- * 
- * Shared TypeScript interfaces for the reusable CandleChart component.
- * Used across all pages (TradingPage, Quantum, etc.)
- */
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+import { useEffect, useRef, useState } from "react";
+import { createLazyChart } from "../../../lib/chartLazyLoader";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import type { CandleData } from "./types";
 
-export interface CandleChartProps {
-  symbol: string;
-  exchange: string;
-  market: string;
+interface UseCandleChartOptions {
   interval: string;
-  limit?: number;
-  className?: string;
+  containerRef: React.RefObject<HTMLDivElement>;
 }
 
-export interface CandleData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
 }
 
-export interface ChartTheme {
-  layout: {
-    background: { color: string };
-    textColor: string;
-  };
-  grid: {
-    vertLines: { color: string };
-    horzLines: { color: string };
-  };
-  timeScale: {
-    borderColor: string;
-    timeVisible: boolean;
-    secondsVisible: boolean;
-    fixLeftEdge?: boolean;
-    fixRightEdge?: boolean;
-    rightOffset?: number;
-    barSpacing?: number;
-    minBarSpacing?: number;
-  };
-  rightPriceScale: {
-    borderColor: string;
-    autoScale?: boolean;
-    scaleMargins?: { top: number; bottom: number };
-    mode?: number;
-  };
-  crosshair?: {
-    vertLine?: {
-      color: string;
-      labelBackgroundColor: string;
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is any {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        const isDark = actualTheme === "dark";
+        const chartTheme = getChartTheme(isDark, interval);
+        const seriesTheme = getSeriesTheme(isDark);
+
+        const chart = await createLazyChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          ...chartTheme,
+        });
+
+        if (!isMounted) {
+          chart.remove();
+          return;
+        }
+
+        chartInstance.current = chart;
+        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
+
+        setIsChartReady(true);
+
+        const resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && chartInstance.current) {
+            const { width, height } = entries[0].contentRect;
+            chartInstance.current.applyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+
+        const themeObserver = new MutationObserver(() => {
+          if (chartInstance.current && seriesInstance.current) {
+            const isDarkNow = document.documentElement.classList.contains("dark");
+            const newChartTheme = getChartTheme(isDarkNow, interval);
+            const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+            chartInstance.current.applyOptions(newChartTheme);
+            seriesInstance.current.applyOptions(newSeriesTheme);
+          }
+        });
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+
+        return () => {
+          resizeObserver.disconnect();
+          themeObserver.disconnect();
+        };
+      } catch (err) {
+        console.error("[useCandleChart] Failed to initialize chart:", err);
+      }
     };
-    horzLine?: {
-      color: string;
-      labelBackgroundColor: string;
-    };
-  };
-}
 
-export interface CandlestickSeriesTheme {
-  upColor: string;
-  downColor: string;
-  borderVisible: boolean;
-  wickUpColor: string;
-  wickDownColor: string;
-  priceLineVisible?: boolean;
+    initChart();
+
+    return () => {
+      isMounted = false;
+      if (chartInstance.current) {
+        chartInstance.current.remove();
+        chartInstance.current = null;
+      }
+    };
+  }, [interval, actualTheme, containerRef]);
+
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !seriesInstance.current) return;
+    if (!data || data.length === 0) return;
+
+    // Lightweight-charts expects seconds.
+    // Whitespace is supported by passing {time} without OHLC.
+    const formatted = data
+      .map((d) => {
+        const tSec = Math.floor(d.time / 1000);
+        if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+        if (isRealCandle(d)) {
+          return {
+            time: tSec,
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).close,
+          };
+        }
+        return { time: tSec }; // ✅ Whitespace
+      })
+      .filter(Boolean) as any[];
+
+    if (formatted.length <= 0) return;
+
+    // Safety: ensure ascending order by time
+    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+
+    seriesInstance.current.setData(formatted);
+  };
+
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    // Use first/last REAL candles (ignore whitespace)
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
+  };
 }
 </file>
 
@@ -165169,418 +165255,6 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
-</file>
-
-<file path="readme/the_backfill_system_01_26_v1.md">
-# README — Backfill + Gap-Fill Autodetect (Trades-SoT, ClickHouse, ENV-driven)
-
-**Projekt:** `0_WS_AI`
-**Datum:** 2026-02-21
-**Ziel:** Rohdaten (Trades) als Single Source of Truth in ClickHouse speichern, Candles daraus ableiten, und **zu jeder Zeit** Datenlücken automatisch erkennen und nachladen (Gap-Fill).
-
----
-
-## 1) Systemvertrag
-
-### 1.1 Single Source of Truth
-
-**SoT ist immer die Trades-Tabelle** pro Exchange:
-
-* `trading.<exchange>_trades` (z. B. `trading.binance_trades`)
-
-Schema (Beispiel Binance, bestätigt per `DESCRIBE TABLE`):
-
-* `symbol LowCardinality(String)`
-* `market LowCardinality(String)`
-* `price Decimal(76,38)`
-* `size Decimal(76,38)`
-* `side Enum8('buy'=1,'sell'=2)`
-* `timestamp DateTime64(3,'UTC')`
-* `trade_id UInt64 MATERIALIZED cityHash64(...)`
-* `source LowCardinality(String) DEFAULT 'live_ws'`
-
-### 1.2 Quelle/Markierung der Daten (source)
-
-`source` beschreibt **nur**, woher ein **echter Trade** stammt:
-
-* `live_ws` → Live-Stream
-* `rest_backfill` → Backfill (historisch nachgeladen)
-
-**Wichtig:** `source` ist **kein Gap-Marker**. Gaps werden nicht durch Fake-Rows markiert, sondern durch SQL-Expected-Buckets Scan.
-
----
-
-## 2) Komponenten & Pfade
-
-### 2.1 Auto-Start des Backfill-Loops
-
-**Pfad:** `backend/services/adapter/collector_starter.py`
-**Funktion:** `start_auto_backfill_gap_loop()`
-
-* liest `AUTO_BACKFILL_*` ENV
-* startet pro Coin (`exchange:symbol`) einen Task `BackfillLoopService.run()`
-
-### 2.2 Gap-Detection + Gap-Fill (Autodetect & Nachladen)
-
-**Pfad:** `backend/services/usecases/backfill_loop_service.py`
-**Klasse:** `BackfillLoopService`
-
-Funktional:
-
-1. **Gap-Scan** (Expected-Buckets über ClickHouse)
-2. **Gap-Fill**: neuestes GapWindow wird sofort nachgeladen
-3. **Normal-Backfill**: wenn keine Gaps existieren, rückwärts bis `AUTO_BACKFILL_UNTIL_DATE`
-
-### 2.3 Historical Backfill (Trades-only, enterprise)
-
-**Pfad:** `backend/services/usecases/unified_historical.py`
-**Klasse:** `UnifiedHistoricalService`
-
-Eigenschaften:
-
-* **Trades-only** (keine Candles im Backfill)
-* **deterministischer Cursor** mit `to_date` (EXKLUSIV)
-* **kein Datenverlust bei liquiden Märkten**: Cursor bewegt sich anhand **ältestem zurückgelieferten Trade** (kein stumpfer “1h-hop”)
-* komplett **ENV/Policy-driven** (Fenstergröße, API-Limit, Methodennamen)
-
----
-
-## 3) Wie Gap-Detection genau funktioniert (Expected-Buckets)
-
-**Definition:** Ein Bucket gilt als “vorhanden”, wenn in diesem Bucket **mindestens 1 Trade** existiert.
-Fehlende Buckets = Expected − Present.
-
-Mechanik:
-
-* Scan-Fenster: `[now - GAP_SCAN_DAYS, now]`
-* Bucketgröße: `GAP_BUCKET_SECONDS` (z. B. 60)
-* Expected-Buckets: `system.numbers` erzeugt Zeitraster
-* Present-Buckets: `toStartOfInterval(timestamp, step)` aus Trades
-* Missing: left join expected vs present where present is null
-* Missing buckets werden in Python zu **GapWindow(start,end_exklusiv)** segmentiert
-* `BackfillLoopService.run()` priorisiert `gaps[0]` (neuester Gap) und lädt exakt `[start,end)` nach
-
----
-
-## 4) Gap-Fill / Auto-Nachladen (zu jeder Zeit)
-
-### 4.1 Dauerbetrieb (kritischer Fix)
-
-Damit “dauerhaft prüfen und nachladen” wirklich dauerhaft ist, darf der Loop **nicht** stoppen, wenn eine Iteration 0 Trades liefert.
-
-**Regel:**
-
-* `trades_loaded <= 0` → **sleep + continue**
-* niemals `break` (sonst endet das Autogap-System bei leeren Fenstern/temporären API-Problemen)
-
----
-
-## 5) UnifiedHistoricalService (Enterprise, dynamisch, nicht hardcoded)
-
-### 5.1 Warum der Cursor-Fix zwingend war
-
-Bei BTCUSDT können in 1h weit mehr als 1000 Trades existieren.
-Wenn man pro 1h-Fenster nur 1000 lädt und dann stumpf 1h zurückspringt, gehen Daten verloren.
-
-**Enterprise-Lösung:**
-
-* Nach jedem Fetch wird `t_end` auf den **ältesten zurückgelieferten Trade** gesetzt
-* so “scrollt” der Cursor rückwärts durch das Fenster, bis es wirklich abgearbeitet ist
-
-### 5.2 Keine Hardcodes: ENV steuert alles
-
-Methoden-Namen und Policies werden über ENV gesetzt:
-
-* Spot-Fetch-Methode: `HIST_FETCH_METHOD_SPOT`
-* Futures-Fetch-Methode: `HIST_FETCH_METHOD_FUTURES`
-* Fenstergröße: `HIST_WINDOW_SECONDS`
-* API per-call limit: `HIST_PER_CALL_LIMIT`
-* Flush batch: `HIST_FLUSH_BATCH_SIZE`
-* Stagnation: `HIST_MAX_STAGNANT`, `HIST_CURSOR_BACKOFF_MS`
-
-Der Service versucht zusätzlich Fallbacks (z. B. `fetch_trades`, `fetch_spot_trades`) und meldet “not implemented”, wenn ein Exchange keinen Time-Backfill unterstützt.
-
----
-
-## 6) ENV-Konfiguration (relevante Keys)
-
-### 6.1 Auto-Backfill
-
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-AUTO_BACKFILL_MARKET="spot"
-BACKFILL_READY_TIMEOUT=120
-```
-
-### 6.2 Gap-Scan / Autodetect
-
-```bash
-GAP_SCAN_DAYS=30
-GAP_BUCKET_SECONDS=60
-GAP_SOURCE_FILTER=live_ws,rest_backfill
-```
-
-**Interpretation:**
-
-* Scan prüft letzte 30 Tage in 60s Buckets
-* Buckets zählen als vorhanden, wenn Trades mit source in `{live_ws, rest_backfill}` vorhanden sind
-
-### 6.3 Enterprise Historical Policies (Trades-only)
-
-```bash
-HIST_WINDOW_SECONDS=3600
-HIST_PER_CALL_LIMIT=1000
-HIST_FLUSH_BATCH_SIZE=500
-HIST_FETCH_METHOD_SPOT=fetch_trades
-HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
-HIST_MAX_STAGNANT=3
-HIST_CURSOR_BACKOFF_MS=1
-```
-
----
-
-## 7) Betriebslogik im Klartext
-
-1. System startet → `collector_starter` spawnt BackfillLoop Tasks pro `AUTO_BACKFILL_COINS`.
-2. Jeder Loop:
-
-   * scannt Gaps (Expected-Buckets)
-   * wenn Gap gefunden → lädt dieses GapWindow per `UnifiedHistoricalService.history([start,end))`
-   * sonst → normaler Backfill rückwärts Richtung `AUTO_BACKFILL_UNTIL_DATE`
-3. Loop läuft weiter, auch wenn eine Iteration mal 0 Trades liefert (sleep+continue).
-4. ClickHouse bleibt Single Source of Truth, Candles werden daraus abgeleitet.
-
----
-
-## 8) Ergebnis / Garantie
-
-* Keine synthetischen Daten (kein Interpolieren, keine Fake-Trades)
-* Trades sind SoT, Candles sind abgeleitet
-* Gap-Detection + Nachladen arbeitet automatisch und dauerhaft
-* Historischer Backfill ist robust auch bei sehr hoher Trade-Dichte (kein 1h-hop Datenverlust)
-* Konfiguration ist vollständig ENV-gesteuert, keine Hardcodes in der Logik
-
----
-
-## 9) Frontend: Historical Data Updates (Rewrite 2026-02-21)
-
-### 9.1 Problem: Historical Count blieb bei 1267 stecken
-
-**Symptom:**
-- Frontend zeigte "Historical 1267" und aktualisierte nicht, obwohl Backfill kontinuierlich neue Daten lud
-- ClickHouse enthielt 5123+ Candles, aber Frontend zeigte nur 1267
-
-**Root Cause:**
-- Alte `useWsLane.ts` verwendete `setHistorical(hist)` → **ersetzte** alle Daten statt zu mergen
-- Nur ein einziger Request bei Connection-Open → keine kontinuierlichen Updates
-
-### 9.2 Lösung: Kompletter Rewrite mit Polling + Merge
-
-**Pfad:** `frontend/src/services/ws/useWsLane.ts`
-
-**Neue Features:**
-1. **Polling-Mechanismus**: Sendet periodisch `historical:interval:limit` Requests
-2. **Merge-Logik**: `mergeCandles()` kombiniert alte + neue Daten ohne Duplikate
-3. **Stop-Heuristik**: Polling stoppt automatisch wenn Daten stabil sind (N Zyklen ohne Wachstum)
-4. **ENV-Driven Policies**: Alle Parameter konfigurierbar via `.env`
-
-**ENV-Konfiguration:**
-```bash
-# .env
-VITE_WS_HIST_LIMIT=2000              # Max Candles pro Request
-VITE_WS_HIST_POLL_MS=1000            # Polling-Intervall (ms)
-VITE_WS_HIST_NO_GROWTH_STOP=10       # Stop nach N Zyklen ohne Wachstum
-```
-
-**Code-Struktur:**
-```typescript
-// ENV-driven Policies (Build-time)
-const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
-const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
-const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
-
-// Clamping für sichere Werte
-function clampInt(n: number, def: number, min: number, max: number): number {
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  return x < min ? min : x > max ? max : x;
-}
-
-// Merge-Funktion (verhindert unnötige Re-Renders)
-function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
-  if (!incoming.length) return prev;
-  
-  const map = new Map<number, LiveCandle>();
-  for (const c of prev) map.set(c.t, c);
-  
-  let changed = false;
-  for (const c of incoming) {
-    const old = map.get(c.t);
-    if (!old || old.o !== c.o || old.h !== c.h || old.l !== c.l || old.c !== c.c || old.v !== c.v) {
-      map.set(c.t, c);
-      changed = true;
-    }
-  }
-  
-  if (!changed) return prev; // ✅ Verhindert unnötige State-Updates
-  return Array.from(map.values()).sort((a, b) => a.t - b.t);
-}
-```
-
-**Polling-Logik:**
-```typescript
-const startHistoricalPolling = () => {
-  // Initial Request sofort
-  requestHistorical();
-  
-  // Dann periodisch bis stabil
-  histTimerRef.current = window.setInterval(() => {
-    if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
-      stopHistoricalPolling(); // ✅ Auto-Stop bei stabilen Daten
-      return;
-    }
-    requestHistorical();
-  }, histPollMsRef.current);
-};
-```
-
-**Effekt:**
-- ✅ Historical Daten wachsen kontinuierlich (1267 → 5123+)
-- ✅ Polling stoppt automatisch wenn Backfill fertig
-- ✅ Keine unnötigen Re-Renders durch Change-Detection
-- ✅ Alle Policies via ENV konfigurierbar
-- ✅ Backend kann optional eigene Limits überschreiben (via `connection` message)
-
-**Wichtig:**
-Nach Änderung der `.env` (VITE Variablen) muss der Dev-Server neu gestartet werden:
-```bash
-cd frontend && npm run dev
-```
-
----
-
-## 10) Backend: ClickHouse Thread-Safety (Fix 2026-02-21)
-
-### 10.1 Problem: Concurrent Query Session Error
-
-**Symptom:**
-```
-❌ CLICKHOUSE oldest query FAILED | error=Attempt to execute concurrent queries within the same session
-⚠️ [GAPSCAN] scan failed | Attempt to execute concurrent queries within the same session
-```
-
-**Root Cause:**
-- `BackfillLoopService` und `GapScanService` verwendeten **denselben ClickHouse-Client** (shared session)
-- Parallele Queries in verschiedenen Threads → Session-Konflikt
-- `asyncio.to_thread()` führte Queries in Thread-Pool aus, aber mit shared Client
-
-### 10.2 Lösung: Thread-Local ClickHouse Clients
-
-**Neue Datei:** `backend/database/clickhouse/threadsafe_client.py`
-
-```python
-from __future__ import annotations
-
-import threading
-import clickhouse_connect
-
-from backend.database.clickhouse.cl_config import CL_CONNECTION
-
-_thread_local = threading.local()
-
-
-def _make_client():
-    return clickhouse_connect.get_client(
-        host=CL_CONNECTION["host"],
-        port=CL_CONNECTION["port"],
-        username=CL_CONNECTION.get("username", "default"),
-        password=CL_CONNECTION.get("password", ""),
-        database=CL_CONNECTION.get("database", "default"),
-        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
-        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
-    )
-
-
-def get_thread_client():
-    """
-    Thread-safe ClickHouse client:
-    - exactly one clickhouse_connect client per OS thread
-    - prevents "concurrent queries within the same session"
-    """
-    c = getattr(_thread_local, "client", None)
-    if c is None:
-        c = _make_client()
-        _thread_local.client = c
-    return c
-```
-
-**Wichtig:**
-- **Keine doppelte Konfiguration**: Nutzt zentrale `CL_CONNECTION` aus `cl_config.py`
-- **Thread-Local Storage**: Jeder Thread bekommt seinen eigenen Client
-- **Lazy Initialization**: Client wird erst bei Bedarf erstellt
-
-### 10.3 Integration in BackfillLoopService
-
-**Pfad:** `backend/services/usecases/backfill_loop_service.py`
-
-**Import hinzugefügt:**
-```python
-from backend.database.clickhouse.threadsafe_client import get_thread_client
-```
-
-**Methode vereinfacht:**
-```python
-def _get_ch_client_sync(self):
-    """
-    THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-    """
-    return get_thread_client()
-```
-
-**Effekt:**
-- Jede `asyncio.to_thread(_run)` Query bekommt eigenen Client
-- Keine Session-Konflikte mehr
-- BackfillLoop und GapScan können parallel laufen
-
-### 10.4 Integration in GapScanService
-
-**Pfad:** `backend/services/usecases/gap_scan_service.py`
-
-Gleiche Umstellung:
-- Import `get_thread_client`
-- Verwendung statt shared Pool/Client
-
-**Resultat:**
-- ✅ BackfillLoop läuft ohne ClickHouse-Fehler
-- ✅ GapScan funktioniert parallel
-- ✅ Keine "concurrent queries" Errors mehr
-
----
-
-## 11) Zusammenfassung der Fixes (2026-02-21)
-
-### Frontend Fix
-- **Problem**: Historical Count blieb bei 1267 stecken
-- **Lösung**: Merge-Logik in `useWsLane.ts` statt Replace
-- **Datei**: `frontend/src/services/ws/useWsLane.ts`
-
-### Backend Fix
-- **Problem**: ClickHouse Session-Konflikte bei parallelen Queries
-- **Lösung**: Thread-Local Clients via `threadsafe_client.py`
-- **Dateien**: 
-  - `backend/database/clickhouse/threadsafe_client.py` (neu)
-  - `backend/services/usecases/backfill_loop_service.py` (angepasst)
-  - `backend/services/usecases/gap_scan_service.py` (angepasst)
-
-### Ergebnis
-- ✅ Historical Daten wachsen kontinuierlich im Frontend
-- ✅ Backfill läuft ohne ClickHouse-Fehler
-- ✅ Gap-Detection funktioniert parallel
-- ✅ System ist produktionsreif
-
----
 </file>
 
 <file path="backend/api/routers/ro_historical.py">
@@ -167716,6 +167390,747 @@ const TradingPage = () => {
 };
 
 export default TradingPage;
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/types.ts">
+/**
+ * CandleChart Types
+ * =================
+ * 
+ * Shared TypeScript interfaces for the reusable CandleChart component.
+ * Used across all pages (TradingPage, Quantum, etc.)
+ */
+
+export interface CandleChartProps {
+  symbol: string;
+  exchange: string;
+  market: string;
+  interval: string;
+  limit?: number;          // limit counts ONLY real OHLC (see useChartView)
+  className?: string;
+}
+
+/**
+ * CandleData supports:
+ * - CandleBar (real OHLC)
+ * - CandleWhitespace (time-only) -> renders as visible gaps in lightweight-charts
+ *
+ * time is in MILLISECONDS here (we convert to seconds when calling setData()).
+ */
+export type CandleData = CandleBar | CandleWhitespace;
+
+export interface CandleBar {
+  time: number; // ms
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface CandleWhitespace {
+  time: number; // ms
+  // intentionally no OHLC -> lightweight-charts renders whitespace / gap
+}
+
+export interface ChartTheme {
+  layout: {
+    background: { color: string };
+    textColor: string;
+  };
+  grid: {
+    vertLines: { color: string };
+    horzLines: { color: string };
+  };
+  timeScale: {
+    borderColor: string;
+    timeVisible: boolean;
+    secondsVisible: boolean;
+    fixLeftEdge?: boolean;
+    fixRightEdge?: boolean;
+    rightOffset?: number;
+    barSpacing?: number;
+    minBarSpacing?: number;
+  };
+  rightPriceScale: {
+    borderColor: string;
+    autoScale?: boolean;
+    scaleMargins?: { top: number; bottom: number };
+    mode?: number;
+  };
+  crosshair?: {
+    vertLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+    horzLine?: {
+      color: string;
+      labelBackgroundColor: string;
+    };
+  };
+}
+
+export interface CandlestickSeriesTheme {
+  upColor: string;
+  downColor: string;
+  borderVisible: boolean;
+  wickUpColor: string;
+  wickDownColor: string;
+  priceLineVisible?: boolean;
+}
+</file>
+
+<file path="readme/the_backfill_system_01_26_v1.md">
+# README — Backfill + Gap-Fill Autodetect (Trades-SoT, ClickHouse, ENV-driven)
+
+**Projekt:** `0_WS_AI`
+**Datum:** 2026-02-21
+**Ziel:** Rohdaten (Trades) als Single Source of Truth in ClickHouse speichern, Candles daraus ableiten, und **zu jeder Zeit** Datenlücken automatisch erkennen und nachladen (Gap-Fill).
+
+---
+
+## 12) Frontend: Chart Gap Visualization (Whitespace Bars) - 2026-02-21
+
+### 12.1 Problem: Candles "kleben zusammen" trotz Zeitlücken
+
+**Symptom:**
+- TradingView Lightweight-Charts rendert bar-index-basiert
+- Jede Candle bekommt gleichen Abstand, unabhängig von Timestamps
+- Zwischen 2025-12-16 und 2026-02-12 (Wochen Pause) wurden Candles direkt nebeneinander gezeichnet
+- Visuell falsches Chartbild: Gaps waren nicht sichtbar
+
+**Root Cause:**
+- Lightweight-Charts Standard-Verhalten: Bar-Index-Spacing
+- Echte Zeitlücken werden nur sichtbar durch **Whitespace-Bars** (nur `time`, kein OHLC)
+
+### 12.2 Lösung: Whitespace Gap Injection (Enterprise Policy)
+
+**Prinzip:**
+1. `CandleData` wird Union Type: `CandleBar | CandleWhitespace`
+2. `CandleBar` = echte OHLC Daten
+3. `CandleWhitespace` = nur `time` (kein OHLC) → rendert als sichtbare Lücke
+4. `limit` zählt **NUR echte Candles**, Whitespace kommt zusätzlich
+5. Keine synthetischen OHLC, keine Interpolation
+
+**ENV-Konfiguration:**
+```bash
+# frontend/.env
+VITE_CHART_MAX_REAL_CANDLES=2000           # Limit zählt NUR echte OHLC
+VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP=2000 # Max Whitespace pro Gap (OOM-Schutz)
+VITE_CHART_INITIAL_VISIBLE=500             # Initial sichtbare Candles
+```
+
+### 12.3 Implementierung: 4 Dateien + ENV
+
+#### 12.3.1 Types: Whitespace Support
+
+**Pfad:** `frontend/src/shared/components/CandleChart/types.ts`
+
+```typescript
+export type CandleData = CandleBar | CandleWhitespace;
+
+export interface CandleBar {
+  time: number; // ms
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface CandleWhitespace {
+  time: number; // ms
+  // intentionally no OHLC -> lightweight-charts renders whitespace / gap
+}
+```
+
+**Wichtig:**
+- `time` ist in **Millisekunden** (Konvertierung zu Sekunden in `setData()`)
+- Whitespace hat **absichtlich kein OHLC** → Chart rendert Lücke
+
+#### 12.3.2 Chart Hook: Whitespace Rendering
+
+**Pfad:** `frontend/src/shared/components/CandleChart/useCandleChart.ts`
+
+```typescript
+const setChartData = (data: CandleData[]) => {
+  // Lightweight-charts expects seconds.
+  // Whitespace is supported by passing {time} without OHLC.
+  const formatted = data
+    .map((d) => {
+      const tSec = Math.floor(d.time / 1000);
+      if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+      if (isRealCandle(d)) {
+        return {
+          time: tSec,
+          open: (d as any).open,
+          high: (d as any).high,
+          low: (d as any).low,
+          close: (d as any).close,
+        };
+      }
+      return { time: tSec }; // ✅ Whitespace
+    })
+    .filter(Boolean) as any[];
+
+  seriesInstance.current.setData(formatted);
+};
+```
+
+**Effekt:**
+- Echte Candles: `{time, open, high, low, close}`
+- Whitespace: `{time}` → Chart rendert Lücke
+
+#### 12.3.3 Data Hook: Gap Detection & Injection
+
+**Pfad:** `frontend/src/pages/TradingPage/hooks/useChartView.ts`
+
+**Kern-Funktionen:**
+
+```typescript
+// ENV-driven Policies
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+// Interval → Sekunden (dynamisch, kein Hardcode)
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  // ... Regex-Parsing für s/m/h/d/w/M
+}
+
+// Gap-Injection mit Downsampling (OOM-Schutz)
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+// Limit zählt NUR echte Candles
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+```
+
+**Wichtig:**
+- `limit=2000` bedeutet: 2000 echte Candles + Whitespace zusätzlich
+- Downsampling bei riesigen Gaps (z.B. Monate): `stride = ceil(missingBars / maxW)`
+- Verhindert Memory-Blowup bei extremen Zeitlücken
+
+#### 12.3.4 Component: Meta Display
+
+**Pfad:** `frontend/src/shared/components/CandleChart/CandleChart.tsx`
+
+```typescript
+const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
+
+const { chartData, loading, error, meta } = useChartView(
+  symbol, market, exchange, interval, limit
+);
+
+return (
+  <div className="flex flex-col gap-2">
+    <div className="text-xs opacity-70">
+      Historical: {meta.historicalCount} | Live: {meta.liveCount} | 
+      TotalPoints: {meta.totalCount} | Real: {meta.realCount} | 
+      Whitespace: {meta.whitespaceCount}
+    </div>
+    {/* Chart Container */}
+  </div>
+);
+```
+
+**Meta-Informationen:**
+- `historicalCount`: Anzahl historischer Candles vom Backend
+- `liveCount`: Anzahl Live-Candles
+- `totalCount`: Real + Whitespace
+- `realCount`: Nur echte OHLC Candles
+- `whitespaceCount`: Anzahl Gap-Marker
+
+### 12.4 Ergebnis: Sichtbare Zeitlücken
+
+**Vorher:**
+- Candles zwischen 2025-12-16 und 2026-02-12 direkt nebeneinander
+- Visuell falscher Eindruck: "durchgehende Daten"
+
+**Nachher:**
+- ✅ Sichtbarer Leerraum zwischen den Zeiträumen
+- ✅ Keine Fake-Candles, keine Interpolation
+- ✅ `limit=2000` zählt nur echte Candles
+- ✅ Whitespace kommt zusätzlich (nicht im Limit)
+- ✅ OOM-Schutz durch Downsampling bei extremen Gaps
+
+### 12.5 Enterprise Policy: Keine Hardcodes
+
+**Alle Parameter ENV-driven:**
+```bash
+VITE_CHART_MAX_REAL_CANDLES=2000           # Max echte Candles (0 = unlimited)
+VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP=2000 # Max Whitespace pro Gap
+VITE_CHART_INITIAL_VISIBLE=500             # Initial sichtbare Candles
+```
+
+**Interval-Parsing dynamisch:**
+- Regex: `/^(\d+)(s|m|h|d|w|M)$/`
+- Unterstützt: Sekunden, Minuten, Stunden, Tage, Wochen, Monate
+- Kein Hardcode für spezifische Intervalle
+
+**Betroffene Dateien:**
+1. `frontend/.env` - ENV Variablen
+2. `frontend/src/shared/components/CandleChart/types.ts` - Union Type
+3. `frontend/src/shared/components/CandleChart/useCandleChart.ts` - Whitespace Rendering
+4. `frontend/src/pages/TradingPage/hooks/useChartView.ts` - Gap Detection & Injection
+5. `frontend/src/shared/components/CandleChart/CandleChart.tsx` - Meta Display
+
+### 12.6 Wichtig: Vite ENV Reload
+
+Nach Änderung der `.env` (VITE Variablen) muss der Dev-Server neu gestartet werden:
+```bash
+cd frontend && npm run dev
+```
+
+---
+
+## 1) Systemvertrag
+
+### 1.1 Single Source of Truth
+
+**SoT ist immer die Trades-Tabelle** pro Exchange:
+
+* `trading.<exchange>_trades` (z. B. `trading.binance_trades`)
+
+Schema (Beispiel Binance, bestätigt per `DESCRIBE TABLE`):
+
+* `symbol LowCardinality(String)`
+* `market LowCardinality(String)`
+* `price Decimal(76,38)`
+* `size Decimal(76,38)`
+* `side Enum8('buy'=1,'sell'=2)`
+* `timestamp DateTime64(3,'UTC')`
+* `trade_id UInt64 MATERIALIZED cityHash64(...)`
+* `source LowCardinality(String) DEFAULT 'live_ws'`
+
+### 1.2 Quelle/Markierung der Daten (source)
+
+`source` beschreibt **nur**, woher ein **echter Trade** stammt:
+
+* `live_ws` → Live-Stream
+* `rest_backfill` → Backfill (historisch nachgeladen)
+
+**Wichtig:** `source` ist **kein Gap-Marker**. Gaps werden nicht durch Fake-Rows markiert, sondern durch SQL-Expected-Buckets Scan.
+
+---
+
+## 2) Komponenten & Pfade
+
+### 2.1 Auto-Start des Backfill-Loops
+
+**Pfad:** `backend/services/adapter/collector_starter.py`
+**Funktion:** `start_auto_backfill_gap_loop()`
+
+* liest `AUTO_BACKFILL_*` ENV
+* startet pro Coin (`exchange:symbol`) einen Task `BackfillLoopService.run()`
+
+### 2.2 Gap-Detection + Gap-Fill (Autodetect & Nachladen)
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+**Klasse:** `BackfillLoopService`
+
+Funktional:
+
+1. **Gap-Scan** (Expected-Buckets über ClickHouse)
+2. **Gap-Fill**: neuestes GapWindow wird sofort nachgeladen
+3. **Normal-Backfill**: wenn keine Gaps existieren, rückwärts bis `AUTO_BACKFILL_UNTIL_DATE`
+
+### 2.3 Historical Backfill (Trades-only, enterprise)
+
+**Pfad:** `backend/services/usecases/unified_historical.py`
+**Klasse:** `UnifiedHistoricalService`
+
+Eigenschaften:
+
+* **Trades-only** (keine Candles im Backfill)
+* **deterministischer Cursor** mit `to_date` (EXKLUSIV)
+* **kein Datenverlust bei liquiden Märkten**: Cursor bewegt sich anhand **ältestem zurückgelieferten Trade** (kein stumpfer “1h-hop”)
+* komplett **ENV/Policy-driven** (Fenstergröße, API-Limit, Methodennamen)
+
+---
+
+## 3) Wie Gap-Detection genau funktioniert (Expected-Buckets)
+
+**Definition:** Ein Bucket gilt als “vorhanden”, wenn in diesem Bucket **mindestens 1 Trade** existiert.
+Fehlende Buckets = Expected − Present.
+
+Mechanik:
+
+* Scan-Fenster: `[now - GAP_SCAN_DAYS, now]`
+* Bucketgröße: `GAP_BUCKET_SECONDS` (z. B. 60)
+* Expected-Buckets: `system.numbers` erzeugt Zeitraster
+* Present-Buckets: `toStartOfInterval(timestamp, step)` aus Trades
+* Missing: left join expected vs present where present is null
+* Missing buckets werden in Python zu **GapWindow(start,end_exklusiv)** segmentiert
+* `BackfillLoopService.run()` priorisiert `gaps[0]` (neuester Gap) und lädt exakt `[start,end)` nach
+
+---
+
+## 4) Gap-Fill / Auto-Nachladen (zu jeder Zeit)
+
+### 4.1 Dauerbetrieb (kritischer Fix)
+
+Damit “dauerhaft prüfen und nachladen” wirklich dauerhaft ist, darf der Loop **nicht** stoppen, wenn eine Iteration 0 Trades liefert.
+
+**Regel:**
+
+* `trades_loaded <= 0` → **sleep + continue**
+* niemals `break` (sonst endet das Autogap-System bei leeren Fenstern/temporären API-Problemen)
+
+---
+
+## 5) UnifiedHistoricalService (Enterprise, dynamisch, nicht hardcoded)
+
+### 5.1 Warum der Cursor-Fix zwingend war
+
+Bei BTCUSDT können in 1h weit mehr als 1000 Trades existieren.
+Wenn man pro 1h-Fenster nur 1000 lädt und dann stumpf 1h zurückspringt, gehen Daten verloren.
+
+**Enterprise-Lösung:**
+
+* Nach jedem Fetch wird `t_end` auf den **ältesten zurückgelieferten Trade** gesetzt
+* so “scrollt” der Cursor rückwärts durch das Fenster, bis es wirklich abgearbeitet ist
+
+### 5.2 Keine Hardcodes: ENV steuert alles
+
+Methoden-Namen und Policies werden über ENV gesetzt:
+
+* Spot-Fetch-Methode: `HIST_FETCH_METHOD_SPOT`
+* Futures-Fetch-Methode: `HIST_FETCH_METHOD_FUTURES`
+* Fenstergröße: `HIST_WINDOW_SECONDS`
+* API per-call limit: `HIST_PER_CALL_LIMIT`
+* Flush batch: `HIST_FLUSH_BATCH_SIZE`
+* Stagnation: `HIST_MAX_STAGNANT`, `HIST_CURSOR_BACKOFF_MS`
+
+Der Service versucht zusätzlich Fallbacks (z. B. `fetch_trades`, `fetch_spot_trades`) und meldet “not implemented”, wenn ein Exchange keinen Time-Backfill unterstützt.
+
+---
+
+## 6) ENV-Konfiguration (relevante Keys)
+
+### 6.1 Auto-Backfill
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_MARKET="spot"
+BACKFILL_READY_TIMEOUT=120
+```
+
+### 6.2 Gap-Scan / Autodetect
+
+```bash
+GAP_SCAN_DAYS=30
+GAP_BUCKET_SECONDS=60
+GAP_SOURCE_FILTER=live_ws,rest_backfill
+```
+
+**Interpretation:**
+
+* Scan prüft letzte 30 Tage in 60s Buckets
+* Buckets zählen als vorhanden, wenn Trades mit source in `{live_ws, rest_backfill}` vorhanden sind
+
+### 6.3 Enterprise Historical Policies (Trades-only)
+
+```bash
+HIST_WINDOW_SECONDS=3600
+HIST_PER_CALL_LIMIT=1000
+HIST_FLUSH_BATCH_SIZE=500
+HIST_FETCH_METHOD_SPOT=fetch_trades
+HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
+HIST_MAX_STAGNANT=3
+HIST_CURSOR_BACKOFF_MS=1
+```
+
+---
+
+## 7) Betriebslogik im Klartext
+
+1. System startet → `collector_starter` spawnt BackfillLoop Tasks pro `AUTO_BACKFILL_COINS`.
+2. Jeder Loop:
+
+   * scannt Gaps (Expected-Buckets)
+   * wenn Gap gefunden → lädt dieses GapWindow per `UnifiedHistoricalService.history([start,end))`
+   * sonst → normaler Backfill rückwärts Richtung `AUTO_BACKFILL_UNTIL_DATE`
+3. Loop läuft weiter, auch wenn eine Iteration mal 0 Trades liefert (sleep+continue).
+4. ClickHouse bleibt Single Source of Truth, Candles werden daraus abgeleitet.
+
+---
+
+## 8) Ergebnis / Garantie
+
+* Keine synthetischen Daten (kein Interpolieren, keine Fake-Trades)
+* Trades sind SoT, Candles sind abgeleitet
+* Gap-Detection + Nachladen arbeitet automatisch und dauerhaft
+* Historischer Backfill ist robust auch bei sehr hoher Trade-Dichte (kein 1h-hop Datenverlust)
+* Konfiguration ist vollständig ENV-gesteuert, keine Hardcodes in der Logik
+
+---
+
+## 9) Frontend: Historical Data Updates (Rewrite 2026-02-21)
+
+### 9.1 Problem: Historical Count blieb bei 1267 stecken
+
+**Symptom:**
+- Frontend zeigte "Historical 1267" und aktualisierte nicht, obwohl Backfill kontinuierlich neue Daten lud
+- ClickHouse enthielt 5123+ Candles, aber Frontend zeigte nur 1267
+
+**Root Cause:**
+- Alte `useWsLane.ts` verwendete `setHistorical(hist)` → **ersetzte** alle Daten statt zu mergen
+- Nur ein einziger Request bei Connection-Open → keine kontinuierlichen Updates
+
+### 9.2 Lösung: Kompletter Rewrite mit Polling + Merge
+
+**Pfad:** `frontend/src/services/ws/useWsLane.ts`
+
+**Neue Features:**
+1. **Polling-Mechanismus**: Sendet periodisch `historical:interval:limit` Requests
+2. **Merge-Logik**: `mergeCandles()` kombiniert alte + neue Daten ohne Duplikate
+3. **Stop-Heuristik**: Polling stoppt automatisch wenn Daten stabil sind (N Zyklen ohne Wachstum)
+4. **ENV-Driven Policies**: Alle Parameter konfigurierbar via `.env`
+
+**ENV-Konfiguration:**
+```bash
+# frontend/.env
+VITE_WS_HIST_LIMIT=2000              # Max Candles pro Request
+VITE_WS_HIST_POLL_MS=1000            # Polling-Intervall (ms)
+VITE_WS_HIST_NO_GROWTH_STOP=10       # Stop nach N Zyklen ohne Wachstum
+```
+
+**TypeScript Definitions:**
+```typescript
+// frontend/src/vite-env.d.ts
+interface ImportMetaEnv {
+  // ... existing vars ...
+  
+  // WebSocket Historical Polling
+  readonly VITE_WS_HIST_LIMIT?: string;
+  readonly VITE_WS_HIST_POLL_MS?: string;
+  readonly VITE_WS_HIST_NO_GROWTH_STOP?: string;
+}
+```
+
+**Code-Struktur:**
+```typescript
+// ENV-driven Policies (Build-time)
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
+
+// Clamping für sichere Werte
+function clampInt(n: number, def: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  return x < min ? min : x > max ? max : x;
+}
+
+// Merge-Funktion (verhindert unnötige Re-Renders)
+function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
+  if (!incoming.length) return prev;
+  
+  const map = new Map<number, LiveCandle>();
+  for (const c of prev) map.set(c.t, c);
+  
+  let changed = false;
+  for (const c of incoming) {
+    const old = map.get(c.t);
+    if (!old || old.o !== c.o || old.h !== c.h || old.l !== c.l || old.c !== c.c || old.v !== c.v) {
+      map.set(c.t, c);
+      changed = true;
+    }
+  }
+  
+  if (!changed) return prev; // ✅ Verhindert unnötige State-Updates
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
+}
+```
+
+**Polling-Logik:**
+```typescript
+const startHistoricalPolling = () => {
+  // Initial Request sofort
+  requestHistorical();
+  
+  // Dann periodisch bis stabil
+  histTimerRef.current = window.setInterval(() => {
+    if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
+      stopHistoricalPolling(); // ✅ Auto-Stop bei stabilen Daten
+      return;
+    }
+    requestHistorical();
+  }, histPollMsRef.current);
+};
+```
+
+**Effekt:**
+- ✅ Historical Daten wachsen kontinuierlich (1267 → 5123+)
+- ✅ Polling stoppt automatisch wenn Backfill fertig
+- ✅ Keine unnötigen Re-Renders durch Change-Detection
+- ✅ Alle Policies via ENV konfigurierbar
+- ✅ Backend kann optional eigene Limits überschreiben (via `connection` message)
+
+**Wichtig:**
+Nach Änderung der `.env` (VITE Variablen) muss der Dev-Server neu gestartet werden:
+```bash
+cd frontend && npm run dev
+```
+
+---
+
+## 10) Backend: ClickHouse Thread-Safety (Fix 2026-02-21)
+
+### 10.1 Problem: Concurrent Query Session Error
+
+**Symptom:**
+```
+❌ CLICKHOUSE oldest query FAILED | error=Attempt to execute concurrent queries within the same session
+⚠️ [GAPSCAN] scan failed | Attempt to execute concurrent queries within the same session
+```
+
+**Root Cause:**
+- `BackfillLoopService` und `GapScanService` verwendeten **denselben ClickHouse-Client** (shared session)
+- Parallele Queries in verschiedenen Threads → Session-Konflikt
+- `asyncio.to_thread()` führte Queries in Thread-Pool aus, aber mit shared Client
+
+### 10.2 Lösung: Thread-Local ClickHouse Clients
+
+**Neue Datei:** `backend/database/clickhouse/threadsafe_client.py`
+
+```python
+from __future__ import annotations
+
+import threading
+import clickhouse_connect
+
+from backend.database.clickhouse.cl_config import CL_CONNECTION
+
+_thread_local = threading.local()
+
+
+def _make_client():
+    return clickhouse_connect.get_client(
+        host=CL_CONNECTION["host"],
+        port=CL_CONNECTION["port"],
+        username=CL_CONNECTION.get("username", "default"),
+        password=CL_CONNECTION.get("password", ""),
+        database=CL_CONNECTION.get("database", "default"),
+        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
+        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
+    )
+
+
+def get_thread_client():
+    """
+    Thread-safe ClickHouse client:
+    - exactly one clickhouse_connect client per OS thread
+    - prevents "concurrent queries within the same session"
+    """
+    c = getattr(_thread_local, "client", None)
+    if c is None:
+        c = _make_client()
+        _thread_local.client = c
+    return c
+```
+
+**Wichtig:**
+- **Keine doppelte Konfiguration**: Nutzt zentrale `CL_CONNECTION` aus `cl_config.py`
+- **Thread-Local Storage**: Jeder Thread bekommt seinen eigenen Client
+- **Lazy Initialization**: Client wird erst bei Bedarf erstellt
+
+### 10.3 Integration in BackfillLoopService
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+
+**Import hinzugefügt:**
+```python
+from backend.database.clickhouse.threadsafe_client import get_thread_client
+```
+
+**Methode vereinfacht:**
+```python
+def _get_ch_client_sync(self):
+    """
+    THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+    """
+    return get_thread_client()
+```
+
+**Effekt:**
+- Jede `asyncio.to_thread(_run)` Query bekommt eigenen Client
+- Keine Session-Konflikte mehr
+- BackfillLoop und GapScan können parallel laufen
+
+### 10.4 Integration in GapScanService
+
+**Pfad:** `backend/services/usecases/gap_scan_service.py`
+
+Gleiche Umstellung:
+- Import `get_thread_client`
+- Verwendung statt shared Pool/Client
+
+**Resultat:**
+- ✅ BackfillLoop läuft ohne ClickHouse-Fehler
+- ✅ GapScan funktioniert parallel
+- ✅ Keine "concurrent queries" Errors mehr
+
+---
+
+## 11) Zusammenfassung der Fixes (2026-02-21)
+
+### Frontend Fix
+- **Problem**: Historical Count blieb bei 1267 stecken
+- **Lösung**: Merge-Logik in `useWsLane.ts` statt Replace
+- **Datei**: `frontend/src/services/ws/useWsLane.ts`
+
+### Backend Fix
+- **Problem**: ClickHouse Session-Konflikte bei parallelen Queries
+- **Lösung**: Thread-Local Clients via `threadsafe_client.py`
+- **Dateien**: 
+  - `backend/database/clickhouse/threadsafe_client.py` (neu)
+  - `backend/services/usecases/backfill_loop_service.py` (angepasst)
+  - `backend/services/usecases/gap_scan_service.py` (angepasst)
+
+### Ergebnis
+- ✅ Historical Daten wachsen kontinuierlich im Frontend
+- ✅ Backfill läuft ohne ClickHouse-Fehler
+- ✅ Gap-Detection funktioniert parallel
+- ✅ System ist produktionsreif
+
+---
 </file>
 
 <file path="docker-compose.yml">
@@ -173323,6 +173738,262 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
 }
 </file>
 
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'COLLECTOR_SYMBOLS', 
+    'BTCUSDT,ETHUSDT,ADAUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
 <file path="backend/services/adapter/unified_aggregator.py">
 import asyncio
 import logging
@@ -173831,262 +174502,6 @@ async def run_unified_aggregator():
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'COLLECTOR_SYMBOLS', 
-    'BTCUSDT,ETHUSDT,ADAUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
