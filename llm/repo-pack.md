@@ -417,7 +417,7 @@ backend/
         user_secrets.py
         user_settings.py
       scripts/
-        bootstrap_kline_1s_state.py
+        bootstrap_all_kline.py
         cleanup.py
         run_all.py
         show_tables.py
@@ -750,6 +750,8 @@ readme/
 __init__.py
 .deps_installed
 .repomixignore
+check_mvs.py
+check_system.sh
 DATENFLUSS_LIVE_CHART.md
 DIAGNOSE_BERICHT_ENV.md
 docker-compose.yml
@@ -757,6 +759,7 @@ Dockerfile
 FEHLER_ANALYSE.md
 FIX_PLAN_FINAL.md
 FRONTEND_ARCHITEKTUR_KOMPLETT.md
+KLINE_PREAGG_ANALYSE.md
 monitor-system.sh
 package.json
 PFAD_ANALYSE_BACKFILL_KOMPLETT.md
@@ -125486,7 +125489,7 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="backend/database/tables/scripts/bootstrap_kline_1s_state.py">
+<file path="backend/database/tables/scripts/bootstrap_all_kline.py">
 #!/usr/bin/env python3
 """
 Bootstrap MV aggregation for existing historical trades.
@@ -160147,6 +160150,119 @@ data/
 *.dump
 </file>
 
+<file path="check_mvs.py">
+#!/usr/bin/env python3
+"""Check Materialized Views in ClickHouse"""
+import asyncio
+from backend.database.clickhouse.cl_client import get_clickhouse_client
+
+async def check_mvs():
+    client = await get_clickhouse_client()
+    
+    # Check for Materialized Views
+    query = """
+    SELECT name, engine 
+    FROM system.tables 
+    WHERE database='trading' AND engine='MaterializedView' 
+    ORDER BY name
+    """
+    
+    result = await client.fetch(query)
+    
+    print("🔍 MATERIALIZED VIEWS IN TRADING DATABASE:")
+    print("=" * 60)
+    
+    if not result:
+        print("❌ KEINE Materialized Views gefunden!")
+        print("\n⚠️  MVs sollten beim Backend-Start erstellt werden.")
+        print("   Prüfe Backend-Logs für Fehler in ensure_kline_preagg()")
+    else:
+        print(f"✅ {len(result)} Materialized Views gefunden:\n")
+        for i, row in enumerate(result, 1):
+            print(f"   {i}. {row['name']}")
+    
+    print("\n" + "=" * 60)
+    
+    # Check all_kline table
+    count_query = "SELECT count() as cnt FROM trading.all_kline"
+    count_result = await client.fetch(count_query)
+    count = count_result[0]['cnt'] if count_result else 0
+    
+    print(f"\n📊 TRADING.ALL_KLINE:")
+    print("=" * 60)
+    print(f"Anzahl Rows: {count:,}")
+    
+    if count == 0:
+        print("\n⚠️  Tabelle ist LEER!")
+        print("   → MVs wurden noch nicht getriggert")
+        print("   → Bootstrap-Script ausführen um historische Daten zu füllen")
+    else:
+        print(f"\n✅ Tabelle enthält {count:,} Candles")
+    
+    await client.close()
+
+if __name__ == "__main__":
+    asyncio.run(check_mvs())
+</file>
+
+<file path="check_system.sh">
+#!/bin/bash
+# Check Materialized Views und all_kline Status
+
+echo "🔍 MATERIALIZED VIEWS CHECK"
+echo "============================================================"
+
+MVS=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --user admin --password admin --query "SELECT name FROM system.tables WHERE database='trading' AND engine='MaterializedView' ORDER BY name" 2>&1)
+
+if [ -z "$MVS" ]; then
+    echo "❌ KEINE Materialized Views gefunden!"
+    echo ""
+    echo "⚠️  MVs sollten beim Backend-Start erstellt werden."
+    echo "   Prüfe Backend-Logs:"
+    echo "   docker logs 0_ws_ai-backend-1 | grep -i 'kline_preagg'"
+else
+    echo "✅ Materialized Views gefunden:"
+    echo "$MVS" | nl
+fi
+
+echo ""
+echo "============================================================"
+echo "📊 TRADING.ALL_KLINE STATUS"
+echo "============================================================"
+
+COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --user admin --password admin --query "SELECT count() FROM trading.all_kline" 2>&1)
+
+echo "Anzahl Rows: $COUNT"
+
+if [ "$COUNT" = "0" ]; then
+    echo ""
+    echo "⚠️  Tabelle ist LEER!"
+    echo "   → MVs wurden noch nicht getriggert"
+    echo "   → Bootstrap-Script ausführen um historische Daten zu füllen"
+else
+    echo ""
+    echo "✅ Tabelle enthält Daten"
+fi
+
+echo ""
+echo "============================================================"
+echo "🗑️  ALTE TABELLE CHECK"
+echo "============================================================"
+
+OLD_COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --user admin --password admin --query "SELECT count() FROM trading.all_kline_1s_state" 2>&1)
+
+echo "all_kline_1s_state Rows: $OLD_COUNT"
+
+if [ "$OLD_COUNT" = "0" ]; then
+    echo ""
+    echo "⚠️  Alte Tabelle 'all_kline_1s_state' existiert noch (leer)"
+    echo "   → Kann gedroppt werden: DROP TABLE trading.all_kline_1s_state"
+fi
+
+echo ""
+echo "🎉 FERTIG!"
+</file>
+
 <file path="DATENFLUSS_LIVE_CHART.md">
 # 🔄 Kompletter Datenfluss: Historische Daten + Live Updates
 
@@ -162038,6 +162154,116 @@ function useChartView(
 - 🚀 Basis für zukünftige Features
 
 **Du musst NIE WIEDER nachschauen - ALLES steht hier!** 🎉
+</file>
+
+<file path="KLINE_PREAGG_ANALYSE.md">
+# Analyse: Ist `kline_preagg.py` notwendig?
+
+## Zusammenfassung
+**JA, die Datei ist ABSOLUT NOTWENDIG!** Sie ist das Herzstück des Pre-Aggregation Systems.
+
+## Was macht `kline_preagg.py`?
+
+### 1. **Tabellen-Erstellung** (`ensure_all_kline_state_table`)
+- Erstellt `trading.all_kline` (AggregatingMergeTree mit STATE-Funktionen)
+- Erstellt `trading.all_kline_final` VIEW (mit MERGE-Funktionen zum Lesen)
+- **Ohne diese Tabelle**: Keine Pre-Aggregation möglich!
+
+### 2. **Materialized Views Erstellung** (`ensure_mv_for_exchange`)
+- Erstellt für JEDEN Exchange eine MV: `mv_{exchange}_trades_to_all_kline_1s`
+- Diese MVs aggregieren **automatisch** neue Trades → 1s Candles
+- **Ohne MVs**: Trades werden NICHT automatisch zu Candles aggregiert!
+
+### 3. **Orchestrierung** (`ensure_kline_preagg`)
+- Findet alle `*_trades` Tabellen
+- Erstellt MVs für alle gefundenen Exchanges
+- Singleton-Pattern (nur 1x ausführen)
+
+## Warum ist sie notwendig?
+
+### Problem OHNE `kline_preagg.py`:
+```
+Frontend Request → Backend → ClickHouse
+                              ↓
+                    Scan 19 Mio Trades (5-15 Sekunden!)
+                              ↓
+                    Aggregiere zu Candles
+                              ↓
+                    Return (LANGSAM!)
+```
+
+### Lösung MIT `kline_preagg.py`:
+```
+Trades kommen rein → MV triggert automatisch → all_kline (STATE)
+                                                      ↓
+Frontend Request → Backend → ClickHouse
+                              ↓
+                    Read all_kline (Pre-Aggregated, <50ms!)
+                              ↓
+                    Return (SCHNELL!)
+```
+
+## Wo wird sie verwendet?
+
+### 1. **Backend Startup** (`backend/core/main.py`)
+```python
+# ✅ KLINE PRE-AGG: Materialized Views beim Start erstellen
+try:
+    from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+    await ensure_kline_preagg()
+    logger.info("✅ Kline Pre-Aggregation (Materialized Views) initialized")
+except Exception as e:
+    logger.error(f"Kline Pre-Agg init failed: {e}", exc_info=True)
+```
+
+### 2. **OHLC Query** (`backend/services/usecases/unified_ohlc.py`)
+```python
+# ✅ Pre-Agg first
+preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
+if preagg_enabled:
+    try:
+        from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+        await ensure_kline_preagg()
+
+        if await _table_exists("trading", "all_kline"):
+            if interval_seconds == 1:
+                return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
+            return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
+    except Exception as e:
+        logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+```
+
+## Was passiert OHNE diese Datei?
+
+1. ❌ `trading.all_kline` Tabelle existiert nicht
+2. ❌ Materialized Views werden nicht erstellt
+3. ❌ Trades werden NICHT automatisch zu Candles aggregiert
+4. ❌ Jeder Chart-Request scannt Millionen Trades (5-15 Sekunden)
+5. ❌ System ist NICHT produktionsreif
+
+## Alternative?
+
+### Option 1: SQL-Script statt Python
+- Man könnte die CREATE TABLE + CREATE MV Statements in ein SQL-Script packen
+- **NACHTEIL**: Keine dynamische Exchange-Erkennung
+- **NACHTEIL**: Manuelles Hinzufügen neuer Exchanges notwendig
+
+### Option 2: Direkt in `db_md/all_kline.py`
+- Man könnte die MV-Erstellung in die Tabellen-Definition integrieren
+- **NACHTEIL**: Vermischt Tabellen-Schema mit Runtime-Logik
+- **NACHTEIL**: Weniger flexibel
+
+## Fazit
+
+**`kline_preagg.py` ist ESSENTIELL und sollte NICHT gelöscht werden!**
+
+Sie ist:
+- ✅ Gut strukturiert (Separation of Concerns)
+- ✅ Dynamisch (findet Exchanges automatisch)
+- ✅ Sicher (Singleton-Pattern, Error-Handling)
+- ✅ Produktionsreif (Logging, Validierung)
+
+**Ohne diese Datei funktioniert das gesamte Pre-Aggregation System NICHT!**
 </file>
 
 <file path="package.json">
@@ -165076,6 +165302,729 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
+<file path="backend/exchanges/binance/services/rest_api.py">
+#!/usr/bin/env python3
+"""
+Binance REST API Wrapper für ExchangeFactory Integration (Decimal Optimized)
+============================================================================
+
+ExchangeFactory-kompatible Binance REST API Implementierung mit Financial-Grade
+Decimal-Präzision für alle Preis- und Volumen-Berechnungen.
+"""
+
+import logging
+import aiohttp
+import asyncio
+import os
+from decimal import Decimal
+from typing import Dict, List, Optional
+from backend.exchanges.binance.config import BinanceEndpoints
+from backend.services.domain.config_manager import load_user_credentials
+# FIXED: Import zentrale HTTP-Defaults (0ms Latenz - nur Variablen!)
+from backend.exchanges.shared.http_defaults import (
+    HTTP_CONNECTOR_LIMIT, HTTP_CONNECTOR_LIMIT_PER_HOST, HTTP_CONNECTOR_TTL_DNS,
+    HTTP_CONNECTOR_CLEANUP_CLOSED, HTTP_CONNECTOR_KEEPALIVE_TIMEOUT,
+    HTTP_TIMEOUT_TOTAL, HTTP_TIMEOUT_CONNECT, HTTP_TIMEOUT_SOCK_CONNECT, HTTP_TIMEOUT_SOCK_READ,
+    HTTP_HEADERS, BINANCE_TIMEOUT_TOTAL, BINANCE_TIMEOUT_SOCK_READ, BINANCE_CONNECTOR_LIMIT
+)
+
+logger = logging.getLogger("binance-rest-wrapper")
+
+class BinanceRestAPI:
+    """ExchangeFactory kompatible Wrapper Klasse für Binance REST API"""
+    
+    def __init__(self, user_id: str = None):
+        self.user_id = user_id
+        self.base_url = os.getenv('BINANCE_REST_URL', 'https://api.binance.com')
+        self._session = None
+        self._creds = None
+        # CACHE-WAR FIX: Service-Level Cache DEAKTIVIERT  
+        self._symbols_cache = None
+        self._tickers_cache = None
+        
+    async def _ensure_credentials(self):
+        """Lädt Credentials lazy beim ersten Bedarf"""
+        if self._creds is None:
+            self._creds = await load_user_credentials(self.user_id, "binance")
+    
+    async def _get_session(self):
+        """Lazy session creation with connection limits"""
+        if not self._session:
+            # FIXED: Alle Werte aus http_defaults.py (0ms Latenz!)
+            connector = aiohttp.TCPConnector(
+                limit=BINANCE_CONNECTOR_LIMIT,
+                limit_per_host=HTTP_CONNECTOR_LIMIT_PER_HOST,
+                ttl_dns_cache=HTTP_CONNECTOR_TTL_DNS,
+                enable_cleanup_closed=HTTP_CONNECTOR_CLEANUP_CLOSED,
+                keepalive_timeout=HTTP_CONNECTOR_KEEPALIVE_TIMEOUT
+            )
+            timeout = aiohttp.ClientTimeout(
+                total=BINANCE_TIMEOUT_TOTAL,
+                connect=HTTP_TIMEOUT_CONNECT,
+                sock_connect=HTTP_TIMEOUT_SOCK_CONNECT,
+                sock_read=BINANCE_TIMEOUT_SOCK_READ
+            )
+            self._session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout,
+                headers=HTTP_HEADERS,
+                trust_env=True
+            )
+        return self._session
+        
+    def _to_decimal(self, value, default="0") -> Decimal:
+        """Sichere Konvertierung zu Decimal mit Fallback"""
+        try:
+            return Decimal(str(value)) if value is not None else Decimal(default)
+        except:
+            return Decimal(default)
+    
+    async def _prepare_symbol_dynamic(self, symbol: str, market_type: str) -> str:
+        """
+        🎯 UNIVERSELLE Symbol-Konvertierung via SymbolRegistry
+        
+        Args:
+            symbol: Standard symbol (BTCUSDT)
+            market_type: "spot" oder "futures"
+            
+        Returns:
+            Native Exchange Symbol (z.B. BTCUSDT für Binance)
+        """
+        try:
+            from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+            from backend.api.models.keys import Market
+            
+            # Exchange Namen aus Klasse extrahieren (z.B. BinanceRestAPI → binance)
+            exchange_name = self.__class__.__name__.lower().replace('restapi', '')
+            
+            # Market enum bestimmen
+            market = Market.SPOT if market_type == "spot" else Market.FUTURES
+            
+            # Registry-Katalog laden
+            catalog = await SYMBOL_REGISTRY.catalog(exchange_name, market)
+            
+            # Symbol-Info finden
+            symbol_info = next((x for x in catalog if x.get("symbol", x.get("base", "")) + x.get("quote", "") == symbol.upper()), None)
+            
+            if symbol_info:
+                # Registry weiß das EXAKTE Format für diesen Exchange + Market
+                return symbol_info["native_symbol"] 
+            
+            # Fallback zu legacy hardcoded (für Kompatibilität)
+            return self._prepare_symbol_legacy(symbol, market_type)
+            
+        except Exception as e:
+            logger.warning(f"SymbolRegistry lookup failed for {symbol}: {e}")
+            # Fallback zu legacy hardcoded
+            return self._prepare_symbol_legacy(symbol, market_type)
+
+    def _prepare_symbol_legacy(self, symbol: str, market_type: str) -> str:
+        """Legacy hardcoded logic als Fallback"""
+        # Binance nutzt Standard-Format BTCUSDT für beide Markets
+        return symbol.upper()
+
+    def _prepare_symbol(self, symbol: str) -> str:
+        """Umleitung zur dynamischen Funktion"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self._prepare_symbol_dynamic(symbol, "spot"))
+        except:
+            # Sync Fallback für legacy Code
+            return self._prepare_symbol_legacy(symbol, "spot")
+            
+    async def _request(self, endpoint: str, params: dict = None) -> dict:
+        """HTTP request with rate limiting and error handling"""
+        session = await self._get_session()
+        url = f"{self.base_url}{endpoint}"
+        
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 429:  # Rate limit
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    return await self._request(endpoint, params)
+                    
+                response.raise_for_status()
+                return await response.json()
+                
+        except Exception as e:
+            logger.error(f"Binance API request failed: {e}")
+            raise
+            
+    async def _request_futures(self, endpoint: str, params: dict = None) -> dict:
+        """HTTP request for Binance Futures API (different base URL)"""
+        session = await self._get_session()
+        url = f"{os.getenv('BINANCE_FUTURES_URL', 'https://fapi.binance.com')}{endpoint}"
+        
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 429:  # Rate limit
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    return await self._request_futures(endpoint, params)
+                    
+                response.raise_for_status()
+                return await response.json()
+                
+        except Exception as e:
+            logger.error(f"Binance Futures API request failed: {e}")
+            raise
+            
+    async def fetch_symbols(self, market_filter: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch symbols from Binance with optional market filtering
+        
+        Args:
+            market_filter: Filter by market type ("spot", "futures", None for all)
+            
+        Returns:
+            List of symbol dictionaries compatible with ExchangeFactory
+        """
+        try:
+            symbols = []
+            
+            # PARALLEL API CALLS - Spot und Futures gleichzeitig
+            tasks = []
+            
+            # Prepare spot symbols task
+            if not market_filter or market_filter == "spot":
+                tasks.append(("spot", self._request(BinanceEndpoints.EXCHANGE_INFO)))
+            
+            # Prepare USDT-M futures symbols task  
+            if not market_filter or market_filter in ["usdtm", "futures"]:
+                tasks.append(("usdtm", self._request_futures("/fapi/v1/exchangeInfo")))
+            
+            # Prepare Coin-M futures symbols task
+            if not market_filter or market_filter == "coinm" or market_filter == "futures":
+                # Binance Coin-M uses dapi (delivery API)
+                coinm_url = f"{os.getenv('BINANCE_COINM_URL', 'https://dapi.binance.com')}/dapi/v1/exchangeInfo"
+                session = await self._get_session()
+                
+                async def fetch_coinm():
+                    try:
+                        async with session.get(coinm_url) as response:
+                            response.raise_for_status()
+                            return await response.json()
+                    except Exception as e:
+                        logger.error(f"Binance Coin-M API request failed: {e}")
+                        raise
+                
+                tasks.append(("coinm", fetch_coinm()))
+            
+            # Execute all API calls in parallel
+            if tasks:
+                api_calls = [task[1] for task in tasks]
+                results = await asyncio.gather(*api_calls, return_exceptions=True)
+                
+                # Process parallel results
+                for i, (market_type, result) in enumerate(zip([task[0] for task in tasks], results)):
+                    try:
+                        if isinstance(result, Exception):
+                            logger.warning(f"Failed to fetch Binance {market_type} symbols: {result}")
+                            continue
+                            
+                        data = result
+                        if data and "symbols" in data:
+                            for symbol in data["symbols"]:
+                                # Binance Coin-M uses 'contractStatus' instead of 'status'
+                                status_field = "contractStatus" if market_type == "coinm" else "status"
+                                if symbol.get(status_field) == "TRADING":
+                                    symbol_data = {
+                                        "symbol": symbol["symbol"],
+                                        "baseCoin": symbol["baseAsset"],
+                                        "quoteCoin": symbol["quoteAsset"],
+                                        "status": "TRADING",  # Normalized
+                                        "exchange": "binance"
+                                    }
+                                    
+                                    # Set market type based on source
+                                    if market_type == "spot":
+                                        symbol_data["market_type"] = "spot"
+                                    elif market_type == "usdtm":
+                                        symbol_data["market_type"] = "usdtm"
+                                        symbol_data["product_type"] = "USDT-FUTURES"
+                                    elif market_type == "coinm":
+                                        # Distinguish between Coin-M Perpetual and Delivery
+                                        # Delivery futures have deliveryDate != 0
+                                        delivery_date = symbol.get("deliveryDate", 0)
+                                        if delivery_date and delivery_date != 0:
+                                            symbol_data["market_type"] = "delivery"
+                                            symbol_data["product_type"] = "DELIVERY-FUTURES"
+                                            symbol_data["deliveryDate"] = delivery_date
+                                        else:
+                                            symbol_data["market_type"] = "coinm"
+                                            symbol_data["product_type"] = "COIN-FUTURES"
+                                    
+                                    symbols.append(symbol_data)
+                                    
+                    except Exception as e:
+                        logger.warning(f"Failed to process Binance {market_type} symbols: {e}")
+            
+            # self._symbols_cache = symbols  # Middleware handled
+            logger.info(f"✅ Fetched {len(symbols)} symbols from Binance"
+                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
+            
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch Binance symbols: {e}")
+            if self._symbols_cache:
+                logger.info("📦 Returning cached symbols due to fetch failure")
+                return self._symbols_cache
+            return []
+    
+    async def fetch_tickers(self, market_filter: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch tickers from Binance with optional market filtering (Decimal Precision)
+        
+        Args:
+            market_filter: Filter by market type ("spot", "futures", None for all)
+            
+        Returns:
+            List of ticker dictionaries with Decimal precision
+        """
+        try:
+            tickers = []
+            
+            # Fetch spot tickers
+            if not market_filter or market_filter == "spot":
+                try:
+                    # Get 24hr ticker statistics for all symbols
+                    data = await self._request(BinanceEndpoints.TICKER_24HR)
+                    
+                    for ticker in data:
+                        tickers.append({
+                            "symbol": ticker["symbol"],
+                            "last": self._to_decimal(ticker.get("lastPrice")),  # DECIMAL: Binance field mapping
+                            "bid": self._to_decimal(ticker.get("bidPrice")),
+                            "ask": self._to_decimal(ticker.get("askPrice")),
+                            "volume": self._to_decimal(ticker.get("volume")),    # Base volume
+                            "change": self._to_decimal(ticker.get("priceChange")),
+                            "changeRate": self._to_decimal(ticker.get("priceChangePercent")),
+                            "high": self._to_decimal(ticker.get("highPrice")),   # DECIMAL: 24h high
+                            "low": self._to_decimal(ticker.get("lowPrice")),     # DECIMAL: 24h low
+                            "market_type": "spot",
+                            "exchange": "binance"
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to fetch Binance spot tickers: {e}")
+            
+            # Cache result - DEAKTIVIERT
+            # self._tickers_cache = tickers
+            
+            logger.info(f"✅ Fetched {len(tickers)} tickers from Binance (Decimal precision)"
+                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
+            
+            return tickers
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch Binance tickers: {e}")
+            # Return cached data if available
+            if self._tickers_cache:
+                logger.info("📦 Returning cached tickers due to fetch failure")
+                return self._tickers_cache
+            return []
+
+    def _validate_spot_limit(self, limit: int) -> int:
+        """
+        Map any limit to valid Binance Spot API limits
+        Frontend kann beliebige Werte senden, wir mappen intelligent
+        
+        Args:
+            limit: Requested limit from frontend/API
+            
+        Returns:
+            Valid Binance Spot limit (5, 10, 20, 50, 100, 500, 1000, 5000)
+        """
+        # Binance Spot erlaubte Limits (flexibler als Futures)
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
+        
+        # Finde den nächsthöheren erlaubten Wert
+        for valid_limit in valid_limits:
+            if limit <= valid_limit:
+                return valid_limit
+        
+        # Falls limit > 5000, verwende Maximum
+        return 5000
+
+    async def fetch_spot_orderbook(self, symbol: str, limit: int = 100) -> dict:
+        """
+        Fetch spot orderbook from Binance
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of bids/asks to fetch (wird intelligent validiert)
+            
+        Returns:
+            Orderbook dictionary with bids/asks
+        """
+        try:
+            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
+            validated_limit = self._validate_spot_limit(limit)
+            
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": validated_limit  # Immer valider Wert
+            }
+            data = await self._request(BinanceEndpoints.DEPTH, params)
+            
+            return {
+                "symbol": symbol,
+                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
+                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
+                "lastUpdateId": data.get("lastUpdateId"),
+                "timestamp": int(data.get("timestamp", 0)) or None
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot orderbook for {symbol}: {e}")
+            # FIXED: Return empty but valid structure instead of raising
+            import time
+            return {
+                "symbol": symbol,
+                "bids": [],
+                "asks": [],
+                "timestamp": int(time.time() * 1000),
+                "error": str(e)
+            }
+
+    def _validate_futures_limit(self, limit: int) -> int:
+        """
+        Map any limit to valid Binance Futures API limits
+        Frontend kann beliebige Werte senden, wir mappen intelligent
+        
+        Args:
+            limit: Requested limit from frontend/API
+            
+        Returns:
+            Valid Binance Futures limit (5, 10, 20, 50, 100, 500, 1000)
+        """
+        # Binance Futures erlaubte Limits
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000]
+        
+        # Finde den nächsthöheren erlaubten Wert
+        for valid_limit in valid_limits:
+            if limit <= valid_limit:
+                return valid_limit
+        
+        # Falls limit > 1000, verwende Maximum
+        return 1000
+
+    async def fetch_futures_orderbook(self, symbol: str, limit: int = 100) -> dict:
+        """
+        Fetch futures orderbook from Binance
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of bids/asks to fetch (wird intelligent validiert)
+            
+        Returns:
+            Orderbook dictionary with bids/asks
+        """
+        try:
+            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
+            validated_limit = self._validate_futures_limit(limit)
+            
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": validated_limit  # Immer valider Wert
+            }
+            data = await self._request_futures("/fapi/v1/depth", params)
+            
+            return {
+                "symbol": symbol,
+                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
+                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
+                "lastUpdateId": data.get("lastUpdateId"),
+                "timestamp": int(data.get("timestamp", 0)) or None
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures orderbook for {symbol}: {e}")
+            # FIXED: Return empty but valid structure instead of raising
+            import time
+            return {
+                "symbol": symbol,
+                "bids": [],
+                "asks": [],
+                "timestamp": int(time.time() * 1000),
+                "error": str(e)
+            }
+    
+    async def fetch_trades(
+        self, 
+        symbol: str, 
+        limit: int = 100,
+        fromId: int = None,
+        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
+        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
+    ) -> List[Dict]:
+        """
+        Fetch recent trades from Binance Spot
+        Returns UNIFIED trade format!
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of trades (max 1000)
+            fromId: Trade ID to start from (optional, DEPRECATED - use startTime/endTime)
+            startTime: Start time in milliseconds (optional, for time-based backfill)
+            endTime: End time in milliseconds (optional, for time-based backfill)
+            
+        Returns:
+            List of UNIFIED trades
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": min(limit, 1000)
+            }
+            
+            # ✅ ZEIT-BASIERTES BACKFILL: Nutze aggTrades mit startTime/endTime
+            if startTime is not None or endTime is not None:
+                if startTime is not None:
+                    params["startTime"] = startTime
+                if endTime is not None:
+                    params["endTime"] = endTime
+                
+                # aggTrades Endpoint (zeitbasiert)
+                raw_trades = await self._request("/api/v3/aggTrades", params)
+                
+                # ✅ Normalisierung für aggTrades-Format
+                unified_trades = []
+                for t in raw_trades:
+                    unified_trades.append({
+                        "trade_id": str(t["a"]),              # aggTrade ID
+                        "symbol": symbol,
+                        "market": "spot",
+                        "price": str(t["p"]),
+                        "size": str(t["q"]),
+                        "side": "sell" if t["m"] else "buy",
+                        "timestamp": int(t["T"]),
+                    })
+                
+                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (time-based)")
+                return unified_trades
+            
+            # ✅ FALLBACK: Recent trades (ohne fromId - API ignoriert fromId bei /trades)
+            raw_trades = await self._request(BinanceEndpoints.TRADES, params)
+            
+            # ✅ Normalisierung für normale Trades
+            unified_trades = []
+            for t in raw_trades:
+                unified_trades.append({
+                    "trade_id": str(t["id"]),
+                    "symbol": symbol,
+                    "market": "spot",
+                    "price": str(t["price"]),
+                    "size": str(t["qty"]),
+                    "side": "sell" if t["isBuyerMaker"] else "buy",
+                    "timestamp": int(t["time"]),
+                })
+            
+            logger.info(f"✅ Fetched {len(unified_trades)} unified spot trades for {symbol}")
+            return unified_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot trades for {symbol}: {e}")
+            return []
+
+    async def fetch_futures_trades(
+        self,
+        symbol: str,
+        limit: int = 100,
+        fromId: int = None,
+        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
+        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
+    ) -> List[Dict]:
+        """
+        Fetch recent trades from Binance Futures
+        Returns UNIFIED trade format!
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of trades (max 1000)
+            fromId: Trade ID to start from (optional, for historical backfill)
+            startTime: Start time in milliseconds (optional, for time-based backfill)
+            endTime: End time in milliseconds (optional, for time-based backfill)
+            
+        Returns:
+            List of UNIFIED trades in format:
+            {
+                "trade_id": str,
+                "symbol": str,
+                "market": "futures",
+                "price": str,
+                "size": str,
+                "side": "buy" | "sell",
+                "timestamp": int (milliseconds)
+            }
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": min(limit, 1000)
+            }
+            
+            # ✅ ZEIT-BASIERTES BACKFILL: aggTrades
+            if startTime is not None or endTime is not None:
+                if startTime is not None:
+                    params["startTime"] = startTime
+                if endTime is not None:
+                    params["endTime"] = endTime
+                
+                # Futures aggTrades Endpoint
+                raw_trades = await self._request_futures("/fapi/v1/aggTrades", params)
+                
+                # Normalisierung für aggTrades-Format
+                unified_trades = []
+                for t in raw_trades:
+                    unified_trades.append({
+                        "trade_id": str(t["a"]),
+                        "symbol": symbol,
+                        "market": "futures",  # ← Futures statt Spot
+                        "price": str(t["p"]),
+                        "size": str(t["q"]),
+                        "side": "sell" if t["m"] else "buy",
+                        "timestamp": int(t["T"]),
+                    })
+                
+                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (futures, time-based)")
+                return unified_trades
+            
+            # ✅ FALLBACK: Recent trades (bestehende Logik)
+            if fromId is not None:
+                params["fromId"] = fromId
+            
+            raw_trades = await self._request_futures("/fapi/v1/trades", params)
+            
+            # ✅ NORMALISIERUNG!
+            unified_trades = []
+            for t in raw_trades:
+                unified_trades.append({
+                    "trade_id": str(t["id"]),
+                    "symbol": symbol,
+                    "market": "futures",
+                    "price": str(t["price"]),
+                    "size": str(t["qty"]),
+                    "side": "sell" if t["isBuyerMaker"] else "buy",
+                    "timestamp": int(t["time"]),
+                })
+            
+            logger.info(f"✅ Fetched {len(unified_trades)} unified futures trades for {symbol}")
+            return unified_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures trades for {symbol}: {e}")
+            return []
+
+    async def fetch_spot_candles(
+        self, 
+        symbol: str, 
+        interval: str, 
+        limit: int = 500, 
+        endTime: int = None
+    ) -> List[List]:
+        """
+        Fetch historical klines/candlesticks from Binance Spot API
+        
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
+            limit: Number of candles (max 1000)
+            endTime: End time in milliseconds (optional)
+            
+        Returns:
+            List[List]: Binance Kline format:
+            [
+                [
+                    1499040000000,      # 0: Open time
+                    "0.01634000",       # 1: Open
+                    "0.80000000",       # 2: High
+                    "0.01575800",       # 3: Low
+                    "0.01577100",       # 4: Close
+                    "148976.11427815",  # 5: Volume
+                    1499644799999,      # 6: Close time
+                    "2434.19055334",    # 7: Quote asset volume
+                    308,                # 8: Number of trades
+                    "1756.87402397",    # 9: Taker buy base volume
+                    "28.46694368",      # 10: Taker buy quote volume
+                    "0"                 # 11: Ignore
+                ],
+                ...
+            ]
+        
+        Official Docs:
+            https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "interval": interval,
+                "limit": min(limit, 1000)  # Binance max limit
+            }
+            if endTime:
+                params["endTime"] = endTime
+            
+            data = await self._request("/api/v3/klines", params)
+            
+            logger.debug(f"✅ Fetched {len(data)} spot candles for {symbol} ({interval})")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot candles for {symbol}: {e}")
+            return []
+
+    async def fetch_futures_candles(
+        self, 
+        symbol: str, 
+        interval: str, 
+        limit: int = 500, 
+        endTime: int = None
+    ) -> List[List]:
+        """
+        Fetch historical klines/candlesticks from Binance Futures API
+        
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
+            limit: Number of candles (max 1500)
+            endTime: End time in milliseconds (optional)
+            
+        Returns:
+            List[List]: Same format as spot (see fetch_spot_candles)
+        
+        Official Docs:
+            https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "interval": interval,
+                "limit": min(limit, 1500)  # Futures allows up to 1500
+            }
+            if endTime:
+                params["endTime"] = endTime
+            
+            data = await self._request_futures("/fapi/v1/klines", params)
+            
+            logger.debug(f"✅ Fetched {len(data)} futures candles for {symbol} ({interval})")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures candles for {symbol}: {e}")
+            return []
+
+    async def close(self):
+        """Close the HTTP session"""
+        if self._session:
+            await self._session.close()
+            self._session = None
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -165917,729 +166866,6 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
-</file>
-
-<file path="backend/exchanges/binance/services/rest_api.py">
-#!/usr/bin/env python3
-"""
-Binance REST API Wrapper für ExchangeFactory Integration (Decimal Optimized)
-============================================================================
-
-ExchangeFactory-kompatible Binance REST API Implementierung mit Financial-Grade
-Decimal-Präzision für alle Preis- und Volumen-Berechnungen.
-"""
-
-import logging
-import aiohttp
-import asyncio
-import os
-from decimal import Decimal
-from typing import Dict, List, Optional
-from backend.exchanges.binance.config import BinanceEndpoints
-from backend.services.domain.config_manager import load_user_credentials
-# FIXED: Import zentrale HTTP-Defaults (0ms Latenz - nur Variablen!)
-from backend.exchanges.shared.http_defaults import (
-    HTTP_CONNECTOR_LIMIT, HTTP_CONNECTOR_LIMIT_PER_HOST, HTTP_CONNECTOR_TTL_DNS,
-    HTTP_CONNECTOR_CLEANUP_CLOSED, HTTP_CONNECTOR_KEEPALIVE_TIMEOUT,
-    HTTP_TIMEOUT_TOTAL, HTTP_TIMEOUT_CONNECT, HTTP_TIMEOUT_SOCK_CONNECT, HTTP_TIMEOUT_SOCK_READ,
-    HTTP_HEADERS, BINANCE_TIMEOUT_TOTAL, BINANCE_TIMEOUT_SOCK_READ, BINANCE_CONNECTOR_LIMIT
-)
-
-logger = logging.getLogger("binance-rest-wrapper")
-
-class BinanceRestAPI:
-    """ExchangeFactory kompatible Wrapper Klasse für Binance REST API"""
-    
-    def __init__(self, user_id: str = None):
-        self.user_id = user_id
-        self.base_url = os.getenv('BINANCE_REST_URL', 'https://api.binance.com')
-        self._session = None
-        self._creds = None
-        # CACHE-WAR FIX: Service-Level Cache DEAKTIVIERT  
-        self._symbols_cache = None
-        self._tickers_cache = None
-        
-    async def _ensure_credentials(self):
-        """Lädt Credentials lazy beim ersten Bedarf"""
-        if self._creds is None:
-            self._creds = await load_user_credentials(self.user_id, "binance")
-    
-    async def _get_session(self):
-        """Lazy session creation with connection limits"""
-        if not self._session:
-            # FIXED: Alle Werte aus http_defaults.py (0ms Latenz!)
-            connector = aiohttp.TCPConnector(
-                limit=BINANCE_CONNECTOR_LIMIT,
-                limit_per_host=HTTP_CONNECTOR_LIMIT_PER_HOST,
-                ttl_dns_cache=HTTP_CONNECTOR_TTL_DNS,
-                enable_cleanup_closed=HTTP_CONNECTOR_CLEANUP_CLOSED,
-                keepalive_timeout=HTTP_CONNECTOR_KEEPALIVE_TIMEOUT
-            )
-            timeout = aiohttp.ClientTimeout(
-                total=BINANCE_TIMEOUT_TOTAL,
-                connect=HTTP_TIMEOUT_CONNECT,
-                sock_connect=HTTP_TIMEOUT_SOCK_CONNECT,
-                sock_read=BINANCE_TIMEOUT_SOCK_READ
-            )
-            self._session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout,
-                headers=HTTP_HEADERS,
-                trust_env=True
-            )
-        return self._session
-        
-    def _to_decimal(self, value, default="0") -> Decimal:
-        """Sichere Konvertierung zu Decimal mit Fallback"""
-        try:
-            return Decimal(str(value)) if value is not None else Decimal(default)
-        except:
-            return Decimal(default)
-    
-    async def _prepare_symbol_dynamic(self, symbol: str, market_type: str) -> str:
-        """
-        🎯 UNIVERSELLE Symbol-Konvertierung via SymbolRegistry
-        
-        Args:
-            symbol: Standard symbol (BTCUSDT)
-            market_type: "spot" oder "futures"
-            
-        Returns:
-            Native Exchange Symbol (z.B. BTCUSDT für Binance)
-        """
-        try:
-            from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-            from backend.api.models.keys import Market
-            
-            # Exchange Namen aus Klasse extrahieren (z.B. BinanceRestAPI → binance)
-            exchange_name = self.__class__.__name__.lower().replace('restapi', '')
-            
-            # Market enum bestimmen
-            market = Market.SPOT if market_type == "spot" else Market.FUTURES
-            
-            # Registry-Katalog laden
-            catalog = await SYMBOL_REGISTRY.catalog(exchange_name, market)
-            
-            # Symbol-Info finden
-            symbol_info = next((x for x in catalog if x.get("symbol", x.get("base", "")) + x.get("quote", "") == symbol.upper()), None)
-            
-            if symbol_info:
-                # Registry weiß das EXAKTE Format für diesen Exchange + Market
-                return symbol_info["native_symbol"] 
-            
-            # Fallback zu legacy hardcoded (für Kompatibilität)
-            return self._prepare_symbol_legacy(symbol, market_type)
-            
-        except Exception as e:
-            logger.warning(f"SymbolRegistry lookup failed for {symbol}: {e}")
-            # Fallback zu legacy hardcoded
-            return self._prepare_symbol_legacy(symbol, market_type)
-
-    def _prepare_symbol_legacy(self, symbol: str, market_type: str) -> str:
-        """Legacy hardcoded logic als Fallback"""
-        # Binance nutzt Standard-Format BTCUSDT für beide Markets
-        return symbol.upper()
-
-    def _prepare_symbol(self, symbol: str) -> str:
-        """Umleitung zur dynamischen Funktion"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._prepare_symbol_dynamic(symbol, "spot"))
-        except:
-            # Sync Fallback für legacy Code
-            return self._prepare_symbol_legacy(symbol, "spot")
-            
-    async def _request(self, endpoint: str, params: dict = None) -> dict:
-        """HTTP request with rate limiting and error handling"""
-        session = await self._get_session()
-        url = f"{self.base_url}{endpoint}"
-        
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 429:  # Rate limit
-                    retry_after = int(response.headers.get('Retry-After', 1))
-                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    return await self._request(endpoint, params)
-                    
-                response.raise_for_status()
-                return await response.json()
-                
-        except Exception as e:
-            logger.error(f"Binance API request failed: {e}")
-            raise
-            
-    async def _request_futures(self, endpoint: str, params: dict = None) -> dict:
-        """HTTP request for Binance Futures API (different base URL)"""
-        session = await self._get_session()
-        url = f"{os.getenv('BINANCE_FUTURES_URL', 'https://fapi.binance.com')}{endpoint}"
-        
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 429:  # Rate limit
-                    retry_after = int(response.headers.get('Retry-After', 1))
-                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    return await self._request_futures(endpoint, params)
-                    
-                response.raise_for_status()
-                return await response.json()
-                
-        except Exception as e:
-            logger.error(f"Binance Futures API request failed: {e}")
-            raise
-            
-    async def fetch_symbols(self, market_filter: Optional[str] = None) -> List[Dict]:
-        """
-        Fetch symbols from Binance with optional market filtering
-        
-        Args:
-            market_filter: Filter by market type ("spot", "futures", None for all)
-            
-        Returns:
-            List of symbol dictionaries compatible with ExchangeFactory
-        """
-        try:
-            symbols = []
-            
-            # PARALLEL API CALLS - Spot und Futures gleichzeitig
-            tasks = []
-            
-            # Prepare spot symbols task
-            if not market_filter or market_filter == "spot":
-                tasks.append(("spot", self._request(BinanceEndpoints.EXCHANGE_INFO)))
-            
-            # Prepare USDT-M futures symbols task  
-            if not market_filter or market_filter in ["usdtm", "futures"]:
-                tasks.append(("usdtm", self._request_futures("/fapi/v1/exchangeInfo")))
-            
-            # Prepare Coin-M futures symbols task
-            if not market_filter or market_filter == "coinm" or market_filter == "futures":
-                # Binance Coin-M uses dapi (delivery API)
-                coinm_url = f"{os.getenv('BINANCE_COINM_URL', 'https://dapi.binance.com')}/dapi/v1/exchangeInfo"
-                session = await self._get_session()
-                
-                async def fetch_coinm():
-                    try:
-                        async with session.get(coinm_url) as response:
-                            response.raise_for_status()
-                            return await response.json()
-                    except Exception as e:
-                        logger.error(f"Binance Coin-M API request failed: {e}")
-                        raise
-                
-                tasks.append(("coinm", fetch_coinm()))
-            
-            # Execute all API calls in parallel
-            if tasks:
-                api_calls = [task[1] for task in tasks]
-                results = await asyncio.gather(*api_calls, return_exceptions=True)
-                
-                # Process parallel results
-                for i, (market_type, result) in enumerate(zip([task[0] for task in tasks], results)):
-                    try:
-                        if isinstance(result, Exception):
-                            logger.warning(f"Failed to fetch Binance {market_type} symbols: {result}")
-                            continue
-                            
-                        data = result
-                        if data and "symbols" in data:
-                            for symbol in data["symbols"]:
-                                # Binance Coin-M uses 'contractStatus' instead of 'status'
-                                status_field = "contractStatus" if market_type == "coinm" else "status"
-                                if symbol.get(status_field) == "TRADING":
-                                    symbol_data = {
-                                        "symbol": symbol["symbol"],
-                                        "baseCoin": symbol["baseAsset"],
-                                        "quoteCoin": symbol["quoteAsset"],
-                                        "status": "TRADING",  # Normalized
-                                        "exchange": "binance"
-                                    }
-                                    
-                                    # Set market type based on source
-                                    if market_type == "spot":
-                                        symbol_data["market_type"] = "spot"
-                                    elif market_type == "usdtm":
-                                        symbol_data["market_type"] = "usdtm"
-                                        symbol_data["product_type"] = "USDT-FUTURES"
-                                    elif market_type == "coinm":
-                                        # Distinguish between Coin-M Perpetual and Delivery
-                                        # Delivery futures have deliveryDate != 0
-                                        delivery_date = symbol.get("deliveryDate", 0)
-                                        if delivery_date and delivery_date != 0:
-                                            symbol_data["market_type"] = "delivery"
-                                            symbol_data["product_type"] = "DELIVERY-FUTURES"
-                                            symbol_data["deliveryDate"] = delivery_date
-                                        else:
-                                            symbol_data["market_type"] = "coinm"
-                                            symbol_data["product_type"] = "COIN-FUTURES"
-                                    
-                                    symbols.append(symbol_data)
-                                    
-                    except Exception as e:
-                        logger.warning(f"Failed to process Binance {market_type} symbols: {e}")
-            
-            # self._symbols_cache = symbols  # Middleware handled
-            logger.info(f"✅ Fetched {len(symbols)} symbols from Binance"
-                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
-            
-            return symbols
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch Binance symbols: {e}")
-            if self._symbols_cache:
-                logger.info("📦 Returning cached symbols due to fetch failure")
-                return self._symbols_cache
-            return []
-    
-    async def fetch_tickers(self, market_filter: Optional[str] = None) -> List[Dict]:
-        """
-        Fetch tickers from Binance with optional market filtering (Decimal Precision)
-        
-        Args:
-            market_filter: Filter by market type ("spot", "futures", None for all)
-            
-        Returns:
-            List of ticker dictionaries with Decimal precision
-        """
-        try:
-            tickers = []
-            
-            # Fetch spot tickers
-            if not market_filter or market_filter == "spot":
-                try:
-                    # Get 24hr ticker statistics for all symbols
-                    data = await self._request(BinanceEndpoints.TICKER_24HR)
-                    
-                    for ticker in data:
-                        tickers.append({
-                            "symbol": ticker["symbol"],
-                            "last": self._to_decimal(ticker.get("lastPrice")),  # DECIMAL: Binance field mapping
-                            "bid": self._to_decimal(ticker.get("bidPrice")),
-                            "ask": self._to_decimal(ticker.get("askPrice")),
-                            "volume": self._to_decimal(ticker.get("volume")),    # Base volume
-                            "change": self._to_decimal(ticker.get("priceChange")),
-                            "changeRate": self._to_decimal(ticker.get("priceChangePercent")),
-                            "high": self._to_decimal(ticker.get("highPrice")),   # DECIMAL: 24h high
-                            "low": self._to_decimal(ticker.get("lowPrice")),     # DECIMAL: 24h low
-                            "market_type": "spot",
-                            "exchange": "binance"
-                        })
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to fetch Binance spot tickers: {e}")
-            
-            # Cache result - DEAKTIVIERT
-            # self._tickers_cache = tickers
-            
-            logger.info(f"✅ Fetched {len(tickers)} tickers from Binance (Decimal precision)"
-                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
-            
-            return tickers
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch Binance tickers: {e}")
-            # Return cached data if available
-            if self._tickers_cache:
-                logger.info("📦 Returning cached tickers due to fetch failure")
-                return self._tickers_cache
-            return []
-
-    def _validate_spot_limit(self, limit: int) -> int:
-        """
-        Map any limit to valid Binance Spot API limits
-        Frontend kann beliebige Werte senden, wir mappen intelligent
-        
-        Args:
-            limit: Requested limit from frontend/API
-            
-        Returns:
-            Valid Binance Spot limit (5, 10, 20, 50, 100, 500, 1000, 5000)
-        """
-        # Binance Spot erlaubte Limits (flexibler als Futures)
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
-        
-        # Finde den nächsthöheren erlaubten Wert
-        for valid_limit in valid_limits:
-            if limit <= valid_limit:
-                return valid_limit
-        
-        # Falls limit > 5000, verwende Maximum
-        return 5000
-
-    async def fetch_spot_orderbook(self, symbol: str, limit: int = 100) -> dict:
-        """
-        Fetch spot orderbook from Binance
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of bids/asks to fetch (wird intelligent validiert)
-            
-        Returns:
-            Orderbook dictionary with bids/asks
-        """
-        try:
-            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
-            validated_limit = self._validate_spot_limit(limit)
-            
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": validated_limit  # Immer valider Wert
-            }
-            data = await self._request(BinanceEndpoints.DEPTH, params)
-            
-            return {
-                "symbol": symbol,
-                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
-                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
-                "lastUpdateId": data.get("lastUpdateId"),
-                "timestamp": int(data.get("timestamp", 0)) or None
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot orderbook for {symbol}: {e}")
-            # FIXED: Return empty but valid structure instead of raising
-            import time
-            return {
-                "symbol": symbol,
-                "bids": [],
-                "asks": [],
-                "timestamp": int(time.time() * 1000),
-                "error": str(e)
-            }
-
-    def _validate_futures_limit(self, limit: int) -> int:
-        """
-        Map any limit to valid Binance Futures API limits
-        Frontend kann beliebige Werte senden, wir mappen intelligent
-        
-        Args:
-            limit: Requested limit from frontend/API
-            
-        Returns:
-            Valid Binance Futures limit (5, 10, 20, 50, 100, 500, 1000)
-        """
-        # Binance Futures erlaubte Limits
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000]
-        
-        # Finde den nächsthöheren erlaubten Wert
-        for valid_limit in valid_limits:
-            if limit <= valid_limit:
-                return valid_limit
-        
-        # Falls limit > 1000, verwende Maximum
-        return 1000
-
-    async def fetch_futures_orderbook(self, symbol: str, limit: int = 100) -> dict:
-        """
-        Fetch futures orderbook from Binance
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of bids/asks to fetch (wird intelligent validiert)
-            
-        Returns:
-            Orderbook dictionary with bids/asks
-        """
-        try:
-            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
-            validated_limit = self._validate_futures_limit(limit)
-            
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": validated_limit  # Immer valider Wert
-            }
-            data = await self._request_futures("/fapi/v1/depth", params)
-            
-            return {
-                "symbol": symbol,
-                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
-                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
-                "lastUpdateId": data.get("lastUpdateId"),
-                "timestamp": int(data.get("timestamp", 0)) or None
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures orderbook for {symbol}: {e}")
-            # FIXED: Return empty but valid structure instead of raising
-            import time
-            return {
-                "symbol": symbol,
-                "bids": [],
-                "asks": [],
-                "timestamp": int(time.time() * 1000),
-                "error": str(e)
-            }
-    
-    async def fetch_trades(
-        self, 
-        symbol: str, 
-        limit: int = 100,
-        fromId: int = None,
-        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
-        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
-    ) -> List[Dict]:
-        """
-        Fetch recent trades from Binance Spot
-        Returns UNIFIED trade format!
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of trades (max 1000)
-            fromId: Trade ID to start from (optional, DEPRECATED - use startTime/endTime)
-            startTime: Start time in milliseconds (optional, for time-based backfill)
-            endTime: End time in milliseconds (optional, for time-based backfill)
-            
-        Returns:
-            List of UNIFIED trades
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": min(limit, 1000)
-            }
-            
-            # ✅ ZEIT-BASIERTES BACKFILL: Nutze aggTrades mit startTime/endTime
-            if startTime is not None or endTime is not None:
-                if startTime is not None:
-                    params["startTime"] = startTime
-                if endTime is not None:
-                    params["endTime"] = endTime
-                
-                # aggTrades Endpoint (zeitbasiert)
-                raw_trades = await self._request("/api/v3/aggTrades", params)
-                
-                # ✅ Normalisierung für aggTrades-Format
-                unified_trades = []
-                for t in raw_trades:
-                    unified_trades.append({
-                        "trade_id": str(t["a"]),              # aggTrade ID
-                        "symbol": symbol,
-                        "market": "spot",
-                        "price": str(t["p"]),
-                        "size": str(t["q"]),
-                        "side": "sell" if t["m"] else "buy",
-                        "timestamp": int(t["T"]),
-                    })
-                
-                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (time-based)")
-                return unified_trades
-            
-            # ✅ FALLBACK: Recent trades (ohne fromId - API ignoriert fromId bei /trades)
-            raw_trades = await self._request(BinanceEndpoints.TRADES, params)
-            
-            # ✅ Normalisierung für normale Trades
-            unified_trades = []
-            for t in raw_trades:
-                unified_trades.append({
-                    "trade_id": str(t["id"]),
-                    "symbol": symbol,
-                    "market": "spot",
-                    "price": str(t["price"]),
-                    "size": str(t["qty"]),
-                    "side": "sell" if t["isBuyerMaker"] else "buy",
-                    "timestamp": int(t["time"]),
-                })
-            
-            logger.info(f"✅ Fetched {len(unified_trades)} unified spot trades for {symbol}")
-            return unified_trades
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot trades for {symbol}: {e}")
-            return []
-
-    async def fetch_futures_trades(
-        self,
-        symbol: str,
-        limit: int = 100,
-        fromId: int = None,
-        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
-        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
-    ) -> List[Dict]:
-        """
-        Fetch recent trades from Binance Futures
-        Returns UNIFIED trade format!
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of trades (max 1000)
-            fromId: Trade ID to start from (optional, for historical backfill)
-            startTime: Start time in milliseconds (optional, for time-based backfill)
-            endTime: End time in milliseconds (optional, for time-based backfill)
-            
-        Returns:
-            List of UNIFIED trades in format:
-            {
-                "trade_id": str,
-                "symbol": str,
-                "market": "futures",
-                "price": str,
-                "size": str,
-                "side": "buy" | "sell",
-                "timestamp": int (milliseconds)
-            }
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": min(limit, 1000)
-            }
-            
-            # ✅ ZEIT-BASIERTES BACKFILL: aggTrades
-            if startTime is not None or endTime is not None:
-                if startTime is not None:
-                    params["startTime"] = startTime
-                if endTime is not None:
-                    params["endTime"] = endTime
-                
-                # Futures aggTrades Endpoint
-                raw_trades = await self._request_futures("/fapi/v1/aggTrades", params)
-                
-                # Normalisierung für aggTrades-Format
-                unified_trades = []
-                for t in raw_trades:
-                    unified_trades.append({
-                        "trade_id": str(t["a"]),
-                        "symbol": symbol,
-                        "market": "futures",  # ← Futures statt Spot
-                        "price": str(t["p"]),
-                        "size": str(t["q"]),
-                        "side": "sell" if t["m"] else "buy",
-                        "timestamp": int(t["T"]),
-                    })
-                
-                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (futures, time-based)")
-                return unified_trades
-            
-            # ✅ FALLBACK: Recent trades (bestehende Logik)
-            if fromId is not None:
-                params["fromId"] = fromId
-            
-            raw_trades = await self._request_futures("/fapi/v1/trades", params)
-            
-            # ✅ NORMALISIERUNG!
-            unified_trades = []
-            for t in raw_trades:
-                unified_trades.append({
-                    "trade_id": str(t["id"]),
-                    "symbol": symbol,
-                    "market": "futures",
-                    "price": str(t["price"]),
-                    "size": str(t["qty"]),
-                    "side": "sell" if t["isBuyerMaker"] else "buy",
-                    "timestamp": int(t["time"]),
-                })
-            
-            logger.info(f"✅ Fetched {len(unified_trades)} unified futures trades for {symbol}")
-            return unified_trades
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures trades for {symbol}: {e}")
-            return []
-
-    async def fetch_spot_candles(
-        self, 
-        symbol: str, 
-        interval: str, 
-        limit: int = 500, 
-        endTime: int = None
-    ) -> List[List]:
-        """
-        Fetch historical klines/candlesticks from Binance Spot API
-        
-        Args:
-            symbol: Trading pair (e.g., BTCUSDT)
-            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
-            limit: Number of candles (max 1000)
-            endTime: End time in milliseconds (optional)
-            
-        Returns:
-            List[List]: Binance Kline format:
-            [
-                [
-                    1499040000000,      # 0: Open time
-                    "0.01634000",       # 1: Open
-                    "0.80000000",       # 2: High
-                    "0.01575800",       # 3: Low
-                    "0.01577100",       # 4: Close
-                    "148976.11427815",  # 5: Volume
-                    1499644799999,      # 6: Close time
-                    "2434.19055334",    # 7: Quote asset volume
-                    308,                # 8: Number of trades
-                    "1756.87402397",    # 9: Taker buy base volume
-                    "28.46694368",      # 10: Taker buy quote volume
-                    "0"                 # 11: Ignore
-                ],
-                ...
-            ]
-        
-        Official Docs:
-            https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "interval": interval,
-                "limit": min(limit, 1000)  # Binance max limit
-            }
-            if endTime:
-                params["endTime"] = endTime
-            
-            data = await self._request("/api/v3/klines", params)
-            
-            logger.debug(f"✅ Fetched {len(data)} spot candles for {symbol} ({interval})")
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot candles for {symbol}: {e}")
-            return []
-
-    async def fetch_futures_candles(
-        self, 
-        symbol: str, 
-        interval: str, 
-        limit: int = 500, 
-        endTime: int = None
-    ) -> List[List]:
-        """
-        Fetch historical klines/candlesticks from Binance Futures API
-        
-        Args:
-            symbol: Trading pair (e.g., BTCUSDT)
-            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
-            limit: Number of candles (max 1500)
-            endTime: End time in milliseconds (optional)
-            
-        Returns:
-            List[List]: Same format as spot (see fetch_spot_candles)
-        
-        Official Docs:
-            https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "interval": interval,
-                "limit": min(limit, 1500)  # Futures allows up to 1500
-            }
-            if endTime:
-                params["endTime"] = endTime
-            
-            data = await self._request_futures("/fapi/v1/klines", params)
-            
-            logger.debug(f"✅ Fetched {len(data)} futures candles for {symbol} ({interval})")
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures candles for {symbol}: {e}")
-            return []
-
-    async def close(self):
-        """Close the HTTP session"""
-        if self._session:
-            await self._session.close()
-            self._session = None
 </file>
 
 <file path="backend/services/adapter/stream_aggregator.py">
@@ -168550,1384 +168776,6 @@ services:
 volumes:
   clickhouse-data:
   redis-data:
-</file>
-
-<file path="backend/database/clickhouse/cl_config.py">
-import os
-from typing import Dict, Any, Set
-
-# cl_ Database Patterns für alle 8 Exchanges  
-CL_DATABASE_PATTERNS: Dict[str, str] = {
-    "trades": "trading.{exchange}_trades",
-    "candles": "trading.{exchange}_bars", 
-    "orderbook": "trading.{exchange}_orderbook",
-    "user_settings": "trading.user_coin_settings",
-    "indicators": "trading.user_indicator_settings",
-    "health": "monitoring.{component}_health"
-}
-
-# cl_ Connection Settings - zentral für alle Exchanges
-# Only params supported by clickhouse_connect.get_client() HTTP API
-# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
-CL_CONNECTION: Dict[str, Any] = {
-    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
-    "database": os.getenv("CLICKHOUSE_DB", "trading"),
-    "username": os.getenv("CLICKHOUSE_USER", "admin"),
-    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
-    "connect_timeout": 5,
-    "send_receive_timeout": 30
-}
-
-# cl_ Performance Settings
-CL_PERFORMANCE: Dict[str, int] = {
-    "batch_size": 1000,
-    "queue_maxsize": 5000,
-    "processing_timeout": 10,
-    "health_check_interval": 60,
-    "connection_pool_size": 10,
-    "max_concurrent_inserts": 5
-}
-
-# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
-def _get_critical_cl_components() -> Set[str]:
-    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
-    
-    components = {
-        "cl.unified-manager",
-        "cl.schema-manager",
-        "cl.connection-pool"
-    }
-    
-    # Nur erste 2 Exchanges als kritisch markieren
-    for ex in exchanges[:2]:
-        components.add(f"cl.{ex}-manager")
-    
-    return components
-
-CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
-
-# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
-def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
-    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    configs = {}
-    for i, exchange in enumerate(exchanges):
-        # Erste 2 = high priority, rest = medium
-        priority = "high" if i < 2 else "medium"
-        batch_size = 1000 if i < 2 else 800
-        
-        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
-        configs[exchange] = {
-            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
-            "priority": priority,
-            "batch_size": batch_size,
-            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
-        }
-    
-    return configs
-
-EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
-
-# cl_ Health Thresholds
-CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
-    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
-    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
-    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
-    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
-}
-
-# cl_ Schema Definitions
-CL_SCHEMAS: Dict[str, Dict[str, str]] = {
-    "trades": {
-        "table_suffix": "_trades",
-        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "candles": {
-        "table_suffix": "_bars", 
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "orderbook": {
-        "table_suffix": "_orderbook",
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
-        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    }
-}
-</file>
-
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
-                    market_safe = market if market else "spot"
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market_safe,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market_safe,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    mk = (market or "spot").lower()
-
-                    # Robust mapping (keine Annahmen über extra Enum-Members)
-                    if mk == "spot":
-                        market_enum = Market.SPOT
-                    elif mk in ("usdtm", "usdt", "futures"):
-                        market_enum = Market.USDTM
-                    else:
-                        market_enum = Market.SPOT
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
-                    symbols = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": mk,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
-<file path="frontend/src/config/exchangeSupport.ts">
-// frontend/src/config/exchangeSupport.ts
-
-export type MarketType = string;   // dynamisch vom Backend
-export type ExchangeId = string;   // dynamisch vom Backend
-
-export interface Exchange {
-  id: string;
-  name: string;
-}
-
-export interface MarketOption {
-  name: string;
-  description: string;
-  icon: string;
-}
-
-let cachedExchanges: Exchange[] = [];
-let cachedMarkets: MarketOption[] = [];
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  return (await res.json()) as T;
-}
-
-// Robust: akzeptiert mehrere Backend-Formate (alt/neu)
-async function getAvailableExchanges(): Promise<string[]> {
-  // 1) Alt: /api/config/exchanges  -> { exchanges: [...] }
-  try {
-    const r = await fetchJson<{ exchanges: string[] }>("/api/config/exchanges");
-    if (Array.isArray(r.exchanges)) return r.exchanges;
-  } catch {}
-
-  // 2) Unified Orderbook: /api/orderbook/exchanges oder /exchanges je nach Registry
-  // (Antwort kann { supported_exchanges: [...] } sein)
-  try {
-    const r = await fetchJson<{ supported_exchanges: string[] }>("/api/orderbook/exchanges");
-    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
-  } catch {}
-
-  try {
-    const r = await fetchJson<{ supported_exchanges: string[] }>("/exchanges");
-    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
-  } catch {}
-
-  return [];
-}
-
-async function getAvailableMarketTypes(): Promise<string[]> {
-  // 1) Alt: /api/config/market-types -> { market_types: [...] }
-  try {
-    const r = await fetchJson<{ market_types: string[] }>("/api/config/market-types");
-    if (Array.isArray(r.market_types)) return r.market_types;
-  } catch {}
-
-  // 2) Falls es später ein /api/config/markets o.ä. gibt: hier ergänzen.
-  return [];
-}
-
-function getMarketDescription(market: string): string {
-  const m = (market || "").toLowerCase();
-  const descriptions: Record<string, string> = {
-    spot: "Spot-Trading mit sofortiger Abwicklung",
-    futures: "Futures-Trading",
-    usdtm: "USDT-Margined Futures",
-    usdcm: "USDC-Margined Futures",
-    coinm: "Coin-Margined Futures",
-    margin: "Margin Trading",
-  };
-  return descriptions[m] || `${market} Trading`;
-}
-
-function getMarketIcon(market: string): string {
-  const m = (market || "").toLowerCase();
-  const icons: Record<string, string> = {
-    spot: "",
-    futures: "",
-    usdtm: "",
-    usdcm: "",
-    coinm: "",
-    margin: "",
-  };
-  return icons[m] || "";
-}
-
-// Loader: liefert Arrays, aber UI muss über STATE re-rendern (macht TradingContext)
-export async function loadExchanges(force = false): Promise<Exchange[]> {
-  if (!force && cachedExchanges.length > 0) return cachedExchanges;
-
-  const ids = await getAvailableExchanges();
-  cachedExchanges = ids.map((id) => ({
-    id,
-    name: id ? id.charAt(0).toUpperCase() + id.slice(1) : id,
-  }));
-  return cachedExchanges;
-}
-
-export async function loadMarkets(force = false): Promise<MarketOption[]> {
-  if (!force && cachedMarkets.length > 0) return cachedMarkets;
-
-  const markets = await getAvailableMarketTypes();
-  cachedMarkets = markets.map((name) => ({
-    name,
-    description: getMarketDescription(name),
-    icon: getMarketIcon(name),
-  }));
-  return cachedMarkets;
-}
-
-// Getter (nur read-only)
-export const getExchanges = (): Exchange[] => cachedExchanges;
-export const getMarketOptions = (): MarketOption[] => cachedMarkets;
-
-// Alle gelieferten Markets gelten als supported
-export const isMarketSupported = (): boolean => true;
-
-// Helper: Map market name to API filter (generisch)
-export const getMarketFilter = (selectedMarket?: string): string | null => {
-  if (!selectedMarket) return null;
-
-  // Normalisiere zu lowercase für Backend
-  const normalized = selectedMarket.toLowerCase();
-
-  // Futures-Varianten → "futures"
-  if (normalized.includes("futures") || normalized.includes("perpetual")) {
-    return "futures";
-  }
-
-  // Spot bleibt spot
-  if (normalized === "spot") return "spot";
-
-  // Alles andere: as-is
-  return normalized;
-};
-</file>
-
-<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
-import React, { useMemo } from "react";
-import { useWsLane } from "../../services/ws/useWsLane";
-import { DataTable } from "./components/DataTable";
-
-const SYMBOL = "BTCUSDT";
-const MARKET = "spot";
-const INTERVAL = "1h";
-
-// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
-// aber erst mal: harte Liste, damit es deterministisch läuft.
-const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
-
-function fmt(n: number | undefined, digits = 2) {
-  if (n === undefined || !Number.isFinite(n)) return "-";
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
-
-function fmtDate(ts: number | undefined) {
-  if (!ts) return "-";
-  return new Date(ts).toLocaleString("de-DE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-export default function BTCUSDTMonitor() {
-  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
-
-  return (
-    <div className="p-4 space-y-6 bg-background text-foreground">
-      <div className="space-y-2">
-        <h1 className="text-2xl font-bold">
-          BTCUSDT Live Monitor (WebSocket + Historical)
-        </h1>
-        <div className="text-sm text-muted-foreground">
-          Route: <code className="px-1 py-0.5 bg-muted rounded">/btcusdt</code> • 
-          Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
-        </div>
-      </div>
-
-      {/* Live Status Table */}
-      <div className="overflow-x-auto border border-border rounded-lg">
-        <table className="w-full border-collapse min-w-[1200px]">
-          <thead>
-            <tr className="text-left bg-muted/50">
-              <th className="p-3 border-b border-border">Exchange</th>
-              <th className="p-3 border-b border-border">WS</th>
-              <th className="p-3 border-b border-border text-right">Trades</th>
-              <th className="p-3 border-b border-border text-right">Historical</th>
-              <th className="p-3 border-b border-border text-right">Live Candles</th>
-              <th className="p-3 border-b border-border text-right">Last Price</th>
-              <th className="p-3 border-b border-border text-right">Last Size</th>
-              <th className="p-3 border-b border-border">Side</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((ex) => (
-              <Row key={ex} exchange={ex} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Debug Tables for first exchange */}
-      {exchanges.length > 0 && exchanges[0] && <DebugTables exchange={exchanges[0]} />}
-
-      {/* Diagnose Info */}
-      <div className="p-4 bg-muted/30 rounded-lg text-sm space-y-2">
-        <div className="font-semibold">Diagnose</div>
-        <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
-          <li><b>Historical &gt; 0</b> → Backend sendet historical candles korrekt.</li>
-          <li><b>Timestamps nicht 1970</b> → Timestamp-Mapping funktioniert.</li>
-          <li><b>Live Candles wachsen</b> → Echtzeit-Updates funktionieren.</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function Row({ exchange }: { exchange: string }) {
-  const { status, trades, candles, historical } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
-
-  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
-
-  return (
-    <tr className="border-t border-border/50 hover:bg-muted/20 transition-colors">
-      <td className="p-3 font-bold">{exchange}</td>
-      <td className="p-3">
-        <span className={status === "OPEN" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-          {status}
-        </span>
-      </td>
-      <td className="p-3 text-right">{trades.length}</td>
-      <td className="p-3 text-right font-semibold text-blue-600 dark:text-blue-400">
-        {historical.length}
-      </td>
-      <td className="p-3 text-right">{candles.length}</td>
-      <td className="p-3 text-right">{fmt(lastTrade?.price, 8)}</td>
-      <td className="p-3 text-right">{fmt(lastTrade?.size, 8)}</td>
-      <td className="p-3">{lastTrade?.side ?? "-"}</td>
-    </tr>
-  );
-}
-
-function DebugTables({ exchange }: { exchange: string }) {
-  const { historical, candles, trades } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold">Debug Tables ({exchange})</h2>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Historical Candles */}
-        <DataTable
-          title="📊 Historical Candles"
-          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
-          data={historical}
-          renderRow={(candle) => (
-            <>
-              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
-            </>
-          )}
-          maxRows={10}
-        />
-
-        {/* Live Candles */}
-        <DataTable
-          title="🔴 Live Candles"
-          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
-          data={candles}
-          renderRow={(candle) => (
-            <>
-              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
-              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
-            </>
-          )}
-          maxRows={10}
-        />
-      </div>
-
-      {/* Trades Table */}
-      <DataTable
-        title="💹 Recent Trades"
-        columns={["Time", "Price", "Size", "Side"]}
-        data={trades}
-        renderRow={(trade) => (
-          <>
-            <td className="px-3 py-2 text-xs font-mono">{fmtDate(trade.ts)}</td>
-            <td className="px-3 py-2 text-xs text-right">{fmt(trade.price, 8)}</td>
-            <td className="px-3 py-2 text-xs text-right">{fmt(trade.size, 8)}</td>
-            <td className="px-3 py-2 text-xs">
-              <span className={trade.side === "buy" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                {trade.side}
-              </span>
-            </td>
-          </>
-        )}
-        maxRows={15}
-      />
-    </div>
-  );
-}
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
-// frontend/src/pages/TradingPage/components/CoinSelector.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Search, RefreshCw, Settings } from "lucide-react";
-
-interface CoinSetting {
-  symbol: string;
-  exchange: string;
-  market: string;
-  store_live: boolean;
-  load_history: boolean;
-  history_until?: string;
-  favorite?: boolean;
-  chart_resolution?: string;
-  db_resolutions?: string[];
-}
-
-interface AdvancedCoinSelectorProps {
-  selectedSymbol: string;
-  onSymbolSelect: (symbol: string) => void;
-  onSettingsClick?: () => void;
-  exchange: string;
-  selectedMarket?: string;
-}
-
-/**
- * CoinSelector - Visuell 1:1 wie alte_gui, aber mit neuer WebSocket-Logik
- * 
- * Features:
- * - Header Row: ★ COIN ↑ PRICE 24H L H
- * - Favorite Star (klickbar)
- * - Price Display (font-mono)
- * - 24H Change (grün/rot)
- * - L/H Buttons als kleine Dots (rot/grün schaltbar)
- * - Footer: Symbol-Count + Refresh + Settings
- * - WebSocket für Symbols (dynamisch, kein Hardcode)
- * - REST API für Settings (/api/user/settings/coins)
- */
-const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
-  selectedSymbol,
-  onSymbolSelect,
-  onSettingsClick,
-  exchange,
-  selectedMarket,
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string; price?: string; change?: string; changePercent?: number }>>([]);
-  const [loadingSymbols, setLoadingSymbols] = useState(false);
-
-  const [loadingSettings, setLoadingSettings] = useState(false);
-  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-
-  const market = selectedMarket || "spot";
-
-  // ----------------------------
-  // ENV / URL helpers (dynamisch!)
-  // ----------------------------
-  const resolveApiBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_BACKEND_HTTP_URL ||
-      env?.VITE_API_BASE_URL ||
-      env?.VITE_BACKEND_URL ||
-      "http://localhost:8100";
-    return String(raw).replace(/\/+$/, "");
-  };
-
-  const resolveWsBase = (): string => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_BACKEND_WS_URL ||
-      env?.VITE_WS_BASE_URL ||
-      env?.VITE_WS_URL;
-
-    if (raw && typeof raw === "string" && raw.trim()) {
-      return raw.replace(/\/+$/, "");
-    }
-
-    // ✅ Vite Proxy: window.location.host enthält Port automatisch!
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${window.location.host}`;
-  };
-
-  const getClientId = (): string => {
-    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
-    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
-
-    const key = "wsai_client_id";
-    try {
-      const existing = window.localStorage.getItem(key);
-      if (existing && existing.trim()) return existing.trim();
-
-      const generated =
-        (globalThis.crypto && "randomUUID" in globalThis.crypto)
-          ? (globalThis.crypto as any).randomUUID()
-          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
-
-      window.localStorage.setItem(key, generated);
-      return generated;
-    } catch {
-      return `client_${Date.now()}`;
-    }
-  };
-
-  const alwaysLiveSymbols = useMemo(() => {
-    const env = (import.meta as any)?.env;
-    const raw =
-      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
-      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
-      "BTCUSDT";
-    return new Set(
-      String(raw)
-        .split(",")
-        .map((s: string) => s.trim().toUpperCase())
-        .filter(Boolean)
-    );
-  }, []);
-
-  // ----------------------------
-  // Keying
-  // ----------------------------
-  const keyFor = (ex: string, sym: string, mk: string) =>
-    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
-
-  // ----------------------------
-  // REST: load/save coin settings
-  // ----------------------------
-  const loadCoinSettings = async (): Promise<void> => {
-    setLoadingSettings(true);
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-      });
-
-      if (!res.ok) {
-        throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
-      }
-
-      const list: CoinSetting[] = await res.json();
-      const map = new Map<string, CoinSetting>();
-      const favs = new Set<string>();
-      for (const s of Array.isArray(list) ? list : []) {
-        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-        if (s.favorite) favs.add(s.symbol);
-      }
-      setCoinSettings(map);
-      setFavorites(favs);
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load coin settings");
-    } finally {
-      setLoadingSettings(false);
-    }
-  };
-
-  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
-    setLocalError(null);
-    try {
-      const apiBase = resolveApiBase();
-      const url = `${apiBase}/api/user/settings/coins`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": getClientId(),
-        },
-        body: JSON.stringify(settingsList),
-      });
-
-      if (!res.ok) {
-        throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
-      }
-
-      const ct = res.headers.get("content-type") || "";
-      if (ct.includes("application/json")) {
-        const maybe = await res.json();
-        if (Array.isArray(maybe)) {
-          const map = new Map<string, CoinSetting>();
-          const favs = new Set<string>();
-          for (const s of maybe) {
-            if (!s?.symbol || !s?.exchange) continue;
-            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
-            if (s.favorite) favs.add(s.symbol);
-          }
-          setCoinSettings(map);
-          setFavorites(favs);
-        }
-      }
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to save coin settings");
-    }
-  };
-
-  useEffect(() => {
-    if (isOpen) loadCoinSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, exchange]);
-
-  // ----------------------------
-  // WS: load symbols
-  // ----------------------------
-  const wsOnceRef = useRef<WebSocket | null>(null);
-
-  const loadSymbols = async (): Promise<void> => {
-    setLoadingSymbols(true);
-    setLocalError(null);
-
-    try {
-      wsOnceRef.current?.close();
-    } catch {}
-    wsOnceRef.current = null;
-
-    try {
-      const wsBase = resolveWsBase();
-      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/BTCUSDT/${encodeURIComponent(market)}`;
-
-      const list: string[] = await new Promise((resolve, reject) => {
-        const ws = new WebSocket(wsUrl);
-        wsOnceRef.current = ws;
-
-        let done = false;
-        const timeout = window.setTimeout(() => {
-          if (done) return;
-          done = true;
-          try { ws.close(); } catch {}
-          reject(new Error("WS symbols request timeout"));
-        }, 5000);
-
-        ws.onopen = () => {
-          try {
-            ws.send("symbols");
-          } catch (err) {
-            window.clearTimeout(timeout);
-            if (!done) {
-              done = true;
-              try { ws.close(); } catch {}
-              reject(err instanceof Error ? err : new Error("WS send failed"));
-            }
-          }
-        };
-
-        ws.onerror = () => {
-          window.clearTimeout(timeout);
-          if (!done) {
-            done = true;
-            try { ws.close(); } catch {}
-            reject(new Error("WS connection error"));
-          }
-        };
-
-        ws.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                resolve(data.symbols);
-              }
-              return;
-            }
-            if (data?.type === "error") {
-              window.clearTimeout(timeout);
-              if (!done) {
-                done = true;
-                try { ws.close(); } catch {}
-                reject(new Error(data.message || "WS error"));
-              }
-            }
-          } catch {
-            // ignore non-json
-          }
-        };
-
-        ws.onclose = () => {
-          // ignore; timeout/error handles failure
-        };
-      });
-
-      setSymbols(
-        list.map((s) => ({
-          symbol: String(s),
-          exchange,
-          market_type: market,
-          price: "-",
-          change: "-",
-          changePercent: 0,
-        }))
-      );
-    } catch (e: any) {
-      console.error(e);
-      setLocalError(e?.message || "Failed to load symbols");
-      setSymbols([]);
-    } finally {
-      setLoadingSymbols(false);
-    }
-  };
-
-  useEffect(() => {
-    loadSymbols();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchange, market]);
-
-  useEffect(() => {
-    return () => {
-      try {
-        wsOnceRef.current?.close();
-      } catch {}
-      wsOnceRef.current = null;
-    };
-  }, []);
-
-  // ----------------------------
-  // L/H helpers + toggles
-  // ----------------------------
-  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
-
-  const isLiveEnabled = (sym: string): boolean => {
-    if (isAlwaysLive(sym)) return true;
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.store_live;
-  };
-
-  const isHistoricalEnabled = (sym: string): boolean => {
-    const s = coinSettings.get(keyFor(exchange, sym, market));
-    return !!s?.load_history;
-  };
-
-  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
-    const key = keyFor(exchange, sym, market);
-    const current = coinSettings.get(key);
-
-    const next: CoinSetting = current
-      ? { ...current, ...patch, symbol: sym, exchange, market }
-      : {
-          symbol: sym,
-          exchange,
-          market,
-          store_live: false,
-          load_history: false,
-          ...patch,
-        };
-
-    const list = Array.from(coinSettings.values());
-
-    const idx = list.findIndex(
-      (x) =>
-        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
-        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
-        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
-    );
-
-    if (idx >= 0) list[idx] = next;
-    else list.push(next);
-
-    const map = new Map(coinSettings);
-    map.set(key, next);
-    setCoinSettings(map);
-
-    return list;
-  };
-
-  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isAlwaysLive(sym)) return;
-
-    const newState = !isLiveEnabled(sym);
-    const updatedList = upsertSetting(sym, { store_live: newState });
-    await saveCoinSettings(updatedList);
-  };
-
-  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const newState = !isHistoricalEnabled(sym);
-    const updatedList = upsertSetting(sym, { load_history: newState });
-    await saveCoinSettings(updatedList);
-  };
-
-  const handleToggleFavorite = async (sym: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    const isFav = favorites.has(sym);
-    const updatedList = upsertSetting(sym, { favorite: !isFav });
-    await saveCoinSettings(updatedList);
-  };
-
-  // ----------------------------
-  // UI filtering
-  // ----------------------------
-  const filteredSymbols = useMemo(() => {
-    let filtered = symbols || [];
-
-    // Deduplizierung
-    filtered = filtered.filter((symbol, index, self) => 
-      index === self.findIndex(s => 
-        s.symbol === symbol.symbol && 
-        s.market_type === symbol.market_type &&
-        s.exchange === symbol.exchange
-      )
-    );
-
-    // Search filter
-    if (searchTerm) {
-      filtered = filtered.filter((x) => x.symbol.toLowerCase().includes(searchTerm.toLowerCase()));
-    }
-
-    // Sort: Favorites first, then alphabetically
-    return filtered.sort((a, b) => {
-      const aFav = favorites.has(a.symbol);
-      const bFav = favorites.has(b.symbol);
-      if (aFav && !bFav) return -1;
-      if (!aFav && bFav) return 1;
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }, [symbols, searchTerm, favorites]);
-
-  return (
-    <div className="relative">
-      {/* Selected Symbol Display */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
-      >
-        <span className="font-bold text-white dark:text-white text-sm">
-          {selectedSymbol}
-        </span>
-        <svg
-          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-        </svg>
-      </button>
-
-      {/* Dropdown */}
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
-          {/* Search */}
-          <div className="p-2 border-b border-border">
-            <div className="relative">
-              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search symbols"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {/* Header Row */}
-          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
-            <div className="flex items-center w-[130px]">
-              <span className="text-yellow-500 mr-2 text-xs">★</span>
-              <span className="text-xs">COIN</span>
-              <span className="ml-1">↑</span>
-            </div>
-            <div className="w-[110px] text-right text-xs">PRICE</div>
-            <div className="w-[90px] text-right text-xs">24H</div>
-            <div className="w-[35px] text-center text-xs">L</div>
-            <div className="w-[12px] text-center text-xs">H</div>
-          </div>
-
-          {/* Coins list */}
-          <div className="max-h-[300px] overflow-y-auto">
-            {loadingSymbols ? (
-              <div className="p-4 text-center text-gray-400">
-                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
-                <span className="text-xs">Loading...</span>
-              </div>
-            ) : localError ? (
-              <div className="p-4 text-center">
-                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
-                <div className="text-gray-400 text-xs">{localError}</div>
-              </div>
-            ) : filteredSymbols.length > 0 ? (
-              filteredSymbols.map((coin) => {
-                const uniqueKey = `${coin.exchange}|${coin.market_type}|${coin.symbol}`;
-                
-                return (
-                  <div
-                    key={uniqueKey}
-                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
-                      coin.symbol === selectedSymbol
-                        ? "bg-muted"
-                        : "hover:bg-muted"
-                    }`}
-                    onClick={() => {
-                      onSymbolSelect(coin.symbol);
-                      setIsOpen(false);
-                    }}
-                  >
-                    <div className="flex items-center w-[130px]">
-                      <span
-                        className={`text-sm mr-2 cursor-pointer ${
-                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
-                        }`}
-                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
-                      >
-                        ★
-                      </span>
-                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
-                    </div>
-                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
-                      {coin.price}
-                    </div>
-                    <div
-                      className={`w-[90px] text-right font-bold text-sm ${
-                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
-                      }`}
-                    >
-                      {coin.change}
-                    </div>
-                    <div className="w-[35px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isLiveEnabled(coin.symbol) 
-                            ? "rgb(34, 197, 94)"
-                            : "rgb(239, 68, 68)"
-                        }}
-                        onClick={(e) => handleLiveClick(coin.symbol, e)}
-                        title={isLiveEnabled(coin.symbol) 
-                          ? `Live data ACTIVE for ${coin.symbol}` 
-                          : `Enable Live data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                    <div className="w-[12px] text-center">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
-                        style={{
-                          backgroundColor: isHistoricalEnabled(coin.symbol) 
-                            ? "rgb(34, 197, 94)"
-                            : "rgb(239, 68, 68)"
-                        }}
-                        onClick={(e) => handleHistoricalClick(coin.symbol, e)}
-                        title={isHistoricalEnabled(coin.symbol) 
-                          ? `Historical data ACTIVE for ${coin.symbol}` 
-                          : `Enable Historical data for ${coin.symbol}`}
-                      ></span>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="p-4 text-center text-gray-400">
-                <span className="text-xs">No symbols found</span>
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
-            <div>
-              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => loadSymbols()}
-                disabled={loadingSymbols}
-                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
-                title="Refresh symbols"
-              >
-                <RefreshCw size={10} className={loadingSymbols ? 'animate-spin' : ''} />
-              </button>
-              {onSettingsClick && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSettingsClick();
-                    setIsOpen(false);
-                  }}
-                  className="p-0.5 text-gray-400 hover:text-white"
-                  title="Settings"
-                >
-                  <Settings size={10} />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Overlay to close dropdown when clicking outside */}
-      {isOpen && (
-        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-      )}
-    </div>
-  );
-};
-
-export default CoinSelector;
-</file>
-
-<file path="frontend/src/shared/layout/GlobalNav.tsx">
-// frontend/src/shared/layout/GlobalNav.tsx
-
-import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useTradingContext } from "../../contexts/TradingContext";
-import ThemeToggle from "../ui/theme-toggle";
-
-const GlobalNav = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const {
-    selectedExchange,
-    setSelectedExchange,
-    setSelectedMarket,
-    exchanges,
-    markets,
-    supportLoading,
-  } = useTradingContext();
-
-  const [activeTab, setActiveTab] = useState(() => {
-    const path = location.pathname;
-    if (path === "/trading" || path === "/") return "Market";
-    if (path === "/quantum") return "Quantum";
-    if (path === "/database") return "Database";
-    if (path === "/whales") return "Whales";
-    if (path === "/news") return "News";
-    if (path === "/bot") return "Trading Bot";
-    if (path === "/api") return "API";
-    if (path === "/ml") return "ML";
-    if (path === "/settings") return "Settings";
-    return "Market";
-  });
-
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
-
-  // ✅ Display name: aus dynamischem State
-  const exchangeDisplayName =
-    exchanges.find((e) => e.id === selectedExchange)?.name || selectedExchange || "—";
-
-  const navItems = [
-    { name: "Market", path: "/trading", hasDropdown: true },
-    { name: "Trading Bot", path: "/bot" },
-    { name: "Quantum", path: "/quantum" },
-    { name: "ML", path: "/ml" },
-    { name: "Database", path: "/database" },
-    { name: "Whales", path: "/whales" },
-    { name: "News", path: "/news" },
-    { name: "API", path: "/api" },
-    { name: "Settings", path: "/settings" },
-  ];
-
-  const handleTabClick = (itemName: string, itemPath?: string) => {
-    if (itemName === "Market") {
-      setIsDropdownOpen(!isDropdownOpen);
-      setActiveTab(itemName);
-    } else {
-      setIsDropdownOpen(false);
-      setIsExchangeDropdownOpen(false);
-      setActiveTab(itemName);
-      if (itemPath) navigate(itemPath);
-    }
-  };
-
-  const handleMarketOptionClick = (option: string) => {
-    setSelectedMarket(option as any);
-    setActiveTab("Market");
-    setIsDropdownOpen(false);
-    navigate("/trading");
-    console.log(`[GlobalNav] Market changed to: ${option}`);
-  };
-
-  const handleExchangeChange = (exchange: string) => {
-    setSelectedExchange(exchange);
-    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
-  };
-
-  return (
-    <nav className="flex justify-between items-center mb-5 px-6 py-5">
-      {/* Left side: Navigation items */}
-      <div className="flex gap-2">
-        {navItems.map((item) => (
-          <div key={item.name} className="relative">
-            <button
-              className={`px-5 py-1.5 rounded font-medium transition-colors ${
-                activeTab === item.name
-                  ? "bg-destructive text-destructive-foreground"
-                  : "hover:bg-muted text-foreground"
-              }`}
-              onClick={() => handleTabClick(item.name, item.path)}
-              type="button"
-            >
-              {item.name}
-              {item.hasDropdown && " ▽"}
-            </button>
-
-            {/* Market Dropdown */}
-            {item.name === "Market" && isDropdownOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
-                {markets.map((option) => (
-                  <div
-                    key={option.name}
-                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
-                    onClick={() => handleMarketOptionClick(option.name)}
-                  >
-                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
-                      {option.icon}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
-                        {option.name}
-                      </div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        {option.description}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {/* Optional: sichtbares Debug wenn leer */}
-                {!supportLoading && markets.length === 0 && (
-                  <div className="p-3 text-xs text-gray-500">No market options loaded</div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right side: Exchange selector + Theme toggle */}
-      <div className="flex items-center gap-3">
-        {/* Exchange Dropdown */}
-        <div className="relative">
-          <button
-            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
-            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
-            type="button"
-          >
-            {exchangeDisplayName} ▽
-          </button>
-
-          {isExchangeDropdownOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
-              {exchanges.map((exchange) => (
-                <div
-                  key={exchange.id}
-                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
-                  onClick={() => {
-                    setIsExchangeDropdownOpen(false);
-                    handleExchangeChange(exchange.id);
-                  }}
-                >
-                  {exchange.name}
-                </div>
-              ))}
-
-              {!supportLoading && exchanges.length === 0 && (
-                <div className="p-2 text-xs text-muted-foreground">No exchanges loaded</div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <ThemeToggle />
-      </div>
-
-      {/* Overlay to close dropdowns */}
-      {(isDropdownOpen || isExchangeDropdownOpen) && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => {
-            setIsDropdownOpen(false);
-            setIsExchangeDropdownOpen(false);
-          }}
-        />
-      )}
-    </nav>
-  );
-};
-
-export default GlobalNav;
 </file>
 
 <file path="monitor-system.sh">
@@ -172031,563 +170879,1382 @@ echo ""
 exit $exit_code
 </file>
 
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
+<file path="backend/database/clickhouse/cl_config.py">
 import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from typing import Dict, Any, Set
 
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
+# cl_ Database Patterns für alle 8 Exchanges  
+CL_DATABASE_PATTERNS: Dict[str, str] = {
+    "trades": "trading.{exchange}_trades",
+    "candles": "trading.{exchange}_bars", 
+    "orderbook": "trading.{exchange}_orderbook",
+    "user_settings": "trading.user_coin_settings",
+    "indicators": "trading.user_indicator_settings",
+    "health": "monitoring.{component}_health"
+}
 
-logger_env = logging.getLogger("main.env")
+# cl_ Connection Settings - zentral für alle Exchanges
+# Only params supported by clickhouse_connect.get_client() HTTP API
+# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
+CL_CONNECTION: Dict[str, Any] = {
+    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
+    "database": os.getenv("CLICKHOUSE_DB", "trading"),
+    "username": os.getenv("CLICKHOUSE_USER", "admin"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
+    "connect_timeout": 5,
+    "send_receive_timeout": 30
+}
 
-# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
-# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
-if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
-    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
-    if env_path.exists():
-        load_dotenv(env_path)
-        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-    else:
-        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
-else:
-    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+# cl_ Performance Settings
+CL_PERFORMANCE: Dict[str, int] = {
+    "batch_size": 1000,
+    "queue_maxsize": 5000,
+    "processing_timeout": 10,
+    "health_check_interval": 60,
+    "connection_pool_size": 10,
+    "max_concurrent_inserts": 5
+}
 
-# =============================
-# CORE INIT COMPONENTS
-# =============================
+# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
+def _get_critical_cl_components() -> Set[str]:
+    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
+    
+    components = {
+        "cl.unified-manager",
+        "cl.schema-manager",
+        "cl.connection-pool"
+    }
+    
+    # Nur erste 2 Exchanges als kritisch markieren
+    for ex in exchanges[:2]:
+        components.add(f"cl.{ex}-manager")
+    
+    return components
 
+CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+
+# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
+def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
+    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    configs = {}
+    for i, exchange in enumerate(exchanges):
+        # Erste 2 = high priority, rest = medium
+        priority = "high" if i < 2 else "medium"
+        batch_size = 1000 if i < 2 else 800
+        
+        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
+        configs[exchange] = {
+            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
+            "priority": priority,
+            "batch_size": batch_size,
+            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
+        }
+    
+    return configs
+
+EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+
+# cl_ Health Thresholds
+CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
+    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
+    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
+    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
+    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
+}
+
+# cl_ Schema Definitions
+CL_SCHEMAS: Dict[str, Dict[str, str]] = {
+    "trades": {
+        "table_suffix": "_trades",
+        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "candles": {
+        "table_suffix": "_bars", 
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "orderbook": {
+        "table_suffix": "_orderbook",
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
+        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    }
+}
+</file>
+
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
 from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
 
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
 
 
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
 
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
 
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse unified_cl_service initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
-        startup_errors.append(f"clickhouse_service: {e}")
-        startup_success = False
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
 
-    # ✅ NEU: ClickHouse Connection Pool Init (Foundation)
-    try:
-        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
-        
-        pool_ok = await initialize_clickhouse_foundation()
-        if not pool_ok:
-            raise RuntimeError("ClickHouse foundation initialization returned False")
-        
-        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse Pool init failed: {e}")
-        startup_errors.append(f"clickhouse_pool: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
     try:
         await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
 
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
 
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
+                    market_safe = market if market else "spot"
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market_safe,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market_safe,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
 
+                    mk = (market or "spot").lower()
 
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
                 })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
         try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
         except Exception:
             pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
 
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
 
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
+<file path="frontend/src/config/exchangeSupport.ts">
+// frontend/src/config/exchangeSupport.ts
+
+export type MarketType = string;   // dynamisch vom Backend
+export type ExchangeId = string;   // dynamisch vom Backend
+
+export interface Exchange {
+  id: string;
+  name: string;
+}
+
+export interface MarketOption {
+  name: string;
+  description: string;
+  icon: string;
+}
+
+let cachedExchanges: Exchange[] = [];
+let cachedMarkets: MarketOption[] = [];
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return (await res.json()) as T;
+}
+
+// Robust: akzeptiert mehrere Backend-Formate (alt/neu)
+async function getAvailableExchanges(): Promise<string[]> {
+  // 1) Alt: /api/config/exchanges  -> { exchanges: [...] }
+  try {
+    const r = await fetchJson<{ exchanges: string[] }>("/api/config/exchanges");
+    if (Array.isArray(r.exchanges)) return r.exchanges;
+  } catch {}
+
+  // 2) Unified Orderbook: /api/orderbook/exchanges oder /exchanges je nach Registry
+  // (Antwort kann { supported_exchanges: [...] } sein)
+  try {
+    const r = await fetchJson<{ supported_exchanges: string[] }>("/api/orderbook/exchanges");
+    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
+  } catch {}
+
+  try {
+    const r = await fetchJson<{ supported_exchanges: string[] }>("/exchanges");
+    if (Array.isArray(r.supported_exchanges)) return r.supported_exchanges;
+  } catch {}
+
+  return [];
+}
+
+async function getAvailableMarketTypes(): Promise<string[]> {
+  // 1) Alt: /api/config/market-types -> { market_types: [...] }
+  try {
+    const r = await fetchJson<{ market_types: string[] }>("/api/config/market-types");
+    if (Array.isArray(r.market_types)) return r.market_types;
+  } catch {}
+
+  // 2) Falls es später ein /api/config/markets o.ä. gibt: hier ergänzen.
+  return [];
+}
+
+function getMarketDescription(market: string): string {
+  const m = (market || "").toLowerCase();
+  const descriptions: Record<string, string> = {
+    spot: "Spot-Trading mit sofortiger Abwicklung",
+    futures: "Futures-Trading",
+    usdtm: "USDT-Margined Futures",
+    usdcm: "USDC-Margined Futures",
+    coinm: "Coin-Margined Futures",
+    margin: "Margin Trading",
+  };
+  return descriptions[m] || `${market} Trading`;
+}
+
+function getMarketIcon(market: string): string {
+  const m = (market || "").toLowerCase();
+  const icons: Record<string, string> = {
+    spot: "",
+    futures: "",
+    usdtm: "",
+    usdcm: "",
+    coinm: "",
+    margin: "",
+  };
+  return icons[m] || "";
+}
+
+// Loader: liefert Arrays, aber UI muss über STATE re-rendern (macht TradingContext)
+export async function loadExchanges(force = false): Promise<Exchange[]> {
+  if (!force && cachedExchanges.length > 0) return cachedExchanges;
+
+  const ids = await getAvailableExchanges();
+  cachedExchanges = ids.map((id) => ({
+    id,
+    name: id ? id.charAt(0).toUpperCase() + id.slice(1) : id,
+  }));
+  return cachedExchanges;
+}
+
+export async function loadMarkets(force = false): Promise<MarketOption[]> {
+  if (!force && cachedMarkets.length > 0) return cachedMarkets;
+
+  const markets = await getAvailableMarketTypes();
+  cachedMarkets = markets.map((name) => ({
+    name,
+    description: getMarketDescription(name),
+    icon: getMarketIcon(name),
+  }));
+  return cachedMarkets;
+}
+
+// Getter (nur read-only)
+export const getExchanges = (): Exchange[] => cachedExchanges;
+export const getMarketOptions = (): MarketOption[] => cachedMarkets;
+
+// Alle gelieferten Markets gelten als supported
+export const isMarketSupported = (): boolean => true;
+
+// Helper: Map market name to API filter (generisch)
+export const getMarketFilter = (selectedMarket?: string): string | null => {
+  if (!selectedMarket) return null;
+
+  // Normalisiere zu lowercase für Backend
+  const normalized = selectedMarket.toLowerCase();
+
+  // Futures-Varianten → "futures"
+  if (normalized.includes("futures") || normalized.includes("perpetual")) {
+    return "futures";
+  }
+
+  // Spot bleibt spot
+  if (normalized === "spot") return "spot";
+
+  // Alles andere: as-is
+  return normalized;
+};
+</file>
+
+<file path="frontend/src/pages/CoinMonitor/CoinMonitor.tsx">
+import React, { useMemo } from "react";
+import { useWsLane } from "../../services/ws/useWsLane";
+import { DataTable } from "./components/DataTable";
+
+const SYMBOL = "BTCUSDT";
+const MARKET = "spot";
+const INTERVAL = "1h";
+
+// Wenn du Exchanges dynamisch brauchst, mach das später wieder rein (REST),
+// aber erst mal: harte Liste, damit es deterministisch läuft.
+const EXCHANGES = ["binance", "bitget", "bybit", "okx"];
+
+function fmt(n: number | undefined, digits = 2) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function fmtDate(ts: number | undefined) {
+  if (!ts) return "-";
+  return new Date(ts).toLocaleString("de-DE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+export default function BTCUSDTMonitor() {
+  const exchanges = useMemo(() => EXCHANGES.slice().sort(), []);
+
+  return (
+    <div className="p-4 space-y-6 bg-background text-foreground">
+      <div className="space-y-2">
+        <h1 className="text-2xl font-bold">
+          BTCUSDT Live Monitor (WebSocket + Historical)
+        </h1>
+        <div className="text-sm text-muted-foreground">
+          Route: <code className="px-1 py-0.5 bg-muted rounded">/btcusdt</code> • 
+          Symbol: <b>{SYMBOL}</b> • Market: <b>{MARKET}</b> • Interval: <b>{INTERVAL}</b>
+        </div>
+      </div>
+
+      {/* Live Status Table */}
+      <div className="overflow-x-auto border border-border rounded-lg">
+        <table className="w-full border-collapse min-w-[1200px]">
+          <thead>
+            <tr className="text-left bg-muted/50">
+              <th className="p-3 border-b border-border">Exchange</th>
+              <th className="p-3 border-b border-border">WS</th>
+              <th className="p-3 border-b border-border text-right">Trades</th>
+              <th className="p-3 border-b border-border text-right">Historical</th>
+              <th className="p-3 border-b border-border text-right">Live Candles</th>
+              <th className="p-3 border-b border-border text-right">Last Price</th>
+              <th className="p-3 border-b border-border text-right">Last Size</th>
+              <th className="p-3 border-b border-border">Side</th>
+            </tr>
+          </thead>
+          <tbody>
+            {exchanges.map((ex) => (
+              <Row key={ex} exchange={ex} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Debug Tables for first exchange */}
+      {exchanges.length > 0 && exchanges[0] && <DebugTables exchange={exchanges[0]} />}
+
+      {/* Diagnose Info */}
+      <div className="p-4 bg-muted/30 rounded-lg text-sm space-y-2">
+        <div className="font-semibold">Diagnose</div>
+        <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+          <li><b>WS = OPEN</b> und Trades zählen hoch → WS + Parsing ok.</li>
+          <li><b>Historical &gt; 0</b> → Backend sendet historical candles korrekt.</li>
+          <li><b>Timestamps nicht 1970</b> → Timestamp-Mapping funktioniert.</li>
+          <li><b>Live Candles wachsen</b> → Echtzeit-Updates funktionieren.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function Row({ exchange }: { exchange: string }) {
+  const { status, trades, candles, historical } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
+
+  const lastTrade = trades.length ? trades[trades.length - 1] : undefined;
+
+  return (
+    <tr className="border-t border-border/50 hover:bg-muted/20 transition-colors">
+      <td className="p-3 font-bold">{exchange}</td>
+      <td className="p-3">
+        <span className={status === "OPEN" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+          {status}
+        </span>
+      </td>
+      <td className="p-3 text-right">{trades.length}</td>
+      <td className="p-3 text-right font-semibold text-blue-600 dark:text-blue-400">
+        {historical.length}
+      </td>
+      <td className="p-3 text-right">{candles.length}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.price, 8)}</td>
+      <td className="p-3 text-right">{fmt(lastTrade?.size, 8)}</td>
+      <td className="p-3">{lastTrade?.side ?? "-"}</td>
+    </tr>
+  );
+}
+
+function DebugTables({ exchange }: { exchange: string }) {
+  const { historical, candles, trades } = useWsLane(exchange, SYMBOL, MARKET, INTERVAL);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-semibold">Debug Tables ({exchange})</h2>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Historical Candles */}
+        <DataTable
+          title="📊 Historical Candles"
+          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
+          data={historical}
+          renderRow={(candle) => (
+            <>
+              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
+            </>
+          )}
+          maxRows={10}
+        />
+
+        {/* Live Candles */}
+        <DataTable
+          title="🔴 Live Candles"
+          columns={["Time", "Open", "High", "Low", "Close", "Volume"]}
+          data={candles}
+          renderRow={(candle) => (
+            <>
+              <td className="px-3 py-2 text-xs font-mono">{fmtDate(candle.t * 1000)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.o, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.h, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.l, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.c, 2)}</td>
+              <td className="px-3 py-2 text-xs text-right">{fmt(candle.v, 4)}</td>
+            </>
+          )}
+          maxRows={10}
+        />
+      </div>
+
+      {/* Trades Table */}
+      <DataTable
+        title="💹 Recent Trades"
+        columns={["Time", "Price", "Size", "Side"]}
+        data={trades}
+        renderRow={(trade) => (
+          <>
+            <td className="px-3 py-2 text-xs font-mono">{fmtDate(trade.ts)}</td>
+            <td className="px-3 py-2 text-xs text-right">{fmt(trade.price, 8)}</td>
+            <td className="px-3 py-2 text-xs text-right">{fmt(trade.size, 8)}</td>
+            <td className="px-3 py-2 text-xs">
+              <span className={trade.side === "buy" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {trade.side}
+              </span>
+            </td>
+          </>
+        )}
+        maxRows={15}
+      />
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/TradingPage/components/CoinSelector.tsx">
+// frontend/src/pages/TradingPage/components/CoinSelector.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Search, RefreshCw, Settings } from "lucide-react";
+
+interface CoinSetting {
+  symbol: string;
+  exchange: string;
+  market: string;
+  store_live: boolean;
+  load_history: boolean;
+  history_until?: string;
+  favorite?: boolean;
+  chart_resolution?: string;
+  db_resolutions?: string[];
+}
+
+interface AdvancedCoinSelectorProps {
+  selectedSymbol: string;
+  onSymbolSelect: (symbol: string) => void;
+  onSettingsClick?: () => void;
+  exchange: string;
+  selectedMarket?: string;
+}
+
+/**
+ * CoinSelector - Visuell 1:1 wie alte_gui, aber mit neuer WebSocket-Logik
+ * 
+ * Features:
+ * - Header Row: ★ COIN ↑ PRICE 24H L H
+ * - Favorite Star (klickbar)
+ * - Price Display (font-mono)
+ * - 24H Change (grün/rot)
+ * - L/H Buttons als kleine Dots (rot/grün schaltbar)
+ * - Footer: Symbol-Count + Refresh + Settings
+ * - WebSocket für Symbols (dynamisch, kein Hardcode)
+ * - REST API für Settings (/api/user/settings/coins)
+ */
+const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
+  selectedSymbol,
+  onSymbolSelect,
+  onSettingsClick,
+  exchange,
+  selectedMarket,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const [symbols, setSymbols] = useState<Array<{ symbol: string; exchange: string; market_type: string; price?: string; change?: string; changePercent?: number }>>([]);
+  const [loadingSymbols, setLoadingSymbols] = useState(false);
+
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [coinSettings, setCoinSettings] = useState<Map<string, CoinSetting>>(new Map());
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const market = selectedMarket || "spot";
+
+  // ----------------------------
+  // ENV / URL helpers (dynamisch!)
+  // ----------------------------
+  const resolveApiBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_HTTP_URL ||
+      env?.VITE_API_BASE_URL ||
+      env?.VITE_BACKEND_URL ||
+      "http://localhost:8100";
+    return String(raw).replace(/\/+$/, "");
+  };
+
+  const resolveWsBase = (): string => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_BACKEND_WS_URL ||
+      env?.VITE_WS_BASE_URL ||
+      env?.VITE_WS_URL;
+
+    if (raw && typeof raw === "string" && raw.trim()) {
+      return raw.replace(/\/+$/, "");
     }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
 
+    // ✅ Vite Proxy: window.location.host enthält Port automatisch!
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${window.location.host}`;
+  };
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
+  const getClientId = (): string => {
+    const envId = (import.meta as any)?.env?.VITE_CLIENT_ID;
+    if (envId && typeof envId === "string" && envId.trim()) return envId.trim();
 
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
+    const key = "wsai_client_id";
+    try {
+      const existing = window.localStorage.getItem(key);
+      if (existing && existing.trim()) return existing.trim();
 
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
+      const generated =
+        (globalThis.crypto && "randomUUID" in globalThis.crypto)
+          ? (globalThis.crypto as any).randomUUID()
+          : `client_${Math.random().toString(16).slice(2)}_${Date.now()}`;
 
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
+      window.localStorage.setItem(key, generated);
+      return generated;
+    } catch {
+      return `client_${Date.now()}`;
+    }
+  };
 
-    logger.info("🛑 Shutdown complete")
+  const alwaysLiveSymbols = useMemo(() => {
+    const env = (import.meta as any)?.env;
+    const raw =
+      env?.VITE_ALWAYS_LIVE_SYMBOLS ||
+      env?.VITE_DEFAULT_ALWAYS_LIVE_SYMBOLS ||
+      "BTCUSDT";
+    return new Set(
+      String(raw)
+        .split(",")
+        .map((s: string) => s.trim().toUpperCase())
+        .filter(Boolean)
+    );
+  }, []);
 
+  // ----------------------------
+  // Keying
+  // ----------------------------
+  const keyFor = (ex: string, sym: string, mk: string) =>
+    `${String(ex).toLowerCase()}_${String(sym).toUpperCase()}_${String(mk).toLowerCase()}`;
 
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
+  // ----------------------------
+  // REST: load/save coin settings
+  // ----------------------------
+  const loadCoinSettings = async (): Promise<void> => {
+    setLoadingSettings(true);
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins?exchange=${encodeURIComponent(exchange)}`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
         },
+      });
+
+      if (!res.ok) {
+        throw new Error(`loadCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      const list: CoinSetting[] = await res.json();
+      const map = new Map<string, CoinSetting>();
+      const favs = new Set<string>();
+      for (const s of Array.isArray(list) ? list : []) {
+        map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+        if (s.favorite) favs.add(s.symbol);
+      }
+      setCoinSettings(map);
+      setFavorites(favs);
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load coin settings");
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const saveCoinSettings = async (settingsList: CoinSetting[]): Promise<void> => {
+    setLocalError(null);
+    try {
+      const apiBase = resolveApiBase();
+      const url = `${apiBase}/api/user/settings/coins`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": getClientId(),
+        },
+        body: JSON.stringify(settingsList),
+      });
+
+      if (!res.ok) {
+        throw new Error(`saveCoinSettings failed: ${res.status} ${res.statusText}`);
+      }
+
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const maybe = await res.json();
+        if (Array.isArray(maybe)) {
+          const map = new Map<string, CoinSetting>();
+          const favs = new Set<string>();
+          for (const s of maybe) {
+            if (!s?.symbol || !s?.exchange) continue;
+            map.set(keyFor(s.exchange, s.symbol, s.market || "spot"), s);
+            if (s.favorite) favs.add(s.symbol);
+          }
+          setCoinSettings(map);
+          setFavorites(favs);
+        }
+      }
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to save coin settings");
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) loadCoinSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, exchange]);
+
+  // ----------------------------
+  // WS: load symbols
+  // ----------------------------
+  const wsOnceRef = useRef<WebSocket | null>(null);
+
+  const loadSymbols = async (): Promise<void> => {
+    setLoadingSymbols(true);
+    setLocalError(null);
+
+    try {
+      wsOnceRef.current?.close();
+    } catch {}
+    wsOnceRef.current = null;
+
+    try {
+      const wsBase = resolveWsBase();
+      const wsUrl = `${wsBase}/ws/${encodeURIComponent(exchange)}/BTCUSDT/${encodeURIComponent(market)}`;
+
+      const list: string[] = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        wsOnceRef.current = ws;
+
+        let done = false;
+        const timeout = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          try { ws.close(); } catch {}
+          reject(new Error("WS symbols request timeout"));
+        }, 5000);
+
+        ws.onopen = () => {
+          try {
+            ws.send("symbols");
+          } catch (err) {
+            window.clearTimeout(timeout);
+            if (!done) {
+              done = true;
+              try { ws.close(); } catch {}
+              reject(err instanceof Error ? err : new Error("WS send failed"));
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(timeout);
+          if (!done) {
+            done = true;
+            try { ws.close(); } catch {}
+            reject(new Error("WS connection error"));
+          }
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.type === "symbols" && Array.isArray(data.symbols)) {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                resolve(data.symbols);
+              }
+              return;
+            }
+            if (data?.type === "error") {
+              window.clearTimeout(timeout);
+              if (!done) {
+                done = true;
+                try { ws.close(); } catch {}
+                reject(new Error(data.message || "WS error"));
+              }
+            }
+          } catch {
+            // ignore non-json
+          }
+        };
+
+        ws.onclose = () => {
+          // ignore; timeout/error handles failure
+        };
+      });
+
+      setSymbols(
+        list.map((s) => ({
+          symbol: String(s),
+          exchange,
+          market_type: market,
+          price: "-",
+          change: "-",
+          changePercent: 0,
+        }))
+      );
+    } catch (e: any) {
+      console.error(e);
+      setLocalError(e?.message || "Failed to load symbols");
+      setSymbols([]);
+    } finally {
+      setLoadingSymbols(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSymbols();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchange, market]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        wsOnceRef.current?.close();
+      } catch {}
+      wsOnceRef.current = null;
+    };
+  }, []);
+
+  // ----------------------------
+  // L/H helpers + toggles
+  // ----------------------------
+  const isAlwaysLive = (sym: string) => alwaysLiveSymbols.has(String(sym).toUpperCase());
+
+  const isLiveEnabled = (sym: string): boolean => {
+    if (isAlwaysLive(sym)) return true;
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.store_live;
+  };
+
+  const isHistoricalEnabled = (sym: string): boolean => {
+    const s = coinSettings.get(keyFor(exchange, sym, market));
+    return !!s?.load_history;
+  };
+
+  const upsertSetting = (sym: string, patch: Partial<CoinSetting>): CoinSetting[] => {
+    const key = keyFor(exchange, sym, market);
+    const current = coinSettings.get(key);
+
+    const next: CoinSetting = current
+      ? { ...current, ...patch, symbol: sym, exchange, market }
+      : {
+          symbol: sym,
+          exchange,
+          market,
+          store_live: false,
+          load_history: false,
+          ...patch,
+        };
+
+    const list = Array.from(coinSettings.values());
+
+    const idx = list.findIndex(
+      (x) =>
+        String(x.exchange).toLowerCase() === String(exchange).toLowerCase() &&
+        String(x.symbol).toUpperCase() === String(sym).toUpperCase() &&
+        String((x.market || "spot")).toLowerCase() === String(market).toLowerCase()
+    );
+
+    if (idx >= 0) list[idx] = next;
+    else list.push(next);
+
+    const map = new Map(coinSettings);
+    map.set(key, next);
+    setCoinSettings(map);
+
+    return list;
+  };
+
+  const handleLiveClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isAlwaysLive(sym)) return;
+
+    const newState = !isLiveEnabled(sym);
+    const updatedList = upsertSetting(sym, { store_live: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  const handleHistoricalClick = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    const newState = !isHistoricalEnabled(sym);
+    const updatedList = upsertSetting(sym, { load_history: newState });
+    await saveCoinSettings(updatedList);
+  };
+
+  const handleToggleFavorite = async (sym: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const isFav = favorites.has(sym);
+    const updatedList = upsertSetting(sym, { favorite: !isFav });
+    await saveCoinSettings(updatedList);
+  };
+
+  // ----------------------------
+  // UI filtering
+  // ----------------------------
+  const filteredSymbols = useMemo(() => {
+    let filtered = symbols || [];
+
+    // Deduplizierung
+    filtered = filtered.filter((symbol, index, self) => 
+      index === self.findIndex(s => 
+        s.symbol === symbol.symbol && 
+        s.market_type === symbol.market_type &&
+        s.exchange === symbol.exchange
+      )
+    );
+
+    // Search filter
+    if (searchTerm) {
+      filtered = filtered.filter((x) => x.symbol.toLowerCase().includes(searchTerm.toLowerCase()));
     }
 
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
+    // Sort: Favorites first, then alphabetically
+    return filtered.sort((a, b) => {
+      const aFav = favorites.has(a.symbol);
+      const bFav = favorites.has(b.symbol);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [symbols, searchTerm, favorites]);
 
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
+  return (
+    <div className="relative">
+      {/* Selected Symbol Display */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors min-w-[150px]"
+      >
+        <span className="font-bold text-white dark:text-white text-sm">
+          {selectedSymbol}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
 
+      {/* Dropdown */}
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden w-[377px]">
+          {/* Search */}
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search size={12} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search symbols"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none"
+              />
+            </div>
+          </div>
 
-if __name__ == "__main__":
-    start()
+          {/* Header Row */}
+          <div className="flex items-center px-3 py-2 bg-card border-b border-border text-muted-foreground text-xs">
+            <div className="flex items-center w-[130px]">
+              <span className="text-yellow-500 mr-2 text-xs">★</span>
+              <span className="text-xs">COIN</span>
+              <span className="ml-1">↑</span>
+            </div>
+            <div className="w-[110px] text-right text-xs">PRICE</div>
+            <div className="w-[90px] text-right text-xs">24H</div>
+            <div className="w-[35px] text-center text-xs">L</div>
+            <div className="w-[12px] text-center text-xs">H</div>
+          </div>
+
+          {/* Coins list */}
+          <div className="max-h-[300px] overflow-y-auto">
+            {loadingSymbols ? (
+              <div className="p-4 text-center text-gray-400">
+                <RefreshCw size={12} className="animate-spin mx-auto mb-2" />
+                <span className="text-xs">Loading...</span>
+              </div>
+            ) : localError ? (
+              <div className="p-4 text-center">
+                <div className="text-red-500 font-semibold text-sm mb-1">⚠️ Error</div>
+                <div className="text-gray-400 text-xs">{localError}</div>
+              </div>
+            ) : filteredSymbols.length > 0 ? (
+              filteredSymbols.map((coin) => {
+                const uniqueKey = `${coin.exchange}|${coin.market_type}|${coin.symbol}`;
+                
+                return (
+                  <div
+                    key={uniqueKey}
+                    className={`flex items-center px-3 py-2 cursor-pointer transition-colors border-b border-border ${
+                      coin.symbol === selectedSymbol
+                        ? "bg-muted"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => {
+                      onSymbolSelect(coin.symbol);
+                      setIsOpen(false);
+                    }}
+                  >
+                    <div className="flex items-center w-[130px]">
+                      <span
+                        className={`text-sm mr-2 cursor-pointer ${
+                          favorites.has(coin.symbol) ? "text-yellow-500" : "text-muted-foreground"
+                        }`}
+                        onClick={(e) => handleToggleFavorite(coin.symbol, e)}
+                      >
+                        ★
+                      </span>
+                      <span className="font-bold text-foreground text-sm">{coin.symbol}</span>
+                    </div>
+                    <div className="w-[110px] text-right font-mono text-foreground text-sm">
+                      {coin.price}
+                    </div>
+                    <div
+                      className={`w-[90px] text-right font-bold text-sm ${
+                        (coin.changePercent || 0) >= 0 ? "text-green-500" : "text-red-500"
+                      }`}
+                    >
+                      {coin.change}
+                    </div>
+                    <div className="w-[35px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isLiveEnabled(coin.symbol) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleLiveClick(coin.symbol, e)}
+                        title={isLiveEnabled(coin.symbol) 
+                          ? `Live data ACTIVE for ${coin.symbol}` 
+                          : `Enable Live data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                    <div className="w-[12px] text-center">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full cursor-pointer hover:scale-125 transition-transform"
+                        style={{
+                          backgroundColor: isHistoricalEnabled(coin.symbol) 
+                            ? "rgb(34, 197, 94)"
+                            : "rgb(239, 68, 68)"
+                        }}
+                        onClick={(e) => handleHistoricalClick(coin.symbol, e)}
+                        title={isHistoricalEnabled(coin.symbol) 
+                          ? `Historical data ACTIVE for ${coin.symbol}` 
+                          : `Enable Historical data for ${coin.symbol}`}
+                      ></span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="p-4 text-center text-gray-400">
+                <span className="text-xs">No symbols found</span>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="p-1.5 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+            <div>
+              <span className="text-[10px]">{filteredSymbols.length} symbols</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSymbols()}
+                disabled={loadingSymbols}
+                className="p-0.5 text-gray-400 hover:text-white disabled:opacity-50"
+                title="Refresh symbols"
+              >
+                <RefreshCw size={10} className={loadingSymbols ? 'animate-spin' : ''} />
+              </button>
+              {onSettingsClick && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSettingsClick();
+                    setIsOpen(false);
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-white"
+                  title="Settings"
+                >
+                  <Settings size={10} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Overlay to close dropdown when clicking outside */}
+      {isOpen && (
+        <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+      )}
+    </div>
+  );
+};
+
+export default CoinSelector;
+</file>
+
+<file path="frontend/src/shared/layout/GlobalNav.tsx">
+// frontend/src/shared/layout/GlobalNav.tsx
+
+import { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useTradingContext } from "../../contexts/TradingContext";
+import ThemeToggle from "../ui/theme-toggle";
+
+const GlobalNav = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const {
+    selectedExchange,
+    setSelectedExchange,
+    setSelectedMarket,
+    exchanges,
+    markets,
+    supportLoading,
+  } = useTradingContext();
+
+  const [activeTab, setActiveTab] = useState(() => {
+    const path = location.pathname;
+    if (path === "/trading" || path === "/") return "Market";
+    if (path === "/quantum") return "Quantum";
+    if (path === "/database") return "Database";
+    if (path === "/whales") return "Whales";
+    if (path === "/news") return "News";
+    if (path === "/bot") return "Trading Bot";
+    if (path === "/api") return "API";
+    if (path === "/ml") return "ML";
+    if (path === "/settings") return "Settings";
+    return "Market";
+  });
+
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isExchangeDropdownOpen, setIsExchangeDropdownOpen] = useState(false);
+
+  // ✅ Display name: aus dynamischem State
+  const exchangeDisplayName =
+    exchanges.find((e) => e.id === selectedExchange)?.name || selectedExchange || "—";
+
+  const navItems = [
+    { name: "Market", path: "/trading", hasDropdown: true },
+    { name: "Trading Bot", path: "/bot" },
+    { name: "Quantum", path: "/quantum" },
+    { name: "ML", path: "/ml" },
+    { name: "Database", path: "/database" },
+    { name: "Whales", path: "/whales" },
+    { name: "News", path: "/news" },
+    { name: "API", path: "/api" },
+    { name: "Settings", path: "/settings" },
+  ];
+
+  const handleTabClick = (itemName: string, itemPath?: string) => {
+    if (itemName === "Market") {
+      setIsDropdownOpen(!isDropdownOpen);
+      setActiveTab(itemName);
+    } else {
+      setIsDropdownOpen(false);
+      setIsExchangeDropdownOpen(false);
+      setActiveTab(itemName);
+      if (itemPath) navigate(itemPath);
+    }
+  };
+
+  const handleMarketOptionClick = (option: string) => {
+    setSelectedMarket(option as any);
+    setActiveTab("Market");
+    setIsDropdownOpen(false);
+    navigate("/trading");
+    console.log(`[GlobalNav] Market changed to: ${option}`);
+  };
+
+  const handleExchangeChange = (exchange: string) => {
+    setSelectedExchange(exchange);
+    console.log(`[GlobalNav] Exchange changed to: ${exchange}`);
+  };
+
+  return (
+    <nav className="flex justify-between items-center mb-5 px-6 py-5">
+      {/* Left side: Navigation items */}
+      <div className="flex gap-2">
+        {navItems.map((item) => (
+          <div key={item.name} className="relative">
+            <button
+              className={`px-5 py-1.5 rounded font-medium transition-colors ${
+                activeTab === item.name
+                  ? "bg-destructive text-destructive-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => handleTabClick(item.name, item.path)}
+              type="button"
+            >
+              {item.name}
+              {item.hasDropdown && " ▽"}
+            </button>
+
+            {/* Market Dropdown */}
+            {item.name === "Market" && isDropdownOpen && (
+              <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl border dark:border-gray-600">
+                {markets.map((option) => (
+                  <div
+                    key={option.name}
+                    className="flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-600 last:border-b-0"
+                    onClick={() => handleMarketOptionClick(option.name)}
+                  >
+                    <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center mr-2 text-xs">
+                      {option.icon}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900 dark:text-white text-xs">
+                        {option.name}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {option.description}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Optional: sichtbares Debug wenn leer */}
+                {!supportLoading && markets.length === 0 && (
+                  <div className="p-3 text-xs text-gray-500">No market options loaded</div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Right side: Exchange selector + Theme toggle */}
+      <div className="flex items-center gap-3">
+        {/* Exchange Dropdown */}
+        <div className="relative">
+          <button
+            className="px-3 py-1.5 bg-muted hover:bg-muted/80 rounded font-medium text-sm transition-colors text-foreground"
+            onClick={() => setIsExchangeDropdownOpen(!isExchangeDropdownOpen)}
+            type="button"
+          >
+            {exchangeDisplayName} ▽
+          </button>
+
+          {isExchangeDropdownOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 w-fit min-w-[160px] max-h-[400px] overflow-y-auto bg-card rounded-lg shadow-xl border border-border">
+              {exchanges.map((exchange) => (
+                <div
+                  key={exchange.id}
+                  className="p-2 hover:bg-muted cursor-pointer text-sm font-medium text-foreground"
+                  onClick={() => {
+                    setIsExchangeDropdownOpen(false);
+                    handleExchangeChange(exchange.id);
+                  }}
+                >
+                  {exchange.name}
+                </div>
+              ))}
+
+              {!supportLoading && exchanges.length === 0 && (
+                <div className="p-2 text-xs text-muted-foreground">No exchanges loaded</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <ThemeToggle />
+      </div>
+
+      {/* Overlay to close dropdowns */}
+      {(isDropdownOpen || isExchangeDropdownOpen) && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => {
+            setIsDropdownOpen(false);
+            setIsExchangeDropdownOpen(false);
+          }}
+        />
+      )}
+    </nav>
+  );
+};
+
+export default GlobalNav;
 </file>
 
 <file path="backend/websocket/ws_manager.py">
@@ -173155,6 +172822,573 @@ createRoot(document.getElementById('root')!).render(
 );
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+logger_env = logging.getLogger("main.env")
+
+# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
+# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
+if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
+    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+    else:
+        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
+else:
+    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse unified_cl_service initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
+        startup_errors.append(f"clickhouse_service: {e}")
+        startup_success = False
+
+    # ✅ NEU: ClickHouse Connection Pool Init (Foundation)
+    try:
+        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
+        
+        pool_ok = await initialize_clickhouse_foundation()
+        if not pool_ok:
+            raise RuntimeError("ClickHouse foundation initialization returned False")
+        
+        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse Pool init failed: {e}")
+        startup_errors.append(f"clickhouse_pool: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+    # ✅ KLINE PRE-AGG: Materialized Views beim Start erstellen
+    try:
+        from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+        await ensure_kline_preagg()
+        logger.info("✅ Kline Pre-Aggregation (Materialized Views) initialized")
+    except Exception as e:
+        logger.error(f"Kline Pre-Agg init failed: {e}", exc_info=True)
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="backend/services/adapter/collector_starter.py">
 """
 ✅ ENTERPRISE: Konfigurierbare Collector Settings
@@ -173409,365 +173643,6 @@ async def start_auto_backfill_gap_loop():
             logger.info(f"✅ LOOP started: {exchange}:{symbol}")
         except Exception as e:
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
-</file>
-
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-
-✅ NEU:
-- fill_block Events (Gap/Backfill Block Visualizer)
-  type="fill_block"
-  payload: { exchange, market, symbol, start_sec, end_sec, stage, progress, batch, total }
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Any
-from collections.abc import Mapping
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
-    """
-    Trade erwartet dict wegen .get().
-    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
-
-    if isinstance(x, (tuple, list)):
-        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
-            return {
-                "price": x[0],
-                "size": x[1],
-                "timestamp": x[2],
-                "side": x[3] if len(x) > 3 else None,
-            }
-        return {}
-
-    return {}
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _send_one(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-                self.metrics["payloads_sent"] += 1
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-
-        # bounded concurrency
-        sem = asyncio.Semaphore(256)
-
-        async def _wrap(job: _SendJob) -> None:
-            async with sem:
-                await _send_one(job)
-
-        await asyncio.gather(*[_wrap(j) for j in jobs], return_exceptions=True)
-        self.metrics["messages_sent"] += len(jobs)
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                await asyncio.sleep(sleep_s)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Frontend WS batch loop error: {e}", exc_info=True)
-                await asyncio.sleep(0.25)
-
-
-# Global instance (imported by ws_router.py as frontend_ws_manager)
-ws_manager = PerformantWebSocketManager()
-
-
-def _normalize_event(data: Any) -> Dict[str, Any]:
-    if isinstance(data, Mapping):
-        return dict(data)
-    if isinstance(data, (tuple, list)):
-        return _ensure_trade_dict(data)
-    return {}
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str = "spot") -> None:
-    channel = _make_channel(exchange, symbol, market_type)
-    t = _normalize_event(trade_data)
-    if not t:
-        return
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "market": _norm_market(market_type),
-        "symbol": _norm_symbol(symbol),
-        "price": t.get("price"),
-        "size": t.get("size"),
-        "side": t.get("side"),
-        "ts": t.get("timestamp") or t.get("ts"),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str = "spot") -> None:
-    channel = _make_channel(exchange, symbol, market_type)
-    c = _normalize_event(candle_data)
-    if not c:
-        return
-
-    # Candle payload: expects {t,o,h,l,c,v} on frontend (seconds)
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "market": _norm_market(market_type),
-        "symbol": _norm_symbol(symbol),
-        "t": c.get("t") or c.get("time") or c.get("timestamp"),
-        "o": c.get("o") or c.get("open"),
-        "h": c.get("h") or c.get("high"),
-        "l": c.get("l") or c.get("low"),
-        "c": c.get("c") or c.get("close"),
-        "v": c.get("v") or c.get("volume"),
-        "interval": c.get("interval"),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_orderbook_data(exchange: str, symbol: str, ob_data: Any, market_type: str = "spot") -> None:
-    channel = _make_channel(exchange, symbol, market_type)
-    d = _normalize_event(ob_data)
-    if not d:
-        return
-
-    msg = {
-        "type": "orderbook",
-        "exchange": _norm_exchange(exchange),
-        "market": _norm_market(market_type),
-        "symbol": _norm_symbol(symbol),
-        "bids": d.get("bids") or [],
-        "asks": d.get("asks") or [],
-        "ts": d.get("timestamp") or d.get("ts"),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_fill_block(
-    exchange: str,
-    symbol: str,
-    market_type: str,
-    *,
-    start_sec: int,
-    end_sec: int,
-    stage: str,
-    progress: float,
-    batch: int,
-    total: int,
-) -> None:
-    """
-    ✅ NEW: Transparent red overlay in frontend shows currently filling block.
-    start_sec/end_sec are UNIX seconds in UTC.
-    stage: "gap" | "backfill" | "bootstrap"
-    """
-    channel = _make_channel(exchange, symbol, market_type)
-    msg = {
-        "type": "fill_block",
-        "exchange": _norm_exchange(exchange),
-        "market": _norm_market(market_type),
-        "symbol": _norm_symbol(symbol),
-        "start_sec": int(start_sec),
-        "end_sec": int(end_sec),
-        "stage": str(stage or "gap"),
-        "progress": float(progress),
-        "batch": int(batch),
-        "total": int(total),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
@@ -174278,6 +174153,365 @@ async def run_unified_aggregator():
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
+</file>
+
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+
+✅ NEU:
+- fill_block Events (Gap/Backfill Block Visualizer)
+  type="fill_block"
+  payload: { exchange, market, symbol, start_sec, end_sec, stage, progress, batch, total }
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Any
+from collections.abc import Mapping
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
+    """
+    Trade erwartet dict wegen .get().
+    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
+            return {
+                "price": x[0],
+                "size": x[1],
+                "timestamp": x[2],
+                "side": x[3] if len(x) > 3 else None,
+            }
+        return {}
+
+    return {}
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _send_one(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+                self.metrics["payloads_sent"] += 1
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+
+        # bounded concurrency
+        sem = asyncio.Semaphore(256)
+
+        async def _wrap(job: _SendJob) -> None:
+            async with sem:
+                await _send_one(job)
+
+        await asyncio.gather(*[_wrap(j) for j in jobs], return_exceptions=True)
+        self.metrics["messages_sent"] += len(jobs)
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                await asyncio.sleep(sleep_s)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Frontend WS batch loop error: {e}", exc_info=True)
+                await asyncio.sleep(0.25)
+
+
+# Global instance (imported by ws_router.py as frontend_ws_manager)
+ws_manager = PerformantWebSocketManager()
+
+
+def _normalize_event(data: Any) -> Dict[str, Any]:
+    if isinstance(data, Mapping):
+        return dict(data)
+    if isinstance(data, (tuple, list)):
+        return _ensure_trade_dict(data)
+    return {}
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    t = _normalize_event(trade_data)
+    if not t:
+        return
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "price": t.get("price"),
+        "size": t.get("size"),
+        "side": t.get("side"),
+        "ts": t.get("timestamp") or t.get("ts"),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    c = _normalize_event(candle_data)
+    if not c:
+        return
+
+    # Candle payload: expects {t,o,h,l,c,v} on frontend (seconds)
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "t": c.get("t") or c.get("time") or c.get("timestamp"),
+        "o": c.get("o") or c.get("open"),
+        "h": c.get("h") or c.get("high"),
+        "l": c.get("l") or c.get("low"),
+        "c": c.get("c") or c.get("close"),
+        "v": c.get("v") or c.get("volume"),
+        "interval": c.get("interval"),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_orderbook_data(exchange: str, symbol: str, ob_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    d = _normalize_event(ob_data)
+    if not d:
+        return
+
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "bids": d.get("bids") or [],
+        "asks": d.get("asks") or [],
+        "ts": d.get("timestamp") or d.get("ts"),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_fill_block(
+    exchange: str,
+    symbol: str,
+    market_type: str,
+    *,
+    start_sec: int,
+    end_sec: int,
+    stage: str,
+    progress: float,
+    batch: int,
+    total: int,
+) -> None:
+    """
+    ✅ NEW: Transparent red overlay in frontend shows currently filling block.
+    start_sec/end_sec are UNIX seconds in UTC.
+    stage: "gap" | "backfill" | "bootstrap"
+    """
+    channel = _make_channel(exchange, symbol, market_type)
+    msg = {
+        "type": "fill_block",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "start_sec": int(start_sec),
+        "end_sec": int(end_sec),
+        "stage": str(stage or "gap"),
+        "progress": float(progress),
+        "batch": int(batch),
+        "total": int(total),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="backend/services/usecases/unified_ohlc.py">
