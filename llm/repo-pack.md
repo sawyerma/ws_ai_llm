@@ -124034,426 +124034,6 @@ class ClickHouseSchemaManager:
 cl_schema_manager = ClickHouseSchemaManager()
 </file>
 
-<file path="backend/database/clickhouse/cl_unified_manager.py">
-"""
-Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
-Environment Detection, Connection Pooling, Schema Management
-
-EXAKT nach README: 200 Zeilen ClickHouse Connection Foundation
-"""
-
-import asyncio
-import logging
-import os
-from typing import Dict, Any, List, Optional, Union
-from datetime import datetime
-import clickhouse_connect
-from clickhouse_connect.driver import Client
-from contextlib import asynccontextmanager
-import json
-
-from .cl_config import (
-    CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS, 
-    CL_SCHEMAS, CL_HEALTH_THRESHOLDS
-)
-
-logger = logging.getLogger(__name__)
-
-class ClickHouseConnectionPool:
-    """
-    Low-Level ClickHouse Connection Pool
-    Environment Detection + Connection Management
-    """
-    
-    def __init__(self):
-        self.connections: Dict[str, Client] = {}
-        self.connection_stats: Dict[str, Dict[str, Any]] = {}
-        self.environment = self._detect_environment()
-        self.is_initialized = False
-        self.initialization_time: Optional[datetime] = None
-        
-        # Environment-specific connection settings
-        self.connection_config = self._get_environment_config()
-        
-        logger.info(f"ClickHouse Connection Pool initialized for environment: {self.environment}")
-    
-    def _detect_environment(self) -> str:
-        """
-        Environment Detection Logic
-        Docker, Local, Production detection
-        """
-        # Check for Docker environment
-        if os.path.exists('/.dockerenv'):
-            return "docker"
-        
-        # Check for production indicators
-        if os.environ.get('ENVIRONMENT') == 'production':
-            return "production"
-        
-        # Check if ClickHouse service is available locally
-        try:
-            # Try to connect to local ClickHouse
-            test_client = clickhouse_connect.get_client(
-                host='localhost',
-                port=8123,
-                connect_timeout=2
-            )
-            test_client.ping()
-            test_client.close()
-            return "local"
-        except Exception:
-            pass
-        
-        # Check for Docker Compose ClickHouse service
-        try:
-            test_client = clickhouse_connect.get_client(
-                host='clickhouse',
-                port=8123,
-                connect_timeout=2
-            )
-            test_client.ping()
-            test_client.close()
-            return "docker"
-        except Exception:
-            pass
-        
-        return "development"
-    
-    def _get_environment_config(self) -> Dict[str, Any]:
-        """
-        Get environment-specific connection configuration
-        """
-        base_config = CL_CONNECTION.copy()
-        
-        if self.environment == "docker":
-            base_config.update({
-                "host": "clickhouse",
-                "port": 8123,
-                "tcp_port": 9000
-            })
-        elif self.environment == "local":
-            base_config.update({
-                "host": "localhost", 
-                "port": 8123,
-                "tcp_port": 9000
-            })
-        elif self.environment == "production":
-            base_config.update({
-                "host": os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
-                "port": int(os.environ.get("CLICKHOUSE_HTTP_PORT", "8123")),
-                "tcp_port": int(os.environ.get("CLICKHOUSE_TCP_PORT", "9000")),
-                "username": os.environ.get("CLICKHOUSE_USER"),
-                "password": os.environ.get("CLICKHOUSE_PASSWORD")
-            })
-        
-        return base_config
-    
-    async def initialize(self) -> bool:
-        """
-        Initialize connection pool with environment-specific settings
-        """
-        if self.is_initialized:
-            return True
-        
-        try:
-            self.initialization_time = datetime.now()
-            
-            # Create primary connection
-            primary_client = self._create_client("primary")
-            if primary_client:
-                self.connections["primary"] = primary_client
-                self.connection_stats["primary"] = {
-                    "created_at": datetime.now().isoformat(),
-                    "connection_count": 0,
-                    "error_count": 0,
-                    "last_used": None
-                }
-                
-                # Test primary connection
-                await self._test_connection("primary")
-                
-                self.is_initialized = True
-                logger.info(f"ClickHouse Connection Pool initialized successfully in {self.environment} environment")
-                return True
-        
-        except Exception as e:
-            logger.error(f"ClickHouse Connection Pool initialization failed: {e}")
-            return False
-        
-        return False
-    
-    def _create_client(self, connection_name: str) -> Optional[Client]:
-        """
-        Create ClickHouse client with environment-specific settings
-        """
-        try:
-            config = self.connection_config.copy()
-            
-            # Remove None values
-            config = {k: v for k, v in config.items() if v is not None}
-            
-            # Filter out parameters not supported by clickhouse_connect.get_client()
-            # get_client() only accepts HTTP client parameters (host, port, username, password, database, etc.)
-            # tcp_port/http_port are for native protocol, not HTTP client API
-            # Also filter custom retry/timeout params that don't match clickhouse_connect API
-            unsupported_params = ['tcp_port', 'http_port', 'retry_on_timeout', 'max_retries', 'retry_delay']
-            config = {k: v for k, v in config.items() if k not in unsupported_params}
-            
-            client = clickhouse_connect.get_client(**config)
-            
-            logger.debug(f"ClickHouse client created: {connection_name} -> {config['host']}:{config['port']}")
-            return client
-            
-        except Exception as e:
-            logger.error(f"Failed to create ClickHouse client {connection_name}: {e}")
-            return None
-    
-    async def _test_connection(self, connection_name: str) -> bool:
-        """
-        Test ClickHouse connection with basic query
-        """
-        try:
-            if connection_name not in self.connections:
-                return False
-            
-            client = self.connections[connection_name]
-            result = client.query("SELECT 1 as test")
-            
-            if result and len(result.result_rows) > 0:
-                self.connection_stats[connection_name]["last_used"] = datetime.now().isoformat()
-                self.connection_stats[connection_name]["connection_count"] += 1
-                logger.debug(f"ClickHouse connection test successful: {connection_name}")
-                return True
-            
-            return False
-            
-        except Exception as e:
-            if connection_name in self.connection_stats:
-                self.connection_stats[connection_name]["error_count"] += 1
-            logger.error(f"ClickHouse connection test failed {connection_name}: {e}")
-            return False
-    
-    def get_client(self, connection_name: str = "primary") -> Optional[Client]:
-        """
-        Get ClickHouse client from pool
-        """
-        if not self.is_initialized:
-            logger.warning("ClickHouse Connection Pool not initialized")
-            return None
-        
-        if connection_name in self.connections:
-            return self.connections[connection_name]
-        
-        # Try to create connection on demand
-        client = self._create_client(connection_name)
-        if client:
-            self.connections[connection_name] = client
-            self.connection_stats[connection_name] = {
-                "created_at": datetime.now().isoformat(),
-                "connection_count": 0,
-                "error_count": 0,
-                "last_used": None
-            }
-        
-        return client
-    
-    def get_pool_health(self) -> Dict[str, Any]:
-        """
-        Get connection pool health status
-        """
-        uptime_seconds = 0
-        if self.initialization_time:
-            uptime_seconds = (datetime.now() - self.initialization_time).total_seconds()
-        
-        healthy_connections = 0
-        total_connections = len(self.connections)
-        
-        for conn_name in self.connections.keys():
-            if self.connection_stats.get(conn_name, {}).get("error_count", 0) < 3:
-                healthy_connections += 1
-        
-        health_percentage = (healthy_connections / total_connections * 100) if total_connections > 0 else 0
-        
-        return {
-            "service": "clickhouse_connection_pool",
-            "environment": self.environment,
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "total_connections": total_connections,
-            "healthy_connections": healthy_connections,
-            "health_percentage": round(health_percentage, 2),
-            "connection_config": {
-                "host": self.connection_config.get("host"),
-                "port": self.connection_config.get("port"),
-                "database": self.connection_config.get("database", "trading")
-            },
-            "connection_stats": self.connection_stats,
-            "status": "healthy" if health_percentage >= 80 else "degraded" if health_percentage >= 50 else "unhealthy"
-        }
-    
-    async def shutdown(self):
-        """
-        Graceful shutdown of connection pool
-        """
-        logger.info("Shutting down ClickHouse Connection Pool...")
-        
-        for conn_name, client in self.connections.items():
-            try:
-                if hasattr(client, 'close'):
-                    client.close()
-                logger.debug(f"ClickHouse connection closed: {conn_name}")
-            except Exception as e:
-                logger.error(f"Error closing ClickHouse connection {conn_name}: {e}")
-        
-        self.connections.clear()
-        self.connection_stats.clear()
-        self.is_initialized = False
-        
-        logger.info("ClickHouse Connection Pool shutdown complete")
-
-class SchemaManager:
-    """
-    ClickHouse Schema Management
-    Database and Table Creation/Validation
-    """
-    
-    def __init__(self, connection_pool: ClickHouseConnectionPool):
-        self.connection_pool = connection_pool
-        self.managed_databases: List[str] = []
-        self.managed_tables: Dict[str, List[str]] = {}
-    
-    async def ensure_database(self, database_name: str = "trading") -> bool:
-        """
-        Ensure database exists
-        """
-        try:
-            client = self.connection_pool.get_client()
-            if not client:
-                return False
-            
-            # Create database if not exists
-            create_db_query = f"CREATE DATABASE IF NOT EXISTS {database_name}"
-            client.command(create_db_query)
-            
-            if database_name not in self.managed_databases:
-                self.managed_databases.append(database_name)
-            
-            logger.info(f"ClickHouse database ensured: {database_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to ensure ClickHouse database {database_name}: {e}")
-            return False
-    
-    async def ensure_exchange_tables(self, exchange: str, database: str = "trading") -> bool:
-        """
-        Ensure all tables exist for an exchange
-        """
-        try:
-            client = self.connection_pool.get_client()
-            if not client:
-                return False
-            
-            success_count = 0
-            total_schemas = len(CL_SCHEMAS)
-            
-            for schema_name, schema_config in CL_SCHEMAS.items():
-                table_name = f"{database}.{exchange}{schema_config['table_suffix']}"
-                
-                create_table_query = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    {schema_config['columns']}
-                ) ENGINE = {schema_config['engine']}
-                """
-                
-                try:
-                    client.command(create_table_query)
-                    success_count += 1
-                    logger.debug(f"ClickHouse table ensured: {table_name}")
-                except Exception as table_error:
-                    logger.error(f"Failed to create table {table_name}: {table_error}")
-            
-            if database not in self.managed_tables:
-                self.managed_tables[database] = []
-            
-            exchange_tables = [f"{exchange}{config['table_suffix']}" for config in CL_SCHEMAS.values()]
-            self.managed_tables[database].extend(exchange_tables)
-            
-            logger.info(f"ClickHouse tables ensured for {exchange}: {success_count}/{total_schemas}")
-            return success_count == total_schemas
-            
-        except Exception as e:
-            logger.error(f"Failed to ensure tables for exchange {exchange}: {e}")
-            return False
-    
-    def get_schema_health(self) -> Dict[str, Any]:
-        """
-        Get schema management health status
-        """
-        return {
-            "service": "clickhouse_schema_manager",
-            "managed_databases": self.managed_databases,
-            "managed_tables": dict(self.managed_tables),
-            "total_databases": len(self.managed_databases),
-            "total_tables": sum(len(tables) for tables in self.managed_tables.values()),
-            "status": "healthy" if len(self.managed_databases) > 0 else "initializing"
-        }
-
-# Global instances (Singleton pattern following Redis model)
-_connection_pool: Optional[ClickHouseConnectionPool] = None
-_schema_manager: Optional[SchemaManager] = None
-
-def get_clickhouse_connection_pool() -> ClickHouseConnectionPool:
-    """
-    Get global ClickHouse connection pool instance
-    """
-    global _connection_pool
-    if _connection_pool is None:
-        _connection_pool = ClickHouseConnectionPool()
-    return _connection_pool
-
-def get_schema_manager() -> SchemaManager:
-    """
-    Get global schema manager instance
-    """
-    global _schema_manager, _connection_pool
-    if _schema_manager is None:
-        if _connection_pool is None:
-            _connection_pool = ClickHouseConnectionPool()
-        _schema_manager = SchemaManager(_connection_pool)
-    return _schema_manager
-
-async def initialize_clickhouse_foundation() -> bool:
-    """
-    Initialize complete ClickHouse foundation
-    Connection Pool + Schema Manager
-    """
-    try:
-        # Initialize connection pool
-        pool = get_clickhouse_connection_pool()
-        pool_ready = await pool.initialize()
-        
-        if not pool_ready:
-            logger.error("ClickHouse Connection Pool initialization failed")
-            return False
-        
-        # Initialize schema manager
-        schema_mgr = get_schema_manager()
-        
-        # Ensure trading database
-        trading_db_ready = await schema_mgr.ensure_database("trading")
-        
-        if not trading_db_ready:
-            logger.warning("Trading database creation failed, but continuing...")
-        
-        logger.info("ClickHouse Foundation initialized successfully")
-        return True
-        
-    except Exception as e:
-        logger.error(f"ClickHouse Foundation initialization failed: {e}")
-        return False
-</file>
-
 <file path="backend/database/clickhouse/cl_user_settings.py">
 import asyncio
 import logging
@@ -160683,6 +160263,65 @@ Wenn Backend NICHT in Docker läuft (z.B. `python -m uvicorn backend.core.main:a
 **FIX:** `.env` als Volume mounten ODER `env_file: .env` in `docker-compose.yml` hinzufügen
 </file>
 
+<file path="Dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ============================================================
+# LAYER 1: System Dependencies (CACHED solange unverändert)
+# ============================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    tar \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
+# ============================================================
+# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
+COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
+COPY vendor/system/file_linux/config.guess ./config.guess
+COPY vendor/system/file_linux/config.sub ./config.sub
+
+RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
+ && cd ta-lib/ \
+ && cp ../config.guess ../config.sub . \
+ && chmod +x config.guess config.sub \
+ && ./configure --prefix=/usr \
+ && (make -j$(nproc) || make) \
+ && make install \
+ && cd .. \
+ && rm -rf ta-lib* config.guess config.sub \
+ && ldconfig
+
+# ============================================================
+# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
+# ============================================================
+COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
+COPY vendor/backend/file_linux/ ./wheels/
+
+RUN pip install --no-cache-dir --no-index --find-links ./wheels \
+    -r backend_requirements.lock
+
+# ============================================================
+# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
+# ============================================================
+COPY backend ./backend
+
+# ENV für Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Port exposen
+EXPOSE 8100
+
+# Start der App
+CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
+</file>
+
 <file path="FEHLER_ANALYSE.md">
 # Fehleranalyse - CoinSelector & Backend Issues
 
@@ -162333,492 +161972,256 @@ async def get_candle_resolutions():
     }
 </file>
 
-<file path="backend/database/clickhouse/__init__.py">
-# ClickHouse Lane System - Unified Export Module
-# Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
+<file path="backend/database/clickhouse/cl_unified_manager.py">
+"""
+Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
+Environment Detection, Connection Pooling, Schema Management
 
-from typing import Any, Dict, Optional
-import logging
+FIX (Enterprise):
+- clickhouse_connect Client ist NICHT concurrent-safe pro Session.
+- Lösung: pro Thread EIN Client (thread-local).
+- Alle DB-Operationen sollen aus async Code via asyncio.to_thread() laufen (siehe ClickHouseClientWrapper.execute).
+"""
 
-logger = logging.getLogger(__name__)
+from __future__ import annotations
 
-from .cl_config import (
-    CL_DATABASE_PATTERNS,
-    CL_CONNECTION,
-    CL_PERFORMANCE,
-    CRITICAL_CL_COMPONENTS,
-    EXCHANGE_CL_CONFIGS,
-    CL_HEALTH_THRESHOLDS,
-    CL_SCHEMAS
-)
-
-from .cl_lanes import (
-    cl_status,
-    cl_lane
-)
-
-from .cl_registry import (
-    cl_registry,
-    cl_registry_instance
-)
-
-from .cl_manager import (
-    cl_manager,
-    cl_manager_instance
-)
-
-from .cl_checker import (
-    cl_checker,
-    cl_checker_instance
-)
-
-from .cl_router import (
-    cl_router
-)
-
-from .cl_message_handlers import (
-    cl_message_handlers,
-    cl_handlers_instance
-)
-
-from .cl_unified import (
-    UnifiedClService,
-    unified_cl_service
-)
-
-from .cl_user_settings import (
-    cl_user_settings,
-    get_user_settings_store,
-    get_user_settings_cache
-)
-
-# Import the real ClickHouse implementation
-from .cl_unified_manager import get_clickhouse_connection_pool, ClickHouseConnectionPool
-
-# ClickHouse Client Compatibility Functions
-def get_clickhouse_client():
-    """
-    Get ClickHouse client instance - verwendet echten clickhouse_connect Client
-    """
-    try:
-        pool = get_clickhouse_connection_pool()
-        if not pool.is_initialized:
-            # Initialize pool synchronously if needed
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If in async context, create task
-                    return ClickHouseClientWrapper(pool)
-                else:
-                    # Initialize synchronously
-                    loop.run_until_complete(pool.initialize())
-            except RuntimeError:
-                # No event loop, initialize later
-                pass
-        
-        return ClickHouseClientWrapper(pool)
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to get ClickHouse client: {e}")
-        return ClickHouseClientWrapper(None)
-
-class ClickHouseClientWrapper:
-    """
-    Wrapper für echten clickhouse_connect Client mit execute() Kompatibilität
-    """
-    def __init__(self, connection_pool):
-        self.pool = connection_pool
-        self._client = None
-    
-    def _get_client(self):
-        """Get actual ClickHouse client from pool"""
-        if self.pool and self.pool.is_initialized:
-            return self.pool.get_client()
-        return None
-    
-    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None):
-        """
-        Execute query with clickhouse_connect native parameter binding.
-        - Python 3.9+ kompatibel (Optional statt |)
-        - Native Parameterbindung (typsicher)
-        - Raises on error (no silent [])
-        """
-        client = self._get_client()
-        if not client:
-            if self.pool and not self.pool.is_initialized:
-                await self.pool.initialize()
-                client = self._get_client()
-
-        if not client:
-            raise RuntimeError("ClickHouse client not available (pool not initialized)")
-
-        q = (query or "").strip()
-        if not q:
-            raise ValueError("Empty ClickHouse query")
-
-        try:
-            q_upper = q.lstrip().upper()
-
-            # Write operations: prefer command, fallback to query if command doesn't support parameters
-            if q_upper.startswith(("INSERT", "CREATE", "DROP", "ALTER", "TRUNCATE", "OPTIMIZE", "SYSTEM")):
-                try:
-                    client.command(q, parameters=(params or None))
-                except TypeError:
-                    # Some clickhouse_connect versions don't accept parameters in command()
-                    client.query(q, parameters=(params or None))
-                return []
-
-            # Read operations
-            result = client.query(q, parameters=(params or None))
-            return result.result_rows if result else []
-
-        except Exception as e:
-            logger.error("ClickHouse execute failed: %s", e, exc_info=True)
-            raise  # ✅ Exception statt []
-
-# Legacy compatibility
-ClickHouseClient = ClickHouseClientWrapper
-
-# Main exports for external use
-__all__ = [
-    # Config
-    "CL_DATABASE_PATTERNS",
-    "CL_CONNECTION", 
-    "CL_PERFORMANCE",
-    "CRITICAL_CL_COMPONENTS",
-    "EXCHANGE_CL_CONFIGS",
-    "CL_HEALTH_THRESHOLDS",
-    "CL_SCHEMAS",
-    
-    # Core Classes
-    "cl_status",
-    "cl_lane",
-    "cl_registry",
-    "cl_manager", 
-    "cl_checker",
-    "cl_message_handlers",
-    "UnifiedClService",
-    
-    # Singleton Instances
-    "cl_registry_instance",
-    "cl_manager_instance",
-    "cl_checker_instance", 
-    "cl_handlers_instance",
-    "unified_cl_service",
-    
-    # FastAPI Router
-    "cl_router",
-    
-    # User Settings
-    "cl_user_settings",
-    "get_user_settings_store",
-    "get_user_settings_cache",
-    
-    # Compatibility Functions
-    "get_clickhouse_client",
-    "ClickHouseClient",
-    "ClickHouseClientWrapper"
-]
-
-# Convenience aliases for commonly used instances
-cl_registry = cl_registry_instance
-cl_manager = cl_manager_instance  
-cl_checker = cl_checker_instance
-cl_handlers = cl_handlers_instance
-unified_clickhouse = unified_cl_service
-</file>
-
-<file path="backend/database/clickhouse/cl_manager.py">
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
+import os
+import threading
 from datetime import datetime
-from .cl_lanes import cl_lane, cl_status
-from .cl_registry import cl_registry_instance
-from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
+from typing import Dict, Any, List, Optional
+
+import clickhouse_connect
+from clickhouse_connect.driver import Client
+
+from .cl_config import (
+    CL_CONNECTION,
+    CL_SCHEMAS,
+)
 
 logger = logging.getLogger(__name__)
 
-class cl_manager:
-    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.registry = cl_registry_instance
-        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
-        self.connection_pool = None
+
+class ClickHouseConnectionPool:
+    """
+    ClickHouse Connection Pool
+
+    Enterprise Policy:
+    - pro Thread genau 1 Client (thread-local)
+    - KEIN shared Client über Async-Tasks
+    """
+
+    def __init__(self) -> None:
+        self.environment = self._detect_environment()
         self.is_initialized = False
-        self.startup_time = datetime.now()
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "manager")
-        except ImportError:
-            logger.warning("Health system not available for cl_manager")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_manager initialized")
-    
-    async def initialize(self):
-        """Initialize ClickHouse connection pool and basic infrastructure"""
+        self.initialization_time: Optional[datetime] = None
+
+        # thread-local Clients: { connection_name -> Client }
+        self._thread_local = threading.local()
+
+        # config once
+        self.connection_config = self._get_environment_config()
+
+        logger.info("ClickHouseConnectionPool created | env=%s | cfg=%s:%s/%s",
+                    self.environment,
+                    self.connection_config.get("host"),
+                    self.connection_config.get("port"),
+                    self.connection_config.get("database"))
+
+    def _detect_environment(self) -> str:
+        if os.path.exists("/.dockerenv"):
+            return "docker"
+        if os.environ.get("ENVIRONMENT") == "production":
+            return "production"
+        return "local"
+
+    def _get_environment_config(self) -> Dict[str, Any]:
+        """
+        Nutzt CL_CONNECTION als SSOT.
+        Override nur Host/Port Defaults je Environment (ohne Overengineering).
+        """
+        cfg = dict(CL_CONNECTION)
+
+        # Docker: Service-Name "clickhouse" im Compose-Netz
+        if self.environment == "docker":
+            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "clickhouse")) or "clickhouse"
+            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
+        else:
+            # local/dev: meistens localhost
+            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "localhost")) or "localhost"
+            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
+
+        # Filter: nur Parameter, die clickhouse_connect.get_client akzeptiert (HTTP)
+        allowed = {
+            "host",
+            "port",
+            "username",
+            "password",
+            "database",
+            "connect_timeout",
+            "send_receive_timeout",
+        }
+        cfg = {k: v for k, v in cfg.items() if k in allowed and v is not None}
+        return cfg
+
+    def _make_client(self) -> Client:
+        return clickhouse_connect.get_client(**self.connection_config)
+
+    async def initialize(self) -> bool:
         if self.is_initialized:
-            return
-        
-        try:
-            # Initialize connection pool (will be implemented when we have clickhouse-connect)
-            await self._setup_connection_pool()
-            
-            # Register core lanes for all exchanges
-            await self._register_core_lanes()
-            
-            self.is_initialized = True
-            
-            if self.health_component:
-                self.health_component.record_success({"action": "manager_initialized"})
-                
-            logger.info("ClickHouse cl_manager successfully initialized")
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize cl_manager: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-            raise
-    
-    async def _setup_connection_pool(self):
-        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
-            
-            # ✅ 1) Pool holen
-            self.connection_pool = get_clickhouse_connection_pool()
-            
-            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
-            ok = await initialize_clickhouse_foundation()
-            if not ok:
-                raise RuntimeError("ClickHouse foundation initialization failed")
-            
-            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
-            client = self.connection_pool.get_client()
-            if not client:
-                raise RuntimeError("ClickHouse client not available after initialization")
-            
-            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
-            raise
-    
-    async def _register_core_lanes(self):
-        """Register core lanes for all 8 exchanges"""
-        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
-        operations = ["trades", "candles", "orderbook"]
-        
-        for exchange in exchanges:
-            for operation in operations:
-                try:
-                    lane = self.registry.register_lane(exchange, operation)
-                    # Set REAL ClickHouse connection reference
-                    lane.clickhouse_connection = self.connection_pool
-                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
-    
-    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
-        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
-        if not self.is_initialized:
-            await self.initialize()
-        
-        try:
-            # Get or register lane
-            lane = self.registry.get_lane(exchange, operation_type)
-            if not lane:
-                lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            
-            # Setup ClickHouse connection for this lane
-            await self._setup_lane_connection(lane)
-            
-            # Update lane status to connecting
-            lane.status = cl_status.CONNECTING
-            
-            # Test connection and set to connected
-            if await self._test_lane_connection(lane):
-                lane.record_operation_success(0.0, {"action": "lane_started"})
-                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
-            else:
-                lane.record_operation_error("Connection test failed")
-                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
-            
-            return lane
-            
-        except Exception as e:
-            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
-            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
-            
-            # Create error lane
-            lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            lane.record_operation_error(error_msg)
-            
-            raise
-    
-    async def _setup_lane_connection(self, lane: cl_lane):
-        """Setup ClickHouse connection for specific lane"""
-        try:
-            # Get exchange-specific config
-            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
-            
-            # Create lane-specific connection metadata
-            connection_info = {
-                "exchange": lane.exchange,
-                "operation": lane.operation_type,
-                "database": exchange_config.get("database", lane.exchange),
-                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
-                "tables": exchange_config.get("tables", []),
-                "priority": exchange_config.get("priority", "medium")
-            }
-            
-            # Set REAL connection reference
-            lane.clickhouse_connection = connection_info
-            
-            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
-            raise
-    
-    async def _test_lane_connection(self, lane: cl_lane) -> bool:
-        """Test ClickHouse connection for lane - ECHTER Test!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                logger.error(f"ClickHouse client not available for {lane.exchange}.{lane.operation_type}")
-                return False
-            
-            # ECHTER ClickHouse Ping
-            result = client.command("SELECT 1")
-            
-            if result == 1:
-                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
-                return True
-            else:
-                logger.error(f"Unexpected result from ClickHouse: {result}")
-                return False
-            
-        except Exception as e:
-            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
-            return False
-    
-    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
-        """Insert data into ClickHouse via lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            logger.error(f"No lane found for {exchange}.{operation_type}")
-            return False
-        
-        try:
-            start_time = datetime.now()
-            
-            # ✅ REAL ClickHouse INSERT using cl_unified_manager
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                raise Exception("ClickHouse client not available")
-            
-            # Determine table name based on operation_type
-            table_map = {
-                "trades": f"{exchange}_trades",
-                "candles": f"{exchange}_kline", 
-                "orderbook": f"{exchange}_orderbook"
-            }
-            
-            table_name = table_map.get(operation_type)
-            if not table_name:
-                raise Exception(f"Unknown operation type: {operation_type}")
-            
-            # Build INSERT query
-            full_table = f"trading.{table_name}"
-            columns = list(data.keys())
-            values = list(data.values())
-            
-            # Execute INSERT
-            client.insert(full_table, [values], column_names=columns)
-            
-            end_time = datetime.now()
-            latency_ms = (end_time - start_time).total_seconds() * 1000
-            
-            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
-            
-            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
             return True
-            
+
+        try:
+            self.initialization_time = datetime.now()
+            # Ping über thread-local Client im Thread (kein Blocking im Eventloop)
+            def _ping() -> None:
+                c = self.get_client()
+                c.ping()
+
+            await asyncio.to_thread(_ping)
+            self.is_initialized = True
+            logger.info("ClickHouseConnectionPool initialized | env=%s", self.environment)
+            return True
         except Exception as e:
-            error_msg = f"Insert failed: {str(e)}"
-            lane.record_operation_error(error_msg)
-            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
+            logger.error("ClickHouseConnectionPool init failed: %s", e, exc_info=True)
+            self.is_initialized = False
             return False
-    
-    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
-        """Get status for specific lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            return None
-        
-        return lane.get_health()
-    
-    def get_all_lane_status(self) -> List[Dict[str, Any]]:
-        """Get status for all lanes"""
-        return self.registry.get_lane_health_details()
-    
-    def get_manager_health(self) -> Dict[str, Any]:
-        """Get manager health status"""
-        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
-        
+
+    def get_client(self, connection_name: str = "primary") -> Client:
+        """
+        Thread-local Client.
+        WICHTIG: Dieser Client darf nur im aktuellen Thread benutzt werden.
+        """
+        clients = getattr(self._thread_local, "clients", None)
+        if clients is None:
+            clients = {}
+            self._thread_local.clients = clients
+
+        c = clients.get(connection_name)
+        if c is None:
+            c = self._make_client()
+            clients[connection_name] = c
+        return c
+
+    def get_pool_health(self) -> Dict[str, Any]:
+        """
+        Get connection pool health status
+        """
+        uptime_seconds = 0
+        if self.initialization_time:
+            uptime_seconds = (datetime.now() - self.initialization_time).total_seconds()
+
         return {
-            "component": "clickhouse.manager",
+            "service": "clickhouse_connection_pool",
+            "environment": self.environment,
             "initialized": self.is_initialized,
             "uptime_seconds": round(uptime_seconds, 2),
-            "connection_pool": self.connection_pool,
-            "active_connections": len(self.connections),
-            "registry_health": self.registry.get_system_health()
+            "connection_config": {
+                "host": self.connection_config.get("host"),
+                "port": self.connection_config.get("port"),
+                "database": self.connection_config.get("database", "trading")
+            },
+            "status": "healthy" if self.is_initialized else "initializing"
         }
-    
-    async def shutdown(self):
-        """Graceful shutdown of all ClickHouse operations"""
-        logger.info("Shutting down ClickHouse cl_manager...")
-        
+
+    async def shutdown(self) -> None:
+        # optional: thread-local clients schließen (best-effort)
+        self.is_initialized = False
+        logger.info("ClickHouseConnectionPool shutdown requested")
+
+
+class SchemaManager:
+    """
+    Minimaler Schema-Ensurer (falls du es nutzt).
+    """
+
+    def __init__(self, pool: ClickHouseConnectionPool) -> None:
+        self.pool = pool
+        self.managed_databases: List[str] = []
+        self.managed_tables: Dict[str, List[str]] = {}
+
+    async def ensure_database(self, database_name: str = "trading") -> bool:
         try:
-            # Shutdown all lanes
-            await self.registry.shutdown_all()
-            
-            # Close connection pool - cl_unified_manager handles cleanup
-            if self.connection_pool:
-                self.connection_pool = None
-            
-            # Clear connections
-            self.connections.clear()
-            
-            self.is_initialized = False
-            
-            logger.info("ClickHouse cl_manager shutdown complete")
-            
+            def _run() -> None:
+                c = self.pool.get_client()
+                c.command(f"CREATE DATABASE IF NOT EXISTS {database_name}")
+
+            await asyncio.to_thread(_run)
+            if database_name not in self.managed_databases:
+                self.managed_databases.append(database_name)
+            return True
         except Exception as e:
-            logger.error(f"Error during cl_manager shutdown: {str(e)}")
-            raise
+            logger.error("ensure_database failed: %s", e, exc_info=True)
+            return False
+
+    async def ensure_exchange_tables(self, exchange: str, database: str = "trading") -> bool:
+        """
+        Achtung: Deine echten Tabellen sind bereits vorhanden (binance_trades, ...).
+        Das hier ist nur, falls du CL_SCHEMAS aktiv nutzt.
+        """
+        try:
+            def _run() -> int:
+                c = self.pool.get_client()
+                ok = 0
+                for _, schema in CL_SCHEMAS.items():
+                    table = f"{database}.{exchange}{schema['table_suffix']}"
+                    q = f"CREATE TABLE IF NOT EXISTS {table} ({schema['columns']}) ENGINE = {schema['engine']}"
+                    c.command(q)
+                    ok += 1
+                return ok
+
+            created = await asyncio.to_thread(_run)
+            self.managed_tables.setdefault(database, [])
+            return created == len(CL_SCHEMAS)
+        except Exception as e:
+            logger.error("ensure_exchange_tables failed: %s", e, exc_info=True)
+            return False
+
+    def get_schema_health(self) -> Dict[str, Any]:
+        """
+        Get schema management health status
+        """
+        return {
+            "service": "clickhouse_schema_manager",
+            "managed_databases": self.managed_databases,
+            "managed_tables": dict(self.managed_tables),
+            "total_databases": len(self.managed_databases),
+            "total_tables": sum(len(tables) for tables in self.managed_tables.values()),
+            "status": "healthy" if len(self.managed_databases) > 0 else "initializing"
+        }
 
 
-# Global cl_manager instance
-cl_manager_instance = cl_manager()
+_connection_pool: Optional[ClickHouseConnectionPool] = None
+_schema_manager: Optional[SchemaManager] = None
+
+
+def get_clickhouse_connection_pool() -> ClickHouseConnectionPool:
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = ClickHouseConnectionPool()
+    return _connection_pool
+
+
+def get_schema_manager() -> SchemaManager:
+    global _schema_manager, _connection_pool
+    if _schema_manager is None:
+        if _connection_pool is None:
+            _connection_pool = ClickHouseConnectionPool()
+        _schema_manager = SchemaManager(_connection_pool)
+    return _schema_manager
+
+
+async def initialize_clickhouse_foundation() -> bool:
+    pool = get_clickhouse_connection_pool()
+    ok = await pool.initialize()
+    if not ok:
+        return False
+
+    # optional DB ensure
+    schema = get_schema_manager()
+    await schema.ensure_database("trading")
+    return True
 </file>
 
 <file path="backend/exchanges/mexc/services/orderbook.py">
@@ -164259,431 +163662,493 @@ export function useCandleChart({
 }
 </file>
 
-<file path="readme/the_backfill_system_01_26_v1.md">
-# README — Backfill + Gap-Fill Autodetect (Trades-SoT, ClickHouse, ENV-driven)
-
-**Projekt:** `0_WS_AI`
-**Datum:** 2026-02-21
-**Ziel:** Rohdaten (Trades) als Single Source of Truth in ClickHouse speichern, Candles daraus ableiten, und **zu jeder Zeit** Datenlücken automatisch erkennen und nachladen (Gap-Fill).
-
----
-
-## 1) Systemvertrag
-
-### 1.1 Single Source of Truth
-
-**SoT ist immer die Trades-Tabelle** pro Exchange:
-
-* `trading.<exchange>_trades` (z. B. `trading.binance_trades`)
-
-Schema (Beispiel Binance, bestätigt per `DESCRIBE TABLE`):
-
-* `symbol LowCardinality(String)`
-* `market LowCardinality(String)`
-* `price Decimal(76,38)`
-* `size Decimal(76,38)`
-* `side Enum8('buy'=1,'sell'=2)`
-* `timestamp DateTime64(3,'UTC')`
-* `trade_id UInt64 MATERIALIZED cityHash64(...)`
-* `source LowCardinality(String) DEFAULT 'live_ws'`
-
-### 1.2 Quelle/Markierung der Daten (source)
-
-`source` beschreibt **nur**, woher ein **echter Trade** stammt:
-
-* `live_ws` → Live-Stream
-* `rest_backfill` → Backfill (historisch nachgeladen)
-
-**Wichtig:** `source` ist **kein Gap-Marker**. Gaps werden nicht durch Fake-Rows markiert, sondern durch SQL-Expected-Buckets Scan.
-
----
-
-## 2) Komponenten & Pfade
-
-### 2.1 Auto-Start des Backfill-Loops
-
-**Pfad:** `backend/services/adapter/collector_starter.py`
-**Funktion:** `start_auto_backfill_gap_loop()`
-
-* liest `AUTO_BACKFILL_*` ENV
-* startet pro Coin (`exchange:symbol`) einen Task `BackfillLoopService.run()`
-
-### 2.2 Gap-Detection + Gap-Fill (Autodetect & Nachladen)
-
-**Pfad:** `backend/services/usecases/backfill_loop_service.py`
-**Klasse:** `BackfillLoopService`
-
-Funktional:
-
-1. **Gap-Scan** (Expected-Buckets über ClickHouse)
-2. **Gap-Fill**: neuestes GapWindow wird sofort nachgeladen
-3. **Normal-Backfill**: wenn keine Gaps existieren, rückwärts bis `AUTO_BACKFILL_UNTIL_DATE`
-
-### 2.3 Historical Backfill (Trades-only, enterprise)
-
-**Pfad:** `backend/services/usecases/unified_historical.py`
-**Klasse:** `UnifiedHistoricalService`
-
-Eigenschaften:
-
-* **Trades-only** (keine Candles im Backfill)
-* **deterministischer Cursor** mit `to_date` (EXKLUSIV)
-* **kein Datenverlust bei liquiden Märkten**: Cursor bewegt sich anhand **ältestem zurückgelieferten Trade** (kein stumpfer “1h-hop”)
-* komplett **ENV/Policy-driven** (Fenstergröße, API-Limit, Methodennamen)
-
----
-
-## 3) Wie Gap-Detection genau funktioniert (Expected-Buckets)
-
-**Definition:** Ein Bucket gilt als “vorhanden”, wenn in diesem Bucket **mindestens 1 Trade** existiert.
-Fehlende Buckets = Expected − Present.
-
-Mechanik:
-
-* Scan-Fenster: `[now - GAP_SCAN_DAYS, now]`
-* Bucketgröße: `GAP_BUCKET_SECONDS` (z. B. 60)
-* Expected-Buckets: `system.numbers` erzeugt Zeitraster
-* Present-Buckets: `toStartOfInterval(timestamp, step)` aus Trades
-* Missing: left join expected vs present where present is null
-* Missing buckets werden in Python zu **GapWindow(start,end_exklusiv)** segmentiert
-* `BackfillLoopService.run()` priorisiert `gaps[0]` (neuester Gap) und lädt exakt `[start,end)` nach
-
----
-
-## 4) Gap-Fill / Auto-Nachladen (zu jeder Zeit)
-
-### 4.1 Dauerbetrieb (kritischer Fix)
-
-Damit “dauerhaft prüfen und nachladen” wirklich dauerhaft ist, darf der Loop **nicht** stoppen, wenn eine Iteration 0 Trades liefert.
-
-**Regel:**
-
-* `trades_loaded <= 0` → **sleep + continue**
-* niemals `break` (sonst endet das Autogap-System bei leeren Fenstern/temporären API-Problemen)
-
----
-
-## 5) UnifiedHistoricalService (Enterprise, dynamisch, nicht hardcoded)
-
-### 5.1 Warum der Cursor-Fix zwingend war
-
-Bei BTCUSDT können in 1h weit mehr als 1000 Trades existieren.
-Wenn man pro 1h-Fenster nur 1000 lädt und dann stumpf 1h zurückspringt, gehen Daten verloren.
-
-**Enterprise-Lösung:**
-
-* Nach jedem Fetch wird `t_end` auf den **ältesten zurückgelieferten Trade** gesetzt
-* so “scrollt” der Cursor rückwärts durch das Fenster, bis es wirklich abgearbeitet ist
-
-### 5.2 Keine Hardcodes: ENV steuert alles
-
-Methoden-Namen und Policies werden über ENV gesetzt:
-
-* Spot-Fetch-Methode: `HIST_FETCH_METHOD_SPOT`
-* Futures-Fetch-Methode: `HIST_FETCH_METHOD_FUTURES`
-* Fenstergröße: `HIST_WINDOW_SECONDS`
-* API per-call limit: `HIST_PER_CALL_LIMIT`
-* Flush batch: `HIST_FLUSH_BATCH_SIZE`
-* Stagnation: `HIST_MAX_STAGNANT`, `HIST_CURSOR_BACKOFF_MS`
-
-Der Service versucht zusätzlich Fallbacks (z. B. `fetch_trades`, `fetch_spot_trades`) und meldet “not implemented”, wenn ein Exchange keinen Time-Backfill unterstützt.
-
----
-
-## 6) ENV-Konfiguration (relevante Keys)
-
-### 6.1 Auto-Backfill
-
-```bash
-AUTO_BACKFILL_ENABLED=1
-AUTO_BACKFILL_COINS="binance:BTCUSDT"
-AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
-AUTO_BACKFILL_MARKET="spot"
-BACKFILL_READY_TIMEOUT=120
-```
-
-### 6.2 Gap-Scan / Autodetect
-
-```bash
-GAP_SCAN_DAYS=30
-GAP_BUCKET_SECONDS=60
-GAP_SOURCE_FILTER=live_ws,rest_backfill
-```
-
-**Interpretation:**
-
-* Scan prüft letzte 30 Tage in 60s Buckets
-* Buckets zählen als vorhanden, wenn Trades mit source in `{live_ws, rest_backfill}` vorhanden sind
-
-### 6.3 Enterprise Historical Policies (Trades-only)
-
-```bash
-HIST_WINDOW_SECONDS=3600
-HIST_PER_CALL_LIMIT=1000
-HIST_FLUSH_BATCH_SIZE=500
-HIST_FETCH_METHOD_SPOT=fetch_trades
-HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
-HIST_MAX_STAGNANT=3
-HIST_CURSOR_BACKOFF_MS=1
-```
-
----
-
-## 7) Betriebslogik im Klartext
-
-1. System startet → `collector_starter` spawnt BackfillLoop Tasks pro `AUTO_BACKFILL_COINS`.
-2. Jeder Loop:
-
-   * scannt Gaps (Expected-Buckets)
-   * wenn Gap gefunden → lädt dieses GapWindow per `UnifiedHistoricalService.history([start,end))`
-   * sonst → normaler Backfill rückwärts Richtung `AUTO_BACKFILL_UNTIL_DATE`
-3. Loop läuft weiter, auch wenn eine Iteration mal 0 Trades liefert (sleep+continue).
-4. ClickHouse bleibt Single Source of Truth, Candles werden daraus abgeleitet.
-
----
-
-## 8) Ergebnis / Garantie
-
-* Keine synthetischen Daten (kein Interpolieren, keine Fake-Trades)
-* Trades sind SoT, Candles sind abgeleitet
-* Gap-Detection + Nachladen arbeitet automatisch und dauerhaft
-* Historischer Backfill ist robust auch bei sehr hoher Trade-Dichte (kein 1h-hop Datenverlust)
-* Konfiguration ist vollständig ENV-gesteuert, keine Hardcodes in der Logik
-
----
-
-## 9) Frontend: Historical Data Updates (Fix 2026-02-21)
-
-### 9.1 Problem: Historical Count blieb bei 1267 stecken
-
-**Symptom:**
-- Frontend zeigte "Historical 1267" und aktualisierte nicht, obwohl Backfill kontinuierlich neue Daten lud
-- ClickHouse enthielt 5123+ Candles, aber Frontend zeigte nur 1267
-
-**Root Cause:**
-`frontend/src/services/ws/useWsLane.ts` verwendete `setHistorical(hist)`, was bei jedem neuen WebSocket-Message die kompletten historical Daten **ersetzte** statt zu **mergen**.
-
-### 9.2 Lösung: Merge-Logik für Historical Updates
-
-**Pfad:** `frontend/src/services/ws/useWsLane.ts`
-
-**Vorher (FALSCH):**
-```typescript
-if (msg.type === "historical") {
-  const hist: LiveCandle[] = /* ... parse ... */;
-  setHistorical(hist); // ❌ Ersetzt alle Daten
-}
-```
-
-**Nachher (KORREKT):**
-```typescript
-if (msg.type === "historical") {
-  const hist: LiveCandle[] = /* ... parse ... */;
-  
-  // ✅ FIX: Merge new historical data instead of replacing
-  setHistorical((prev) => {
-    // Create map of existing candles by timestamp
-    const map = new Map<number, LiveCandle>();
-    for (const c of prev) {
-      map.set(c.t, c);
-    }
-    // Add/update with new candles
-    for (const c of hist) {
-      map.set(c.t, c);
-    }
-    // Return sorted array
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
-  });
-}
-```
-
-**Effekt:**
-- Historical Daten werden **inkrementell erweitert** statt ersetzt
-- Backfill kann kontinuierlich neue Candles hinzufügen
-- Frontend zeigt wachsenden Historical Count (1267 → 5123+)
-- Keine Duplikate durch Map-basierte Deduplication
-
----
-
-## 10) Backend: ClickHouse Thread-Safety (Fix 2026-02-21)
-
-### 10.1 Problem: Concurrent Query Session Error
-
-**Symptom:**
-```
-❌ CLICKHOUSE oldest query FAILED | error=Attempt to execute concurrent queries within the same session
-⚠️ [GAPSCAN] scan failed | Attempt to execute concurrent queries within the same session
-```
-
-**Root Cause:**
-- `BackfillLoopService` und `GapScanService` verwendeten **denselben ClickHouse-Client** (shared session)
-- Parallele Queries in verschiedenen Threads → Session-Konflikt
-- `asyncio.to_thread()` führte Queries in Thread-Pool aus, aber mit shared Client
-
-### 10.2 Lösung: Thread-Local ClickHouse Clients
-
-**Neue Datei:** `backend/database/clickhouse/threadsafe_client.py`
-
-```python
-from __future__ import annotations
-
-import threading
-import clickhouse_connect
-
-from backend.database.clickhouse.cl_config import CL_CONNECTION
-
-_thread_local = threading.local()
-
-
-def _make_client():
-    return clickhouse_connect.get_client(
-        host=CL_CONNECTION["host"],
-        port=CL_CONNECTION["port"],
-        username=CL_CONNECTION.get("username", "default"),
-        password=CL_CONNECTION.get("password", ""),
-        database=CL_CONNECTION.get("database", "default"),
-        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
-        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
-    )
-
-
-def get_thread_client():
+<file path="backend/database/clickhouse/__init__.py">
+# ClickHouse Lane System - Unified Export Module
+# Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
+
+from typing import Any, Dict, Optional
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+from .cl_config import (
+    CL_DATABASE_PATTERNS,
+    CL_CONNECTION,
+    CL_PERFORMANCE,
+    CRITICAL_CL_COMPONENTS,
+    EXCHANGE_CL_CONFIGS,
+    CL_HEALTH_THRESHOLDS,
+    CL_SCHEMAS
+)
+
+from .cl_lanes import (
+    cl_status,
+    cl_lane
+)
+
+from .cl_registry import (
+    cl_registry,
+    cl_registry_instance
+)
+
+from .cl_manager import (
+    cl_manager,
+    cl_manager_instance
+)
+
+from .cl_checker import (
+    cl_checker,
+    cl_checker_instance
+)
+
+from .cl_router import (
+    cl_router
+)
+
+from .cl_message_handlers import (
+    cl_message_handlers,
+    cl_handlers_instance
+)
+
+from .cl_unified import (
+    UnifiedClService,
+    unified_cl_service
+)
+
+from .cl_user_settings import (
+    cl_user_settings,
+    get_user_settings_store,
+    get_user_settings_cache
+)
+
+# Import the real ClickHouse implementation
+from .cl_unified_manager import get_clickhouse_connection_pool, ClickHouseConnectionPool
+
+# ClickHouse Client Compatibility Functions
+def get_clickhouse_client():
     """
-    Thread-safe ClickHouse client:
-    - exactly one clickhouse_connect client per OS thread
-    - prevents "concurrent queries within the same session"
+    Get ClickHouse client instance - verwendet echten clickhouse_connect Client
     """
-    c = getattr(_thread_local, "client", None)
-    if c is None:
-        c = _make_client()
-        _thread_local.client = c
-    return c
-```
+    try:
+        pool = get_clickhouse_connection_pool()
+        if not pool.is_initialized:
+            # Initialize pool synchronously if needed
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If in async context, create task
+                    return ClickHouseClientWrapper(pool)
+                else:
+                    # Initialize synchronously
+                    loop.run_until_complete(pool.initialize())
+            except RuntimeError:
+                # No event loop, initialize later
+                pass
+        
+        return ClickHouseClientWrapper(pool)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to get ClickHouse client: {e}")
+        return ClickHouseClientWrapper(None)
 
-**Wichtig:**
-- **Keine doppelte Konfiguration**: Nutzt zentrale `CL_CONNECTION` aus `cl_config.py`
-- **Thread-Local Storage**: Jeder Thread bekommt seinen eigenen Client
-- **Lazy Initialization**: Client wird erst bei Bedarf erstellt
-
-### 10.3 Integration in BackfillLoopService
-
-**Pfad:** `backend/services/usecases/backfill_loop_service.py`
-
-**Import hinzugefügt:**
-```python
-from backend.database.clickhouse.threadsafe_client import get_thread_client
-```
-
-**Methode vereinfacht:**
-```python
-def _get_ch_client_sync(self):
+class ClickHouseClientWrapper:
     """
-    THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+    Wrapper für echten clickhouse_connect Client mit execute() Kompatibilität
+
+    Enterprise FIX:
+    - Jede Operation läuft in asyncio.to_thread()
+    - Im Thread wird thread-local Client aus dem Pool verwendet
+    - Dadurch KEINE concurrent queries in derselben Session
     """
-    return get_thread_client()
-```
 
-**Effekt:**
-- Jede `asyncio.to_thread(_run)` Query bekommt eigenen Client
-- Keine Session-Konflikte mehr
-- BackfillLoop und GapScan können parallel laufen
+    def __init__(self, connection_pool):
+        self.pool = connection_pool
 
-### 10.4 Integration in GapScanService
+    def _get_client_in_thread(self):
+        if self.pool and self.pool.is_initialized:
+            return self.pool.get_client()
+        return None
 
-**Pfad:** `backend/services/usecases/gap_scan_service.py`
+    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None):
+        q = (query or "").strip()
+        if not q:
+            raise ValueError("Empty ClickHouse query")
 
-Gleiche Umstellung:
-- Import `get_thread_client`
-- Verwendung statt shared Pool/Client
+        if self.pool and not self.pool.is_initialized:
+            await self.pool.initialize()
 
-**Resultat:**
-- ✅ BackfillLoop läuft ohne ClickHouse-Fehler
-- ✅ GapScan funktioniert parallel
-- ✅ Keine "concurrent queries" Errors mehr
+        def _run():
+            client = self._get_client_in_thread()
+            if not client:
+                raise RuntimeError("ClickHouse client not available (pool not initialized)")
 
----
+            q_upper = q.lstrip().upper()
 
-## 11) Zusammenfassung der Fixes (2026-02-21)
+            # Writes
+            if q_upper.startswith(("INSERT", "CREATE", "DROP", "ALTER", "TRUNCATE", "OPTIMIZE", "SYSTEM")):
+                try:
+                    client.command(q, parameters=(params or None))
+                except TypeError:
+                    client.query(q, parameters=(params or None))
+                return []
 
-### Frontend Fix
-- **Problem**: Historical Count blieb bei 1267 stecken
-- **Lösung**: Merge-Logik in `useWsLane.ts` statt Replace
-- **Datei**: `frontend/src/services/ws/useWsLane.ts`
+            # Reads
+            res = client.query(q, parameters=(params or None))
+            return res.result_rows if res else []
 
-### Backend Fix
-- **Problem**: ClickHouse Session-Konflikte bei parallelen Queries
-- **Lösung**: Thread-Local Clients via `threadsafe_client.py`
-- **Dateien**: 
-  - `backend/database/clickhouse/threadsafe_client.py` (neu)
-  - `backend/services/usecases/backfill_loop_service.py` (angepasst)
-  - `backend/services/usecases/gap_scan_service.py` (angepasst)
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception as e:
+            logger.error("ClickHouse execute failed: %s", e, exc_info=True)
+            raise
 
-### Ergebnis
-- ✅ Historical Daten wachsen kontinuierlich im Frontend
-- ✅ Backfill läuft ohne ClickHouse-Fehler
-- ✅ Gap-Detection funktioniert parallel
-- ✅ System ist produktionsreif
+# Legacy compatibility
+ClickHouseClient = ClickHouseClientWrapper
 
----
+# Main exports for external use
+__all__ = [
+    # Config
+    "CL_DATABASE_PATTERNS",
+    "CL_CONNECTION", 
+    "CL_PERFORMANCE",
+    "CRITICAL_CL_COMPONENTS",
+    "EXCHANGE_CL_CONFIGS",
+    "CL_HEALTH_THRESHOLDS",
+    "CL_SCHEMAS",
+    
+    # Core Classes
+    "cl_status",
+    "cl_lane",
+    "cl_registry",
+    "cl_manager", 
+    "cl_checker",
+    "cl_message_handlers",
+    "UnifiedClService",
+    
+    # Singleton Instances
+    "cl_registry_instance",
+    "cl_manager_instance",
+    "cl_checker_instance", 
+    "cl_handlers_instance",
+    "unified_cl_service",
+    
+    # FastAPI Router
+    "cl_router",
+    
+    # User Settings
+    "cl_user_settings",
+    "get_user_settings_store",
+    "get_user_settings_cache",
+    
+    # Compatibility Functions
+    "get_clickhouse_client",
+    "ClickHouseClient",
+    "ClickHouseClientWrapper"
+]
+
+# Convenience aliases for commonly used instances
+cl_registry = cl_registry_instance
+cl_manager = cl_manager_instance  
+cl_checker = cl_checker_instance
+cl_handlers = cl_handlers_instance
+unified_clickhouse = unified_cl_service
 </file>
 
-<file path="Dockerfile">
-FROM python:3.11-slim
+<file path="backend/database/clickhouse/cl_manager.py">
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from .cl_lanes import cl_lane, cl_status
+from .cl_registry import cl_registry_instance
+from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
 
-WORKDIR /app
+logger = logging.getLogger(__name__)
 
-# ============================================================
-# LAYER 1: System Dependencies (CACHED solange unverändert)
-# ============================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    wget \
-    tar \
-    curl \
- && rm -rf /var/lib/apt/lists/*
+class cl_manager:
+    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.registry = cl_registry_instance
+        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
+        self.connection_pool = None
+        self.is_initialized = False
+        self.startup_time = datetime.now()
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "manager")
+        except ImportError:
+            logger.warning("Health system not available for cl_manager")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_manager initialized")
+    
+    async def initialize(self):
+        """Initialize ClickHouse connection pool and basic infrastructure"""
+        if self.is_initialized:
+            return
+        
+        try:
+            # Initialize connection pool (will be implemented when we have clickhouse-connect)
+            await self._setup_connection_pool()
+            
+            # Register core lanes for all exchanges
+            await self._register_core_lanes()
+            
+            self.is_initialized = True
+            
+            if self.health_component:
+                self.health_component.record_success({"action": "manager_initialized"})
+                
+            logger.info("ClickHouse cl_manager successfully initialized")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize cl_manager: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+            raise
+    
+    async def _setup_connection_pool(self):
+        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
+            
+            # ✅ 1) Pool holen
+            self.connection_pool = get_clickhouse_connection_pool()
+            
+            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
+            ok = await initialize_clickhouse_foundation()
+            if not ok:
+                raise RuntimeError("ClickHouse foundation initialization failed")
+            
+            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
+            client = self.connection_pool.get_client()
+            if not client:
+                raise RuntimeError("ClickHouse client not available after initialization")
+            
+            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
+            raise
+    
+    async def _register_core_lanes(self):
+        """Register core lanes for all 8 exchanges"""
+        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
+        operations = ["trades", "candles", "orderbook"]
+        
+        for exchange in exchanges:
+            for operation in operations:
+                try:
+                    lane = self.registry.register_lane(exchange, operation)
+                    # Set REAL ClickHouse connection reference
+                    lane.clickhouse_connection = self.connection_pool
+                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
+    
+    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
+        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
+        if not self.is_initialized:
+            await self.initialize()
+        
+        try:
+            # Get or register lane
+            lane = self.registry.get_lane(exchange, operation_type)
+            if not lane:
+                lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            
+            # Setup ClickHouse connection for this lane
+            await self._setup_lane_connection(lane)
+            
+            # Update lane status to connecting
+            lane.status = cl_status.CONNECTING
+            
+            # Test connection and set to connected
+            if await self._test_lane_connection(lane):
+                lane.record_operation_success(0.0, {"action": "lane_started"})
+                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
+            else:
+                lane.record_operation_error("Connection test failed")
+                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
+            
+            return lane
+            
+        except Exception as e:
+            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
+            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
+            
+            # Create error lane
+            lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            lane.record_operation_error(error_msg)
+            
+            raise
+    
+    async def _setup_lane_connection(self, lane: cl_lane):
+        """Setup ClickHouse connection for specific lane"""
+        try:
+            # Get exchange-specific config
+            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
+            
+            # Create lane-specific connection metadata
+            connection_info = {
+                "exchange": lane.exchange,
+                "operation": lane.operation_type,
+                "database": exchange_config.get("database", lane.exchange),
+                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
+                "tables": exchange_config.get("tables", []),
+                "priority": exchange_config.get("priority", "medium")
+            }
+            
+            # Set REAL connection reference
+            lane.clickhouse_connection = connection_info
+            
+            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
+            raise
+    
+    async def _test_lane_connection(self, lane: cl_lane) -> bool:
+        """Test ClickHouse connection for lane - ECHTER Test mit asyncio.to_thread!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            
+            # ✅ FIX: Run in thread to get thread-local client
+            def _test():
+                client = pool.get_client()
+                if not client:
+                    raise RuntimeError("ClickHouse client not available")
+                result = client.command("SELECT 1")
+                return result == 1
+            
+            success = await asyncio.to_thread(_test)
+            
+            if success:
+                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
+            else:
+                logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
+            return False
+    
+    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
+        """Insert data into ClickHouse via lane - THREAD-SAFE mit asyncio.to_thread"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            logger.error(f"No lane found for {exchange}.{operation_type}")
+            return False
+        
+        try:
+            start_time = datetime.now()
+            
+            # ✅ FIX: Run INSERT in thread to get thread-local client
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            
+            # Determine table name based on operation_type
+            table_map = {
+                "trades": f"{exchange}_trades",
+                "candles": f"{exchange}_kline", 
+                "orderbook": f"{exchange}_orderbook"
+            }
+            
+            table_name = table_map.get(operation_type)
+            if not table_name:
+                raise Exception(f"Unknown operation type: {operation_type}")
+            
+            full_table = f"trading.{table_name}"
+            columns = list(data.keys())
+            values = list(data.values())
+            
+            # ✅ Execute INSERT in thread (thread-local client)
+            def _insert():
+                client = pool.get_client()
+                if not client:
+                    raise RuntimeError("ClickHouse client not available")
+                client.insert(full_table, [values], column_names=columns)
+            
+            await asyncio.to_thread(_insert)
+            
+            end_time = datetime.now()
+            latency_ms = (end_time - start_time).total_seconds() * 1000
+            
+            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
+            
+            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Insert failed: {str(e)}"
+            lane.record_operation_error(error_msg)
+            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
+            return False
+    
+    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
+        """Get status for specific lane"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            return None
+        
+        return lane.get_health()
+    
+    def get_all_lane_status(self) -> List[Dict[str, Any]]:
+        """Get status for all lanes"""
+        return self.registry.get_lane_health_details()
+    
+    def get_manager_health(self) -> Dict[str, Any]:
+        """Get manager health status"""
+        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
+        
+        return {
+            "component": "clickhouse.manager",
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_pool": self.connection_pool,
+            "active_connections": len(self.connections),
+            "registry_health": self.registry.get_system_health()
+        }
+    
+    async def shutdown(self):
+        """Graceful shutdown of all ClickHouse operations"""
+        logger.info("Shutting down ClickHouse cl_manager...")
+        
+        try:
+            # Shutdown all lanes
+            await self.registry.shutdown_all()
+            
+            # Close connection pool - cl_unified_manager handles cleanup
+            if self.connection_pool:
+                self.connection_pool = None
+            
+            # Clear connections
+            self.connections.clear()
+            
+            self.is_initialized = False
+            
+            logger.info("ClickHouse cl_manager shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during cl_manager shutdown: {str(e)}")
+            raise
 
-# ============================================================
-# LAYER 2: TA-Lib Compilation (CACHED solange unverändert)
-# ============================================================
-# ✅ OFFLINE-READY: ta-lib aus vendor/system/file_linux/
-COPY vendor/system/file_linux/ta-lib-0.4.0-src.tar.gz ./ta-lib-0.4.0-src.tar.gz
-COPY vendor/system/file_linux/config.guess ./config.guess
-COPY vendor/system/file_linux/config.sub ./config.sub
 
-RUN tar -xzf ta-lib-0.4.0-src.tar.gz \
- && cd ta-lib/ \
- && cp ../config.guess ../config.sub . \
- && chmod +x config.guess config.sub \
- && ./configure --prefix=/usr \
- && (make -j$(nproc) || make) \
- && make install \
- && cd .. \
- && rm -rf ta-lib* config.guess config.sub \
- && ldconfig
-
-# ============================================================
-# LAYER 3: Python Dependencies (CACHED solange requirements.lock unverändert)
-# ============================================================
-COPY vendor/backend/backend_requirements.lock ./backend_requirements.lock
-COPY vendor/backend/file_linux/ ./wheels/
-
-RUN pip install --no-cache-dir --no-index --find-links ./wheels \
-    -r backend_requirements.lock
-
-# ============================================================
-# LAYER 4: Application Code (NEU bei jeder Code-Änderung)
-# ============================================================
-COPY backend ./backend
-
-# ENV für Python
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Port exposen
-EXPOSE 8100
-
-# Start der App
-CMD ["uvicorn", "backend.core.main:app", "--host", "0.0.0.0", "--port", "8100"]
+# Global cl_manager instance
+cl_manager_instance = cl_manager()
 </file>
 
 <file path="backend/database/clickhouse/cl_message_handlers.py">
@@ -165704,6 +165169,992 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
+</file>
+
+<file path="readme/the_backfill_system_01_26_v1.md">
+# README — Backfill + Gap-Fill Autodetect (Trades-SoT, ClickHouse, ENV-driven)
+
+**Projekt:** `0_WS_AI`
+**Datum:** 2026-02-21
+**Ziel:** Rohdaten (Trades) als Single Source of Truth in ClickHouse speichern, Candles daraus ableiten, und **zu jeder Zeit** Datenlücken automatisch erkennen und nachladen (Gap-Fill).
+
+---
+
+## 1) Systemvertrag
+
+### 1.1 Single Source of Truth
+
+**SoT ist immer die Trades-Tabelle** pro Exchange:
+
+* `trading.<exchange>_trades` (z. B. `trading.binance_trades`)
+
+Schema (Beispiel Binance, bestätigt per `DESCRIBE TABLE`):
+
+* `symbol LowCardinality(String)`
+* `market LowCardinality(String)`
+* `price Decimal(76,38)`
+* `size Decimal(76,38)`
+* `side Enum8('buy'=1,'sell'=2)`
+* `timestamp DateTime64(3,'UTC')`
+* `trade_id UInt64 MATERIALIZED cityHash64(...)`
+* `source LowCardinality(String) DEFAULT 'live_ws'`
+
+### 1.2 Quelle/Markierung der Daten (source)
+
+`source` beschreibt **nur**, woher ein **echter Trade** stammt:
+
+* `live_ws` → Live-Stream
+* `rest_backfill` → Backfill (historisch nachgeladen)
+
+**Wichtig:** `source` ist **kein Gap-Marker**. Gaps werden nicht durch Fake-Rows markiert, sondern durch SQL-Expected-Buckets Scan.
+
+---
+
+## 2) Komponenten & Pfade
+
+### 2.1 Auto-Start des Backfill-Loops
+
+**Pfad:** `backend/services/adapter/collector_starter.py`
+**Funktion:** `start_auto_backfill_gap_loop()`
+
+* liest `AUTO_BACKFILL_*` ENV
+* startet pro Coin (`exchange:symbol`) einen Task `BackfillLoopService.run()`
+
+### 2.2 Gap-Detection + Gap-Fill (Autodetect & Nachladen)
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+**Klasse:** `BackfillLoopService`
+
+Funktional:
+
+1. **Gap-Scan** (Expected-Buckets über ClickHouse)
+2. **Gap-Fill**: neuestes GapWindow wird sofort nachgeladen
+3. **Normal-Backfill**: wenn keine Gaps existieren, rückwärts bis `AUTO_BACKFILL_UNTIL_DATE`
+
+### 2.3 Historical Backfill (Trades-only, enterprise)
+
+**Pfad:** `backend/services/usecases/unified_historical.py`
+**Klasse:** `UnifiedHistoricalService`
+
+Eigenschaften:
+
+* **Trades-only** (keine Candles im Backfill)
+* **deterministischer Cursor** mit `to_date` (EXKLUSIV)
+* **kein Datenverlust bei liquiden Märkten**: Cursor bewegt sich anhand **ältestem zurückgelieferten Trade** (kein stumpfer “1h-hop”)
+* komplett **ENV/Policy-driven** (Fenstergröße, API-Limit, Methodennamen)
+
+---
+
+## 3) Wie Gap-Detection genau funktioniert (Expected-Buckets)
+
+**Definition:** Ein Bucket gilt als “vorhanden”, wenn in diesem Bucket **mindestens 1 Trade** existiert.
+Fehlende Buckets = Expected − Present.
+
+Mechanik:
+
+* Scan-Fenster: `[now - GAP_SCAN_DAYS, now]`
+* Bucketgröße: `GAP_BUCKET_SECONDS` (z. B. 60)
+* Expected-Buckets: `system.numbers` erzeugt Zeitraster
+* Present-Buckets: `toStartOfInterval(timestamp, step)` aus Trades
+* Missing: left join expected vs present where present is null
+* Missing buckets werden in Python zu **GapWindow(start,end_exklusiv)** segmentiert
+* `BackfillLoopService.run()` priorisiert `gaps[0]` (neuester Gap) und lädt exakt `[start,end)` nach
+
+---
+
+## 4) Gap-Fill / Auto-Nachladen (zu jeder Zeit)
+
+### 4.1 Dauerbetrieb (kritischer Fix)
+
+Damit “dauerhaft prüfen und nachladen” wirklich dauerhaft ist, darf der Loop **nicht** stoppen, wenn eine Iteration 0 Trades liefert.
+
+**Regel:**
+
+* `trades_loaded <= 0` → **sleep + continue**
+* niemals `break` (sonst endet das Autogap-System bei leeren Fenstern/temporären API-Problemen)
+
+---
+
+## 5) UnifiedHistoricalService (Enterprise, dynamisch, nicht hardcoded)
+
+### 5.1 Warum der Cursor-Fix zwingend war
+
+Bei BTCUSDT können in 1h weit mehr als 1000 Trades existieren.
+Wenn man pro 1h-Fenster nur 1000 lädt und dann stumpf 1h zurückspringt, gehen Daten verloren.
+
+**Enterprise-Lösung:**
+
+* Nach jedem Fetch wird `t_end` auf den **ältesten zurückgelieferten Trade** gesetzt
+* so “scrollt” der Cursor rückwärts durch das Fenster, bis es wirklich abgearbeitet ist
+
+### 5.2 Keine Hardcodes: ENV steuert alles
+
+Methoden-Namen und Policies werden über ENV gesetzt:
+
+* Spot-Fetch-Methode: `HIST_FETCH_METHOD_SPOT`
+* Futures-Fetch-Methode: `HIST_FETCH_METHOD_FUTURES`
+* Fenstergröße: `HIST_WINDOW_SECONDS`
+* API per-call limit: `HIST_PER_CALL_LIMIT`
+* Flush batch: `HIST_FLUSH_BATCH_SIZE`
+* Stagnation: `HIST_MAX_STAGNANT`, `HIST_CURSOR_BACKOFF_MS`
+
+Der Service versucht zusätzlich Fallbacks (z. B. `fetch_trades`, `fetch_spot_trades`) und meldet “not implemented”, wenn ein Exchange keinen Time-Backfill unterstützt.
+
+---
+
+## 6) ENV-Konfiguration (relevante Keys)
+
+### 6.1 Auto-Backfill
+
+```bash
+AUTO_BACKFILL_ENABLED=1
+AUTO_BACKFILL_COINS="binance:BTCUSDT"
+AUTO_BACKFILL_UNTIL_DATE="2024-01-01"
+AUTO_BACKFILL_MARKET="spot"
+BACKFILL_READY_TIMEOUT=120
+```
+
+### 6.2 Gap-Scan / Autodetect
+
+```bash
+GAP_SCAN_DAYS=30
+GAP_BUCKET_SECONDS=60
+GAP_SOURCE_FILTER=live_ws,rest_backfill
+```
+
+**Interpretation:**
+
+* Scan prüft letzte 30 Tage in 60s Buckets
+* Buckets zählen als vorhanden, wenn Trades mit source in `{live_ws, rest_backfill}` vorhanden sind
+
+### 6.3 Enterprise Historical Policies (Trades-only)
+
+```bash
+HIST_WINDOW_SECONDS=3600
+HIST_PER_CALL_LIMIT=1000
+HIST_FLUSH_BATCH_SIZE=500
+HIST_FETCH_METHOD_SPOT=fetch_trades
+HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
+HIST_MAX_STAGNANT=3
+HIST_CURSOR_BACKOFF_MS=1
+```
+
+---
+
+## 7) Betriebslogik im Klartext
+
+1. System startet → `collector_starter` spawnt BackfillLoop Tasks pro `AUTO_BACKFILL_COINS`.
+2. Jeder Loop:
+
+   * scannt Gaps (Expected-Buckets)
+   * wenn Gap gefunden → lädt dieses GapWindow per `UnifiedHistoricalService.history([start,end))`
+   * sonst → normaler Backfill rückwärts Richtung `AUTO_BACKFILL_UNTIL_DATE`
+3. Loop läuft weiter, auch wenn eine Iteration mal 0 Trades liefert (sleep+continue).
+4. ClickHouse bleibt Single Source of Truth, Candles werden daraus abgeleitet.
+
+---
+
+## 8) Ergebnis / Garantie
+
+* Keine synthetischen Daten (kein Interpolieren, keine Fake-Trades)
+* Trades sind SoT, Candles sind abgeleitet
+* Gap-Detection + Nachladen arbeitet automatisch und dauerhaft
+* Historischer Backfill ist robust auch bei sehr hoher Trade-Dichte (kein 1h-hop Datenverlust)
+* Konfiguration ist vollständig ENV-gesteuert, keine Hardcodes in der Logik
+
+---
+
+## 9) Frontend: Historical Data Updates (Rewrite 2026-02-21)
+
+### 9.1 Problem: Historical Count blieb bei 1267 stecken
+
+**Symptom:**
+- Frontend zeigte "Historical 1267" und aktualisierte nicht, obwohl Backfill kontinuierlich neue Daten lud
+- ClickHouse enthielt 5123+ Candles, aber Frontend zeigte nur 1267
+
+**Root Cause:**
+- Alte `useWsLane.ts` verwendete `setHistorical(hist)` → **ersetzte** alle Daten statt zu mergen
+- Nur ein einziger Request bei Connection-Open → keine kontinuierlichen Updates
+
+### 9.2 Lösung: Kompletter Rewrite mit Polling + Merge
+
+**Pfad:** `frontend/src/services/ws/useWsLane.ts`
+
+**Neue Features:**
+1. **Polling-Mechanismus**: Sendet periodisch `historical:interval:limit` Requests
+2. **Merge-Logik**: `mergeCandles()` kombiniert alte + neue Daten ohne Duplikate
+3. **Stop-Heuristik**: Polling stoppt automatisch wenn Daten stabil sind (N Zyklen ohne Wachstum)
+4. **ENV-Driven Policies**: Alle Parameter konfigurierbar via `.env`
+
+**ENV-Konfiguration:**
+```bash
+# .env
+VITE_WS_HIST_LIMIT=2000              # Max Candles pro Request
+VITE_WS_HIST_POLL_MS=1000            # Polling-Intervall (ms)
+VITE_WS_HIST_NO_GROWTH_STOP=10       # Stop nach N Zyklen ohne Wachstum
+```
+
+**Code-Struktur:**
+```typescript
+// ENV-driven Policies (Build-time)
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
+
+// Clamping für sichere Werte
+function clampInt(n: number, def: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  return x < min ? min : x > max ? max : x;
+}
+
+// Merge-Funktion (verhindert unnötige Re-Renders)
+function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
+  if (!incoming.length) return prev;
+  
+  const map = new Map<number, LiveCandle>();
+  for (const c of prev) map.set(c.t, c);
+  
+  let changed = false;
+  for (const c of incoming) {
+    const old = map.get(c.t);
+    if (!old || old.o !== c.o || old.h !== c.h || old.l !== c.l || old.c !== c.c || old.v !== c.v) {
+      map.set(c.t, c);
+      changed = true;
+    }
+  }
+  
+  if (!changed) return prev; // ✅ Verhindert unnötige State-Updates
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
+}
+```
+
+**Polling-Logik:**
+```typescript
+const startHistoricalPolling = () => {
+  // Initial Request sofort
+  requestHistorical();
+  
+  // Dann periodisch bis stabil
+  histTimerRef.current = window.setInterval(() => {
+    if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
+      stopHistoricalPolling(); // ✅ Auto-Stop bei stabilen Daten
+      return;
+    }
+    requestHistorical();
+  }, histPollMsRef.current);
+};
+```
+
+**Effekt:**
+- ✅ Historical Daten wachsen kontinuierlich (1267 → 5123+)
+- ✅ Polling stoppt automatisch wenn Backfill fertig
+- ✅ Keine unnötigen Re-Renders durch Change-Detection
+- ✅ Alle Policies via ENV konfigurierbar
+- ✅ Backend kann optional eigene Limits überschreiben (via `connection` message)
+
+**Wichtig:**
+Nach Änderung der `.env` (VITE Variablen) muss der Dev-Server neu gestartet werden:
+```bash
+cd frontend && npm run dev
+```
+
+---
+
+## 10) Backend: ClickHouse Thread-Safety (Fix 2026-02-21)
+
+### 10.1 Problem: Concurrent Query Session Error
+
+**Symptom:**
+```
+❌ CLICKHOUSE oldest query FAILED | error=Attempt to execute concurrent queries within the same session
+⚠️ [GAPSCAN] scan failed | Attempt to execute concurrent queries within the same session
+```
+
+**Root Cause:**
+- `BackfillLoopService` und `GapScanService` verwendeten **denselben ClickHouse-Client** (shared session)
+- Parallele Queries in verschiedenen Threads → Session-Konflikt
+- `asyncio.to_thread()` führte Queries in Thread-Pool aus, aber mit shared Client
+
+### 10.2 Lösung: Thread-Local ClickHouse Clients
+
+**Neue Datei:** `backend/database/clickhouse/threadsafe_client.py`
+
+```python
+from __future__ import annotations
+
+import threading
+import clickhouse_connect
+
+from backend.database.clickhouse.cl_config import CL_CONNECTION
+
+_thread_local = threading.local()
+
+
+def _make_client():
+    return clickhouse_connect.get_client(
+        host=CL_CONNECTION["host"],
+        port=CL_CONNECTION["port"],
+        username=CL_CONNECTION.get("username", "default"),
+        password=CL_CONNECTION.get("password", ""),
+        database=CL_CONNECTION.get("database", "default"),
+        connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
+        send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
+    )
+
+
+def get_thread_client():
+    """
+    Thread-safe ClickHouse client:
+    - exactly one clickhouse_connect client per OS thread
+    - prevents "concurrent queries within the same session"
+    """
+    c = getattr(_thread_local, "client", None)
+    if c is None:
+        c = _make_client()
+        _thread_local.client = c
+    return c
+```
+
+**Wichtig:**
+- **Keine doppelte Konfiguration**: Nutzt zentrale `CL_CONNECTION` aus `cl_config.py`
+- **Thread-Local Storage**: Jeder Thread bekommt seinen eigenen Client
+- **Lazy Initialization**: Client wird erst bei Bedarf erstellt
+
+### 10.3 Integration in BackfillLoopService
+
+**Pfad:** `backend/services/usecases/backfill_loop_service.py`
+
+**Import hinzugefügt:**
+```python
+from backend.database.clickhouse.threadsafe_client import get_thread_client
+```
+
+**Methode vereinfacht:**
+```python
+def _get_ch_client_sync(self):
+    """
+    THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+    """
+    return get_thread_client()
+```
+
+**Effekt:**
+- Jede `asyncio.to_thread(_run)` Query bekommt eigenen Client
+- Keine Session-Konflikte mehr
+- BackfillLoop und GapScan können parallel laufen
+
+### 10.4 Integration in GapScanService
+
+**Pfad:** `backend/services/usecases/gap_scan_service.py`
+
+Gleiche Umstellung:
+- Import `get_thread_client`
+- Verwendung statt shared Pool/Client
+
+**Resultat:**
+- ✅ BackfillLoop läuft ohne ClickHouse-Fehler
+- ✅ GapScan funktioniert parallel
+- ✅ Keine "concurrent queries" Errors mehr
+
+---
+
+## 11) Zusammenfassung der Fixes (2026-02-21)
+
+### Frontend Fix
+- **Problem**: Historical Count blieb bei 1267 stecken
+- **Lösung**: Merge-Logik in `useWsLane.ts` statt Replace
+- **Datei**: `frontend/src/services/ws/useWsLane.ts`
+
+### Backend Fix
+- **Problem**: ClickHouse Session-Konflikte bei parallelen Queries
+- **Lösung**: Thread-Local Clients via `threadsafe_client.py`
+- **Dateien**: 
+  - `backend/database/clickhouse/threadsafe_client.py` (neu)
+  - `backend/services/usecases/backfill_loop_service.py` (angepasst)
+  - `backend/services/usecases/gap_scan_service.py` (angepasst)
+
+### Ergebnis
+- ✅ Historical Daten wachsen kontinuierlich im Frontend
+- ✅ Backfill läuft ohne ClickHouse-Fehler
+- ✅ Gap-Detection funktioniert parallel
+- ✅ System ist produktionsreif
+
+---
+</file>
+
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await get_ohlc_from_ch(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        interval_seconds=interval_seconds,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
 </file>
 
 <file path="backend/api/routers/ro_user_settings.py">
@@ -168942,580 +169393,6 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
-</file>
-
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
 </file>
 
 <file path="backend/database/clickhouse/cl_config.py">
