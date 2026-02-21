@@ -417,6 +417,7 @@ backend/
         user_secrets.py
         user_settings.py
       scripts/
+        bootstrap_kline_1s_state.py
         cleanup.py
         run_all.py
         show_tables.py
@@ -670,6 +671,7 @@ frontend/
           CandleChart.tsx
           chartThemes.ts
           index.ts
+          LoadingBlockOverlay.tsx
           types.ts
           useCandleChart.ts
         PriceDisplay.tsx
@@ -680,6 +682,8 @@ frontend/
         GlobalNav.tsx
         Navigation.tsx
         RootLayout.tsx
+      state/
+        uiPrefs.ts
       ui/
         resizable.tsx
         tabs.tsx
@@ -17144,117 +17148,6 @@ if __name__ == "__main__":
         sys.exit(1)
 </file>
 
-<file path="backend/database/tables/db_md/all_kline.py">
-#!/usr/bin/env python3
-"""
-ALL_KLINE TABELLE - Cross-Exchange OHLC
-Erstellt 1 Tabelle für alle Exchanges (Multi-Interval)
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_all_kline_table():
-    """Erstellt all_kline Tabelle"""
-    print(f"\n🔥 ERSTELLE ALL_KLINE TABELLE...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.all_kline (
-        exchange LowCardinality(String),
-        symbol LowCardinality(String),
-        interval LowCardinality(String),
-        bucket_start DateTime64(3, 'UTC'),
-        open_price Decimal(76,38),
-        high_price Decimal(76,38),
-        low_price Decimal(76,38),
-        close_price Decimal(76,38),
-        volume Decimal(76,38),
-        quote_volume Decimal(76,38),
-        trades_count UInt32,
-        vwap Nullable(Decimal(76,38)),
-        exchange_count Nullable(UInt8),
-        leader_exchange Nullable(String)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(bucket_start)
-    ORDER BY (exchange, symbol, interval, bucket_start)
-    TTL bucket_start + INTERVAL 12 MONTH
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "all_kline")
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: ALL_KLINE TABELLE")
-    print("=" * 60)
-    print("⚡ Cross-Exchange OHLC - Multi-Interval")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # all_kline Tabelle erstellen
-    if create_all_kline_table():
-        print(f"\n🎉 ALL_KLINE TABELLE ERFOLGREICH ERSTELLT!")
-        print("✅ Multi-Interval OHLC (1s empfohlen)")
-        print("✅ TTL: 12 Monate")
-        print("✅ Verwendung: Cross-Exchange Preis-Vergleiche, Price Leadership, AI/ML Training")
-        return True
-    else:
-        print(f"\n⚠️  FEHLER beim Erstellen der Tabelle!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
 <file path="backend/database/tables/db_md/all_orderbook_.py">
 #!/usr/bin/env python3
 """
@@ -18797,126 +18690,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n⚠️  Migration abgebrochen durch User")
         sys.exit(1)
-</file>
-
-<file path="backend/database/tables/scripts/show_tables.py">
-#!/usr/bin/env python3
-"""
-SHOW TABLES SCRIPT - Zeigt alle Tabellen an
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default"):
-    """Führt SQL-Statement aus"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            return response.text.strip()
-        else:
-            return f"ERROR: {response.text.strip()}"
-            
-    except Exception as e:
-        return f"EXCEPTION: {str(e)}"
-
-def show_all_tables():
-    """Zeigt alle Tabellen an"""
-    print("\n📊 ALLE TABELLEN IN TRADING DATABASE:")
-    print("=" * 60)
-    
-    result = execute_sql("SHOW TABLES FROM trading", "Liste Tabellen")
-    
-    if "ERROR" in result or "EXCEPTION" in result:
-        print(f"❌ Fehler: {result}")
-        return False
-    
-    if not result:
-        print("✅ Keine Tabellen vorhanden - Datenbank ist leer")
-        return True
-    
-    tables = result.split('\n')
-    print(f"\n✅ {len(tables)} Tabellen gefunden:\n")
-    
-    for i, table in enumerate(tables, 1):
-        print(f"  {i:2d}. {table}")
-    
-    return True
-
-def show_table_sizes():
-    """Zeigt Tabellen mit Größen an"""
-    print("\n📊 TABELLEN MIT GRÖSSEN:")
-    print("=" * 60)
-    
-    sql = """
-    SELECT 
-        table,
-        formatReadableSize(total_bytes) as size,
-        formatReadableQuantity(total_rows) as rows
-    FROM system.tables
-    WHERE database = 'trading'
-    ORDER BY total_bytes DESC
-    """
-    
-    result = execute_sql(sql, "Tabellen mit Größen")
-    
-    if "ERROR" in result or "EXCEPTION" in result:
-        print(f"❌ Fehler: {result}")
-        return False
-    
-    if not result:
-        print("✅ Keine Tabellen vorhanden")
-        return True
-    
-    print(result)
-    return True
-
-def main():
-    print("🔥 CLICKHOUSE - SHOW TABLES")
-    print("=" * 60)
-
-    # Test Connection
-    test = execute_sql("SELECT 1", "ClickHouse Test")
-    if "ERROR" in test or "EXCEPTION" in test:
-        print(f"❌ ClickHouse nicht erreichbar: {test}")
-        return False
-    
-    print("✅ ClickHouse verbunden")
-    
-    # Zeige Tabellen
-    if not show_all_tables():
-        return False
-    
-    # Zeige Größen
-    print()
-    if not show_table_sizes():
-        return False
-    
-    print("\n🎉 FERTIG!")
-    return True
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
 </file>
 
 <file path="backend/database/tables/scripts/validate_tables.py">
@@ -125343,153 +125116,6 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
-<file path="backend/database/clickhouse/kline_preagg.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import re
-from datetime import datetime, timezone
-from typing import List, Dict, Any
-
-logger = logging.getLogger(__name__)
-
-_LOCK = asyncio.Lock()
-_ENSURED: bool = False
-_EXCHANGE_RE = re.compile(r"^[a-z0-9_]+$")
-
-
-def _sanitize_exchange(ex: str) -> str:
-    ex = (ex or "").strip().lower()
-    if not ex or not _EXCHANGE_RE.match(ex):
-        raise ValueError(f"Invalid exchange identifier: {ex!r}")
-    return ex
-
-
-async def _get_ch():
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
-
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
-
-    ch = get_clickhouse_client()
-    if not ch:
-        raise RuntimeError("ClickHouse client not available")
-    return ch
-
-
-async def list_trade_tables() -> List[str]:
-    ch = await _get_ch()
-    rows = await ch.execute(
-        """
-        SELECT name
-        FROM system.tables
-        WHERE database = 'trading'
-          AND endsWith(name, '_trades')
-        ORDER BY name ASC
-        """
-    )
-    return [r[0] for r in rows if r and isinstance(r[0], str)]
-
-
-def _exchange_from_trade_table(table: str) -> str | None:
-    if not table.endswith("_trades"):
-        return None
-    ex = table[:-len("_trades")]
-    try:
-        return _sanitize_exchange(ex)
-    except Exception:
-        return None
-
-
-async def ensure_kline_1s_state_table() -> None:
-    ch = await _get_ch()
-    await ch.execute(
-        """
-        CREATE TABLE IF NOT EXISTS trading.all_kline_1s_state
-        (
-            exchange LowCardinality(String),
-            symbol   LowCardinality(String),
-            market   LowCardinality(String),
-            bucket_start DateTime64(3, 'UTC'),
-
-            open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-            high_state  AggregateFunction(max,   Decimal(76, 38)),
-            low_state   AggregateFunction(min,   Decimal(76, 38)),
-            close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-
-            volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-            quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-            trades_count_state AggregateFunction(count, UInt64)
-        )
-        ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMMDD(bucket_start)
-        ORDER BY (exchange, symbol, market, bucket_start)
-        TTL bucket_start + toIntervalMonth(12)
-        SETTINGS index_granularity = 8192
-        """
-    )
-
-
-async def ensure_mv_for_exchange(exchange: str) -> None:
-    ex = _sanitize_exchange(exchange)
-    ch = await _get_ch()
-
-    mv_name = f"trading.mv_{ex}_trades_to_kline_1s"
-
-    await ch.execute(
-        f"""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}
-        TO trading.all_kline_1s_state
-        AS
-        SELECT
-            '{ex}' AS exchange,
-            symbol,
-            market,
-            toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-
-            argMinState(price, (timestamp, trade_id)) AS open_state,
-            maxState(price)                           AS high_state,
-            minState(price)                           AS low_state,
-            argMaxState(price, (timestamp, trade_id)) AS close_state,
-
-            sumState(size)            AS volume_state,
-            sumState(price * size)    AS quote_volume_state,
-            countState()              AS trades_count_state
-        FROM trading.{ex}_trades
-        GROUP BY symbol, market, bucket_start
-        """
-    )
-
-
-async def ensure_kline_preagg() -> None:
-    global _ENSURED
-    if _ENSURED:
-        return
-
-    async with _LOCK:
-        if _ENSURED:
-            return
-
-        await ensure_kline_1s_state_table()
-
-        tables = await list_trade_tables()
-        exchanges: List[str] = []
-        for t in tables:
-            ex = _exchange_from_trade_table(t)
-            if ex:
-                exchanges.append(ex)
-
-        for ex in exchanges:
-            try:
-                await ensure_mv_for_exchange(ex)
-            except Exception as e:
-                logger.error(f"[kline_preagg] MV ensure failed ex={ex}: {e}", exc_info=True)
-
-        _ENSURED = True
-        logger.info(f"[kline_preagg] ensured for exchanges={exchanges}")
-</file>
-
 <file path="backend/database/clickhouse/threadsafe_client.py">
 from __future__ import annotations
 
@@ -125712,6 +125338,414 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n⚠️  Abgebrochen")
         sys.exit(1)
+</file>
+
+<file path="backend/database/tables/db_md/all_kline.py">
+#!/usr/bin/env python3
+"""
+ALL_KLINE TABELLE - Cross-Exchange OHLC (STATE VERSION)
+AggregatingMergeTree für korrekte Partial-Insert Aggregation
+"""
+import requests
+import sys
+import os
+
+# Environment Variables
+CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
+CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
+CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
+CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
+CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
+
+CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
+
+def execute_sql(sql, description="", database="default", ignore_errors=False):
+    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
+    try:
+        url = f"{CLICKHOUSE_URL}?database={database}"
+        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
+        
+        response = requests.post(
+            url, 
+            data=sql, 
+            auth=auth, 
+            timeout=CLICKHOUSE_TIMEOUT,
+            headers={'Content-Type': 'text/plain'}
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ {description}: OK")
+            return True
+        else:
+            error_msg = response.text.strip()
+            print(f"❌ {description}: Code {response.status_code}")
+            print(f"🔍 Fehlerdetails: {error_msg}")
+            if ignore_errors:
+                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
+                return True
+            return False
+            
+    except Exception as e:
+        print(f"❌ {description}: EXCEPTION {str(e)}")
+        if ignore_errors:
+            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
+            return True
+        return False
+
+def create_all_kline_state_table():
+    """Erstellt all_kline STATE Tabelle (AggregatingMergeTree)"""
+    print(f"\n🔥 ERSTELLE ALL_KLINE STATE TABELLE...")
+    
+    sql = """
+    CREATE TABLE IF NOT EXISTS trading.all_kline (
+        exchange LowCardinality(String),
+        symbol   LowCardinality(String),
+        market   LowCardinality(String),
+        interval LowCardinality(String),
+        bucket_start DateTime64(3, 'UTC'),
+
+        open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+        high_state  AggregateFunction(max,   Decimal(76, 38)),
+        low_state   AggregateFunction(min,   Decimal(76, 38)),
+        close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+
+        volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+        quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+        trades_count_state AggregateFunction(count, UInt64)
+    ) ENGINE = AggregatingMergeTree()
+    PARTITION BY toYYYYMMDD(bucket_start)
+    ORDER BY (exchange, symbol, market, interval, bucket_start)
+    TTL bucket_start + INTERVAL 12 MONTH
+    SETTINGS index_granularity = 8192;
+    """
+    
+    return execute_sql(sql, "all_kline (STATE)")
+
+def create_all_kline_final_view():
+    """Erstellt all_kline_final VIEW für fertige OHLC Werte"""
+    print(f"\n🔥 ERSTELLE ALL_KLINE_FINAL VIEW...")
+    
+    sql = """
+    CREATE OR REPLACE VIEW trading.all_kline_final AS
+    SELECT
+        exchange,
+        symbol,
+        market,
+        interval,
+        bucket_start,
+        argMinMerge(open_state)  AS open_price,
+        maxMerge(high_state)     AS high_price,
+        minMerge(low_state)      AS low_price,
+        argMaxMerge(close_state) AS close_price,
+        sumMerge(volume_state)   AS volume,
+        sumMerge(quote_volume_state) AS quote_volume,
+        countMerge(trades_count_state) AS trades_count,
+        CAST(NULL, 'Nullable(Decimal(76, 38))') AS vwap,
+        CAST(NULL, 'Nullable(UInt8)') AS exchange_count,
+        CAST(NULL, 'Nullable(String)') AS leader_exchange
+    FROM trading.all_kline
+    GROUP BY exchange, symbol, market, interval, bucket_start;
+    """
+    
+    return execute_sql(sql, "all_kline_final (VIEW)")
+
+def main():
+    print("🔥 CLICKHOUSE MIGRATION: ALL_KLINE STATE TABELLE")
+    print("=" * 60)
+    print("⚡ Cross-Exchange OHLC - AggregatingMergeTree (State)")
+    print("⚡ Korrekte Partial-Insert Aggregation")
+
+    # Test Connection
+    if not execute_sql("SELECT 1", "ClickHouse Test"):
+        print("❌ ClickHouse nicht erreichbar!")
+        return False
+
+    # Datenbank erstellen
+    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
+        return False
+
+    # all_kline STATE Tabelle erstellen
+    if not create_all_kline_state_table():
+        print(f"\n⚠️  FEHLER beim Erstellen der STATE Tabelle!")
+        return False
+
+    # all_kline_final VIEW erstellen
+    if not create_all_kline_final_view():
+        print(f"\n⚠️  FEHLER beim Erstellen der VIEW!")
+        return False
+
+    print(f"\n🎉 ALL_KLINE STATE TABELLE + VIEW ERFOLGREICH ERSTELLT!")
+    print("✅ AggregatingMergeTree mit State-Functions")
+    print("✅ all_kline_final VIEW für fertige OHLC")
+    print("✅ TTL: 12 Monate")
+    print("✅ Verwendung: Pre-Aggregated Candles, <50ms Performance")
+    return True
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
+</file>
+
+<file path="backend/database/tables/scripts/bootstrap_kline_1s_state.py">
+#!/usr/bin/env python3
+"""
+Bootstrap MV aggregation for existing historical trades.
+
+FACT:
+- ClickHouse Materialized Views aggregate ONLY new inserts after creation.
+- Existing rows in *_trades will NOT be aggregated automatically.
+
+STRATEGY (safe):
+- Re-insert trades into the same table in time-batches via INSERT SELECT,
+  but ONLY as a lightweight projection with the same columns.
+- Requires a source-filter to avoid duplication.
+
+✅ You MUST set BOOTSTRAP_SOURCE="bootstrap_replay" in select and
+   ensure your trades table has a 'source' column (it does in this repo).
+"""
+
+import os
+from datetime import datetime, timezone, timedelta
+
+import clickhouse_connect
+
+
+def env(name: str, default: str) -> str:
+  v = os.getenv(name)
+  return default if v is None or v.strip() == "" else v.strip()
+
+
+def main() -> int:
+  host = env("CLICKHOUSE_HOST", "localhost")
+  port = int(env("CLICKHOUSE_PORT", "8124"))
+  user = env("CLICKHOUSE_USER", "admin")
+  password = env("CLICKHOUSE_PASSWORD", "admin")
+  database = env("CLICKHOUSE_DB", "trading")
+
+  exchange = env("BOOTSTRAP_EXCHANGE", "binance").lower()
+  symbol = env("BOOTSTRAP_SYMBOL", "BTCUSDT").upper()
+  market = env("BOOTSTRAP_MARKET", "spot").lower()
+
+  # time range
+  start_iso = env("BOOTSTRAP_START_ISO", "")
+  end_iso = env("BOOTSTRAP_END_ISO", "")
+
+  if not start_iso or not end_iso:
+    print("ERROR: Set BOOTSTRAP_START_ISO and BOOTSTRAP_END_ISO (UTC ISO).")
+    return 2
+
+  start = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+  end = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+  batch_minutes = int(env("BOOTSTRAP_BATCH_MINUTES", "60"))
+  source_filter = env("BOOTSTRAP_SOURCE_FILTER", "rest_backfill,live,live_ws")
+  replay_source = env("BOOTSTRAP_REPLAY_SOURCE", "bootstrap_replay")
+
+  sources = [s.strip() for s in source_filter.split(",") if s.strip()]
+  if not sources:
+    print("ERROR: BOOTSTRAP_SOURCE_FILTER empty.")
+    return 2
+
+  table = f"{exchange}_trades"
+
+  client = clickhouse_connect.get_client(
+    host=host, port=port, username=user, password=password, database=database
+  )
+
+  cur = start
+  total = 0
+  i = 0
+
+  while cur < end:
+    nxt = min(cur + timedelta(minutes=batch_minutes), end)
+    i += 1
+
+    # NOTE:
+    # - We copy rows in [cur, nxt) and rewrite 'source' to replay_source.
+    # - This triggers MV without double-counting your real backfill sources.
+    # - You can delete replay rows after MV is filled if you want.
+    query = f"""
+      INSERT INTO {database}.{table}
+      SELECT
+        trade_id,
+        symbol,
+        market,
+        price,
+        size,
+        side,
+        timestamp,
+        '{replay_source}' AS source
+      FROM {database}.{table}
+      WHERE symbol = %(symbol)s
+        AND market = %(market)s
+        AND timestamp >= toDateTime64(%(t0)s, 3, 'UTC')
+        AND timestamp <  toDateTime64(%(t1)s, 3, 'UTC')
+        AND source IN %(sources)s
+    """
+
+    params = {
+      "symbol": symbol,
+      "market": market,
+      "t0": int(cur.timestamp()),
+      "t1": int(nxt.timestamp()),
+      "sources": tuple(sources),
+    }
+
+    res = client.command(query, parameters=params)
+    # clickhouse_connect returns "OK" string; count not available here.
+    total += 1
+
+    print(f"[{i}] replay {exchange}:{symbol}:{market} {cur.isoformat()} → {nxt.isoformat()} OK")
+
+    cur = nxt
+
+  print(f"DONE. batches={i} (count not returned; use queries to verify MV table growth)")
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
+</file>
+
+<file path="backend/database/tables/scripts/show_tables.py">
+#!/usr/bin/env python3
+"""
+SHOW TABLES SCRIPT - Zeigt alle Tabellen an
+"""
+import requests
+import sys
+import os
+
+# Environment Variables
+CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
+CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
+CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
+CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
+CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
+
+CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
+
+def execute_sql(sql, description="", database="default"):
+    """Führt SQL-Statement aus"""
+    try:
+        url = f"{CLICKHOUSE_URL}?database={database}"
+        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
+        
+        response = requests.post(
+            url, 
+            data=sql, 
+            auth=auth, 
+            timeout=CLICKHOUSE_TIMEOUT,
+            headers={'Content-Type': 'text/plain'}
+        )
+        
+        if response.status_code == 200:
+            return response.text.strip()
+        else:
+            return f"ERROR: {response.text.strip()}"
+            
+    except Exception as e:
+        return f"EXCEPTION: {str(e)}"
+
+def show_all_tables():
+    """Zeigt alle Tabellen UND Views an"""
+    print("\n📊 ALLE TABELLEN UND VIEWS IN TRADING DATABASE:")
+    print("=" * 60)
+    
+    sql = """
+    SELECT 
+        name,
+        CASE 
+            WHEN engine = 'View' THEN '📋 VIEW'
+            WHEN engine LIKE '%MergeTree%' THEN '📦 TABLE'
+            ELSE '📄 ' || engine
+        END as type
+    FROM system.tables
+    WHERE database = 'trading'
+    ORDER BY 
+        CASE WHEN engine = 'View' THEN 2 ELSE 1 END,
+        name
+    FORMAT TabSeparated
+    """
+    
+    result = execute_sql(sql, "Liste Tabellen + Views")
+    
+    if "ERROR" in result or "EXCEPTION" in result:
+        print(f"❌ Fehler: {result}")
+        return False
+    
+    if not result:
+        print("✅ Keine Tabellen vorhanden - Datenbank ist leer")
+        return True
+    
+    lines = result.split('\n')
+    print(f"\n✅ {len(lines)} Tabellen/Views gefunden:\n")
+    
+    for i, line in enumerate(lines, 1):
+        parts = line.split('\t')
+        if len(parts) >= 2:
+            name, type_icon = parts[0], parts[1]
+            print(f"  {i:2d}. {type_icon} {name}")
+        else:
+            print(f"  {i:2d}. {line}")
+    
+    return True
+
+def show_table_sizes():
+    """Zeigt Tabellen mit Größen an"""
+    print("\n📊 TABELLEN MIT GRÖSSEN:")
+    print("=" * 60)
+    
+    sql = """
+    SELECT 
+        table,
+        formatReadableSize(total_bytes) as size,
+        formatReadableQuantity(total_rows) as rows
+    FROM system.tables
+    WHERE database = 'trading'
+    ORDER BY total_bytes DESC
+    """
+    
+    result = execute_sql(sql, "Tabellen mit Größen")
+    
+    if "ERROR" in result or "EXCEPTION" in result:
+        print(f"❌ Fehler: {result}")
+        return False
+    
+    if not result:
+        print("✅ Keine Tabellen vorhanden")
+        return True
+    
+    print(result)
+    return True
+
+def main():
+    print("🔥 CLICKHOUSE - SHOW TABLES & VIEWS")
+    print("=" * 60)
+
+    # Test Connection
+    test = execute_sql("SELECT 1", "ClickHouse Test")
+    if "ERROR" in test or "EXCEPTION" in test:
+        print(f"❌ ClickHouse nicht erreichbar: {test}")
+        return False
+    
+    print("✅ ClickHouse verbunden")
+    
+    # Zeige Tabellen + Views
+    if not show_all_tables():
+        return False
+    
+    # Zeige Größen
+    print()
+    if not show_table_sizes():
+        return False
+    
+    print("\n🎉 FERTIG!")
+    return True
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
 </file>
 
 <file path="backend/exchanges/binance/services/orderbook.py">
@@ -131073,6 +131107,84 @@ export * from './types';
 export * from './chartThemes';
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx">
+// frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx
+import React, { useEffect, useMemo, useState } from "react";
+import type { FillBlock } from "@/services/ws/useWsLane";
+
+type Props = {
+  chartRef: React.MutableRefObject<any>;
+  enabled: boolean;
+  block: FillBlock | null;
+};
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+export default function LoadingBlockOverlay({ chartRef, enabled, block }: Props) {
+  const [coords, setCoords] = useState<{ left: number; right: number } | null>(null);
+
+  const key = useMemo(() => {
+    if (!block) return "";
+    return `${block.start_sec}:${block.end_sec}:${block.stage}:${block.progress}:${block.batch}:${block.total}`;
+  }, [block]);
+
+  useEffect(() => {
+    if (!enabled || !block) {
+      setCoords(null);
+      return;
+    }
+
+    let raf = 0;
+    const tick = () => {
+      const chart = chartRef.current;
+      if (!chart || !chart.timeScale) {
+        setCoords(null);
+        raf = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      const ts = chart.timeScale();
+      const left = ts.timeToCoordinate(block.start_sec);
+      const right = ts.timeToCoordinate(block.end_sec);
+
+      if (isFiniteNum(left) && isFiniteNum(right)) {
+        const l = Math.min(left, right);
+        const r = Math.max(left, right);
+        setCoords({ left: l, right: r });
+      } else {
+        setCoords(null);
+      }
+
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [enabled, block, chartRef, key]);
+
+  if (!enabled || !block || !coords) return null;
+
+  const width = Math.max(0, coords.right - coords.left);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-20">
+      <div
+        style={{
+          position: "absolute",
+          left: `${coords.left}px`,
+          width: `${width}px`,
+          top: 0,
+          bottom: 0,
+          background: "rgba(255, 0, 0, 0.12)",
+        }}
+      />
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
 // frontend/src/shared/components/PriceDisplay.tsx
 type Props = {
@@ -131196,6 +131308,50 @@ export function RootLayout({ children, title, subtitle }: Props) {
       </main>
     </div>
   );
+}
+</file>
+
+<file path="frontend/src/shared/state/uiPrefs.ts">
+// frontend/src/shared/state/uiPrefs.ts
+import { useEffect, useState } from "react";
+
+const KEY_SHOW_BLOCK_OVERLAY = "ui.showLoadingBlockOverlay";
+
+export function getShowLoadingBlockOverlayDefault(): boolean {
+  const v = localStorage.getItem(KEY_SHOW_BLOCK_OVERLAY);
+  if (v === null) return true; // ✅ default ON
+  return v === "1";
+}
+
+export function setShowLoadingBlockOverlay(v: boolean) {
+  localStorage.setItem(KEY_SHOW_BLOCK_OVERLAY, v ? "1" : "0");
+}
+
+export function useShowLoadingBlockOverlay() {
+  const [enabled, setEnabled] = useState<boolean>(() => getShowLoadingBlockOverlayDefault());
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === KEY_SHOW_BLOCK_OVERLAY) {
+        setEnabled(getShowLoadingBlockOverlayDefault());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const toggle = () => {
+    const next = !enabled;
+    setEnabled(next);
+    setShowLoadingBlockOverlay(next);
+  };
+
+  const set = (v: boolean) => {
+    setEnabled(v);
+    setShowLoadingBlockOverlay(v);
+  };
+
+  return { enabled, toggle, set };
 }
 </file>
 
@@ -162431,6 +162587,182 @@ async def initialize_clickhouse_foundation() -> bool:
     return True
 </file>
 
+<file path="backend/database/clickhouse/kline_preagg.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from typing import List
+
+logger = logging.getLogger(__name__)
+
+_LOCK = asyncio.Lock()
+_ENSURED: bool = False
+_EXCHANGE_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _sanitize_exchange(ex: str) -> str:
+    ex = (ex or "").strip().lower()
+    if not ex or not _EXCHANGE_RE.match(ex):
+        raise ValueError(f"Invalid exchange identifier: {ex!r}")
+    return ex
+
+
+async def _get_ch():
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch = get_clickhouse_client()
+    if not ch:
+        raise RuntimeError("ClickHouse client not available")
+    return ch
+
+
+async def list_trade_tables() -> List[str]:
+    ch = await _get_ch()
+    rows = await ch.execute(
+        """
+        SELECT name
+        FROM system.tables
+        WHERE database = 'trading'
+          AND endsWith(name, '_trades')
+        ORDER BY name ASC
+        """
+    )
+    return [r[0] for r in rows if r and isinstance(r[0], str)]
+
+
+def _exchange_from_trade_table(table: str) -> str | None:
+    if not table.endswith("_trades"):
+        return None
+    ex = table[:-len("_trades")]
+    try:
+        return _sanitize_exchange(ex)
+    except Exception:
+        return None
+
+
+async def ensure_all_kline_state_table() -> None:
+    """
+    Ensures trading.all_kline exists as AggregatingMergeTree STATE table.
+    If it exists with different schema, migration must be done via SQL (not here).
+    """
+    ch = await _get_ch()
+    await ch.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trading.all_kline
+        (
+            exchange LowCardinality(String),
+            symbol   LowCardinality(String),
+            market   LowCardinality(String),
+            interval LowCardinality(String),
+            bucket_start DateTime64(3, 'UTC'),
+
+            open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+            high_state  AggregateFunction(max,   Decimal(76, 38)),
+            low_state   AggregateFunction(min,   Decimal(76, 38)),
+            close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+
+            volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+            quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+            trades_count_state AggregateFunction(count, UInt64)
+        )
+        ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMMDD(bucket_start)
+        ORDER BY (exchange, symbol, market, interval, bucket_start)
+        TTL bucket_start + toIntervalMonth(12)
+        SETTINGS index_granularity = 8192
+        """
+    )
+
+    await ch.execute(
+        """
+        CREATE OR REPLACE VIEW trading.all_kline_final AS
+        SELECT
+            exchange,
+            symbol,
+            market,
+            interval,
+            bucket_start,
+            argMinMerge(open_state)  AS open_price,
+            maxMerge(high_state)     AS high_price,
+            minMerge(low_state)      AS low_price,
+            argMaxMerge(close_state) AS close_price,
+            sumMerge(volume_state)   AS volume,
+            sumMerge(quote_volume_state) AS quote_volume,
+            toUInt32(sumMerge(trades_count_state)) AS trades_count,
+            CAST(NULL, 'Nullable(Decimal(76, 38))') AS vwap,
+            CAST(NULL, 'Nullable(UInt8)') AS exchange_count,
+            CAST(NULL, 'Nullable(String)') AS leader_exchange
+        FROM trading.all_kline
+        GROUP BY exchange, symbol, market, interval, bucket_start
+        """
+    )
+
+
+async def ensure_mv_for_exchange(exchange: str) -> None:
+    ex = _sanitize_exchange(exchange)
+    ch = await _get_ch()
+
+    mv_name = f"trading.mv_{ex}_trades_to_all_kline_1s"
+
+    await ch.execute(
+        f"""
+        CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}
+        TO trading.all_kline
+        AS
+        SELECT
+            '{ex}' AS exchange,
+            symbol,
+            market,
+            '1s' AS interval,
+            toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+
+            argMinState(price, (timestamp, trade_id)) AS open_state,
+            maxState(price)                           AS high_state,
+            minState(price)                           AS low_state,
+            argMaxState(price, (timestamp, trade_id)) AS close_state,
+
+            sumState(size)            AS volume_state,
+            sumState(price * size)    AS quote_volume_state,
+            countState()              AS trades_count_state
+        FROM trading.{ex}_trades
+        GROUP BY symbol, market, bucket_start
+        """
+    )
+
+
+async def ensure_kline_preagg() -> None:
+    global _ENSURED
+    if _ENSURED:
+        return
+
+    async with _LOCK:
+        if _ENSURED:
+            return
+
+        await ensure_all_kline_state_table()
+
+        tables = await list_trade_tables()
+        exchanges: List[str] = []
+        for t in tables:
+            ex = _exchange_from_trade_table(t)
+            if ex:
+                exchanges.append(ex)
+
+        for ex in exchanges:
+            try:
+                await ensure_mv_for_exchange(ex)
+            except Exception as e:
+                logger.error(f"[kline_preagg] MV ensure failed ex={ex}: {e}", exc_info=True)
+
+        _ENSURED = True
+        logger.info(f"[kline_preagg] ensured for exchanges={exchanges}")
+</file>
+
 <file path="backend/exchanges/mexc/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -162844,354 +163176,6 @@ def apply_exchange_limits(streams: Iterable[str], limit: int = 200) -> List[str]
 <file path="frontend/src/config/env.ts">
 // frontend/src/config/env.ts
 export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
-</file>
-
-<file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
-import { useState, useEffect } from "react";
-import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
-
-interface TimeButtonsProps {
-  onIntervalChange?: (interval: string) => void;
-  onIndicatorSelect?: (indicator: string) => void;
-}
-
-const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
-  const [activeTime, setActiveTime] = useState("1m");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [selectedIntervals, setSelectedIntervals] = useState<Set<string>>(
-    new Set(["1s", "5s", "15s", "1m", "1h"]),
-  );
-  const [isGridView, setIsGridView] = useState(false);
-  const [allIntervals, setAllIntervals] = useState<Array<{ label: string; value: string }>>([]);
-
-  // ✅ Load intervals from backend API on mount
-  useEffect(() => {
-    const loadIntervals = async () => {
-      try {
-        const intervals = await getAllIntervals();
-        setAllIntervals(intervals);
-        
-        const defaultSelected = await getDefaultSelectedIntervals();
-        setSelectedIntervals(defaultSelected);
-      } catch (error) {
-        console.error("Failed to load candle intervals:", error);
-      }
-    };
-    
-    loadIntervals();
-  }, []);
-
-  const displayIntervals = Array.from(selectedIntervals);
-
-  const handleTimeSelect = (interval: string) => {
-    setActiveTime(interval);
-    setIsDropdownOpen(false);
-    
-    if (onIntervalChange) {
-      onIntervalChange(interval);
-    }
-  };
-
-  const handleEditToggle = () => {
-    setIsEditMode(!isEditMode);
-  };
-
-  const handleIntervalToggle = (interval: string) => {
-    const newSelected = new Set(selectedIntervals);
-    if (newSelected.has(interval)) {
-      newSelected.delete(interval);
-    } else {
-      newSelected.add(interval);
-    }
-    setSelectedIntervals(newSelected);
-  };
-
-  const handleSave = () => {
-    setIsEditMode(false);
-  };
-
-  const handleIndicatorSelect = (indicator: string) => {
-    if (onIndicatorSelect) {
-      onIndicatorSelect(indicator);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-3 my-3 text-sm">
-      <label className="font-medium text-muted-foreground mr-2">
-        Zeit
-      </label>
-
-      {/* Display Buttons */}
-      {displayIntervals.map((interval) => (
-        <div
-          key={interval}
-          className={`cursor-pointer select-none ${
-            activeTime === interval
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-foreground hover:bg-muted/80"
-          }`}
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => handleTimeSelect(interval)}
-        >
-          {interval}
-        </div>
-      ))}
-
-      {/* Dropdown Button */}
-      <div className="relative">
-        <div
-          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
-          style={{
-            padding: "2px 8px",
-            borderRadius: "4px",
-            display: "flex",
-            alignItems: "center",
-            gap: "4px",
-            fontSize: "12.8px",
-            border: "none",
-            outline: "none",
-            boxShadow: "none",
-            borderWidth: "0",
-            borderStyle: "none",
-            borderColor: "transparent",
-          }}
-          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-        >
-          ▽
-        </div>
-
-        {/* Dropdown Menu */}
-        {isDropdownOpen && (
-          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-900 dark:text-white">
-                  Intervall auswählen
-                </h3>
-                <button
-                  className="text-blue-500 text-sm font-medium"
-                  onClick={isEditMode ? handleSave : handleEditToggle}
-                >
-                  {isEditMode ? "Speichern" : "Bearbeiten"}
-                </button>
-              </div>
-
-              {/* Grid of time intervals */}
-              <div className="grid grid-cols-4 gap-2">
-                {allIntervals.map((interval) => (
-                  <div
-                    key={interval.value}
-                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
-                      activeTime === interval.value && !isEditMode
-                        ? "bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300"
-                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
-                    }`}
-                    onClick={() =>
-                      isEditMode
-                        ? handleIntervalToggle(interval.value)
-                        : handleTimeSelect(interval.value)
-                    }
-                  >
-                    {interval.label}
-
-                    {/* Checkbox in edit mode */}
-                    {isEditMode && (
-                      <div className="absolute top-1 right-1">
-                        <div
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${
-                            selectedIntervals.has(interval.value)
-                              ? "bg-blue-500 text-white"
-                              : "bg-gray-300 text-gray-600"
-                          }`}
-                        >
-                          {selectedIntervals.has(interval.value) ? "✓" : ""}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Overlay to close dropdown */}
-        {isDropdownOpen && (
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setIsDropdownOpen(false)}
-          />
-        )}
-      </div>
-
-      {/* Separator */}
-      <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-2"></div>
-
-      {/* Indicators Button - Simplified (kein Modal Import) */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => console.log("Indicators clicked")}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M2 12L5 9L8 11L12 7"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 4V7H9"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span>Indikatoren</span>
-      </div>
-
-      {/* Grid View Button */}
-      <div
-        className={`cursor-pointer select-none flex items-center justify-center ${
-          isGridView
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground hover:bg-muted/80"
-        }`}
-        style={{
-          padding: "4px 8px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-          width: "28px",
-          height: "24px",
-        }}
-        onClick={() => setIsGridView(!isGridView)}
-        title="Grid View"
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <rect
-            x="1"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="1"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="1"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <rect
-            x="8"
-            y="8"
-            width="5"
-            height="5"
-            rx="1"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-        </svg>
-      </div>
-
-      {/* Alarm Button */}
-      <div
-        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
-        style={{
-          padding: "4px 12px",
-          borderRadius: "4px",
-          fontSize: "12.8px",
-          border: "none",
-          outline: "none",
-          boxShadow: "none",
-          borderWidth: "0",
-          borderStyle: "none",
-          borderColor: "transparent",
-        }}
-        onClick={() => {
-          console.log("Alarm clicked");
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          className="opacity-80"
-        >
-          <path
-            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            fill="none"
-          />
-          <path
-            d="M7 4V7L9 9"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-          />
-        </svg>
-        Alarm
-      </div>
-    </div>
-  );
-};
-
-export default TimeButtons;
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
@@ -165092,440 +165076,237 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 </file>
 
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from "react";
-import { useWsLane } from "../../../services/ws/useWsLane";
-import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+<file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
+import { useState, useEffect } from "react";
+import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
+import { useShowLoadingBlockOverlay } from "@/shared/state/uiPrefs";
 
-/**
- * ENTERPRISE POLICY:
- * - limit counts ONLY real candles (OHLC)
- * - gaps are visualized via Whitespace bars (time-only)
- * - NO synthetic OHLC is ever generated ("kein Interpolieren")
- * - fully ENV driven (no hardcoded behavior)
- */
-
-function envInt(key: string, def: number, min: number, max: number): number {
-  const raw = (import.meta as any).env?.[key];
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
+interface TimeButtonsProps {
+  onIntervalChange?: (interval: string) => void;
+  onIndicatorSelect?: (indicator: string) => void;
 }
 
-// default real-candle limit from ENV (0 = unlimited)
-const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
-
-// max whitespace points inserted per single gap
-const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
-
-function intervalToSec(interval: string | undefined): number {
-  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (!Number.isFinite(n) || n <= 0) return 60;
-
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  if (u === "w") return n * 604800;
-  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
-  if (u === "M") return n * 2592000;
-
-  return 60;
-}
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function isRealBar(b: any): b is CandleBar {
-  return (
-    isFiniteNum(b?.time) &&
-    isFiniteNum(b?.open) &&
-    isFiniteNum(b?.high) &&
-    isFiniteNum(b?.low) &&
-    isFiniteNum(b?.close)
+const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) => {
+  const [activeTime, setActiveTime] = useState("1m");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIntervals, setSelectedIntervals] = useState<Set<string>>(
+    new Set(["1s", "5s", "15s", "1m", "1h"]),
   );
-}
+  const [isGridView, setIsGridView] = useState(false);
+  const [allIntervals, setAllIntervals] = useState<Array<{ label: string; value: string }>>([]);
 
-/**
- * Inserts Whitespace points between REAL points to visualize missing buckets.
- * Never generates OHLC -> no interpolation.
- *
- * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
- */
-function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
-  if (sortedReal.length <= 1) return sortedReal;
-  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
-
-  const stepMs = stepSec * 1000;
-  const out: CandleData[] = [];
-
-  for (let i = 0; i < sortedReal.length; i++) {
-    const cur = sortedReal[i];
-    if (!cur) continue;
-    out.push(cur);
-
-    const nxt = sortedReal[i + 1];
-    if (!nxt) break;
-
-    const dtMs = nxt.time - cur.time;
-    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
-
-    const missingBars = Math.floor(dtMs / stepMs) - 1;
-    if (missingBars <= 0) continue;
-
-    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
-    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
-
-    for (let k = 1; k <= missingBars; k += stride) {
-      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
-    }
-  }
-
-  return out;
-}
-
-/**
- * Applies real-candle limit (N), WITHOUT counting whitespace.
- * Returns last N real candles, then injects whitespace gaps inside that window.
- */
-function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
-  if (realSorted.length === 0) return [];
-
-  let windowReal = realSorted;
-  if (maxReal > 0 && realSorted.length > maxReal) {
-    windowReal = realSorted.slice(realSorted.length - maxReal);
-  }
-
-  return injectWhitespaceGaps(windowReal, stepSec);
-}
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit?: number
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status } = useWsLane(exchange, symbol, market, interval);
-  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const maxReal = useMemo(() => {
-    const n = Number(limit);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return ENV_MAX_REAL;
-  }, [limit]);
-
-  const chartData = useMemo<CandleData[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    if (hist.length === 0 && live.length === 0) return [];
-
-    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
-    const map = new Map<number, CandleBar>();
-
-    const push = (c: any) => {
-      const tSec = Number(c?.t);
-      if (!Number.isFinite(tSec) || tSec <= 0) return;
-
-      const timeMs = Math.floor(tSec) * 1000;
-
-      const bar: CandleBar = {
-        time: timeMs,
-        open: Number(c?.o),
-        high: Number(c?.h),
-        low: Number(c?.l),
-        close: Number(c?.c),
-        volume: Number(c?.v),
-      };
-
-      if (!isRealBar(bar)) return;
-      map.set(timeMs, bar);
-    };
-
-    for (const c of hist) push(c);
-    for (const c of live) push(c);
-
-    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
-
-    // ✅ limit counts ONLY real candles
-    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
-  }, [historical, candles, stepSec, maxReal]);
-
-  const meta = useMemo(() => {
-    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
-    const whitespaceCount = chartData.length - realCount;
-    return {
-      status,
-      interval,
-      stepSec,
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      realCount,
-      whitespaceCount,
-      maxRealCandles: maxReal,
-      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
-    };
-  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+  const overlayPref = useShowLoadingBlockOverlay();
 
   useEffect(() => {
-    if (status === "OPEN") {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
+    const loadIntervals = async () => {
+      try {
+        const intervals = await getAllIntervals();
+        setAllIntervals(intervals);
+
+        const defaultSelected = await getDefaultSelectedIntervals();
+        setSelectedIntervals(defaultSelected);
+      } catch (error) {
+        console.error("Failed to load candle intervals:", error);
       }
-      return;
-    }
-    if (status === "ERROR") {
-      setLoading(false);
-      setError(new Error("WebSocket connection failed"));
-      return;
-    }
-    setLoading(true);
-  }, [status, chartData.length]);
+    };
 
-  return {
-    chartData,
-    loading,
-    error,
-    meta,
+    loadIntervals();
+  }, []);
+
+  const displayIntervals = Array.from(selectedIntervals);
+
+  const handleTimeSelect = (interval: string) => {
+    setActiveTime(interval);
+    setIsDropdownOpen(false);
+
+    if (onIntervalChange) {
+      onIntervalChange(interval);
+    }
   };
-}
-</file>
 
-<file path="frontend/src/services/ws/WebSocketPool.ts">
-// frontend/src/services/ws/WebSocketPool.ts
-import { WS_BASE_URL } from "../../config/env";
+  const handleEditToggle = () => {
+    setIsEditMode(!isEditMode);
+  };
 
-export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+  const handleIntervalToggle = (interval: string) => {
+    const newSelected = new Set(selectedIntervals);
+    if (newSelected.has(interval)) {
+      newSelected.delete(interval);
+    } else {
+      newSelected.add(interval);
+    }
+    setSelectedIntervals(newSelected);
+  };
 
-export type WsMsg =
-  | { type: "connection"; [k: string]: any }
-  | { type: "trade"; exchange: string; symbol: string; market: string; price?: any; size?: any; side?: any; ts?: any; [k: string]: any }
-  | { type: "candle"; exchange: string; symbol: string; market: string; interval?: string; t?: any; o?: any; h?: any; l?: any; c?: any; v?: any; [k: string]: any }
-  | { type: "orderbook"; exchange: string; symbol: string; market: string; bids?: any[]; asks?: any[]; spread?: any; ts?: any; [k: string]: any }
-  | { type: "historical"; exchange: string; symbol: string; market: string; interval?: string; candles?: any[]; [k: string]: any }
-  | { type: string; [k: string]: any };
+  const handleSave = () => {
+    setIsEditMode(false);
+  };
 
-type Listener = (msg: WsMsg) => void;
-type StatusListener = (s: WsStatus) => void;
+  const handleIndicatorSelect = (indicator: string) => {
+    if (onIndicatorSelect) {
+      onIndicatorSelect(indicator);
+    }
+  };
 
-type Key = string; // exchange:symbol:market
+  return (
+    <div className="flex items-center gap-3 my-3 text-sm">
+      <label className="font-medium text-muted-foreground mr-2">Zeit</label>
 
-type Conn = {
-  key: Key;
-  exchange: string;
-  symbol: string;
-  market: string;
-  url: string;
+      {displayIntervals.map((interval) => (
+        <div
+          key={interval}
+          className={`cursor-pointer select-none ${
+            activeTime === interval
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-foreground hover:bg-muted/80"
+          }`}
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => handleTimeSelect(interval)}
+        >
+          {interval}
+        </div>
+      ))}
 
-  ws: WebSocket | null;
-  status: WsStatus;
+      {/* Dropdown */}
+      <div className="relative">
+        <div
+          className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none"
+          style={{
+            padding: "2px 8px",
+            borderRadius: "4px",
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12.8px",
+            border: "none",
+            outline: "none",
+            boxShadow: "none",
+            borderWidth: "0",
+            borderStyle: "none",
+            borderColor: "transparent",
+          }}
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+        >
+          ▽
+        </div>
 
-  listeners: Set<Listener>;
-  statusListeners: Set<StatusListener>;
+        {isDropdownOpen && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-80 bg-white dark:bg-gray-800 rounded-lg shadow-xl">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-semibold text-gray-900 dark:text-white">Intervall auswählen</h3>
+                <button
+                  className="text-blue-500 text-sm font-medium"
+                  onClick={isEditMode ? handleSave : handleEditToggle}
+                >
+                  {isEditMode ? "Speichern" : "Bearbeiten"}
+                </button>
+              </div>
 
-  refCount: number;
-  reconnectAttempt: number;
-  reconnectTimer: number | null;
-  manuallyClosed: boolean;
+              {/* ✅ NEW: Overlay Toggle (minimal UI impact) */}
+              <div className="flex items-center justify-between mb-3 px-1">
+                <div className="text-xs text-gray-600 dark:text-gray-300">
+                  Block-Overlay
+                </div>
+                <button
+                  className={`text-xs px-2 py-1 rounded ${
+                    overlayPref.enabled
+                      ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200"
+                      : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+                  }`}
+                  onClick={() => overlayPref.toggle()}
+                >
+                  {overlayPref.enabled ? "ON" : "OFF"}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                {allIntervals.map((it) => (
+                  <div
+                    key={it.value}
+                    className={`h-10 rounded text-sm font-medium transition-colors relative flex items-center justify-center cursor-pointer ${
+                      activeTime === it.value && !isEditMode
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                    onClick={() => {
+                      if (isEditMode) {
+                        handleIntervalToggle(it.value);
+                      } else {
+                        handleTimeSelect(it.value);
+                      }
+                    }}
+                  >
+                    {it.label}
+                    {isEditMode && (
+                      <div
+                        className={`absolute top-1 right-1 w-3 h-3 rounded border ${
+                          selectedIntervals.has(it.value) ? "bg-blue-500 border-blue-500" : "border-gray-400"
+                        }`}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                (Bearbeiten = Buttons oben konfigurieren)
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Alarm Button (unchanged) */}
+      <div
+        className="bg-muted text-foreground hover:bg-muted/80 cursor-pointer select-none flex items-center gap-2"
+        style={{
+          padding: "4px 12px",
+          borderRadius: "4px",
+          fontSize: "12.8px",
+          border: "none",
+          outline: "none",
+          boxShadow: "none",
+          borderWidth: "0",
+          borderStyle: "none",
+          borderColor: "transparent",
+        }}
+        onClick={() => {
+          console.log("Alarm clicked");
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="opacity-80">
+          <path
+            d="M7 13C10.3137 13 13 10.3137 13 7C13 3.68629 10.3137 1 7 1C3.68629 1 1 3.68629 1 7C1 10.3137 3.68629 13 7 13Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+          <path
+            d="M7 4V7L9 9"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+          />
+        </svg>
+        Alarm
+      </div>
+    </div>
+  );
 };
 
-function mkKey(exchange: string, symbol: string, market: string): Key {
-  return `${exchange}:${symbol}:${market}`;
-}
-
-function wsUrl(exchange: string, symbol: string, market: string) {
-  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
-
-  // Prefer explicit base if set, else same-origin
-  if (WS_BASE_URL) {
-    const base = WS_BASE_URL.replace(/\/+$/, "");
-    return `${base}${path}`;
-  }
-
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}${path}`;
-}
-
-function safeJson(s: string): any | null {
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-export class WebSocketPool {
-  private static _i: WebSocketPool | null = null;
-  static get instance() {
-    if (!this._i) this._i = new WebSocketPool();
-    return this._i;
-  }
-
-  private conns = new Map<Key, Conn>();
-
-  acquire(exchange: string, symbol: string, market = "spot"): Key {
-    const key = mkKey(exchange, symbol, market);
-    let c = this.conns.get(key);
-
-    if (!c) {
-      c = {
-        key,
-        exchange,
-        symbol,
-        market,
-        url: wsUrl(exchange, symbol, market),
-
-        ws: null,
-        status: "INIT",
-
-        listeners: new Set(),
-        statusListeners: new Set(),
-
-        refCount: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        manuallyClosed: false,
-      };
-      this.conns.set(key, c);
-    }
-
-    c.refCount += 1;
-
-    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
-      this.open(c);
-    }
-
-    return key;
-  }
-
-  release(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    const c = this.conns.get(key);
-    if (!c) return;
-
-    c.refCount = Math.max(0, c.refCount - 1);
-    if (c.refCount === 0) {
-      this.close(c);
-      this.conns.delete(key);
-    }
-  }
-
-  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.listeners.add(cb);
-    return () => {
-      c.listeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.statusListeners.add(cb);
-    cb(c.status);
-    return () => {
-      c.statusListeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
-    const c = this.conns.get(mkKey(exchange, symbol, market));
-    if (!c || !c.ws || c.status !== "OPEN") return false;
-
-    try {
-      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private setStatus(c: Conn, s: WsStatus) {
-    c.status = s;
-    for (const l of c.statusListeners) l(s);
-  }
-
-  private open(c: Conn) {
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    c.manuallyClosed = false;
-    this.setStatus(c, "CONNECTING");
-
-    const ws = new WebSocket(c.url);
-    c.ws = ws;
-
-    ws.onopen = () => {
-      c.reconnectAttempt = 0;
-      this.setStatus(c, "OPEN");
-    };
-
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
-      const parsed = safeJson(ev.data);
-      if (!parsed || typeof parsed !== "object") return;
-      const msg = parsed as WsMsg;
-      for (const l of c.listeners) l(msg);
-    };
-
-    ws.onerror = () => {
-      this.setStatus(c, "ERROR");
-      this.scheduleReconnect(c);
-    };
-
-    ws.onclose = () => {
-      c.ws = null;
-      this.setStatus(c, "CLOSED");
-      if (!c.manuallyClosed) this.scheduleReconnect(c);
-    };
-  }
-
-  private close(c: Conn) {
-    c.manuallyClosed = true;
-
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    try { c.ws?.close(); } catch { /* ignore */ }
-    c.ws = null;
-    this.setStatus(c, "CLOSED");
-  }
-
-  private scheduleReconnect(c: Conn) {
-    if (c.manuallyClosed) return;
-    if (c.refCount <= 0) return;
-
-    c.reconnectAttempt += 1;
-    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
-
-    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
-    c.reconnectTimer = window.setTimeout(() => {
-      if (c.refCount <= 0 || c.manuallyClosed) return;
-      this.open(c);
-    }, delay);
-  }
-}
+export default TimeButtons;
 </file>
 
 <file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
@@ -165777,186 +165558,6 @@ export function getChartTheme(isDark: boolean, interval: string): ChartTheme {
  */
 export function getSeriesTheme(isDark: boolean): CandlestickSeriesTheme {
   return isDark ? SERIES_THEME_DARK : SERIES_THEME_LIGHT;
-}
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-import { useEffect, useRef, useState } from "react";
-import { createLazyChart } from "../../../lib/chartLazyLoader";
-import { useTheme } from "../../ui/theme-provider";
-import { getChartTheme, getSeriesTheme } from "./chartThemes";
-import type { CandleData } from "./types";
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
-}
-
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-  setChartData: (data: CandleData[]) => void;
-  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
-}
-
-const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
-
-function isRealCandle(d: CandleData): d is any {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-  const initialRangeSetRef = useRef(false);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        const isDark = actualTheme === "dark";
-        const chartTheme = getChartTheme(isDark, interval);
-        const seriesTheme = getSeriesTheme(isDark);
-
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          ...chartTheme,
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
-
-        setIsChartReady(true);
-
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        const themeObserver = new MutationObserver(() => {
-          if (chartInstance.current && seriesInstance.current) {
-            const isDarkNow = document.documentElement.classList.contains("dark");
-            const newChartTheme = getChartTheme(isDarkNow, interval);
-            const newSeriesTheme = getSeriesTheme(isDarkNow);
-
-            chartInstance.current.applyOptions(newChartTheme);
-            seriesInstance.current.applyOptions(newSeriesTheme);
-          }
-        });
-        themeObserver.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-
-        return () => {
-          resizeObserver.disconnect();
-          themeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error("[useCandleChart] Failed to initialize chart:", err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval, actualTheme, containerRef]);
-
-  const setChartData = (data: CandleData[]) => {
-    if (!isChartReady || !seriesInstance.current) return;
-    if (!data || data.length === 0) return;
-
-    // Lightweight-charts expects seconds.
-    // Whitespace is supported by passing {time} without OHLC.
-    const formatted = data
-      .map((d) => {
-        const tSec = Math.floor(d.time / 1000);
-        if (!Number.isFinite(tSec) || tSec <= 0) return null;
-
-        if (isRealCandle(d)) {
-          return {
-            time: tSec,
-            open: (d as any).open,
-            high: (d as any).high,
-            low: (d as any).low,
-            close: (d as any).close,
-          };
-        }
-        return { time: tSec }; // ✅ Whitespace
-      })
-      .filter(Boolean) as any[];
-
-    if (formatted.length <= 0) return;
-
-    // Safety: ensure ascending order by time
-    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-
-    seriesInstance.current.setData(formatted);
-  };
-
-  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
-    if (!isChartReady || !chartInstance.current) return;
-    if (!data || data.length === 0) return;
-    if (initialRangeSetRef.current) return;
-
-    // Use first/last REAL candles (ignore whitespace)
-    const real = data.filter(isRealCandle);
-    if (real.length === 0) return;
-
-    const lastIndex = real.length - 1;
-    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
-
-    const firstCandle = real[firstIndex];
-    const lastCandle = real[lastIndex];
-    if (!firstCandle || !lastCandle) return;
-
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
-
-    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
-      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
-      initialRangeSetRef.current = true;
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-    setInitialVisibleRangeOnce,
-  };
 }
 </file>
 
@@ -167453,6 +167054,187 @@ const ChartView: React.FC<ChartViewProps> = ({
 export default ChartView;
 </file>
 
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+import type { FillBlock } from "@/services/ws/useWsLane";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated
+ * - fully ENV driven
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  if (u === "M") return n * 2592000;
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs } as any);
+    }
+  }
+
+  return out;
+}
+
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(symbol: string, market: string, exchange: string, interval: string, limit?: number) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const histCount = Array.isArray(historical) ? historical.length : 0;
+    const liveCount = Array.isArray(candles) ? candles.length : 0;
+
+    const realCount = chartData.filter((d: any) => (d as any).open !== undefined).length;
+    const whitespaceCount = Math.max(0, chartData.length - realCount);
+
+    return {
+      historicalCount: histCount,
+      liveCount,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+    };
+  }, [historical, candles, chartData]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    if (status === "ERROR") {
+      setError(new Error("WebSocket error"));
+    }
+  }, [status]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+    fillBlock: (fillBlock as FillBlock | null) ?? null,
+  };
+}
+</file>
+
 <file path="frontend/src/pages/TradingPage/TradingPage.tsx">
 import { useState, useMemo } from "react";
 import PriceDisplay from "./components/PriceDisplay";
@@ -167540,6 +167322,238 @@ const TradingPage = () => {
 export default TradingPage;
 </file>
 
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+// frontend/src/services/ws/WebSocketPool.ts
+type WsBase = {
+  type: string;
+  exchange?: string;
+  market?: string;
+  symbol?: string;
+};
+
+export type WsTradeMsg = WsBase & {
+  type: "trade";
+  price?: number;
+  size?: number;
+  side?: string;
+  ts?: number;
+};
+
+export type WsCandleMsg = WsBase & {
+  type: "candle";
+  t?: number; // seconds
+  o?: number;
+  h?: number;
+  l?: number;
+  c?: number;
+  v?: number;
+  interval?: string;
+};
+
+export type WsOrderbookMsg = WsBase & {
+  type: "orderbook";
+  bids?: Array<[number, number]>;
+  asks?: Array<[number, number]>;
+  ts?: number;
+};
+
+export type WsHistoricalMsg = WsBase & {
+  type: "historical";
+  interval?: string;
+  candles?: any[];
+  count?: number;
+};
+
+export type WsConnectionMsg = WsBase & {
+  type: "connection";
+  status?: string;
+  channel?: string;
+  server_iso?: string;
+};
+
+export type WsErrorMsg = WsBase & {
+  type: "error";
+  message?: string;
+};
+
+export type WsFillBlockMsg = WsBase & {
+  type: "fill_block";
+  start_sec: number;
+  end_sec: number;
+  stage: string;       // "gap" | "backfill" | "bootstrap"
+  progress: number;    // 0..100 (global progress)
+  batch: number;
+  total: number;
+  server_iso?: string;
+};
+
+export type WsMsg =
+  | WsTradeMsg
+  | WsCandleMsg
+  | WsOrderbookMsg
+  | WsHistoricalMsg
+  | WsConnectionMsg
+  | WsErrorMsg
+  | WsFillBlockMsg
+  | (WsBase & Record<string, any>);
+
+export type WsStatus = "IDLE" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+
+type Listener = (msg: WsMsg) => void;
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function safeJson(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+type ConnKey = string;
+
+type Conn = {
+  key: ConnKey;
+  url: string;
+  ws: WebSocket | null;
+  status: WsStatus;
+  listeners: Set<Listener>;
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+};
+
+export class WebSocketPool {
+  private conns = new Map<ConnKey, Conn>();
+
+  private makeKey(url: string) {
+    return url;
+  }
+
+  open(url: string, listener: Listener): () => void {
+    const key = this.makeKey(url);
+    let c = this.conns.get(key);
+
+    if (!c) {
+      c = {
+        key,
+        url,
+        ws: null,
+        status: "IDLE",
+        listeners: new Set(),
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+      };
+      this.conns.set(key, c);
+      this.openConn(c);
+    }
+
+    c.listeners.add(listener);
+    c.refCount += 1;
+
+    return () => this.release(key, listener);
+  }
+
+  getStatus(url: string): WsStatus {
+    const c = this.conns.get(this.makeKey(url));
+    return c?.status ?? "IDLE";
+  }
+
+  private setStatus(c: Conn, s: WsStatus) {
+    c.status = s;
+  }
+
+  private openConn(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") return;
+      const parsed = safeJson(ev.data);
+      if (!parsed || typeof parsed !== "object") return;
+      const msg = parsed as WsMsg;
+      for (const l of c.listeners) l(msg);
+    };
+
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+      this.scheduleReconnect(c);
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed) this.scheduleReconnect(c);
+    };
+  }
+
+  private closeConn(c: Conn) {
+    c.manuallyClosed = true;
+
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    try {
+      c.ws?.close();
+    } catch {
+      /* ignore */
+    }
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+
+  private scheduleReconnect(c: Conn) {
+    if (c.manuallyClosed) return;
+    if (c.refCount <= 0) return;
+
+    c.reconnectAttempt += 1;
+    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
+
+    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
+    c.reconnectTimer = window.setTimeout(() => {
+      if (c.refCount <= 0 || c.manuallyClosed) return;
+      this.openConn(c);
+    }, delay);
+  }
+
+  private release(key: ConnKey, listener: Listener) {
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.listeners.delete(listener);
+    c.refCount -= 1;
+
+    if (c.refCount <= 0) {
+      this.closeConn(c);
+      this.conns.delete(key);
+    }
+  }
+}
+
+export const wsPool = new WebSocketPool();
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/types.ts">
 /**
  * CandleChart Types
@@ -167625,6 +167639,173 @@ export interface CandlestickSeriesTheme {
   wickUpColor: string;
   wickDownColor: string;
   priceLineVisible?: boolean;
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+import { useEffect, useRef, useState } from "react";
+import { createLazyChart } from "../../../lib/chartLazyLoader";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import type { CandleData } from "./types";
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is any {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({ interval, containerRef }: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        const isDark = actualTheme === "dark";
+        const chartTheme = getChartTheme(isDark, interval);
+        const seriesTheme = getSeriesTheme(isDark);
+
+        const chart = await createLazyChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          ...chartTheme,
+        });
+
+        if (!isMounted) {
+          chart.remove();
+          return;
+        }
+
+        chartInstance.current = chart;
+        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
+
+        setIsChartReady(true);
+
+        const resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && chartInstance.current) {
+            const { width, height } = entries[0].contentRect;
+            chartInstance.current.applyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+
+        const themeObserver = new MutationObserver(() => {
+          if (chartInstance.current && seriesInstance.current) {
+            const isDarkNow = document.documentElement.classList.contains("dark");
+            const newChartTheme = getChartTheme(isDarkNow, interval);
+            const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+            chartInstance.current.applyOptions(newChartTheme);
+            seriesInstance.current.applyOptions(newSeriesTheme);
+          }
+        });
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+
+        return () => {
+          resizeObserver.disconnect();
+          themeObserver.disconnect();
+        };
+      } catch (err) {
+        console.error("[useCandleChart] Failed to initialize chart:", err);
+      }
+    };
+
+    initChart();
+
+    return () => {
+      isMounted = false;
+      if (chartInstance.current) {
+        chartInstance.current.remove();
+        chartInstance.current = null;
+      }
+    };
+  }, [interval, actualTheme, containerRef]);
+
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !seriesInstance.current) return;
+    if (!data || data.length === 0) return;
+
+    const formatted = data
+      .map((d) => {
+        const tSec = Math.floor((d as any).time / 1000);
+        if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+        if (isRealCandle(d)) {
+          return {
+            time: tSec,
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).close,
+          };
+        }
+        return { time: tSec }; // whitespace
+      })
+      .filter(Boolean) as any[];
+
+    if (formatted.length <= 0) return;
+    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+    seriesInstance.current.setData(formatted);
+  };
+
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor((firstCandle as any).time / 1000);
+    const toSec = Math.floor((lastCandle as any).time / 1000);
+
+    try {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    } catch {
+      // ignore
+    }
+  };
+
+  return { chartInstance, seriesInstance, isChartReady, setChartData, setInitialVisibleRangeOnce };
 }
 </file>
 
@@ -172409,436 +172590,6 @@ if __name__ == "__main__":
     start()
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Any
-from collections.abc import Mapping
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
-    """
-    Trade erwartet dict wegen .get().
-    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
-
-    if isinstance(x, (tuple, list)):
-        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
-        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
-            return {
-                "price": x[0],
-                "size": x[1],
-                "timestamp": x[2],
-                "side": x[3] if len(x) > 3 else None,
-            }
-        return {}
-
-    return {}
-
-
-def _ms_to_sec(ts: Any) -> Optional[int]:
-    """Konvertiert Millisekunden zu Sekunden (Lightweight-Charts Format)"""
-    if ts is None:
-        return None
-    try:
-        t = int(ts)
-    except Exception:
-        return None
-    # Heuristik: > 1e11 -> ms, sonst sec
-    return t // 1000 if t > 100_000_000_000 else t
-
-
-def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
-    """
-    Unterstützt:
-    A) Mapping (bereits dict)
-       - entweder schon {time,open,high,low,close,volume}
-       - oder {timestamp,o,h,l,c,v} (Aggregator-State)
-    B) Tuple/List:
-       - (interval_str, candle_dict)  ✅ finished-Format
-       - (time, open, high, low, close[, volume])
-    """
-    # A) dict-like
-    if isinstance(x, Mapping):
-        d = dict(x)
-
-        # Aggregator-Keys -> Frontend-Keys
-        if "open" not in d and "o" in d:
-            d["open"] = d.get("o")
-        if "high" not in d and "h" in d:
-            d["high"] = d.get("h")
-        if "low" not in d and "l" in d:
-            d["low"] = d.get("l")
-        if "close" not in d and "c" in d:
-            d["close"] = d.get("c")
-        if "volume" not in d and "v" in d:
-            d["volume"] = d.get("v")
-
-        # time setzen (Lightweight-Charts: Sekunden)
-        if "time" not in d:
-            ts = d.get("timestamp") or d.get("ts") or d.get("time")
-            tsec = _ms_to_sec(ts)
-            if tsec is not None:
-                d["time"] = tsec
-
-        return d
-
-    # B) tuple/list
-    if isinstance(x, (tuple, list)):
-        # B1) (interval, dict) ✅ KRITISCH für verschachtelte Tuples!
-        if len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], Mapping):
-            d = _ensure_candle_dict(x[1])  # Rekursiv normalisieren
-            d.setdefault("interval", x[0])
-            return d
-
-        # B2) (time, o, h, l, c[, v])
-        if len(x) >= 5:
-            tsec = _ms_to_sec(x[0])
-            d = {
-                "time": tsec if tsec is not None else x[0],
-                "open": x[1],
-                "high": x[2],
-                "low": x[3],
-                "close": x[4],
-            }
-            if len(x) > 5:
-                d["volume"] = x[5]
-            return d
-
-    return {}
-
-
-def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
-    """
-    Orderbook erwartet dict (bids/asks etc.).
-    Unterstützt Tuple/List: (bids, asks[, timestamp])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
-
-    if isinstance(x, (tuple, list)):
-        if len(x) >= 2:
-            d = {"bids": x[0], "asks": x[1]}
-            if len(x) > 2:
-                d["timestamp"] = x[2]
-            return d
-        return {}
-
-    return {}
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
-        }
-
-
-ws_manager = PerformantWebSocketManager()
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "notional": float(trade_data.get("price", 0) or 0) * float(trade_data.get("size", 0) or 0),  # ✅ NEU: Notional Value
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
-    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
-    """
-    ✅ Broadcast Orderbook Updates to Frontend
-    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
-    """
-    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "orderbook",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
-        "market": market,
-        "bids": orderbook_data.get("bids", []),
-        "asks": orderbook_data.get("asks", []),
-        "timestamp": orderbook_data.get("timestamp"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
 <file path="backend/websocket/ws_manager.py">
 from typing import Dict, Set, Optional, Tuple
 import asyncio
@@ -173660,626 +173411,363 @@ async def start_auto_backfill_gap_loop():
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
-<file path="backend/services/usecases/unified_ohlc.py">
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+
+✅ NEU:
+- fill_block Events (Gap/Backfill Block Visualizer)
+  type="fill_block"
+  payload: { exchange, market, symbol, start_sec, end_sec, stage, progress, batch, total }
+"""
+
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import os
-from datetime import datetime, timezone
-from typing import Any, List, Dict
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Any
+from collections.abc import Mapping
 
-logger = logging.getLogger(__name__)
+from fastapi import WebSocket
 
-
-def _to_sec(ts: int | float | None) -> int | None:
-    if ts is None:
-        return None
-    try:
-        n = int(ts)
-    except Exception:
-        return None
-    if n <= 0:
-        return None
-    if n >= 1_000_000_000_000:
-        return int(n // 1000)
-    return n
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
 
 
-def _utc_now_sec() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _env_int(key: str, default: int, lo: int, hi: int) -> int:
-    raw = os.getenv(key)
-    try:
-        n = int(raw) if raw is not None else int(default)
-    except Exception:
-        n = int(default)
-    if n < lo:
-        return lo
-    if n > hi:
-        return hi
-    return n
-
-
-async def _ch():
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
-
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
-
-    ch_client = get_clickhouse_client()
-    if not ch_client:
-        raise RuntimeError("ClickHouse client not available")
-    return ch_client
-
-
-async def _table_exists(db: str, name: str) -> bool:
-    ch_client = await _ch()
-    rows = await ch_client.execute(
-        """
-        SELECT 1
-        FROM system.tables
-        WHERE database = %(db)s AND name = %(name)s
-        LIMIT 1
-        """,
-        {"db": db, "name": name},
-    )
-    return bool(rows)
-
-
-async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    rows = await ch.execute(
-        """
-        SELECT
-            bucket_start AS ts,
-            argMinMerge(open_state)  AS open,
-            maxMerge(high_state)     AS high,
-            minMerge(low_state)      AS low,
-            argMaxMerge(close_state) AS close,
-            sumMerge(volume_state)   AS volume
-        FROM trading.all_kline_1s_state
-        WHERE exchange = %(exchange)s
-          AND symbol   = %(symbol)s
-          AND market   = %(market)s
-          AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-          AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-        GROUP BY bucket_start
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-        """,
-        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
-    )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
-
-
-async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    rows = await ch.execute(
-        """
-        WITH toUInt32(%(step)s) AS step
-        SELECT
-            toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-            argMin(open, bucket_start)  AS open,
-            max(high)                   AS high,
-            min(low)                    AS low,
-            argMax(close, bucket_start) AS close,
-            sum(volume)                 AS volume
-        FROM
-        (
-            SELECT
-                bucket_start,
-                argMinMerge(open_state)  AS open,
-                maxMerge(high_state)     AS high,
-                minMerge(low_state)      AS low,
-                argMaxMerge(close_state) AS close,
-                sumMerge(volume_state)   AS volume
-            FROM trading.all_kline_1s_state
-            WHERE exchange = %(exchange)s
-              AND symbol   = %(symbol)s
-              AND market   = %(market)s
-              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-            GROUP BY bucket_start
-        )
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-        """,
-        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-    )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
-
-
-async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
-    interval_seconds = int(interval_seconds)
-    limit = int(limit)
-    if interval_seconds <= 0:
-        raise ValueError("interval_seconds must be > 0")
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
-
-    exchange = (exchange or "").lower().strip()
-    symbol = (symbol or "").upper().strip()
-    market = (market or "spot").lower().strip()
-
-    end_sec = _to_sec(end) or _utc_now_sec()
-    start_sec = _to_sec(start)
-
-    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
-    if start_sec is None:
-        start_sec = end_sec - (limit * interval_seconds)
-
-    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
-    if end_sec - start_sec > max_range_s:
-        start_sec = end_sec - max_range_s
-
-    if start_sec > end_sec:
-        start_sec, end_sec = end_sec, start_sec
-
-    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
-    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
-
-    # ✅ Pre-Agg first
-    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
-    if preagg_enabled:
-        try:
-            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
-            await ensure_kline_preagg()
-
-            if await _table_exists("trading", "all_kline_1s_state"):
-                if interval_seconds == 1:
-                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
-                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
-        except Exception as e:
-            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
-
-    # Fallback: trades scan (nur wenn PreAgg nicht verfügbar)
-    trades_table = f"{exchange}_trades"
-    if not await _table_exists("trading", trades_table):
-        raise ValueError(f"trades table not found: trading.{trades_table}")
-
-    ch = await _ch()
-
-    query = f"""
-        SELECT
-            toStartOfInterval(timestamp, toIntervalSecond({interval_seconds})) AS ts,
-            argMin(price, (timestamp, trade_id)) AS open,
-            max(price) AS high,
-            min(price) AS low,
-            argMax(price, (timestamp, trade_id)) AS close,
-            sum(size) AS volume
-        FROM trading.{trades_table}
-        WHERE symbol = %(symbol)s
-          AND market = %(market)s
-          AND timestamp >= toDateTime64(%(start)s, 3, 'UTC')
-          AND timestamp <= toDateTime64(%(end)s, 3, 'UTC')
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT {effective_limit}
+def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
     """
+    Trade erwartet dict wegen .get().
+    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
 
-    rows = await ch.execute(query, {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec})
-    if not rows:
-        return []
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
+            return {
+                "price": x[0],
+                "size": x[1],
+                "timestamp": x[2],
+                "side": x[3] if len(x) > 3 else None,
+            }
+        return {}
 
-    return [{"time": int(r[0].timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])} for r in rows]
-</file>
+    return {}
 
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
 
-const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
-const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
-const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
 
-function clampInt(n: number, def: number, min: number, max: number): number {
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
 
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
 
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number; // seconds
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
 
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
 
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
 
-function toSec(ts: unknown): number {
-  const n = Number(ts);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
-  return Math.floor(n); // already sec
-}
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
 
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
 
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
 
-function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
-  if (!incoming.length) return prev;
 
-  const map = new Map<number, LiveCandle>();
-  for (const c of prev) map.set(c.t, c);
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
 
-  let changed = false;
-  for (const c of incoming) {
-    const old = map.get(c.t);
-    if (
-      !old ||
-      old.o !== c.o ||
-      old.h !== c.h ||
-      old.l !== c.l ||
-      old.c !== c.c ||
-      old.v !== c.v
-    ) {
-      map.set(c.t, c);
-      changed = true;
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _send_one(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+                self.metrics["payloads_sent"] += 1
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+
+        # bounded concurrency
+        sem = asyncio.Semaphore(256)
+
+        async def _wrap(job: _SendJob) -> None:
+            async with sem:
+                await _send_one(job)
+
+        await asyncio.gather(*[_wrap(j) for j in jobs], return_exceptions=True)
+        self.metrics["messages_sent"] += len(jobs)
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                await asyncio.sleep(sleep_s)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Frontend WS batch loop error: {e}", exc_info=True)
+                await asyncio.sleep(0.25)
+
+
+# Global instance (imported by ws_router.py as frontend_ws_manager)
+ws_manager = PerformantWebSocketManager()
+
+
+def _normalize_event(data: Any) -> Dict[str, Any]:
+    if isinstance(data, Mapping):
+        return dict(data)
+    if isinstance(data, (tuple, list)):
+        return _ensure_trade_dict(data)
+    return {}
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    t = _normalize_event(trade_data)
+    if not t:
+        return
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "price": t.get("price"),
+        "size": t.get("size"),
+        "side": t.get("side"),
+        "ts": t.get("timestamp") or t.get("ts"),
     }
-  }
+    await ws_manager.broadcast_to_channel(channel, msg)
 
-  if (!changed) return prev;
-  return Array.from(map.values()).sort((a, b) => a.t - b.t);
-}
 
-export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    c = _normalize_event(candle_data)
+    if not c:
+        return
 
-  // Backend limits (from "connection" message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  // Historical request policy (client-side, ENV-driven)
-  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
-  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
-  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
-  const histLastCountRef = useRef<number>(0);
-  const histNoGrowthRef = useRef<number>(0);
-  const histTimerRef = useRef<number | null>(null);
-  const histInFlightRef = useRef<boolean>(false);
-  const histLastReqAtRef = useRef<number>(0);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  // Reset state on lane key change
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-
-    histLastCountRef.current = 0;
-    histNoGrowthRef.current = 0;
-    histInFlightRef.current = false;
-    histLastReqAtRef.current = 0;
-
-    if (histTimerRef.current !== null) {
-      window.clearInterval(histTimerRef.current);
-      histTimerRef.current = null;
+    # Candle payload: expects {t,o,h,l,c,v} on frontend (seconds)
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "t": c.get("t") or c.get("time") or c.get("timestamp"),
+        "o": c.get("o") or c.get("open"),
+        "h": c.get("h") or c.get("high"),
+        "l": c.get("l") or c.get("low"),
+        "c": c.get("c") or c.get("close"),
+        "v": c.get("v") or c.get("volume"),
+        "interval": c.get("interval"),
     }
-  }, [exchange, symbol, market, interval]);
+    await ws_manager.broadcast_to_channel(channel, msg)
 
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
 
-    const requestHistorical = () => {
-      // throttle: avoid spamming
-      const now = Date.now();
-      if (histInFlightRef.current) return;
-      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
+async def broadcast_orderbook_data(exchange: str, symbol: str, ob_data: Any, market_type: str = "spot") -> None:
+    channel = _make_channel(exchange, symbol, market_type)
+    d = _normalize_event(ob_data)
+    if not d:
+        return
 
-      histInFlightRef.current = true;
-      histLastReqAtRef.current = now;
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "bids": d.get("bids") or [],
+        "asks": d.get("asks") or [],
+        "ts": d.get("timestamp") or d.get("ts"),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 
-      // Protocol: "historical:<interval>:<limit>"
-      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
-    };
 
-    const stopHistoricalPolling = () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-    };
-
-    const startHistoricalPolling = () => {
-      if (histTimerRef.current !== null) return;
-
-      // initial request immediately
-      requestHistorical();
-
-      // then poll until stable (no growth)
-      histTimerRef.current = window.setInterval(() => {
-        // stop condition: stable data for N cycles
-        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
-          stopHistoricalPolling();
-          return;
-        }
-        requestHistorical();
-      }, histPollMsRef.current);
-    };
-
-    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
-      setStatus(newStatus);
-
-      if (newStatus === "OPEN") {
-        // start polling historical (works even if backend doesn't push)
-        startHistoricalPolling();
-      }
-
-      if (newStatus === "CLOSED" || newStatus === "ERROR") {
-        stopHistoricalPolling();
-      }
-    });
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-
-        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
-        const hl = Number((limits as any).historicalLimit);
-        const hp = Number((limits as any).historicalPollMs);
-        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
-        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
-
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        // trades buffer (RAF)
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        // build live candle from trades (client-side agg)
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket,
-            o: t.price,
-            h: t.price,
-            l: t.price,
-            c: t.price,
-            v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        // optional backend candle stream; keep compatible
-        const m: any = msg;
-        const tSec = toSec(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
-        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        // mark request as completed
-        histInFlightRef.current = false;
-
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw
-          .map((raw: any) => ({
-            exchange: msg.exchange || exchange,
-            symbol: msg.symbol || symbol,
-            market: (msg as any).market || market,
-            interval: (msg as any).interval || interval,
-            t: toSec(raw.time ?? raw.t),
-            o: toNum(raw.open ?? raw.o),
-            h: toNum(raw.high ?? raw.h),
-            l: toNum(raw.low ?? raw.l),
-            c: toNum(raw.close ?? raw.c),
-            v: toNum(raw.volume ?? raw.v),
-          }))
-          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
-
-        setHistorical((prev) => mergeCandles(prev, hist));
-
-        // stop heuristic: if total historical size does not grow for N polls, stop polling
-        // (works even if backend always returns same "last N" window)
-        const incomingCount = hist.length;
-        const prevTotal = histLastCountRef.current;
-
-        // we need the full state size, but we only have incoming; use a conservative heuristic:
-        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
-        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
-        if (incomingCount <= 0) {
-          histNoGrowthRef.current += 1;
-        } else if (incomingCount === prevTotal) {
-          histNoGrowthRef.current += 1;
-        } else {
-          histNoGrowthRef.current = 0;
-          histLastCountRef.current = incomingCount;
-        }
-
-        return;
-      }
-    });
-
-    return () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-      window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
-      }, 100);
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  // ✅ Chart series must include historical + live
-  // Live should overwrite historical at same t (more recent values)
-  const mergedSeries = useMemo(() => {
-    const map = new Map<number, LiveCandle>();
-    for (const c of historical) map.set(c.t, c);
-    for (const c of candles) map.set(c.t, c); // live overwrites
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
-  }, [historical, candles]);
-
-  return { status, trades, candles: mergedSeries, orderbook, historical };
-}
+async def broadcast_fill_block(
+    exchange: str,
+    symbol: str,
+    market_type: str,
+    *,
+    start_sec: int,
+    end_sec: int,
+    stage: str,
+    progress: float,
+    batch: int,
+    total: int,
+) -> None:
+    """
+    ✅ NEW: Transparent red overlay in frontend shows currently filling block.
+    start_sec/end_sec are UNIX seconds in UTC.
+    stage: "gap" | "backfill" | "bootstrap"
+    """
+    channel = _make_channel(exchange, symbol, market_type)
+    msg = {
+        "type": "fill_block",
+        "exchange": _norm_exchange(exchange),
+        "market": _norm_market(market_type),
+        "symbol": _norm_symbol(symbol),
+        "start_sec": int(start_sec),
+        "end_sec": int(end_sec),
+        "stage": str(stage or "gap"),
+        "progress": float(progress),
+        "batch": int(batch),
+        "total": int(total),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
@@ -174792,6 +174280,475 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
+<file path="backend/services/usecases/unified_ohlc.py">
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any, List, Dict
+
+logger = logging.getLogger(__name__)
+
+
+def _to_sec(ts: int | float | None) -> int | None:
+    if ts is None:
+        return None
+    try:
+        n = int(ts)
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    if n >= 1_000_000_000_000:
+        return int(n // 1000)
+    return n
+
+
+def _utc_now_sec() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _env_int(key: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(key)
+    try:
+        n = int(raw) if raw is not None else int(default)
+    except Exception:
+        n = int(default)
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
+    return n
+
+
+async def _ch():
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch_client = get_clickhouse_client()
+    if not ch_client:
+        raise RuntimeError("ClickHouse client not available")
+    return ch_client
+
+
+async def _table_exists(db: str, name: str) -> bool:
+    ch_client = await _ch()
+    rows = await ch_client.execute(
+        """
+        SELECT 1
+        FROM system.tables
+        WHERE database = %(db)s AND name = %(name)s
+        LIMIT 1
+        """,
+        {"db": db, "name": name},
+    )
+    return bool(rows)
+
+
+async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    rows = await ch.execute(
+        """
+        SELECT
+            bucket_start AS ts,
+            argMinMerge(open_state)  AS open,
+            maxMerge(high_state)     AS high,
+            minMerge(low_state)      AS low,
+            argMaxMerge(close_state) AS close,
+            sumMerge(volume_state)   AS volume
+        FROM trading.all_kline
+        WHERE exchange = %(exchange)s
+          AND symbol   = %(symbol)s
+          AND market   = %(market)s
+          AND interval = '1s'
+          AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+          AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+        GROUP BY bucket_start
+        ORDER BY ts ASC
+        LIMIT %(limit)s
+        """,
+        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+    )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    rows = await ch.execute(
+        """
+        WITH toUInt32(%(step)s) AS step
+        SELECT
+            toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+            argMin(open, bucket_start)  AS open,
+            max(high)                   AS high,
+            min(low)                    AS low,
+            argMax(close, bucket_start) AS close,
+            sum(volume)                 AS volume
+        FROM
+        (
+            SELECT
+                bucket_start,
+                argMinMerge(open_state)  AS open,
+                maxMerge(high_state)     AS high,
+                minMerge(low_state)      AS low,
+                argMaxMerge(close_state) AS close,
+                sumMerge(volume_state)   AS volume
+            FROM trading.all_kline
+            WHERE exchange = %(exchange)s
+              AND symbol   = %(symbol)s
+              AND market   = %(market)s
+              AND interval = '1s'
+              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+            GROUP BY bucket_start
+        )
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT %(limit)s
+        """,
+        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+    )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
+    interval_seconds = int(interval_seconds)
+    limit = int(limit)
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be > 0")
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+    exchange = (exchange or "").lower().strip()
+    symbol = (symbol or "").upper().strip()
+    market = (market or "spot").lower().strip()
+
+    end_sec = _to_sec(end) or _utc_now_sec()
+    start_sec = _to_sec(start)
+
+    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
+    if start_sec is None:
+        start_sec = end_sec - (limit * interval_seconds)
+
+    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
+    if end_sec - start_sec > max_range_s:
+        start_sec = end_sec - max_range_s
+
+    if start_sec > end_sec:
+        start_sec, end_sec = end_sec, start_sec
+
+    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
+    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
+
+    # ✅ Pre-Agg first
+    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
+    if preagg_enabled:
+        try:
+            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+            await ensure_kline_preagg()
+
+            if await _table_exists("trading", "all_kline"):
+                if interval_seconds == 1:
+                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
+                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
+        except Exception as e:
+            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+
+    # Fallback: trades scan (nur wenn PreAgg nicht verfügbar)
+    trades_table = f"{exchange}_trades"
+    if not await _table_exists("trading", trades_table):
+        raise ValueError(f"trades table not found: trading.{trades_table}")
+
+    ch = await _ch()
+
+    query = f"""
+        SELECT
+            toStartOfInterval(timestamp, toIntervalSecond({interval_seconds})) AS ts,
+            argMin(price, (timestamp, trade_id)) AS open,
+            max(price) AS high,
+            min(price) AS low,
+            argMax(price, (timestamp, trade_id)) AS close,
+            sum(size) AS volume
+        FROM trading.{trades_table}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND timestamp >= toDateTime64(%(start)s, 3, 'UTC')
+          AND timestamp <= toDateTime64(%(end)s, 3, 'UTC')
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT {effective_limit}
+    """
+
+    rows = await ch.execute(query, {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec})
+    if not rows:
+        return []
+
+    return [{"time": int(r[0].timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])} for r in rows]
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { wsPool, WsMsg, WsStatus, WsFillBlockMsg } from "./WebSocketPool";
+import { WS_BASE_URL } from "@/config/env";
+
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 12);
+
+export type LiveTrade = {
+  exchange: string;
+  market: string;
+  symbol: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  market: string;
+  symbol: string;
+  t: number; // seconds
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+  interval?: string;
+};
+
+export type LiveOrderbook = {
+  exchange: string;
+  market: string;
+  symbol: string;
+  bids: Array<[number, number]>;
+  asks: Array<[number, number]>;
+  ts?: number;
+};
+
+export type FillBlock = {
+  exchange: string;
+  market: string;
+  symbol: string;
+  start_sec: number;
+  end_sec: number;
+  stage: string;
+  progress: number;
+  batch: number;
+  total: number;
+  server_iso?: string;
+};
+
+function makeUrl(exchange: string, symbol: string, market: string) {
+  const ex = (exchange || "").toLowerCase();
+  const sym = (symbol || "").toUpperCase();
+  const mk = (market || "spot").toLowerCase();
+  return `${WS_BASE_URL}/ws/${ex}/${sym}/${mk}`;
+}
+
+export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
+  const url = useMemo(() => makeUrl(exchange, symbol, market), [exchange, symbol, market]);
+
+  const [status, setStatus] = useState<WsStatus>("IDLE");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [historical, setHistorical] = useState<any[]>([]);
+  const [orderbook, setOrderbook] = useState<LiveOrderbook | null>(null);
+  const [fillBlock, setFillBlock] = useState<FillBlock | null>(null);
+
+  const lastHistCountRef = useRef<number>(0);
+  const histNoGrowthRef = useRef<number>(0);
+  const histTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!url) return;
+
+    const onMsg = (msg: WsMsg) => {
+      if (msg.type === "connection") return;
+
+      if (msg.type === "trade") {
+        const ex = (msg.exchange || exchange).toLowerCase();
+        const mk = (msg.market || market || "spot").toLowerCase();
+        const sym = (msg.symbol || symbol).toUpperCase();
+
+        const t: LiveTrade = {
+          exchange: ex,
+          market: mk,
+          symbol: sym,
+          price: Number((msg as any).price ?? 0),
+          size: Number((msg as any).size ?? 0),
+          side: (msg as any).side,
+          ts: Number((msg as any).ts ?? 0) || undefined,
+        };
+        if (!Number.isFinite(t.price) || !Number.isFinite(t.size)) return;
+
+        setTrades((prev) => {
+          const next = prev.length > 400 ? prev.slice(prev.length - 400) : prev.slice();
+          next.push(t);
+          return next;
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        const ex = (msg.exchange || exchange).toLowerCase();
+        const mk = (msg.market || market || "spot").toLowerCase();
+        const sym = (msg.symbol || symbol).toUpperCase();
+
+        const c: LiveCandle = {
+          exchange: ex,
+          market: mk,
+          symbol: sym,
+          t: Number((msg as any).t ?? 0),
+          o: Number((msg as any).o ?? 0),
+          h: Number((msg as any).h ?? 0),
+          l: Number((msg as any).l ?? 0),
+          c: Number((msg as any).c ?? 0),
+          v: Number((msg as any).v ?? 0),
+          interval: (msg as any).interval ?? interval,
+        };
+
+        if (!Number.isFinite(c.t) || c.t <= 0) return;
+
+        setCandles((prev) => {
+          // merge by t (bucket)
+          const n = prev.length;
+          if (n > 0 && prev[n - 1]?.t === c.t) {
+            const copy = prev.slice();
+            copy[n - 1] = c;
+            return copy;
+          }
+          const next = prev.length > 5000 ? prev.slice(prev.length - 5000) : prev.slice();
+          next.push(c);
+          return next;
+        });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        const arr = (msg as any).candles;
+        if (Array.isArray(arr)) {
+          setHistorical(arr);
+          const cnt = arr.length;
+          if (cnt <= lastHistCountRef.current) {
+            histNoGrowthRef.current += 1;
+          } else {
+            histNoGrowthRef.current = 0;
+          }
+          lastHistCountRef.current = cnt;
+        }
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const ex = (msg.exchange || exchange).toLowerCase();
+        const mk = (msg.market || market || "spot").toLowerCase();
+        const sym = (msg.symbol || symbol).toUpperCase();
+        const bids = Array.isArray((msg as any).bids) ? (msg as any).bids : [];
+        const asks = Array.isArray((msg as any).asks) ? (msg as any).asks : [];
+        setOrderbook({
+          exchange: ex,
+          market: mk,
+          symbol: sym,
+          bids,
+          asks,
+          ts: (msg as any).ts,
+        });
+        return;
+      }
+
+      if (msg.type === "fill_block") {
+        const m = msg as WsFillBlockMsg;
+        setFillBlock({
+          exchange: (m.exchange || exchange).toLowerCase(),
+          market: (m.market || market || "spot").toLowerCase(),
+          symbol: (m.symbol || symbol).toUpperCase(),
+          start_sec: Number(m.start_sec),
+          end_sec: Number(m.end_sec),
+          stage: String(m.stage || "gap"),
+          progress: Number(m.progress ?? 0),
+          batch: Number(m.batch ?? 0),
+          total: Number(m.total ?? 0),
+          server_iso: m.server_iso,
+        });
+        return;
+      }
+    };
+
+    setStatus(wsPool.getStatus(url));
+
+    const unsubscribe = wsPool.open(url, onMsg);
+
+    // historical polling: request newest-first gaps
+    const requestHistorical = () => {
+      // server expects "historical:1m:500" style
+      const lim = Number.isFinite(ENV_HIST_LIMIT) ? ENV_HIST_LIMIT : 500;
+      try {
+        // we cannot directly send through pool (pool is passive)
+        // so we open a short direct socket message by reusing browser WebSocket instance is not exposed.
+        // -> current system uses server-triggered historical push; keep polling via text "historical:..."
+        // This repo's WS router reads receive_text. We must send via underlying ws.
+        // Minimal approach: open a one-shot native socket just to send the request.
+        const ws = new WebSocket(url);
+        ws.onopen = () => {
+          ws.send(`historical:${interval}:${lim}`);
+          setTimeout(() => ws.close(), 250);
+        };
+      } catch {
+        // ignore
+      }
+    };
+
+    requestHistorical();
+
+    histNoGrowthRef.current = 0;
+    lastHistCountRef.current = 0;
+
+    if (histTimerRef.current !== null) window.clearInterval(histTimerRef.current);
+
+    histTimerRef.current = window.setInterval(() => {
+      if (histNoGrowthRef.current >= ENV_HIST_NO_GROWTH_STOP) {
+        if (histTimerRef.current !== null) {
+          window.clearInterval(histTimerRef.current);
+          histTimerRef.current = null;
+        }
+        return;
+      }
+      requestHistorical();
+    }, ENV_HIST_POLL_MS);
+
+    return () => {
+      unsubscribe();
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+    };
+  }, [url, exchange, symbol, market, interval]);
+
+  return { status, trades, candles, historical, orderbook, fillBlock };
+}
+</file>
+
 <file path="backend/services/usecases/unified_historical.py">
 # /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
 
@@ -175299,18 +175256,14 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from backend.services.usecases.unified_historical import UnifiedHistoricalService
-from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
-from backend.database.clickhouse.threadsafe_client import get_thread_client
 
+logger = logging.getLogger("backfill_loop_service")
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
-logger = logging.getLogger(__name__)
-
-def _get_ch_client_sync(self):
-    return get_thread_client()
 
 def _utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
@@ -175318,69 +175271,224 @@ def _utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+@dataclass(frozen=True)
+class GapWindow:
+    start: datetime  # inclusive
+    end: datetime    # exclusive
+
+
+class GapScanService:
+    """
+    Expected-buckets Gap-Scan (inkl. Rand-Gaps):
+    - Generiert Buckets via numbers()
+    - Left join auf vorhandene Buckets
+    - Missing Buckets → zu Gap-Segmenten verdichten
+    - Liefert GapWindows newest-first, limitiert.
+
+    ✅ Optional: fine scan auf kleinerem Fenster (letzte N Minuten) für 1s/5s Systeme
+    """
+
+    def __init__(
+        self,
+        *,
+        exchange: str,
+        symbol: str,
+        market: str,
+        gap_scan_days: int,
+        gap_bucket_seconds: int,
+        gap_sources: List[str],
+        fine_scan_minutes: int,
+        fine_bucket_seconds: int,
+        max_missing_buckets: int,
+        max_windows: int,
+    ):
+        self.exchange = (exchange or "").strip().lower()
+        self.symbol = (symbol or "").strip().upper()
+        self.market = (market or "spot").strip().lower() or "spot"
+
+        self.gap_scan_days = int(gap_scan_days)
+        self.gap_bucket_seconds = int(gap_bucket_seconds)
+        self.gap_sources = list(gap_sources or ["live", "rest_backfill"])
+
+        self.fine_scan_minutes = int(fine_scan_minutes)
+        self.fine_bucket_seconds = int(fine_bucket_seconds)
+
+        self.max_missing_buckets = int(max_missing_buckets)
+        self.max_windows = int(max_windows)
+
+    def _ch_client(self):
+        from backend.database.clickhouse import unified_cl_service
+        if hasattr(unified_cl_service, "get_client_sync"):
+            return unified_cl_service.get_client_sync()
+        raise RuntimeError("unified_cl_service.get_client_sync not available")
+
+    async def _scan_window(self, scan_from: datetime, scan_to: datetime, step_seconds: int) -> List[GapWindow]:
+        table_name = f"{self.exchange}_trades"
+        now = _utc(scan_to)
+        scan_from = _utc(scan_from)
+
+        query = f"""
+            WITH
+                %(t_from)s AS t_from,
+                %(t_to)s   AS t_to,
+                %(step)s   AS step,
+                dateDiff('second', t_from, t_to) AS span_seconds,
+                intDiv(span_seconds, step) + 1 AS n
+            SELECT
+                exp.bucket
+            FROM
+            (
+                SELECT
+                    toStartOfInterval(
+                        t_from + toIntervalSecond(number * step),
+                        toIntervalSecond(%(step)s)
+                    ) AS bucket
+                FROM system.numbers
+                LIMIT n
+            ) AS exp
+            LEFT JOIN
+            (
+                SELECT
+                    toStartOfInterval(timestamp, toIntervalSecond(%(step)s)) AS bucket
+                FROM trading.{table_name}
+                WHERE symbol = %(symbol)s
+                  AND market = %(market)s
+                  AND timestamp >= t_from
+                  AND timestamp <= t_to
+                  AND source IN %(sources)s
+                GROUP BY bucket
+            ) AS pres
+            ON exp.bucket = pres.bucket
+            WHERE pres.bucket IS NULL
+            ORDER BY exp.bucket DESC
+            LIMIT %(lim)s
+        """
+
+        params = {
+            "symbol": self.symbol,
+            "market": self.market,
+            "t_from": scan_from,
+            "t_to": now,
+            "step": int(step_seconds),
+            "sources": tuple(self.gap_sources),
+            "lim": int(self.max_missing_buckets),
+        }
+
+        def _run() -> List[datetime]:
+            client = self._ch_client()
+            res = client.query(query, parameters=params)
+            out: List[datetime] = []
+            for (b,) in res.result_rows:
+                if isinstance(b, datetime):
+                    out.append(_utc(b))
+            return out
+
+        try:
+            missing_buckets = await asyncio.to_thread(_run)
+        except Exception as e:
+            logger.warning(f"[BACKFILL] gap-scan failed: {e}")
+            return []
+
+        if not missing_buckets:
+            return []
+
+        # missing_buckets ist DESC sortiert; segmentiere zu zusammenhängenden Bereichen
+        gaps: List[GapWindow] = []
+        step = timedelta(seconds=int(step_seconds))
+
+        cur_end = missing_buckets[0]
+        cur_start = missing_buckets[0]
+
+        for b in missing_buckets[1:]:
+            if b == (cur_start - step):
+                cur_start = b
+            else:
+                gaps.append(GapWindow(start=cur_start, end=cur_end + step))
+                cur_start = b
+                cur_end = b
+
+        gaps.append(GapWindow(start=cur_start, end=cur_end + step))
+
+        return gaps[: self.max_windows]
+
+    async def scan(self) -> List[GapWindow]:
+        now = datetime.now(timezone.utc)
+
+        # ✅ Fine scan first (higher priority near "now")
+        gaps: List[GapWindow] = []
+        if self.fine_scan_minutes > 0 and self.fine_bucket_seconds > 0:
+            fine_from = now - timedelta(minutes=self.fine_scan_minutes)
+            fine = await self._scan_window(fine_from, now, self.fine_bucket_seconds)
+            gaps.extend(fine)
+
+        # ✅ Coarse scan (last N days)
+        if self.gap_scan_days > 0 and self.gap_bucket_seconds > 0:
+            coarse_from = now - timedelta(days=self.gap_scan_days)
+            coarse = await self._scan_window(coarse_from, now, self.gap_bucket_seconds)
+            gaps.extend(coarse)
+
+        # Dedup + newest-first by end desc
+        uniq = {}
+        for g in gaps:
+            k = (int(g.start.timestamp()), int(g.end.timestamp()))
+            uniq[k] = g
+        out = list(uniq.values())
+        out.sort(key=lambda x: x.end, reverse=True)  # ✅ newest first
+
+        return out[: self.max_windows]
+
+
 class BackfillLoopService:
     """
-    Enterprise Backfill LOOP
+    Loop-basiert (dauerhaft):
+    - Gap-Detection newest-first
+    - dann normaler Backfill rückwärts bis UNTIL_DATE
+    - stoppt NICHT dauerhaft bei loaded<=0 (sleep+continue)
 
-    Eigenschaften:
-    - ClickHouse als Single Source of Truth (oldest_ts)
-    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
-    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus CH)
-    - Keine Hardcodes (Exchange/Symbol per ENV)
+    ✅ NEW:
+    - send fill_block events to frontend websocket channel for active symbol.
     """
 
     def __init__(
         self,
         exchange: str,
         symbol: str,
+        market: str,
         until_date: datetime,
-        market: str = "spot",
+        *,
         batch_size: int = 5000,
         pause_seconds: int = 2,
         gap_scan_days: int = 7,
         gap_bucket_seconds: int = 60,
-        gap_sources_csv: str = "live_ws,rest_backfill",
+        gap_sources: Optional[List[str]] = None,
+        fine_scan_minutes: Optional[int] = None,
+        fine_bucket_seconds: Optional[int] = None,
+        max_missing_buckets: Optional[int] = None,
+        max_windows: Optional[int] = None,
     ):
-        self.exchange = exchange.strip().lower()
-        self.symbol = symbol.strip().upper()
-        self.until_date = _utc(until_date)
-        self.market = market.strip().lower()
+        self.exchange = (exchange or "").strip().lower()
+        self.symbol = (symbol or "").strip().upper()
+        self.market = (market or "spot").strip().lower() or "spot"
 
+        self.until_date = _utc(until_date)
         self.batch_size = int(batch_size)
         self.pause_seconds = int(pause_seconds)
 
-        # Coarse scan defaults (werden später durch ENV überschrieben, wenn gesetzt)
         self.gap_scan_days = int(gap_scan_days)
         self.gap_bucket_seconds = int(gap_bucket_seconds)
-        self.gap_sources = [s.strip() for s in gap_sources_csv.split(",") if s.strip()]
+        self.gap_sources = gap_sources or ["live", "rest_backfill"]
+
+        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", str(fine_scan_minutes or 180)).strip() or "180")
+        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", str(fine_bucket_seconds or 1)).strip() or "1")
+        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", str(max_missing_buckets or 20000)).strip() or "20000")
+        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", str(max_windows or 50)).strip() or "50")
 
         self._historical = UnifiedHistoricalService(self.exchange)
 
         self._running = False
         self._total_trades = 0
         self._batch_count = 0
-
-        # Stateful oldest tracking
         self._global_oldest_ts: Optional[datetime] = None
-
-        # Fine-scan ENV
-        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
-        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
-        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
-        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
-
-        # override coarse from ENV if present
-        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(self.gap_scan_days)))
-        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(self.gap_bucket_seconds)))
-
-        env_sources = os.getenv("GAP_SOURCE_FILTER")
-        if env_sources:
-            self.gap_sources = [s.strip() for s in env_sources.split(",") if s.strip()]
-
-    def stop(self) -> None:
-        self._running = False
 
     def _pause_for_exchange(self) -> int:
         env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
@@ -175396,9 +175504,6 @@ class BackfillLoopService:
             return self.pause_seconds
 
     def _get_ch_client_sync(self):
-        """
-        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-        """
         from backend.database.clickhouse import unified_cl_service
         import asyncio as _asyncio
 
@@ -175485,6 +175590,24 @@ class BackfillLoopService:
         )
         return await scanner.scan()
 
+    async def _emit_fill_block(self, *, start: datetime, end: datetime, stage: str, progress: float) -> None:
+        try:
+            from backend.websocket.ws_frontend_handler import broadcast_fill_block
+            await broadcast_fill_block(
+                self.exchange,
+                self.symbol,
+                self.market,
+                start_sec=int(_utc(start).timestamp()),
+                end_sec=int(_utc(end).timestamp()),
+                stage=stage,
+                progress=float(progress),
+                batch=int(self._batch_count),
+                total=int(self._total_trades),
+            )
+        except Exception:
+            # nie crashen
+            return
+
     async def run(self) -> None:
         self._running = True
         self._total_trades = 0
@@ -175506,27 +175629,34 @@ class BackfillLoopService:
 
         try:
             while self._running:
-                # 1) Gap-Scan (prio) – fine+coarse
                 gaps = await self._find_gaps()
 
                 if gaps:
-                    g = gaps[0]  # newest gap first (scanner liefert newest-first)
+                    # ✅ newest gap first
+                    g = gaps[0]
                     logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
+
+                    # visual: show active block immediately
+                    await self._emit_fill_block(start=g.start, end=g.end, stage="gap", progress=self._calculate_progress(self._global_oldest_ts))
 
                     trades_loaded = await self._historical.history(
                         symbol=self.symbol,
                         market_type=self.market,
-                        end_date=g.start,     # inklusiv
-                        to_date=g.end,        # exklusiv
+                        end_date=g.start,     # inclusive lower
+                        to_date=g.end,        # exclusive upper
                         limit=self.batch_size,
                     )
                 else:
-                    # 2) Normaler Backfill rückwärts
+                    # 2) Normal backfill backwards
                     if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
                         logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
                         break
 
                     cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
+
+                    # visual: show currently processed cursor block (last window)
+                    # note: we don't know the exact window size of UnifiedHistoricalService; visualize [until_date, cursor_to]
+                    await self._emit_fill_block(start=self.until_date, end=cursor_to, stage="backfill", progress=self._calculate_progress(self._global_oldest_ts))
 
                     trades_loaded = await self._historical.history(
                         symbol=self.symbol,
@@ -175537,7 +175667,7 @@ class BackfillLoopService:
                         limit=self.batch_size,
                     )
 
-                # ✅ Enterprise: niemals dauerhaft stoppen bei loaded<=0
+                # ✅ never permanently stop when loaded<=0
                 if trades_loaded <= 0:
                     logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
                     await asyncio.sleep(self._pause_for_exchange())
@@ -175546,7 +175676,6 @@ class BackfillLoopService:
                 self._total_trades += trades_loaded
                 self._batch_count += 1
 
-                # Update global_oldest monotonic
                 batch_oldest = await self._get_oldest_backfill_timestamp()
                 if batch_oldest is not None:
                     if self._global_oldest_ts is None:
@@ -175562,6 +175691,16 @@ class BackfillLoopService:
                     f"📦 BATCH #{self._batch_count} | +{trades_loaded} | total={self._total_trades:,} "
                     f"| progress={progress:.2f}% | oldest={self._global_oldest_ts.isoformat() if self._global_oldest_ts else 'INIT'}"
                 )
+
+                # update overlay progress after batch
+                try:
+                    if gaps:
+                        g = gaps[0]
+                        await self._emit_fill_block(start=g.start, end=g.end, stage="gap", progress=progress)
+                    else:
+                        await self._emit_fill_block(start=self.until_date, end=datetime.now(timezone.utc), stage="backfill", progress=progress)
+                except Exception:
+                    pass
 
                 await asyncio.sleep(self._pause_for_exchange())
 
