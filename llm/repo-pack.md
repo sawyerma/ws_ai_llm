@@ -358,7 +358,6 @@ backend/
       cl_unified.py
       cl_user_settings.py
       init.sql
-      kline_preagg.py
       threadsafe_client.py
     redis/
       __init__.py
@@ -425,6 +424,7 @@ backend/
         show_tables.py
         validate_tables.py
       000_table.md
+    schema_reconcile.py
   exchanges/
     binance/
       services/
@@ -124964,6 +124964,529 @@ if __name__ == "__main__":
   raise SystemExit(main())
 </file>
 
+<file path="backend/database/schema_reconcile.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+_LOCK = asyncio.Lock()
+_DONE: bool = False
+
+
+# --------------------------------------------------------------------------------------
+# ClickHouse access (nutzt euren bestehenden unified service)
+# --------------------------------------------------------------------------------------
+
+async def _get_ch():
+    # vorhandene Struktur beibehalten
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch = get_clickhouse_client()
+    if not ch:
+        raise RuntimeError("ClickHouse client not available")
+    return ch
+
+
+def _default_init_sql_path() -> Path:
+    # default: backend/database/clickhouse/init.sql
+    # diese Datei liegt typischerweise in backend/database/clickhouse/init.sql
+    return Path(__file__).resolve().parent / "clickhouse" / "init.sql"
+
+
+# --------------------------------------------------------------------------------------
+# SQL parsing
+# --------------------------------------------------------------------------------------
+
+def _read_text(path: Path) -> str:
+    if not path.exists():
+        raise FileNotFoundError(f"init.sql not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _split_sql_statements(sql: str) -> List[str]:
+    """
+    Split by ';' but not inside quotes. Strip comments:
+    - '-- ...' line comments
+    - '/* ... */' block comments
+    """
+    s = sql
+    out: List[str] = []
+    buf: List[str] = []
+
+    in_sq = False
+    in_dq = False
+    in_line_comment = False
+    in_block_comment = False
+
+    i = 0
+    n = len(s)
+
+    while i < n:
+        ch = s[i]
+        nxt = s[i + 1] if i + 1 < n else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                buf.append(ch)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if not in_sq and not in_dq:
+            if ch == "-" and nxt == "-":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+        if ch == "'" and not in_dq:
+            if in_sq and nxt == "'":  # escaped ''
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            in_sq = not in_sq
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == '"' and not in_sq:
+            if in_dq and nxt == '"':  # escaped ""
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            in_dq = not in_dq
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == ";" and not in_sq and not in_dq:
+            stmt = "".join(buf).strip()
+            if stmt:
+                out.append(stmt)
+            buf = []
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        out.append(tail)
+
+    return out
+
+
+_CREATE_DB_RE = re.compile(
+    r"^\s*CREATE\s+DATABASE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\s*$",
+    re.IGNORECASE,
+)
+_CREATE_TABLE_RE = re.compile(
+    r"^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
+_CREATE_MV_RE = re.compile(
+    r"^\s*CREATE\s+MATERIALIZED\s+VIEW\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_ddl(s: str) -> str:
+    """
+    Normalize for comparison:
+    - strip ';'
+    - lowercase
+    - collapse whitespace
+    """
+    s = s.strip().rstrip(";").strip().lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+@dataclass(frozen=True)
+class DesiredObject:
+    kind: str  # "database" | "table" | "materialized_view"
+    database: Optional[str]
+    name: str
+    ddl: str
+
+
+def parse_desired_objects_from_init_sql(init_sql: str) -> Tuple[List[DesiredObject], List[str]]:
+    statements = _split_sql_statements(init_sql)
+    desired: List[DesiredObject] = []
+
+    for stmt in statements:
+        s = stmt.strip()
+        if not s:
+            continue
+
+        mdb = _CREATE_DB_RE.match(s)
+        if mdb:
+            desired.append(DesiredObject(kind="database", database=None, name=mdb.group(1), ddl=s))
+            continue
+
+        mt = _CREATE_TABLE_RE.match(s)
+        if mt:
+            desired.append(DesiredObject(kind="table", database=mt.group(1), name=mt.group(2), ddl=s))
+            continue
+
+        mmv = _CREATE_MV_RE.match(s)
+        if mmv:
+            desired.append(DesiredObject(kind="materialized_view", database=mmv.group(1), name=mmv.group(2), ddl=s))
+            continue
+
+    return desired, statements
+
+
+# --------------------------------------------------------------------------------------
+# Introspection
+# --------------------------------------------------------------------------------------
+
+async def _list_tables_and_views(db: str) -> List[Tuple[str, str]]:
+    ch = await _get_ch()
+    rows = await ch.execute(
+        """
+        SELECT name, engine
+        FROM system.tables
+        WHERE database = %(db)s
+        ORDER BY name
+        """,
+        {"db": db},
+    )
+    out: List[Tuple[str, str]] = []
+    for r in rows or []:
+        if r and len(r) >= 2:
+            out.append((str(r[0]), str(r[1])))
+    return out
+
+
+async def _show_create(db: str, name: str) -> str:
+    ch = await _get_ch()
+    rows = await ch.execute(f"SHOW CREATE TABLE {db}.{name}")
+    if not rows or not rows[0] or not isinstance(rows[0][0], str):
+        raise RuntimeError(f"SHOW CREATE TABLE returned unexpected result for {db}.{name}")
+    return rows[0][0]
+
+
+# --------------------------------------------------------------------------------------
+# Policy: protected tables (no DROP)
+# --------------------------------------------------------------------------------------
+
+_DEFAULT_PROTECT_REGEX = [
+    r".*_trades$",           # deine Kernforderung
+    # optional sinnvoll (falls du auch diese nie verlieren willst):
+    # r".*_orderbook$",
+    # r".*_whale_events$",
+]
+
+def _compile_protect_patterns() -> List[re.Pattern]:
+    raw = (os.getenv("SCHEMA_PROTECT_REGEX") or "").strip()
+    pats = [p.strip() for p in raw.split(",") if p.strip()] if raw else list(_DEFAULT_PROTECT_REGEX)
+    compiled: List[re.Pattern] = []
+    for p in pats:
+        compiled.append(re.compile(p))
+    return compiled
+
+
+def _is_protected(name: str, patterns: List[re.Pattern]) -> bool:
+    return any(p.fullmatch(name) for p in patterns)
+
+
+# --------------------------------------------------------------------------------------
+# Diff model
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class DiffItem:
+    kind: str          # missing | mismatch | extra
+    object_kind: str   # table | materialized_view
+    database: str
+    name: str
+    details: str
+
+
+def _is_interactive() -> bool:
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _ask_yes_no(prompt: str, default: bool = False) -> bool:
+    if not _is_interactive():
+        return default
+    suffix = " [Y/n] " if default else " [y/N] "
+    while True:
+        ans = input(prompt + suffix).strip().lower()
+        if not ans:
+            return default
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+
+
+async def _rename_to_backup(db: str, name: str) -> str:
+    ch = await _get_ch()
+    # deterministic-ish unique suffix
+    suffix = str(int(time.time() * 1000))
+    new_name = f"{name}__backup__{suffix}"
+    await ch.execute(f"RENAME TABLE {db}.{name} TO {db}.{new_name}")
+    return new_name
+
+
+async def _drop_object(db: str, name: str) -> None:
+    ch = await _get_ch()
+    await ch.execute(f"DROP TABLE IF EXISTS {db}.{name}")
+
+
+# --------------------------------------------------------------------------------------
+# Main reconcile
+# --------------------------------------------------------------------------------------
+
+async def reconcile_schema_from_init_sql(
+    init_sql_path: Optional[str] = None,
+    *,
+    database: str = "trading",
+    mode: str = "verify",            # verify | ensure | reconcile
+    auto_apply: bool = False,        # destructive ops without TTY
+    backup_rename: bool = True,      # rename before recreate (for mismatches)
+    delete_extras: bool = True,      # delete non-init objects (unless protected)
+) -> List[DiffItem]:
+    """
+    verify:
+      - only check; if diffs exist -> raises RuntimeError
+    ensure:
+      - executes init.sql statements (safe if IF NOT EXISTS); no deletes; no mismatch fixes
+    reconcile:
+      - creates missing
+      - fixes mismatches (protected -> ALWAYS rename backup, never drop; non-protected -> rename if backup_rename else drop)
+      - deletes extras ONLY if non-protected (protected extras are kept)
+      - if interactive -> asks; else needs auto_apply=True for destructive steps
+    """
+    global _DONE
+    if _DONE:
+        return []
+
+    async with _LOCK:
+        if _DONE:
+            return []
+
+        patterns = _compile_protect_patterns()
+
+        path = Path(init_sql_path).expanduser().resolve() if init_sql_path else _default_init_sql_path()
+        init_sql = _read_text(path)
+        desired_objs, statements = parse_desired_objects_from_init_sql(init_sql)
+
+        # desired maps for selected database
+        desired_tables: Dict[str, DesiredObject] = {}
+        desired_mvs: Dict[str, DesiredObject] = {}
+        for o in desired_objs:
+            if o.kind == "table" and o.database == database:
+                desired_tables[o.name] = o
+            elif o.kind == "materialized_view" and o.database == database:
+                desired_mvs[o.name] = o
+
+        ch = await _get_ch()
+
+        # ensure mode: just apply init.sql statements in order
+        if mode == "ensure":
+            for stmt in statements:
+                s = stmt.strip()
+                if s:
+                    await ch.execute(s)
+            _DONE = True
+            return []
+
+        existing = await _list_tables_and_views(database)
+        existing_map: Dict[str, str] = {name: engine for (name, engine) in existing}
+
+        diffs: List[DiffItem] = []
+
+        # missing
+        for name in desired_tables:
+            if name not in existing_map:
+                diffs.append(DiffItem("missing", "table", database, name, "table missing"))
+        for name in desired_mvs:
+            if name not in existing_map:
+                diffs.append(DiffItem("missing", "materialized_view", database, name, "mv missing"))
+
+        # mismatch
+        for name, engine in existing_map.items():
+            if name in desired_tables:
+                desired = desired_tables[name]
+                actual = await _show_create(database, name)
+                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
+                    diffs.append(DiffItem("mismatch", "table", database, name, "DDL differs vs init.sql"))
+            elif name in desired_mvs:
+                desired = desired_mvs[name]
+                actual = await _show_create(database, name)
+                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
+                    diffs.append(DiffItem("mismatch", "materialized_view", database, name, "DDL differs vs init.sql"))
+
+        # extra
+        desired_names = set(desired_tables.keys()) | set(desired_mvs.keys())
+        for name, engine in existing_map.items():
+            if name not in desired_names:
+                kind = "materialized_view" if engine.lower() == "materializedview" else "table"
+                diffs.append(DiffItem("extra", kind, database, name, f"extra object engine={engine}"))
+
+        if mode == "verify":
+            if diffs:
+                raise RuntimeError(f"Schema verify failed: {len(diffs)} differences found (run reconcile).")
+            _DONE = True
+            return diffs
+
+        if mode != "reconcile":
+            raise ValueError("mode must be one of: verify | ensure | reconcile")
+
+        interactive = _is_interactive()
+        allow_destructive = auto_apply or interactive
+
+        # 1) ensure missing objects (safe because init uses IF NOT EXISTS)
+        # apply all desired in init order: tables first, then mvs
+        for o in desired_objs:
+            if o.kind == "table" and o.database == database:
+                await ch.execute(o.ddl)
+        for o in desired_objs:
+            if o.kind == "materialized_view" and o.database == database:
+                await ch.execute(o.ddl)
+
+        # 2) fix mismatches
+        mismatches = [d for d in diffs if d.kind == "mismatch"]
+        if mismatches:
+            if not allow_destructive:
+                raise RuntimeError("Mismatches found but destructive changes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
+
+            do_fix = True
+            if interactive and not auto_apply:
+                do_fix = _ask_yes_no(f"{len(mismatches)} mismatches found. Fix now (protected: rename+recreate; others: rename/drop+recreate)?", default=False)
+
+            if do_fix:
+                for d in mismatches:
+                    is_prot = _is_protected(d.name, patterns)
+                    # MVs: drop & recreate (MVs sind i. d. R. jederzeit rebuildbar)
+                    if d.object_kind == "materialized_view":
+                        if interactive and not auto_apply:
+                            if not _ask_yes_no(f"Recreate MV {d.database}.{d.name} (DROP+CREATE)?", default=True):
+                                continue
+                        await _drop_object(d.database, d.name)
+                        desired = desired_mvs.get(d.name)
+                        if not desired:
+                            raise RuntimeError(f"Desired MV DDL missing for {d.database}.{d.name}")
+                        await ch.execute(desired.ddl)
+                        continue
+
+                    # Tables
+                    if is_prot:
+                        # NEVER DROP: always backup rename
+                        new_name = await _rename_to_backup(d.database, d.name)
+                        logger.warning("[schema] PROTECTED mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
+                    else:
+                        if backup_rename:
+                            new_name = await _rename_to_backup(d.database, d.name)
+                            logger.warning("[schema] mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
+                        else:
+                            if interactive and not auto_apply:
+                                if not _ask_yes_no(f"DROP and recreate table {d.database}.{d.name}?", default=False):
+                                    continue
+                            await _drop_object(d.database, d.name)
+                            logger.warning("[schema] mismatch: dropped %s.%s", d.database, d.name)
+
+                    desired = desired_tables.get(d.name)
+                    if not desired:
+                        raise RuntimeError(f"Desired table DDL missing for {d.database}.{d.name}")
+                    await ch.execute(desired.ddl)
+
+        # 3) delete extras (non-protected only)
+        extras = [d for d in diffs if d.kind == "extra"]
+        if extras and delete_extras:
+            if not allow_destructive:
+                raise RuntimeError("Extras found but destructive deletes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
+
+            # split protected / non-protected
+            prot_extras = [e for e in extras if _is_protected(e.name, patterns)]
+            del_extras = [e for e in extras if not _is_protected(e.name, patterns)]
+
+            if prot_extras:
+                for e in prot_extras:
+                    logger.warning("[schema] PROTECTED extra kept: %s.%s (%s)", e.database, e.name, e.details)
+
+            if del_extras:
+                do_del = True
+                if interactive and not auto_apply:
+                    do_del = _ask_yes_no(f"{len(del_extras)} NON-protected extras found. Delete them now?", default=False)
+
+                if do_del:
+                    for e in del_extras:
+                        if interactive and not auto_apply:
+                            if not _ask_yes_no(f"DROP extra {e.database}.{e.name}?", default=False):
+                                continue
+                        await _drop_object(e.database, e.name)
+                        logger.warning("[schema] dropped extra %s.%s", e.database, e.name)
+
+        _DONE = True
+        return diffs
+
+
+async def reconcile_from_env() -> None:
+    """
+    ENV:
+      SCHEMA_MODE=verify|ensure|reconcile
+      SCHEMA_AUTO_APPLY=0|1
+      SCHEMA_BACKUP_RENAME=0|1
+      SCHEMA_DELETE_EXTRAS=0|1
+      SCHEMA_INIT_SQL=/abs/or/rel/path/to/init.sql
+      SCHEMA_PROTECT_REGEX=regex1,regex2,...  (fullmatch)
+    """
+    mode = (os.getenv("SCHEMA_MODE") or "verify").strip().lower()
+    auto_apply = (os.getenv("SCHEMA_AUTO_APPLY") or "0").strip().lower() in ("1", "true", "yes")
+    backup_rename = (os.getenv("SCHEMA_BACKUP_RENAME") or "1").strip().lower() in ("1", "true", "yes")
+    delete_extras = (os.getenv("SCHEMA_DELETE_EXTRAS") or "1").strip().lower() in ("1", "true", "yes")
+    init_path = os.getenv("SCHEMA_INIT_SQL")  # optional override
+
+    diffs = await reconcile_schema_from_init_sql(
+        init_path,
+        database="trading",
+        mode=mode,
+        auto_apply=auto_apply,
+        backup_rename=backup_rename,
+        delete_extras=delete_extras,
+    )
+
+    if diffs:
+        for d in diffs[:200]:
+            logger.warning("[schema-diff] %s %s %s.%s | %s", d.kind, d.object_kind, d.database, d.name, d.details)
+        if len(diffs) > 200:
+            logger.warning("[schema-diff] ... (%d more)", len(diffs) - 200)
+</file>
+
 <file path="backend/exchanges/binance/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -163943,6 +164466,166 @@ GROUP BY symbol, market, bucket_start;
 -- ========================================
 </file>
 
+<file path="backend/database/tables/db_market/exchanges_db.py">
+#!/usr/bin/env python3
+"""
+EXCHANGE TRADES & ORDERBOOK TABELLEN
+Erstellt 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)
+MAXIMALE Performance durch separate Tabellen!
+"""
+import requests
+import sys
+import os
+
+# Environment Variables
+CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
+CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
+CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
+CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
+CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
+
+CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
+
+# 🔥 ALLE 8 EXCHANGES
+EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
+
+def execute_sql(sql, description="", database="default", ignore_errors=False):
+    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
+    try:
+        url = f"{CLICKHOUSE_URL}?database={database}"
+        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
+        
+        response = requests.post(
+            url, 
+            data=sql, 
+            auth=auth, 
+            timeout=CLICKHOUSE_TIMEOUT,
+            headers={'Content-Type': 'text/plain'}
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ {description}: OK")
+            return True
+        else:
+            error_msg = response.text.strip()
+            print(f"❌ {description}: Code {response.status_code}")
+            print(f"🔍 Fehlerdetails: {error_msg}")
+            if ignore_errors:
+                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
+                return True
+            return False
+            
+    except Exception as e:
+        print(f"❌ {description}: EXCEPTION {str(e)}")
+        if ignore_errors:
+            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
+            return True
+        return False
+
+def create_trades_tables():
+    """Erstellt TRADES Tabellen für alle 8 Exchanges"""
+    print(f"\n🔥 ERSTELLE TRADES TABELLEN FÜR ALLE EXCHANGES...")
+    success_count = 0
+    
+    for exchange in EXCHANGES:
+        print(f"\n📊 Erstelle trades_{exchange}...")
+        
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS trading.{exchange}_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+        """
+        
+        if execute_sql(sql, f"{exchange}_trades"):
+            success_count += 1
+    
+    return success_count
+
+def create_orderbook_tables():
+    """Erstellt ORDERBOOK Tabellen für alle 8 Exchanges"""
+    print(f"\n🔥 ERSTELLE ORDERBOOK TABELLEN FÜR ALLE EXCHANGES...")
+    success_count = 0
+    
+    for exchange in EXCHANGES:
+        print(f"\n📊 Erstelle {exchange}_orderbook...")
+        
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS trading.{exchange}_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+        """
+        
+        if execute_sql(sql, f"{exchange}_orderbook"):
+            success_count += 1
+    
+    return success_count
+
+def main():
+    print("🔥 CLICKHOUSE MIGRATION: EXCHANGE TRADES & ORDERBOOK TABELLEN")
+    print("=" * 70)
+    print("⚡ 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)")
+
+    # Test Connection
+    if not execute_sql("SELECT 1", "ClickHouse Test"):
+        print("❌ ClickHouse nicht erreichbar!")
+        return False
+
+    # Datenbank erstellen
+    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
+        return False
+
+    # Trades Tabellen erstellen
+    trades_count = create_trades_tables()
+    
+    # OrderBook Tabellen erstellen
+    orderbook_count = create_orderbook_tables()
+    
+    total_tables = len(EXCHANGES) * 2  # 16 Tabellen
+    success_count = trades_count + orderbook_count
+    
+    if success_count == total_tables:
+        print(f"\n🎉 ALLE {total_tables} TABELLEN ERFOLGREICH ERSTELLT!")
+        print("✅ 8 Trades Tabellen")
+        print("✅ 8 OrderBook Tabellen")
+        print("✅ MAXIMALE Performance durch separate Tabellen")
+        
+        print(f"\n📊 TABELLEN-ÜBERSICHT:")
+        for exchange in EXCHANGES:
+            print(f"  🔹 {exchange.upper()}: {exchange}_trades, {exchange}_orderbook")
+        
+        return True
+    else:
+        print(f"\n⚠️  NUR {success_count}/{total_tables} TABELLEN ERSTELLT!")
+        return False
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
+</file>
+
 <file path="backend/database/tables/db_md/all_kline.py">
 #!/usr/bin/env python3
 """
@@ -165751,313 +166434,6 @@ class cl_message_handlers:
 
 # Global cl_message_handlers instance
 cl_handlers_instance = cl_message_handlers()
-</file>
-
-<file path="backend/database/clickhouse/kline_preagg.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import re
-from datetime import datetime, timezone
-from typing import List, Dict, Any
-
-logger = logging.getLogger(__name__)
-
-_LOCK = asyncio.Lock()
-_ENSURED: bool = False
-_EXCHANGE_RE = re.compile(r"^[a-z0-9_]+$")
-
-
-def _sanitize_exchange(ex: str) -> str:
-    ex = (ex or "").strip().lower()
-    if not ex or not _EXCHANGE_RE.match(ex):
-        raise ValueError(f"Invalid exchange identifier: {ex!r}")
-    return ex
-
-
-async def _get_ch():
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
-
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
-
-    ch = get_clickhouse_client()
-    if not ch:
-        raise RuntimeError("ClickHouse client not available")
-    return ch
-
-
-async def list_trade_tables() -> List[str]:
-    ch = await _get_ch()
-    rows = await ch.execute(
-        """
-        SELECT name
-        FROM system.tables
-        WHERE database = 'trading'
-          AND endsWith(name, '_trades')
-        ORDER BY name ASC
-        """
-    )
-    return [r[0] for r in rows if r and isinstance(r[0], str)]
-
-
-def _exchange_from_trade_table(table: str) -> str | None:
-    if not table.endswith("_trades"):
-        return None
-    ex = table[:-len("_trades")]
-    try:
-        return _sanitize_exchange(ex)
-    except Exception:
-        return None
-
-
-async def ensure_kline_1s_state_table() -> None:
-    ch = await _get_ch()
-    await ch.execute(
-        """
-        CREATE TABLE IF NOT EXISTS trading.all_kline_1s_state
-        (
-            exchange LowCardinality(String),
-            symbol   LowCardinality(String),
-            market   LowCardinality(String),
-            bucket_start DateTime64(3, 'UTC'),
-
-            open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-            high_state  AggregateFunction(max,   Decimal(76, 38)),
-            low_state   AggregateFunction(min,   Decimal(76, 38)),
-            close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-
-            volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-            quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-            trades_count_state AggregateFunction(count, UInt64)
-        )
-        ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMMDD(bucket_start)
-        ORDER BY (exchange, symbol, market, bucket_start)
-        TTL bucket_start + toIntervalMonth(12)
-        SETTINGS index_granularity = 8192
-        """
-    )
-
-
-async def ensure_mv_for_exchange(exchange: str) -> None:
-    ex = _sanitize_exchange(exchange)
-    ch = await _get_ch()
-
-    mv_name = f"trading.mv_{ex}_trades_to_kline_1s"
-
-    await ch.execute(
-        f"""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}
-        TO trading.all_kline_1s_state
-        AS
-        SELECT
-            '{ex}' AS exchange,
-            symbol,
-            market,
-            toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-
-            argMinState(price, (timestamp, trade_id)) AS open_state,
-            maxState(price)                           AS high_state,
-            minState(price)                           AS low_state,
-            argMaxState(price, (timestamp, trade_id)) AS close_state,
-
-            sumState(size)            AS volume_state,
-            sumState(price * size)    AS quote_volume_state,
-            countState()              AS trades_count_state
-        FROM trading.{ex}_trades
-        GROUP BY symbol, market, bucket_start
-        """
-    )
-
-
-async def ensure_kline_preagg() -> None:
-    global _ENSURED
-    if _ENSURED:
-        return
-
-    async with _LOCK:
-        if _ENSURED:
-            return
-
-        await ensure_kline_1s_state_table()
-
-        tables = await list_trade_tables()
-        exchanges: List[str] = []
-        for t in tables:
-            ex = _exchange_from_trade_table(t)
-            if ex:
-                exchanges.append(ex)
-
-        for ex in exchanges:
-            try:
-                await ensure_mv_for_exchange(ex)
-            except Exception as e:
-                logger.error(f"[kline_preagg] MV ensure failed ex={ex}: {e}", exc_info=True)
-
-        _ENSURED = True
-        logger.info(f"[kline_preagg] ensured for exchanges={exchanges}")
-</file>
-
-<file path="backend/database/tables/db_market/exchanges_db.py">
-#!/usr/bin/env python3
-"""
-EXCHANGE TRADES & ORDERBOOK TABELLEN
-Erstellt 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)
-MAXIMALE Performance durch separate Tabellen!
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-# 🔥 ALLE 8 EXCHANGES
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_trades_tables():
-    """Erstellt TRADES Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE TRADES TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle trades_{exchange}...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_trades"):
-            success_count += 1
-    
-    return success_count
-
-def create_orderbook_tables():
-    """Erstellt ORDERBOOK Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE ORDERBOOK TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle {exchange}_orderbook...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_orderbook"):
-            success_count += 1
-    
-    return success_count
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: EXCHANGE TRADES & ORDERBOOK TABELLEN")
-    print("=" * 70)
-    print("⚡ 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # Trades Tabellen erstellen
-    trades_count = create_trades_tables()
-    
-    # OrderBook Tabellen erstellen
-    orderbook_count = create_orderbook_tables()
-    
-    total_tables = len(EXCHANGES) * 2  # 16 Tabellen
-    success_count = trades_count + orderbook_count
-    
-    if success_count == total_tables:
-        print(f"\n🎉 ALLE {total_tables} TABELLEN ERFOLGREICH ERSTELLT!")
-        print("✅ 8 Trades Tabellen")
-        print("✅ 8 OrderBook Tabellen")
-        print("✅ MAXIMALE Performance durch separate Tabellen")
-        
-        print(f"\n📊 TABELLEN-ÜBERSICHT:")
-        for exchange in EXCHANGES:
-            print(f"  🔹 {exchange.upper()}: {exchange}_trades, {exchange}_orderbook")
-        
-        return True
-    else:
-        print(f"\n⚠️  NUR {success_count}/{total_tables} TABELLEN ERSTELLT!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
 </file>
 
 <file path="backend/exchanges/binance/services/rest_api.py">
@@ -169426,1637 +169802,6 @@ volumes:
   redis-data:
 </file>
 
-<file path="start-system.sh">
-#!/bin/bash
-
-# =============================================================================
-# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
-# =============================================================================
-
-# Strict Bash Setup - Production Hardening for Apple Silicon
-set -euo pipefail
-set +m    # keine Job-Control Meldungen
-IFS=$'\n\t'
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
-
-echo "=================================================="
-echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
-echo "=================================================="
-echo ""
-
-# =============================================================================
-# INTERACTIVE VERBOSE MODE SELECTION
-# =============================================================================
-
-# Check if already set via env var
-if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
-  echo "🔧 Startup Logging Mode:"
-  echo "  1) Normal  - Standard output (recommended)"
-  echo "  2) Verbose - Detailed logs & all steps visible"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " mode_choice
-  
-  case "${mode_choice:-1}" in
-    2)
-      export STARTUP_VERBOSE=1
-      echo "✅ VERBOSE MODE activated - all logs visible"
-      ;;
-    *)
-      export STARTUP_VERBOSE=0
-      echo "✅ NORMAL MODE activated - standard output"
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# BUILD MODE SELECTION
-# =============================================================================
-
-# Interactive build mode selection (unless --clean flag was used)
-CLEAN_BUILD_MODE=0
-if [[ "${1:-}" == "--clean" ]]; then
-  CLEAN_BUILD_MODE=1
-  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
-  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
-  echo ""
-else
-  echo "🏗️  Docker Build Mode:"
-  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
-  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
-  echo ""
-  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " build_choice
-  
-  case "${build_choice:-1}" in
-    2)
-      CLEAN_BUILD_MODE=1
-      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
-      echo "   This will take 10-15 minutes..."
-      ;;
-    *)
-      CLEAN_BUILD_MODE=0
-      echo "✅ FAST START MODE activated - using existing images"
-      echo "   Starting in 10-30 seconds..."
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# DEPENDENCY MANAGEMENT
-# =============================================================================
-
-# Critical dependency checker
-need() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "ERROR: Missing required dependency: $1"
-    exit 1
-  }
-}
-
-# Check required dependencies
-need jq
-need redis-cli
-need curl
-need nc
-need python3
-need docker
-
-# =============================================================================
-# DOCKER DAEMON CHECK & AUTO-START
-# =============================================================================
-
-echo "🐳 Checking Docker status..."
-
-if ! docker info >/dev/null 2>&1; then
-  echo "⚠️  Docker is not running - attempting auto-start..."
-  echo ""
-  
-  # Starte Docker Desktop
-  open -a Docker
-  
-  # Warte bis bereit (max 60s)
-  echo "⏳ Waiting for Docker to be ready..."
-  timeout=60
-  elapsed=0
-  
-  while ! docker info >/dev/null 2>&1; do
-    if (( elapsed >= timeout )); then
-      echo ""
-      echo "❌ Docker startup timeout after ${timeout}s"
-      echo ""
-      echo "Please start Docker Desktop manually:"
-      echo "  1. Open Docker Desktop from Applications"
-      echo "  2. Wait for whale icon in menu bar to stop animating"
-      echo "  3. Run ./start-system.sh again"
-      echo ""
-      exit 1
-    fi
-    
-    printf "\r   Waiting for Docker... %ds/%ds" "$elapsed" "$timeout"
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-  
-  echo ""
-  echo "✅ Docker is ready!"
-  echo ""
-else
-  echo "✅ Docker is already running"
-  echo ""
-fi
-
-# Robust timeout wrapper with macOS compatibility
-with_timeout() {
-  local s="$1"; shift
-  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
-  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
-  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
-  fi
-}
-
-# Docker Compose V2 compatibility wrapper
-dc() {
-  if command -v docker >/dev/null 2>&1; then
-    docker compose "$@"
-  else
-    echo "ERROR: Docker not found"
-    exit 1
-  fi
-}
-
-# Safe pkill wrapper - prevents set -e from killing script when no process found
-safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
-
-# WS-CAT soft fallback - graceful handling with vendor support
-if ! command -v wscat >/dev/null 2>&1; then
-  # Try to install from vendor if available
-  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
-    echo "Installing wscat from vendor..."
-    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
-  fi
-
-  # Check again after potential install
-  if ! command -v wscat >/dev/null 2>&1; then
-    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
-    WS_CAT_SKIP=1
-  else
-    WS_CAT_SKIP=0
-  fi
-else
-  WS_CAT_SKIP=0
-fi
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# TTY-sichere Farben
-isatty() { [[ -t 1 ]]; }
-if isatty; then
-  readonly GREEN=$'\033[0;32m'
-  readonly CYAN=$'\033[0;36m'
-  readonly YELLOW=$'\033[1;33m'
-  readonly RED=$'\033[0;31m'
-  readonly NC=$'\033[0m'
-else
-  readonly GREEN=
-  readonly CYAN=
-  readonly YELLOW=
-  readonly RED=
-  readonly NC=
-fi
-
-# Exchange Configuration
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-SPOT_SYMBOL_DEFAULT="BTCUSDT"
-COINBASE_SPOT_SYMBOL="BTC-USD"
-
-# GUM SPINNER SYSTEM - Professional and stable with vendor support
-if ! command -v gum >/dev/null 2>&1; then
-  # Try to install from vendor if available (future-ready)
-  if [[ -f "vendor/system/file_linux/gum" ]]; then
-    echo "Installing gum from vendor..."
-    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
-    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
-    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
-  fi
-
-  # Fallback to brew if still not available
-  if ! command -v gum >/dev/null 2>&1; then
-    echo "Installing gum via homebrew..."
-    brew install gum >/dev/null 2>&1 || {
-      echo "⚠ gum installation failed - using simple spinner fallback"
-      GUM_AVAILABLE=0
-    }
-  fi
-fi
-
-# Check if gum is available after installation attempts
-if command -v gum >/dev/null 2>&1; then
-  GUM_AVAILABLE=1
-  gum_spin() {  # gum_spin "Titel" CMD...
-    local title="$1"; shift
-    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
-      gum spin --title "$title" -- "$@"
-  }
-else
-  GUM_AVAILABLE=0
-  # Fallback spinner function using simple dots
-  gum_spin() {
-    local title="$1"; shift
-    printf "⠋ %s..." "$title"
-    "$@" >/dev/null 2>&1
-    local result=$?
-    printf "\r"
-    return $result
-  }
-fi
-
-# Professional Status Symbols
-readonly SYMBOL_SUCCESS="✔"
-readonly SYMBOL_FAILURE="✖"
-readonly SYMBOL_WARNING="⚠"
-readonly SYMBOL_INFO="ℹ"
-readonly SYMBOL_SKIP="○"
-
-# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
-ucfirst() {
-  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
-}
-
-# Status display functions
-show_success() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
-}
-show_failure() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
-}
-show_warning() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
-}
-
-show_skip() {
-  local message="$1"
-  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
-}
-
-# Timing Windows (configurable via environment)
-REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
-CH_GROW_WIN="${CH_GROW_WIN:-30}"
-BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
-COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
-RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
-
-# =============================================================================
-# INTELLIGENT STARTUP CONFIGURATION
-# =============================================================================
-
-# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
-export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
-export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
-export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
-export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
-
-# ✅ Feature Flags (enable/disable new behavior)
-export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
-export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
-export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
-
-# ✅ Observability
-export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
-
-# Log configuration
-if [[ "$STARTUP_VERBOSE" == "1" ]]; then
-  echo "=================================================="
-  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
-  echo "=================================================="
-  echo ""
-  echo "📊 Retry & Timeout Configuration:"
-  echo "   MAX_RETRIES=$MAX_RETRIES"
-  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
-  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
-  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
-  echo ""
-  echo "🎯 Feature Flags:"
-  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
-  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
-  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
-  echo ""
-  echo "🚀 Collector Configuration:"
-  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
-  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
-  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
-  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
-  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
-  echo ""
-  echo "📍 System Paths:"
-  echo "   Working Directory: $(pwd)"
-  echo "   Python: $(which python3)"
-  echo "   Docker: $(which docker)"
-  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
-  echo ""
-  echo "=================================================="
-  echo ""
-  
-  # Enable bash command tracing for full visibility
-  echo "🔍 Enabling bash command tracing (set -x)..."
-  echo "   All commands will be printed before execution"
-  echo ""
-  set -x  # Print commands as they execute
-fi
-
-# Optional Features (configurable via environment)
-SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
-RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
-
-# =============================================================================
-# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
-# =============================================================================
-
-# Präzise Latenz-Messung aus pipeline_test.sh
-CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
-CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
-
-# Warm-Up Function
-warm_up() {
-  local url="$1"
-  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
-}
-
-# Präzise Latenzermittlung
-measure_latency() {
-  local url="$1"
-  local timeout="${2:-5}"
-  local tmpfile
-  tmpfile="$(mktemp -t resp.XXXXXX)"
-
-  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
-  local line
-  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
-  local http_code ttfb_s total_s
-  read -r http_code ttfb_s total_s <<<"$line"
-
-  # Convert to milliseconds
-  local ttfb_ms total_ms
-  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
-  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
-
-  # Body for validation
-  local body
-  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
-  rm -f "$tmpfile" 2>/dev/null || true
-
-  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
-  printf "%s" "$body"
-}
-
-# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
-get_available_symbols() {
-  local exchange="$1"
-  local market="${2:-spot}"  # Default to spot market
-  local limit="${3:-5}"      # Default top 5 symbols
-  
-  # Query SymbolRegistry for real available symbols
-  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
-    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
-    head -n "$limit" || echo ""
-}
-
-# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
-get_test_symbols() {
-  local exchange="$1"
-  
-  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
-  local symbols_output
-  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
-  
-  if [[ -n "$symbols_output" ]]; then
-    echo "$symbols_output"
-  else
-    case "$exchange" in
-      coinbase) 
-        echo "BTC-USD"
-        echo "ETH-USD"
-        ;;
-      *) 
-        echo "BTCUSDT"
-        echo "ETHUSDT"
-        ;;
-    esac
-  fi
-}
-
-# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
-test_symbol_api() {
-  local exchange="$1" symbol="$2" market="${3:-spot}"
-  local endpoint_suffix
-  
-  case "$market" in
-    spot) endpoint_suffix="spot" ;;
-    futures) endpoint_suffix="futures" ;;
-    *) endpoint_suffix="spot" ;;
-  esac
-  
-  local response1 response2 h1 h2 a1 a2
-  
-  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
-  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
-  
-  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
-  a1=$(echo "$response1" | tail -n+2)
-  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
-  a2=$(echo "$response2" | tail -n+2)
-  
-  local trades_count=0 orderbook_ok=0
-  
-  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
-    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
-  fi
-  
-  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
-    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
-      orderbook_ok=1
-    fi
-  fi
-  
-  echo $((trades_count + orderbook_ok))
-}
-
-# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
-fetch_multi_symbol_counts() {
-  local exchange="$1"
-  local total_api_count=0 successful_symbols=0 working_symbols=()
-  local symbol_count=0
-  
-  while IFS= read -r symbol; do
-    [[ -z "$symbol" ]] && continue
-    [[ $symbol_count -ge 3 ]] && break
-    
-    local spot_score futures_score=0
-    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
-    
-    if [[ "$exchange" != "coinbase" ]]; then
-      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
-    fi
-    
-    local symbol_total=$((spot_score + futures_score))
-    if [[ $symbol_total -gt 0 ]]; then
-      total_api_count=$((total_api_count + symbol_total))
-      successful_symbols=$((successful_symbols + 1))
-      working_symbols+=("$symbol")
-    fi
-    
-    symbol_count=$((symbol_count + 1))
-  done < <(get_test_symbols "$exchange")
-  
-  local working_list
-  if [[ ${#working_symbols[@]} -gt 0 ]]; then
-    working_list=$(IFS=,; echo "${working_symbols[*]}")
-  else
-    working_list=""
-  fi
-  echo "$total_api_count:$successful_symbols:$working_list"
-}
-
-# LEGACY FUNCTION - Kept for backward compatibility
-fetch_api_counts() {
-  local ex="$1" spot_sym="$2" fut_sym="$3"
-  local result
-  result=$(fetch_multi_symbol_counts "$ex")
-  echo "${result%%:*}"
-}
-
-# Enhanced API health check with multiple fallback patterns
-api_spot_ok() {
-  local exchange="$1"
-  local symbol="$2"
-
-  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
-  local meta body http_status
-  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
-  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
-  body="$(echo "$meta" | awk 'NR>1{print}')"
-
-  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
-}
-
-# =============================================================================
-# REDIS FUNCTIONS - SCAN-based for production
-# =============================================================================
-
-keys_count() {
-  local pattern="$1"
-  local cursor=0
-  local count=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    local new_cursor
-    local batch=0
-
-    if [[ -n "$scan_result" ]]; then
-      local first_line=true
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          [[ -n "$line" ]] && batch=$((batch + 1))
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-      count=$((count + batch))
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$count"
-}
-
-sum_xlen_pattern() {
-  local pattern="$1"
-  local cursor=0
-  local total=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    if [[ -n "$scan_result" ]]; then
-      local new_cursor
-      local first_line=true
-
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          if [[ -n "$line" ]]; then
-            local length
-            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
-            total=$((total + length))
-          fi
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$total"
-}
-
-growth_window() {
-  local pattern="$1"
-  local window="${2:-$REDIS_GROW_WIN}"
-  local before after
-
-  before=$(sum_xlen_pattern "$pattern")
-  sleep "$window"
-  after=$(sum_xlen_pattern "$pattern")
-  echo $((after - before))
-}
-
-persist_growth() {
-  local exchange="$1"
-  local window="${2:-$CH_GROW_WIN}"
-  local before after
-
-  before=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$before" =~ ^[0-9]+$ ]] || before=0
-
-  sleep 10
-
-  after=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$after" =~ ^[0-9]+$ ]] || after=0
-
-  echo $((after - before))
-}
-
-# =============================================================================
-# WEBSOCKET TEST FUNCTIONS
-# =============================================================================
-
-ws_test_coinbase_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
-    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
-    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
-}
-
-ws_test_mexc_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
-    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
-    head -n 3 | grep -q '"code":0' 2>/dev/null
-}
-
-ws_test_mexc_futures() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
-    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
-    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
-}
-
-# =============================================================================
-# SYSTEM INITIALIZATION
-# =============================================================================
-
-mkdir -p logs pids
-
-if [[ ! -f .deps_installed ]]; then
-  echo "Installing Python dependencies..."
-  if [[ -d "vendor/backend" ]]; then
-    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
-  fi
-
-  echo "Installing System dependencies..."
-  if [[ -d "vendor/system" ]]; then
-    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
-
-    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
-      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
-    fi
-  fi
-
-  echo "Installing Frontend dependencies..."
-  if [[ -d "frontend" ]]; then
-    (cd frontend && npm install --silent)
-  fi
-
-  echo "Installing project in editable mode..."
-  pip3 install --break-system-packages -e .
-
-  touch .deps_installed
-  echo "Dependencies installed."
-fi
-
-if [[ ! -d "frontend/node_modules" ]]; then
-  echo "Installing missing frontend dependencies..."
-  (cd frontend && npm install --silent)
-fi
-
-if [[ -f backend/config/.env ]]; then
-  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
-elif [[ -f backend/.env ]]; then
-  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
-else
-  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
-  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
-fi
-
-# =============================================================================
-# GRACEFUL SHUTDOWN SEQUENCE
-# =============================================================================
-
-echo ""
-echo "🛑 Stopping existing processes..."
-echo ""
-
-if nc -z localhost 8100 >/dev/null 2>&1; then
-  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
-else
-  show_skip "Collectors - Backend not running"
-fi
-
-gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
-show_success "Frontend - Stopped"
-
-gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
-show_success "Backend - Stopped"
-
-gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
-show_success "Desktop GUI - Stopped"
-
-gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker - Stopped"
-
-gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker Cache - Cleaned"
-
-echo ""
-
-# =============================================================================
-# SERVICE STARTUP SEQUENCE
-# =============================================================================
-
-echo "Starting Docker services..."
-
-# ✅ START SERVICES - Conditional Build based on user selection
-if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
-  echo "🔨 Building Docker images from scratch (--no-cache)..."
-  echo "   This will take 10-15 minutes - downloading & compiling everything"
-  echo ""
-  dc build --no-cache
-  dc up -d --no-build
-else
-  echo "⚡ Using existing Docker images (fast start)..."
-  echo "   Starting in 10-30 seconds"
-  echo ""
-  dc up -d --no-build
-fi
-
-echo "🔄 Waiting for Docker Services..."
-echo ""
-
-wait_for_service() {
-  local service=$1
-  local host=$2
-  local port=$3
-
-  gum_spin "$service - Service Ready" bash -c "
-    for i in {1..30}; do
-      nc -z $host $port >/dev/null 2>&1 && exit 0
-      sleep 1
-    done
-    exit 1
-  "
-
-  if [[ $? -eq 0 ]]; then
-    show_success "$service - Service" "Ready"
-    return 0
-  else
-    show_failure "$service - Service" "Timeout"
-    return 1
-  fi
-}
-
-wait_for_service "Redis" localhost 6380
-wait_for_service "ClickHouse" localhost 8124
-wait_for_service "Backend API" localhost 8100
-
-echo ""
-
-# =============================================================================
-# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
-# =============================================================================
-
-# ✅ Exponential Backoff Retry Logic
-wait_for_service_smart() {
-    local service_name=$1
-    local check_cmd=$2
-    local max_retries=${3:-$MAX_RETRIES}
-    local initial_delay=${4:-$INITIAL_DELAY}
-    
-    local retry=0
-    local delay=$initial_delay
-    
-    echo "⏳ Waiting for $service_name..."
-    
-    while (( retry < max_retries )); do
-        if eval "$check_cmd" >/dev/null 2>&1; then
-            echo "✅ $service_name ready after $retry retries"
-            return 0
-        fi
-        
-        if (( retry < max_retries - 1 )); then
-            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
-            sleep "$delay"
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            delay=$((delay * 2))
-        fi
-        
-        retry=$((retry + 1))
-    done
-    
-    echo "❌ $service_name failed after $max_retries retries"
-    return 1
-}
-
-# ✅ Parallele Service Checks
-wait_for_all_services_parallel() {
-    local services=("redis:6380" "clickhouse:8124" "backend:8100")
-    local pids=()
-    local temp_dir=$(mktemp -d)
-    
-    echo "🔄 Starting parallel service checks..."
-    
-    # Starte alle Checks parallel
-    for service in "${services[@]}"; do
-        IFS=':' read -r name port <<< "$service"
-        (
-            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
-                echo "0" > "$temp_dir/check_${name}.status"
-            else
-                echo "1" > "$temp_dir/check_${name}.status"
-            fi
-        ) &
-        pids+=($!)
-    done
-    
-    # Warte auf alle (mit Gesamttimeout)
-    local timeout=$SERVICE_CHECK_TIMEOUT
-    local elapsed=0
-    local all_done=false
-    
-    while (( elapsed < timeout )); do
-        all_done=true
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-                break
-            fi
-        done
-        
-        [[ "$all_done" == "true" ]] && break
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    # Kill stragglers
-    for pid in "${pids[@]}"; do
-        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
-    done
-    
-    # Prüfe Ergebnisse
-    local failed=0
-    for service in "${services[@]}"; do
-        IFS=':' read -r name _ <<< "$service"
-        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
-        if [[ "$status" != "0" ]]; then
-            echo "❌ $name check failed"
-            failed=$((failed + 1))
-        else
-            echo "✅ $name check passed"
-        fi
-    done
-    
-    rm -rf "$temp_dir"
-    
-    return $failed
-}
-
-# ✅ Event-driven Backend Ready Check - DOCKER AWARE
-wait_for_backend_ready() {
-    local timeout=$BACKEND_READY_TIMEOUT
-    local elapsed=0
-    
-    echo "⏳ Waiting for backend ready signal..."
-    
-    # Docker-aware check: Poll /health/ready endpoint directly
-    while (( elapsed < timeout )); do
-        # Check if health endpoint is responding
-        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
-        
-        if [[ -n "$health_response" ]]; then
-            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
-            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
-            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
-            
-            # Accept if:
-            # 1. ready=true (ideal), OR
-            # 2. At least 50% components healthy (degraded but operational)
-            if [[ "$ready_bool" == "true" ]]; then
-                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
-                return 0
-            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
-                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
-                return 0
-            else
-                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
-            fi
-        fi
-        
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    
-    echo "❌ Backend ready timeout after ${timeout}s"
-    echo ""
-    echo "🏥 Starting automatic health diagnostic..."
-    echo ""
-    ./start-health.sh
-    return 1
-}
-
-wait_for_backend() {
-  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
-  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
-    if wait_for_all_services_parallel; then
-      echo "✅ All services responding"
-    else
-      echo "⚠️ Some services failed - continuing with resilient mode"
-    fi
-  else
-    # Legacy: Serial checks
-    echo "Using legacy serial checks..."
-  fi
-  
-  echo ""
-  
-  # ✅ STEP 2: Event-driven backend ready check
-  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
-    if wait_for_backend_ready; then
-      echo "✅ Backend fully initialized"
-    else
-      echo "⚠️ Backend timeout - checking resilient health"
-      
-      # Fallback: Check resilient health endpoint
-      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-        echo "✅ Backend operational in degraded mode"
-      else
-        echo "❌ Backend not responding"
-        echo ""
-        echo "🏥 Starting automatic health diagnostic..."
-        echo ""
-        ./start-health.sh
-        return 1
-      fi
-    fi
-  else
-    # Legacy: Polling-based check
-    echo "Using legacy polling-based check..."
-    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
-      for i in {1..60}; do
-        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
-        sleep 1
-      done
-      exit 1
-    '; then
-      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
-    else
-      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
-      return 1
-    fi
-  fi
-  
-  echo ""
-  echo "🚀 Backend startup complete"
-  echo ""
-  
-  # ✅ STEP 3: Warm-up exchanges (non-blocking)
-  echo "🔄 Warming up exchanges (background)..."
-  for exchange in "${EXCHANGES[@]}"; do
-    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
-  done
-  
-  # Give exchanges a moment to respond, but don't block
-  sleep 3
-  
-  # Continue with collector verification (existing code)
-  local collector_success=0
-  local collector_failed=0
-
-  for exchange in "${EXCHANGES[@]}"; do
-      case "$exchange" in
-        "binance") display_name="Binance" ;;
-        "bitget") display_name="Bitget" ;;
-        "mexc") display_name="MEXC" ;;
-        "gateio") display_name="Gate.io" ;;
-        "bybit") display_name="Bybit" ;;
-        "okx") display_name="OKX" ;;
-        "htx") display_name="HTX" ;;
-        "coinbase") display_name="Coinbase" ;;
-        *) display_name="$(ucfirst "$exchange")" ;;
-      esac
-
-      formatted_name=$(printf "%-8s" "$display_name")
-
-      local working_symbol="" symbol_count=0
-      
-      while IFS= read -r symbol; do
-        [[ -z "$symbol" ]] && continue
-        [[ $symbol_count -ge 2 ]] && break
-        
-        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
-        
-        if [[ "$http_test" == "200" ]]; then
-          working_symbol="$symbol"
-          break
-        fi
-        
-        symbol_count=$((symbol_count + 1))
-      done < <(get_test_symbols "$exchange")
-      
-      if [[ -z "$working_symbol" ]]; then
-        case "$exchange" in
-          coinbase) working_symbol="BTC-USD" ;;
-          *) working_symbol="BTCUSDT" ;;
-        esac
-      fi
-
-      echo "🔄 $formatted_name - Collector Starting (background)"
-      
-      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
-      
-      local started=false
-      if [[ "$http_code" == "200" ]]; then
-        echo "✅ $formatted_name - Collector Started (API accessible)"
-        collector_success=$((collector_success + 1))
-        started=true
-      else
-        echo "⚠️  $formatted_name - Collector Started (API warming up)"
-        started=true
-      fi
-
-      if [[ "$started" == "false" ]]; then
-        collector_failed=$((collector_failed + 1))
-        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
-      fi
-    done
-
-    if [[ $collector_failed -gt 0 ]]; then
-      echo ""
-      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
-    fi
-
-    echo ""
-    echo "✅ All Exchange Collectors: STARTED"
-    echo "ℹ️  Background Health Monitoring: ACTIVE" 
-    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
-    echo ""
-    return 0
-}
-
-wait_for_backend
-
-auto_enable_test_coins() {
-  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
-  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
-  
-  for coin in "${test_coins[@]}"; do
-    for exchange in "${EXCHANGES[@]}"; do
-      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
-        -X POST -H "Content-Type: application/json" \
-        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
-        >/dev/null 2>&1 || true
-    done
-  done
-  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
-}
-
-auto_enable_test_coins
-
-echo ""
-
-gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
-if [[ -f monitor-backend.sh ]]; then
-  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
-  MONITOR_PID=$!
-  echo $MONITOR_PID > pids/backend_monitor.pid
-  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
-else
-  show_warning "Backend Monitor - Not found"
-fi
-
-gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
-show_success "Vite Cache - Cleaned"
-
-# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
-echo "🚀 Starting Frontend in new terminal window..."
-osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
-  echo "⚠️  Could not open new terminal - trying background mode"
-  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
-  FRONTEND_PID=$!
-  echo "$FRONTEND_PID" > ../pids/frontend.pid
-  cd ..
-}
-show_success "Frontend - Started in new terminal"
-
-echo ""
-echo "=================================================="
-echo "SYSTEM STATUS"
-echo "=================================================="
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-echo "🔍 Docker Container Status..."
-echo ""
-
-DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
-
-for service in "${DOCKER_SERVICES[@]}"; do
-  case "$service" in
-    "backend") display_name="Backend" ;;
-    "clickhouse") display_name="ClickHouse" ;;
-    "redis") display_name="Redis" ;;
-    "trade-router") display_name="Trade-Router" ;;
-    "unified-aggregator") display_name="Unified-Agg" ;;
-    *) display_name="$(ucfirst "$service")" ;;
-  esac
-
-  status=$(gum_spin "$display_name - Container Checking" bash -c "
-    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
-  ")
-
-  if [[ "$status" == "running" ]]; then
-    show_success "$display_name - Container" "Running"
-  elif [[ "$status" == "not found" ]]; then
-    show_failure "$display_name - Container" "Not Found"
-  else
-    show_warning "$display_name - Container" "$status"
-  fi
-done
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
-# =============================================================================
-
-pipeline_table_snapshot() {
-  echo ""
-  echo "=================================================="
-  echo "PIPELINE DATA FLOW SNAPSHOT"
-  echo "=================================================="
-  echo ""
-  
-  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
-  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
-    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
-  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
-  
-  local h=0 p=0 f=0
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Display-Name
-    local display_name
-    case "$exchange" in
-      "binance")  display_name="Binance" ;;
-      "bitget")   display_name="Bitget" ;;
-      "mexc")     display_name="MEXC" ;;
-      "gateio")   display_name="Gate.io" ;;
-      "bybit")    display_name="Bybit" ;;
-      "okx")      display_name="OKX" ;;
-      "htx")      display_name="HTX" ;;
-      "coinbase") display_name="Coinbase" ;;
-      *)          display_name="$(ucfirst "$exchange")" ;;
-    esac
-    
-    # Test-Symbol pro Exchange
-    local test_symbol
-    if [[ "$exchange" == "coinbase" ]]; then
-      test_symbol="BTC-USD"
-    else
-      test_symbol="BTCUSDT"
-    fi
-    
-    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
-    local redis_spot redis_usdtm redis_coinm redis_usdcm
-
-    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
-    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
-    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
-    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
-
-    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
-    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
-    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
-    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
-    
-    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
-    
-    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
-    local api_response api_trades api_latency
-    api_response=$(
-      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
-        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
-      || echo -e "[]\n0"
-    )
-
-    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
-    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
-
-    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
-    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
-    
-    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
-    local ch_trades_5min
-    ch_trades_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
-    
-    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
-    local ch_candles_5min
-    ch_candles_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE timestamp > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
-    )
-    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
-    
-    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
-    local ch_backfill
-    ch_backfill=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
-    
-    # 6) GW-API Status
-    local gw_status
-    if (( api_trades > 0 )); then
-      gw_status="✓"
-    else
-      gw_status="✗"
-    fi
-    
-    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
-    local ws_status
-    if (( redis_total > 0 )); then
-      ws_status="✓"
-    else
-      ws_status="✗"
-    fi
-    
-    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
-    local ch_write_status
-    if (( ch_trades_5min > 0 )); then
-      ch_write_status="✓"
-    else
-      ch_write_status="✗"
-    fi
-    
-    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
-    local status="FAILED"
-    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
-      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
-    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
-      status="PARTIAL"
-    fi
-
-    case "$status" in
-      HEALTHY) ((h++)) ;;
-      PARTIAL) ((p++)) ;;
-      *)       ((f++)) ;;
-    esac
-    
-    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
-    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
-      "$display_name" "$test_symbol" \
-      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
-      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
-  done
-  
-  echo "-------------------------------------------------------------------------------------------------------------------------------"
-  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
-  echo ""
-  
-  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
-  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Skip if no backfill data
-    local bf_count
-    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
-    
-    if [[ "$bf_count" -gt 0 ]]; then
-      local bf_oldest bf_newest
-      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      
-      printf "  %-10s: %10s trades | Range: %s → %s\n" \
-        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
-    fi
-  done
-  
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "=================================================="
-}
-
-# =============================================================================
-# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
-echo "=================================================="
-echo ""
-
-# Health-Block darf das Script nicht killen → Fehler explizit abfangen
-set +e
-
-# /health/ready – Kubernetes Readiness Probe
-HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
-HEALTH_READY_CODE="$HEALTH_READY_RAW"
-if [[ "$HEALTH_READY_CODE" == "" ]]; then
-  HEALTH_READY_CODE="000"
-fi
-
-# /health/detailed – System-Gesamtstatus
-HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
-
-# /health/components – alle Health-Lanes
-HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
-
-# /health/critical – nur kritische Komponenten
-HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
-
-# Default-Werte
-total_components=0
-healthy_components=0
-degraded_components=0
-unhealthy_components=0
-stale_components=0
-offline_components=0
-
-critical_total=0
-critical_healthy=0
-
-# Komponenten zählen (effective_status basiert)
-if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
-
-  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
-  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
-  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
-  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
-  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
-  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
-fi
-
-# Kritische Komponenten
-if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
-  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
-  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
-fi
-
-# Detaillierter Systemstatus
-system_status="unknown"
-readiness_message=""
-
-if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
-  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
-fi
-
-echo "Health Endpoints:"
-echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
-echo "  /health/detailed   → system_status=$system_status"
-echo "  /health/components → components=$total_components"
-echo "  /health/critical   → critical=$critical_healthy/$critical_total"
-echo ""
-
-echo "Component Status Breakdown (effective_status):"
-printf "  healthy:   %3d\n" "$healthy_components"
-printf "  degraded:  %3d\n" "$degraded_components"
-printf "  unhealthy: %3d\n" "$unhealthy_components"
-printf "  stale:     %3d\n" "$stale_components"
-printf "  offline:   %3d\n" "$offline_components"
-echo ""
-
-
-# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
-HEALTH_SUMMARY_HEALTHY="$healthy_components"
-HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
-HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
-
-export HEALTH_SUMMARY_HEALTHY
-export HEALTH_SUMMARY_PARTIAL
-export HEALTH_SUMMARY_FAILED
-set -e  # ab hier wieder strikt
-
-# =============================================================================
-# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
-# =============================================================================
-
-echo ""
-if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
-  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
-  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-  echo ""
-  echo "🔍 PROBLEMATIC COMPONENTS:"
-  echo ""
-  
-  # Tabellenkopf für problematische Komponenten
-  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
-  echo "------------------------------------------------------------------------------------------------"
-  
-  # Zeige NUR problematische Komponenten (effective_status != healthy)
-  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
-    while read -r comp; do
-      c_name=$(echo "$comp"   | jq -r '.name // "-"')
-      c_type=$(echo "$comp"   | jq -r '.type // "-"')
-      c_crit=$(echo "$comp"   | jq -r '.critical // false')
-      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
-      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
-      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
-      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
-      c_stale=$(echo "$comp"  | jq -r '.stale // false')
-      
-      m_summary=$(echo "$comp" | jq -r '
-        .metrics as $m |
-        (if ($m | type) == "object" and ($m | length) > 0
-         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
-         else "-"
-         end
-        )
-      ' 2>/dev/null || echo "-")
-      m_short=$(printf '%.50s' "$m_summary")
-      
-      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
-    done
-  fi
-  
-  echo "------------------------------------------------------------------------------------------------"
-else
-  # ✅ ALLES OK - Kompakte Anzeige
-  echo "✅ ALL COMPONENTS HEALTHY"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-fi
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
-# =============================================================================
-
-# Error handling for pipeline snapshot
-set +e  # Don't exit on errors in pipeline snapshot
-pipeline_table_snapshot
-set -e  # Re-enable strict error handling
-
-echo ""
-
-# =============================================
-# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
-# =============================================
-ENTERPRISE_DIAG="enterprise_diag.py"
-if [[ -f "$ENTERPRISE_DIAG" ]]; then
-  mkdir -p logs diag_py
-  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
-  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
-  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
-else
-  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
-fi
-
-# =============================================
-# PROFESSIONAL PIPELINE TEST SYSTEM
-# =============================================
-PIPELINE_TEST="test/pipeline_test.py"
-if [[ -f "$PIPELINE_TEST" ]]; then
-  echo ""
-  echo "🔧 Running Professional Pipeline Tests..."
-  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
-  
-  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
-    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
-  else
-    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
-  fi
-else
-  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
-fi
-
-# =============================================================================
-# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
-echo "=================================================="
-echo ""
-
-# Hole neueste Backfill-Loop Logs aus Docker
-BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
-  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
-  tail -10 2>/dev/null || echo "")
-
-if [[ -n "$BACKFILL_LOGS" ]]; then
-  echo "📜 Recent Backfill Activity:"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "$BACKFILL_LOGS"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-else
-  echo "⚠️  No backfill activity detected yet"
-  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
-fi
-
-echo ""
-
-# =============================================================================
-# FINAL SYSTEM STATUS & EXIT
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "System Information:"
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-failed_count=${HEALTH_SUMMARY_FAILED:-0}
-partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
-ready_http="$HEALTH_READY_CODE"
-
-# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
-if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
-  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
-  exit_code=0
-elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
-  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
-  exit_code=2
-else
-  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
-  echo ""
-  echo "🏥 Starting automatic health diagnostic..."
-  echo ""
-  ./start-health.sh
-  exit_code=1
-fi
-
-echo ""
-echo "=================================================="
-echo "STARTUP COMPLETED"
-echo "=================================================="
-echo ""
-echo "🔄 Starting Continuous System Monitor..."
-echo "   Monitor will refresh every 10 seconds"
-echo "   Check: logs/monitor/system_monitor.log"
-echo ""
-
-# ✅ Write Health Diagnostic Report
-mkdir -p monitoring
-curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
-  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
-
-echo "📊 Health Diagnostic Report:"
-echo "   Latest: monitoring/health_diagnostic_latest.json"
-if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
-  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
-  echo "   Time: $LATEST_TIMESTAMP"
-fi
-echo ""
-
-# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
-if ! pgrep -f "monitor-system.sh" > /dev/null; then
-  echo "✅ Starting Live Monitor in new terminal window..."
-  echo "   Updates every 10 seconds"
-  echo "   Press Ctrl+C in monitor window to stop"
-  echo ""
-  
-  # Open new Terminal window with monitor script (macOS)
-  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
-    echo "⚠️  Could not open new terminal - starting monitor in background"
-    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
-    echo "   Monitor logs: logs/monitor_console.log"
-  }
-  
-  sleep 1
-else
-  echo "ℹ️  Monitor already running - check other terminal"
-fi
-
-echo ""
-echo "=================================================="
-echo "✅ STARTUP COMPLETE - Monitor running in separate window"
-echo "=================================================="
-echo ""
-
-exit $exit_code
-</file>
-
 <file path="backend/database/clickhouse/cl_config.py">
 import os
 from typing import Dict, Any, Set
@@ -173051,6 +171796,1686 @@ const GlobalNav = () => {
 export default GlobalNav;
 </file>
 
+<file path="start-system.sh">
+#!/bin/bash
+
+# =============================================================================
+# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
+# =============================================================================
+
+# Strict Bash Setup - Production Hardening for Apple Silicon
+set -euo pipefail
+set +m    # keine Job-Control Meldungen
+IFS=$'\n\t'
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+echo "=================================================="
+echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
+echo "=================================================="
+echo ""
+
+# =============================================================================
+# INTERACTIVE VERBOSE MODE SELECTION
+# =============================================================================
+
+# Check if already set via env var
+if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
+  echo "🔧 Startup Logging Mode:"
+  echo "  1) Normal  - Standard output (recommended)"
+  echo "  2) Verbose - Detailed logs & all steps visible"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " mode_choice
+  
+  case "${mode_choice:-1}" in
+    2)
+      export STARTUP_VERBOSE=1
+      echo "✅ VERBOSE MODE activated - all logs visible"
+      ;;
+    *)
+      export STARTUP_VERBOSE=0
+      echo "✅ NORMAL MODE activated - standard output"
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# BUILD MODE SELECTION
+# =============================================================================
+
+# Interactive build mode selection (unless --clean flag was used)
+CLEAN_BUILD_MODE=0
+if [[ "${1:-}" == "--clean" ]]; then
+  CLEAN_BUILD_MODE=1
+  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
+  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
+  echo ""
+else
+  echo "🏗️  Docker Build Mode:"
+  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
+  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
+  echo ""
+  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " build_choice
+  
+  case "${build_choice:-1}" in
+    2)
+      CLEAN_BUILD_MODE=1
+      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
+      echo "   This will take 10-15 minutes..."
+      ;;
+    *)
+      CLEAN_BUILD_MODE=0
+      echo "✅ FAST START MODE activated - using existing images"
+      echo "   Starting in 10-30 seconds..."
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# DEPENDENCY MANAGEMENT
+# =============================================================================
+
+# Critical dependency checker
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: Missing required dependency: $1"
+    exit 1
+  }
+}
+
+# Check required dependencies
+need jq
+need redis-cli
+need curl
+need nc
+need python3
+need docker
+
+# =============================================================================
+# DOCKER DAEMON CHECK & AUTO-START
+# =============================================================================
+
+echo "🐳 Checking Docker status..."
+
+if ! docker info >/dev/null 2>&1; then
+  echo "⚠️  Docker is not running - attempting auto-start..."
+  echo ""
+  
+  # Starte Docker Desktop
+  open -a Docker
+  
+  # Warte bis bereit (max 60s)
+  echo "⏳ Waiting for Docker to be ready..."
+  timeout=60
+  elapsed=0
+  
+  while ! docker info >/dev/null 2>&1; do
+    if (( elapsed >= timeout )); then
+      echo ""
+      echo "❌ Docker startup timeout after ${timeout}s"
+      echo ""
+      echo "Please start Docker Desktop manually:"
+      echo "  1. Open Docker Desktop from Applications"
+      echo "  2. Wait for whale icon in menu bar to stop animating"
+      echo "  3. Run ./start-system.sh again"
+      echo ""
+      exit 1
+    fi
+    
+    printf "\r   Waiting for Docker... %ds/%ds" "$elapsed" "$timeout"
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  
+  echo ""
+  echo "✅ Docker is ready!"
+  echo ""
+else
+  echo "✅ Docker is already running"
+  echo ""
+fi
+
+# Robust timeout wrapper with macOS compatibility
+with_timeout() {
+  local s="$1"; shift
+  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
+  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
+  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
+  fi
+}
+
+# Docker Compose V2 compatibility wrapper
+dc() {
+  if command -v docker >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    echo "ERROR: Docker not found"
+    exit 1
+  fi
+}
+
+# Safe pkill wrapper - prevents set -e from killing script when no process found
+safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
+
+# WS-CAT soft fallback - graceful handling with vendor support
+if ! command -v wscat >/dev/null 2>&1; then
+  # Try to install from vendor if available
+  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
+    echo "Installing wscat from vendor..."
+    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
+  fi
+
+  # Check again after potential install
+  if ! command -v wscat >/dev/null 2>&1; then
+    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
+    WS_CAT_SKIP=1
+  else
+    WS_CAT_SKIP=0
+  fi
+else
+  WS_CAT_SKIP=0
+fi
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# TTY-sichere Farben
+isatty() { [[ -t 1 ]]; }
+if isatty; then
+  readonly GREEN=$'\033[0;32m'
+  readonly CYAN=$'\033[0;36m'
+  readonly YELLOW=$'\033[1;33m'
+  readonly RED=$'\033[0;31m'
+  readonly NC=$'\033[0m'
+else
+  readonly GREEN=
+  readonly CYAN=
+  readonly YELLOW=
+  readonly RED=
+  readonly NC=
+fi
+
+# Exchange Configuration
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+SPOT_SYMBOL_DEFAULT="BTCUSDT"
+COINBASE_SPOT_SYMBOL="BTC-USD"
+
+# GUM SPINNER SYSTEM - Professional and stable with vendor support
+if ! command -v gum >/dev/null 2>&1; then
+  # Try to install from vendor if available (future-ready)
+  if [[ -f "vendor/system/file_linux/gum" ]]; then
+    echo "Installing gum from vendor..."
+    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
+    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
+    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
+  fi
+
+  # Fallback to brew if still not available
+  if ! command -v gum >/dev/null 2>&1; then
+    echo "Installing gum via homebrew..."
+    brew install gum >/dev/null 2>&1 || {
+      echo "⚠ gum installation failed - using simple spinner fallback"
+      GUM_AVAILABLE=0
+    }
+  fi
+fi
+
+# Check if gum is available after installation attempts
+if command -v gum >/dev/null 2>&1; then
+  GUM_AVAILABLE=1
+  gum_spin() {  # gum_spin "Titel" CMD...
+    local title="$1"; shift
+    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
+      gum spin --title "$title" -- "$@"
+  }
+else
+  GUM_AVAILABLE=0
+  # Fallback spinner function using simple dots
+  gum_spin() {
+    local title="$1"; shift
+    printf "⠋ %s..." "$title"
+    "$@" >/dev/null 2>&1
+    local result=$?
+    printf "\r"
+    return $result
+  }
+fi
+
+# Professional Status Symbols
+readonly SYMBOL_SUCCESS="✔"
+readonly SYMBOL_FAILURE="✖"
+readonly SYMBOL_WARNING="⚠"
+readonly SYMBOL_INFO="ℹ"
+readonly SYMBOL_SKIP="○"
+
+# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
+ucfirst() {
+  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
+}
+
+# Status display functions
+show_success() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
+}
+show_failure() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
+}
+show_warning() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
+}
+
+show_skip() {
+  local message="$1"
+  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
+}
+
+# Timing Windows (configurable via environment)
+REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
+CH_GROW_WIN="${CH_GROW_WIN:-30}"
+BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
+COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
+RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
+
+# =============================================================================
+# INTELLIGENT STARTUP CONFIGURATION
+# =============================================================================
+
+# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
+export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
+export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
+export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
+export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
+
+# ✅ Feature Flags (enable/disable new behavior)
+export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
+export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
+export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
+
+# ✅ Observability
+export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
+
+# Log configuration
+if [[ "$STARTUP_VERBOSE" == "1" ]]; then
+  echo "=================================================="
+  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
+  echo "=================================================="
+  echo ""
+  echo "📊 Retry & Timeout Configuration:"
+  echo "   MAX_RETRIES=$MAX_RETRIES"
+  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
+  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
+  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
+  echo ""
+  echo "🎯 Feature Flags:"
+  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
+  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
+  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
+  echo ""
+  echo "🚀 Collector Configuration:"
+  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
+  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
+  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
+  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
+  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
+  echo ""
+  echo "📍 System Paths:"
+  echo "   Working Directory: $(pwd)"
+  echo "   Python: $(which python3)"
+  echo "   Docker: $(which docker)"
+  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
+  echo ""
+  echo "=================================================="
+  echo ""
+  
+  # Enable bash command tracing for full visibility
+  echo "🔍 Enabling bash command tracing (set -x)..."
+  echo "   All commands will be printed before execution"
+  echo ""
+  set -x  # Print commands as they execute
+fi
+
+# Optional Features (configurable via environment)
+SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
+RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
+
+# =============================================================================
+# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
+# =============================================================================
+
+# Präzise Latenz-Messung aus pipeline_test.sh
+CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
+CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
+
+# Warm-Up Function
+warm_up() {
+  local url="$1"
+  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
+}
+
+# Präzise Latenzermittlung
+measure_latency() {
+  local url="$1"
+  local timeout="${2:-5}"
+  local tmpfile
+  tmpfile="$(mktemp -t resp.XXXXXX)"
+
+  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
+  local line
+  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
+  local http_code ttfb_s total_s
+  read -r http_code ttfb_s total_s <<<"$line"
+
+  # Convert to milliseconds
+  local ttfb_ms total_ms
+  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
+  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
+
+  # Body for validation
+  local body
+  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
+  rm -f "$tmpfile" 2>/dev/null || true
+
+  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
+  printf "%s" "$body"
+}
+
+# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
+get_available_symbols() {
+  local exchange="$1"
+  local market="${2:-spot}"  # Default to spot market
+  local limit="${3:-5}"      # Default top 5 symbols
+  
+  # Query SymbolRegistry for real available symbols
+  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
+    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
+    head -n "$limit" || echo ""
+}
+
+# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
+get_test_symbols() {
+  local exchange="$1"
+  
+  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
+  local symbols_output
+  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
+  
+  if [[ -n "$symbols_output" ]]; then
+    echo "$symbols_output"
+  else
+    case "$exchange" in
+      coinbase) 
+        echo "BTC-USD"
+        echo "ETH-USD"
+        ;;
+      *) 
+        echo "BTCUSDT"
+        echo "ETHUSDT"
+        ;;
+    esac
+  fi
+}
+
+# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
+test_symbol_api() {
+  local exchange="$1" symbol="$2" market="${3:-spot}"
+  local endpoint_suffix
+  
+  case "$market" in
+    spot) endpoint_suffix="spot" ;;
+    futures) endpoint_suffix="futures" ;;
+    *) endpoint_suffix="spot" ;;
+  esac
+  
+  local response1 response2 h1 h2 a1 a2
+  
+  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
+  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
+  
+  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
+  a1=$(echo "$response1" | tail -n+2)
+  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
+  a2=$(echo "$response2" | tail -n+2)
+  
+  local trades_count=0 orderbook_ok=0
+  
+  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
+    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
+  fi
+  
+  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
+    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
+      orderbook_ok=1
+    fi
+  fi
+  
+  echo $((trades_count + orderbook_ok))
+}
+
+# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
+fetch_multi_symbol_counts() {
+  local exchange="$1"
+  local total_api_count=0 successful_symbols=0 working_symbols=()
+  local symbol_count=0
+  
+  while IFS= read -r symbol; do
+    [[ -z "$symbol" ]] && continue
+    [[ $symbol_count -ge 3 ]] && break
+    
+    local spot_score futures_score=0
+    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
+    
+    if [[ "$exchange" != "coinbase" ]]; then
+      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
+    fi
+    
+    local symbol_total=$((spot_score + futures_score))
+    if [[ $symbol_total -gt 0 ]]; then
+      total_api_count=$((total_api_count + symbol_total))
+      successful_symbols=$((successful_symbols + 1))
+      working_symbols+=("$symbol")
+    fi
+    
+    symbol_count=$((symbol_count + 1))
+  done < <(get_test_symbols "$exchange")
+  
+  local working_list
+  if [[ ${#working_symbols[@]} -gt 0 ]]; then
+    working_list=$(IFS=,; echo "${working_symbols[*]}")
+  else
+    working_list=""
+  fi
+  echo "$total_api_count:$successful_symbols:$working_list"
+}
+
+# LEGACY FUNCTION - Kept for backward compatibility
+fetch_api_counts() {
+  local ex="$1" spot_sym="$2" fut_sym="$3"
+  local result
+  result=$(fetch_multi_symbol_counts "$ex")
+  echo "${result%%:*}"
+}
+
+# Enhanced API health check with multiple fallback patterns
+api_spot_ok() {
+  local exchange="$1"
+  local symbol="$2"
+
+  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
+  local meta body http_status
+  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
+  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
+  body="$(echo "$meta" | awk 'NR>1{print}')"
+
+  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
+}
+
+# =============================================================================
+# REDIS FUNCTIONS - SCAN-based for production
+# =============================================================================
+
+keys_count() {
+  local pattern="$1"
+  local cursor=0
+  local count=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    local new_cursor
+    local batch=0
+
+    if [[ -n "$scan_result" ]]; then
+      local first_line=true
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          [[ -n "$line" ]] && batch=$((batch + 1))
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+      count=$((count + batch))
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$count"
+}
+
+sum_xlen_pattern() {
+  local pattern="$1"
+  local cursor=0
+  local total=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    if [[ -n "$scan_result" ]]; then
+      local new_cursor
+      local first_line=true
+
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          if [[ -n "$line" ]]; then
+            local length
+            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
+            total=$((total + length))
+          fi
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$total"
+}
+
+growth_window() {
+  local pattern="$1"
+  local window="${2:-$REDIS_GROW_WIN}"
+  local before after
+
+  before=$(sum_xlen_pattern "$pattern")
+  sleep "$window"
+  after=$(sum_xlen_pattern "$pattern")
+  echo $((after - before))
+}
+
+persist_growth() {
+  local exchange="$1"
+  local window="${2:-$CH_GROW_WIN}"
+  local before after
+
+  before=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$before" =~ ^[0-9]+$ ]] || before=0
+
+  sleep 10
+
+  after=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$after" =~ ^[0-9]+$ ]] || after=0
+
+  echo $((after - before))
+}
+
+# =============================================================================
+# WEBSOCKET TEST FUNCTIONS
+# =============================================================================
+
+ws_test_coinbase_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
+    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
+    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
+}
+
+ws_test_mexc_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
+    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
+    head -n 3 | grep -q '"code":0' 2>/dev/null
+}
+
+ws_test_mexc_futures() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
+    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
+    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
+}
+
+# =============================================================================
+# SYSTEM INITIALIZATION
+# =============================================================================
+
+mkdir -p logs pids
+
+if [[ ! -f .deps_installed ]]; then
+  echo "Installing Python dependencies..."
+  if [[ -d "vendor/backend" ]]; then
+    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
+  fi
+
+  echo "Installing System dependencies..."
+  if [[ -d "vendor/system" ]]; then
+    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
+
+    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
+      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
+    fi
+  fi
+
+  echo "Installing Frontend dependencies..."
+  if [[ -d "frontend" ]]; then
+    (cd frontend && npm install --silent)
+  fi
+
+  echo "Installing project in editable mode..."
+  pip3 install --break-system-packages -e .
+
+  touch .deps_installed
+  echo "Dependencies installed."
+fi
+
+if [[ ! -d "frontend/node_modules" ]]; then
+  echo "Installing missing frontend dependencies..."
+  (cd frontend && npm install --silent)
+fi
+
+if [[ -f backend/config/.env ]]; then
+  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
+elif [[ -f backend/.env ]]; then
+  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
+else
+  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
+  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
+fi
+
+# =============================================================================
+# GRACEFUL SHUTDOWN SEQUENCE
+# =============================================================================
+
+echo ""
+echo "🛑 Stopping existing processes..."
+echo ""
+
+if nc -z localhost 8100 >/dev/null 2>&1; then
+  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
+else
+  show_skip "Collectors - Backend not running"
+fi
+
+gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
+show_success "Frontend - Stopped"
+
+gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
+show_success "Backend - Stopped"
+
+gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
+show_success "Desktop GUI - Stopped"
+
+gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker - Stopped"
+
+gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker Cache - Cleaned"
+
+echo ""
+
+# =============================================================================
+# SERVICE STARTUP SEQUENCE
+# =============================================================================
+
+echo "Starting Docker services..."
+
+# ✅ START SERVICES - Conditional Build based on user selection
+if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
+  echo "🔨 Building Docker images from scratch (--no-cache)..."
+  echo "   This will take 10-15 minutes - downloading & compiling everything"
+  echo ""
+  dc build --no-cache
+  dc up -d --no-build
+else
+  echo "⚡ Using existing Docker images (fast start)..."
+  echo "   Starting in 10-30 seconds"
+  echo ""
+  dc up -d --no-build
+fi
+
+echo "🔄 Waiting for Docker Services..."
+echo ""
+
+wait_for_service() {
+  local service=$1
+  local host=$2
+  local port=$3
+
+  if gum_spin "$service - Service Ready" bash -c "
+    for i in {1..30}; do
+      nc -z $host $port >/dev/null 2>&1 && exit 0
+      sleep 1
+    done
+    exit 1
+  "; then
+    show_success "$service - Service" "Ready"
+    return 0
+  else
+    show_failure "$service - Service" "Timeout"
+    return 1
+  fi
+}
+
+wait_for_service "Redis" localhost 6380
+wait_for_service "ClickHouse" localhost 8124
+wait_for_service "Backend API" localhost 8100
+
+echo ""
+
+# =============================================================================
+# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
+# =============================================================================
+
+# ✅ Exponential Backoff Retry Logic
+wait_for_service_smart() {
+    local service_name=$1
+    local check_cmd=$2
+    local max_retries=${3:-$MAX_RETRIES}
+    local initial_delay=${4:-$INITIAL_DELAY}
+    
+    local retry=0
+    local delay=$initial_delay
+    
+    echo "⏳ Waiting for $service_name..."
+    
+    while (( retry < max_retries )); do
+        if eval "$check_cmd" >/dev/null 2>&1; then
+            echo "✅ $service_name ready after $retry retries"
+            return 0
+        fi
+        
+        if (( retry < max_retries - 1 )); then
+            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
+            sleep "$delay"
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            delay=$((delay * 2))
+        fi
+        
+        retry=$((retry + 1))
+    done
+    
+    echo "❌ $service_name failed after $max_retries retries"
+    return 1
+}
+
+# ✅ Parallele Service Checks
+wait_for_all_services_parallel() {
+    local services=("redis:6380" "clickhouse:8124" "backend:8100")
+    local pids=()
+    local temp_dir=$(mktemp -d)
+    
+    echo "🔄 Starting parallel service checks..."
+    
+    # Starte alle Checks parallel
+    for service in "${services[@]}"; do
+        IFS=':' read -r name port <<< "$service"
+        (
+            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
+                echo "0" > "$temp_dir/check_${name}.status"
+            else
+                echo "1" > "$temp_dir/check_${name}.status"
+            fi
+        ) &
+        pids+=($!)
+    done
+    
+    # Warte auf alle (mit Gesamttimeout)
+    local timeout=$SERVICE_CHECK_TIMEOUT
+    local elapsed=0
+    local all_done=false
+    
+    while (( elapsed < timeout )); do
+        all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        
+        [[ "$all_done" == "true" ]] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    # Kill stragglers
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+    done
+    
+    # Prüfe Ergebnisse
+    local failed=0
+    for service in "${services[@]}"; do
+        IFS=':' read -r name _ <<< "$service"
+        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
+        if [[ "$status" != "0" ]]; then
+            echo "❌ $name check failed"
+            failed=$((failed + 1))
+        else
+            echo "✅ $name check passed"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    return $failed
+}
+
+# ✅ Event-driven Backend Ready Check - DOCKER AWARE
+wait_for_backend_ready() {
+    local timeout=$BACKEND_READY_TIMEOUT
+    local elapsed=0
+    
+    echo "⏳ Waiting for backend ready signal..."
+    
+    # Docker-aware check: Poll /health/ready endpoint directly
+    while (( elapsed < timeout )); do
+        # Check if health endpoint is responding
+        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
+        
+        if [[ -n "$health_response" ]]; then
+            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
+            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
+            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
+            
+            # Accept if:
+            # 1. ready=true (ideal), OR
+            # 2. At least 50% components healthy (degraded but operational)
+            if [[ "$ready_bool" == "true" ]]; then
+                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
+                return 0
+            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
+                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
+                return 0
+            else
+                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
+            fi
+        fi
+        
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    
+    echo "❌ Backend ready timeout after ${timeout}s"
+    echo ""
+    
+    # =============================================================================
+    # ✅ Schema Reconciliation Diagnostics (Backend logs)
+    # =============================================================================
+    echo "🔍 Checking for Schema Reconciliation errors..."
+    echo ""
+
+    # Resolve backend container id robustly (no hardcoded name)
+    backend_cid="$(docker compose ps -q backend 2>/dev/null | head -n 1 || true)"
+
+    if [[ -z "$backend_cid" ]]; then
+      echo "⚠️  Backend container not found via docker compose ps -q backend"
+    else
+      backend_logs="$(docker logs "$backend_cid" 2>&1 | tail -200)"
+
+      # Detect schema-related log lines
+      if echo "$backend_logs" | grep -qiE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff"; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "⚠️  SCHEMA RECONCILIATION / VERIFY ERROR DETECTED"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "📋 Relevant Log Entries (filtered):"
+        echo ""
+        echo "$backend_logs" | grep -iE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff" | tail -80
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+
+        # Try to read SCHEMA_MODE from .env (best-effort)
+        schema_mode_hint="${SCHEMA_MODE:-}"
+        if [[ -z "$schema_mode_hint" ]] && [[ -f ".env" ]]; then
+          schema_mode_hint="$(grep -E '^SCHEMA_MODE=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+        fi
+        schema_mode_hint="${schema_mode_hint:-verify}"
+
+        echo "💡 Hints:"
+        echo "   - SCHEMA_MODE (effective hint): ${schema_mode_hint}"
+        echo "   - If this is dev maintenance: set SCHEMA_MODE=reconcile and (non-TTY) SCHEMA_AUTO_APPLY=1"
+        echo "   - If production strict: keep SCHEMA_MODE=verify and align ClickHouse schema to init.sql"
+        echo ""
+      else
+        echo "ℹ️  No schema errors detected - last 50 backend log lines:"
+        echo ""
+        echo "$backend_logs" | tail -50
+        echo ""
+      fi
+    fi
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    echo "🏥 Starting automatic health diagnostic..."
+    echo ""
+    ./start-health.sh
+    return 1
+}
+
+wait_for_backend() {
+  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
+  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
+    if wait_for_all_services_parallel; then
+      echo "✅ All services responding"
+    else
+      echo "⚠️ Some services failed - continuing with resilient mode"
+    fi
+  else
+    # Legacy: Serial checks
+    echo "Using legacy serial checks..."
+  fi
+  
+  echo ""
+  
+  # ✅ STEP 2: Event-driven backend ready check
+  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
+    if wait_for_backend_ready; then
+      echo "✅ Backend fully initialized"
+    else
+      echo "⚠️ Backend timeout - checking resilient health"
+      
+      # Fallback: Check resilient health endpoint
+      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+        echo "✅ Backend operational in degraded mode"
+      else
+        echo "❌ Backend not responding"
+        echo ""
+        echo "🏥 Starting automatic health diagnostic..."
+        echo ""
+        ./start-health.sh
+        return 1
+      fi
+    fi
+  else
+    # Legacy: Polling-based check
+    echo "Using legacy polling-based check..."
+    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
+      for i in {1..60}; do
+        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
+        sleep 1
+      done
+      exit 1
+    '; then
+      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
+    else
+      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
+      return 1
+    fi
+  fi
+  
+  echo ""
+  echo "🚀 Backend startup complete"
+  echo ""
+  
+  # ✅ STEP 3: Warm-up exchanges (non-blocking)
+  echo "🔄 Warming up exchanges (background)..."
+  for exchange in "${EXCHANGES[@]}"; do
+    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
+  done
+  
+  # Give exchanges a moment to respond, but don't block
+  sleep 3
+  
+  # Continue with collector verification (existing code)
+  local collector_success=0
+  local collector_failed=0
+
+  for exchange in "${EXCHANGES[@]}"; do
+      case "$exchange" in
+        "binance") display_name="Binance" ;;
+        "bitget") display_name="Bitget" ;;
+        "mexc") display_name="MEXC" ;;
+        "gateio") display_name="Gate.io" ;;
+        "bybit") display_name="Bybit" ;;
+        "okx") display_name="OKX" ;;
+        "htx") display_name="HTX" ;;
+        "coinbase") display_name="Coinbase" ;;
+        *) display_name="$(ucfirst "$exchange")" ;;
+      esac
+
+      formatted_name=$(printf "%-8s" "$display_name")
+
+      local working_symbol="" symbol_count=0
+      
+      while IFS= read -r symbol; do
+        [[ -z "$symbol" ]] && continue
+        [[ $symbol_count -ge 2 ]] && break
+        
+        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
+        
+        if [[ "$http_test" == "200" ]]; then
+          working_symbol="$symbol"
+          break
+        fi
+        
+        symbol_count=$((symbol_count + 1))
+      done < <(get_test_symbols "$exchange")
+      
+      if [[ -z "$working_symbol" ]]; then
+        case "$exchange" in
+          coinbase) working_symbol="BTC-USD" ;;
+          *) working_symbol="BTCUSDT" ;;
+        esac
+      fi
+
+      echo "🔄 $formatted_name - Collector Starting (background)"
+      
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
+      
+      local started=false
+      if [[ "$http_code" == "200" ]]; then
+        echo "✅ $formatted_name - Collector Started (API accessible)"
+        collector_success=$((collector_success + 1))
+        started=true
+      else
+        echo "⚠️  $formatted_name - Collector Started (API warming up)"
+        started=true
+      fi
+
+      if [[ "$started" == "false" ]]; then
+        collector_failed=$((collector_failed + 1))
+        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
+      fi
+    done
+
+    if [[ $collector_failed -gt 0 ]]; then
+      echo ""
+      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
+    fi
+
+    echo ""
+    echo "✅ All Exchange Collectors: STARTED"
+    echo "ℹ️  Background Health Monitoring: ACTIVE" 
+    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
+    echo ""
+    return 0
+}
+
+wait_for_backend
+
+auto_enable_test_coins() {
+  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
+  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
+  
+  for coin in "${test_coins[@]}"; do
+    for exchange in "${EXCHANGES[@]}"; do
+      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
+        -X POST -H "Content-Type: application/json" \
+        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
+        >/dev/null 2>&1 || true
+    done
+  done
+  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
+}
+
+auto_enable_test_coins
+
+echo ""
+
+gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
+if [[ -f monitor-backend.sh ]]; then
+  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
+  MONITOR_PID=$!
+  echo $MONITOR_PID > pids/backend_monitor.pid
+  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
+else
+  show_warning "Backend Monitor - Not found"
+fi
+
+gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
+show_success "Vite Cache - Cleaned"
+
+# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
+echo "🚀 Starting Frontend in new terminal window..."
+osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
+  echo "⚠️  Could not open new terminal - trying background mode"
+  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  echo "$FRONTEND_PID" > ../pids/frontend.pid
+  cd ..
+}
+show_success "Frontend - Started in new terminal"
+
+echo ""
+echo "=================================================="
+echo "SYSTEM STATUS"
+echo "=================================================="
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+echo "🔍 Docker Container Status..."
+echo ""
+
+DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
+
+for service in "${DOCKER_SERVICES[@]}"; do
+  case "$service" in
+    "backend") display_name="Backend" ;;
+    "clickhouse") display_name="ClickHouse" ;;
+    "redis") display_name="Redis" ;;
+    "trade-router") display_name="Trade-Router" ;;
+    "unified-aggregator") display_name="Unified-Agg" ;;
+    *) display_name="$(ucfirst "$service")" ;;
+  esac
+
+  status=$(gum_spin "$display_name - Container Checking" bash -c "
+    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
+  ")
+
+  if [[ "$status" == "running" ]]; then
+    show_success "$display_name - Container" "Running"
+  elif [[ "$status" == "not found" ]]; then
+    show_failure "$display_name - Container" "Not Found"
+  else
+    show_warning "$display_name - Container" "$status"
+  fi
+done
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
+# =============================================================================
+
+pipeline_table_snapshot() {
+  echo ""
+  echo "=================================================="
+  echo "PIPELINE DATA FLOW SNAPSHOT"
+  echo "=================================================="
+  echo ""
+  
+  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
+  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
+    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
+  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
+  
+  local h=0 p=0 f=0
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Display-Name
+    local display_name
+    case "$exchange" in
+      "binance")  display_name="Binance" ;;
+      "bitget")   display_name="Bitget" ;;
+      "mexc")     display_name="MEXC" ;;
+      "gateio")   display_name="Gate.io" ;;
+      "bybit")    display_name="Bybit" ;;
+      "okx")      display_name="OKX" ;;
+      "htx")      display_name="HTX" ;;
+      "coinbase") display_name="Coinbase" ;;
+      *)          display_name="$(ucfirst "$exchange")" ;;
+    esac
+    
+    # Test-Symbol pro Exchange
+    local test_symbol
+    if [[ "$exchange" == "coinbase" ]]; then
+      test_symbol="BTC-USD"
+    else
+      test_symbol="BTCUSDT"
+    fi
+    
+    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
+    local redis_spot redis_usdtm redis_coinm redis_usdcm
+
+    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
+    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
+    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
+    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
+
+    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
+    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
+    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
+    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
+    
+    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
+    
+    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
+    local api_response api_trades api_latency
+    api_response=$(
+      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
+        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
+      || echo -e "[]\n0"
+    )
+
+    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
+    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
+
+    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
+    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
+    
+    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
+    local ch_trades_5min
+    ch_trades_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
+    
+    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
+    local ch_candles_5min
+    ch_candles_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE bucket_start > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
+    )
+    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
+    
+    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
+    local ch_backfill
+    ch_backfill=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
+    
+    # 6) GW-API Status
+    local gw_status
+    if (( api_trades > 0 )); then
+      gw_status="✓"
+    else
+      gw_status="✗"
+    fi
+    
+    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
+    local ws_status
+    if (( redis_total > 0 )); then
+      ws_status="✓"
+    else
+      ws_status="✗"
+    fi
+    
+    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
+    local ch_write_status
+    if (( ch_trades_5min > 0 )); then
+      ch_write_status="✓"
+    else
+      ch_write_status="✗"
+    fi
+    
+    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
+    local status="FAILED"
+    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
+      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
+    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
+      status="PARTIAL"
+    fi
+
+    case "$status" in
+      HEALTHY) ((h++)) ;;
+      PARTIAL) ((p++)) ;;
+      *)       ((f++)) ;;
+    esac
+    
+    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
+    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
+      "$display_name" "$test_symbol" \
+      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
+      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
+  done
+  
+  echo "-------------------------------------------------------------------------------------------------------------------------------"
+  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
+  echo ""
+  
+  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
+  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Skip if no backfill data
+    local bf_count
+    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
+    
+    if [[ "$bf_count" -gt 0 ]]; then
+      local bf_oldest bf_newest
+      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      
+      printf "  %-10s: %10s trades | Range: %s → %s\n" \
+        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
+    fi
+  done
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "=================================================="
+}
+
+# =============================================================================
+# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
+echo "=================================================="
+echo ""
+
+# Health-Block darf das Script nicht killen → Fehler explizit abfangen
+set +e
+
+# /health/ready – Kubernetes Readiness Probe
+HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
+HEALTH_READY_CODE="$HEALTH_READY_RAW"
+if [[ "$HEALTH_READY_CODE" == "" ]]; then
+  HEALTH_READY_CODE="000"
+fi
+
+# /health/detailed – System-Gesamtstatus
+HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
+
+# /health/components – alle Health-Lanes
+HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
+
+# /health/critical – nur kritische Komponenten
+HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
+
+# Default-Werte
+total_components=0
+healthy_components=0
+degraded_components=0
+unhealthy_components=0
+stale_components=0
+offline_components=0
+
+critical_total=0
+critical_healthy=0
+
+# Komponenten zählen (effective_status basiert)
+if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
+
+  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
+  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
+  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
+  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
+  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
+  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
+fi
+
+# Kritische Komponenten
+if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
+  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
+  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
+fi
+
+# Detaillierter Systemstatus
+system_status="unknown"
+readiness_message=""
+
+if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
+  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
+fi
+
+echo "Health Endpoints:"
+echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
+echo "  /health/detailed   → system_status=$system_status"
+echo "  /health/components → components=$total_components"
+echo "  /health/critical   → critical=$critical_healthy/$critical_total"
+echo ""
+
+echo "Component Status Breakdown (effective_status):"
+printf "  healthy:   %3d\n" "$healthy_components"
+printf "  degraded:  %3d\n" "$degraded_components"
+printf "  unhealthy: %3d\n" "$unhealthy_components"
+printf "  stale:     %3d\n" "$stale_components"
+printf "  offline:   %3d\n" "$offline_components"
+echo ""
+
+
+# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
+HEALTH_SUMMARY_HEALTHY="$healthy_components"
+HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
+HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
+
+export HEALTH_SUMMARY_HEALTHY
+export HEALTH_SUMMARY_PARTIAL
+export HEALTH_SUMMARY_FAILED
+set -e  # ab hier wieder strikt
+
+# =============================================================================
+# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
+# =============================================================================
+
+echo ""
+if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
+  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
+  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+  echo ""
+  echo "🔍 PROBLEMATIC COMPONENTS:"
+  echo ""
+  
+  # Tabellenkopf für problematische Komponenten
+  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
+  echo "------------------------------------------------------------------------------------------------"
+  
+  # Zeige NUR problematische Komponenten (effective_status != healthy)
+  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
+    while read -r comp; do
+      c_name=$(echo "$comp"   | jq -r '.name // "-"')
+      c_type=$(echo "$comp"   | jq -r '.type // "-"')
+      c_crit=$(echo "$comp"   | jq -r '.critical // false')
+      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
+      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
+      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
+      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
+      c_stale=$(echo "$comp"  | jq -r '.stale // false')
+      
+      m_summary=$(echo "$comp" | jq -r '
+        .metrics as $m |
+        (if ($m | type) == "object" and ($m | length) > 0
+         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
+         else "-"
+         end
+        )
+      ' 2>/dev/null || echo "-")
+      m_short=$(printf '%.50s' "$m_summary")
+      
+      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
+    done
+  fi
+  
+  echo "------------------------------------------------------------------------------------------------"
+else
+  # ✅ ALLES OK - Kompakte Anzeige
+  echo "✅ ALL COMPONENTS HEALTHY"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+fi
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
+# =============================================================================
+
+# Error handling for pipeline snapshot
+set +e  # Don't exit on errors in pipeline snapshot
+pipeline_table_snapshot
+set -e  # Re-enable strict error handling
+
+echo ""
+
+# =============================================
+# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
+# =============================================
+ENTERPRISE_DIAG="enterprise_diag.py"
+if [[ -f "$ENTERPRISE_DIAG" ]]; then
+  mkdir -p logs diag_py
+  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
+  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
+  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
+else
+  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
+fi
+
+# =============================================
+# PROFESSIONAL PIPELINE TEST SYSTEM
+# =============================================
+PIPELINE_TEST="test/pipeline_test.py"
+if [[ -f "$PIPELINE_TEST" ]]; then
+  echo ""
+  echo "🔧 Running Professional Pipeline Tests..."
+  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
+  
+  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
+    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
+  else
+    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
+  fi
+else
+  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
+fi
+
+# =============================================================================
+# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
+echo "=================================================="
+echo ""
+
+# Hole neueste Backfill-Loop Logs aus Docker
+BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
+  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
+  tail -10 2>/dev/null || echo "")
+
+if [[ -n "$BACKFILL_LOGS" ]]; then
+  echo "📜 Recent Backfill Activity:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$BACKFILL_LOGS"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+else
+  echo "⚠️  No backfill activity detected yet"
+  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
+fi
+
+echo ""
+
+# =============================================================================
+# FINAL SYSTEM STATUS & EXIT
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "System Information:"
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+failed_count=${HEALTH_SUMMARY_FAILED:-0}
+partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
+ready_http="$HEALTH_READY_CODE"
+
+# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
+if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
+  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
+  exit_code=0
+elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
+  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
+  exit_code=2
+else
+  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
+  echo ""
+  echo "🏥 Starting automatic health diagnostic..."
+  echo ""
+  ./start-health.sh
+  exit_code=1
+fi
+
+echo ""
+echo "=================================================="
+echo "STARTUP COMPLETED"
+echo "=================================================="
+echo ""
+echo "🔄 Starting Continuous System Monitor..."
+echo "   Monitor will refresh every 10 seconds"
+echo "   Check: logs/monitor/system_monitor.log"
+echo ""
+
+# ✅ Write Health Diagnostic Report
+mkdir -p monitoring
+curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
+  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
+
+echo "📊 Health Diagnostic Report:"
+echo "   Latest: monitoring/health_diagnostic_latest.json"
+if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
+  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
+  echo "   Time: $LATEST_TIMESTAMP"
+fi
+echo ""
+
+# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
+if ! pgrep -f "monitor-system.sh" > /dev/null; then
+  echo "✅ Starting Live Monitor in new terminal window..."
+  echo "   Updates every 10 seconds"
+  echo "   Press Ctrl+C in monitor window to stop"
+  echo ""
+  
+  # Open new Terminal window with monitor script (macOS)
+  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
+    echo "⚠️  Could not open new terminal - starting monitor in background"
+    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
+    echo "   Monitor logs: logs/monitor_console.log"
+  }
+  
+  sleep 1
+else
+  echo "ℹ️  Monitor already running - check other terminal"
+fi
+
+echo ""
+echo "=================================================="
+echo "✅ STARTUP COMPLETE - Monitor running in separate window"
+echo "=================================================="
+echo ""
+
+exit $exit_code
+</file>
+
 <file path="backend/websocket/ws_manager.py">
 from typing import Dict, Set, Optional, Tuple
 import asyncio
@@ -174382,566 +174807,6 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-logger_env = logging.getLogger("main.env")
-
-# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
-# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
-if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
-    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
-    if env_path.exists():
-        load_dotenv(env_path)
-        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-    else:
-        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
-else:
-    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse unified_cl_service initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
-        startup_errors.append(f"clickhouse_service: {e}")
-        startup_success = False
-
-    # ✅ NEU: ClickHouse Connection Pool Init (Foundation)
-    try:
-        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
-        
-        pool_ok = await initialize_clickhouse_foundation()
-        if not pool_ok:
-            raise RuntimeError("ClickHouse foundation initialization returned False")
-        
-        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse Pool init failed: {e}")
-        startup_errors.append(f"clickhouse_pool: {e}")
-        startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
-</file>
-
 <file path="backend/websocket/ws_frontend_handler.py">
 """
 Frontend WebSocket broadcasting (client fan-out) – FINAL.
@@ -175370,6 +175235,583 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
         "server_iso": datetime.utcnow().isoformat(),
     }
     await ws_manager.broadcast_to_channel(channel, msg)
+</file>
+
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+logger_env = logging.getLogger("main.env")
+
+# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
+# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
+if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
+    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+    else:
+        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
+else:
+    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse unified_cl_service initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
+        startup_errors.append(f"clickhouse_service: {e}")
+        startup_success = False
+
+    # ✅ NEU: ClickHouse Connection Pool Init (Foundation)
+    try:
+        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
+        
+        pool_ok = await initialize_clickhouse_foundation()
+        if not pool_ok:
+            raise RuntimeError("ClickHouse foundation initialization returned False")
+        
+        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse Pool init failed: {e}")
+        startup_errors.append(f"clickhouse_pool: {e}")
+        startup_success = False
+
+    # ✅ NEW: Schema Reconciliation (init.sql = Single Source of Truth)
+    try:
+        from backend.database.schema_reconcile import reconcile_from_env
+        await reconcile_from_env()
+        logger.info("🟢 Schema reconciliation completed")
+    except Exception as e:
+        logger.error(f"Schema reconciliation failed: {e}", exc_info=True)
+        startup_errors.append(f"schema_reconcile: {e}")
+
+        # ✅ Hard-stop in verify-mode (strict)
+        if os.getenv("SCHEMA_MODE", "verify").strip().lower() == "verify":
+            # FastAPI startup MUST abort to avoid running against wrong schema
+            raise
+        else:
+            # ensure/reconcile can continue depending on your policy
+            startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -175826,227 +176268,6 @@ def get_available_backfill_services():
     }
 </file>
 
-<file path="backend/services/usecases/unified_ohlc.py">
-from __future__ import annotations
-
-import logging
-import os
-from datetime import datetime, timezone
-from typing import Any, List, Dict
-
-logger = logging.getLogger(__name__)
-
-
-def _to_sec(ts: int | float | None) -> int | None:
-    if ts is None:
-        return None
-    try:
-        n = int(ts)
-    except Exception:
-        return None
-    if n <= 0:
-        return None
-    if n >= 1_000_000_000_000:
-        return int(n // 1000)
-    return n
-
-
-def _utc_now_sec() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
-
-
-def _env_int(key: str, default: int, lo: int, hi: int) -> int:
-    raw = os.getenv(key)
-    try:
-        n = int(raw) if raw is not None else int(default)
-    except Exception:
-        n = int(default)
-    if n < lo:
-        return lo
-    if n > hi:
-        return hi
-    return n
-
-
-async def _ch():
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
-
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
-
-    ch_client = get_clickhouse_client()
-    if not ch_client:
-        raise RuntimeError("ClickHouse client not available")
-    return ch_client
-
-
-async def _table_exists(db: str, name: str) -> bool:
-    ch_client = await _ch()
-    rows = await ch_client.execute(
-        """
-        SELECT 1
-        FROM system.tables
-        WHERE database = %(db)s AND name = %(name)s
-        LIMIT 1
-        """,
-        {"db": db, "name": name},
-    )
-    return bool(rows)
-
-
-async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    rows = await ch.execute(
-        """
-        SELECT
-            bucket_start AS ts,
-            argMinMerge(open_state)  AS open,
-            maxMerge(high_state)     AS high,
-            minMerge(low_state)      AS low,
-            argMaxMerge(close_state) AS close,
-            sumMerge(volume_state)   AS volume
-        FROM trading.all_kline_1s_state
-        WHERE exchange = %(exchange)s
-          AND symbol   = %(symbol)s
-          AND market   = %(market)s
-          AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-          AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-        GROUP BY bucket_start
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-        """,
-        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
-    )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
-
-
-async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    rows = await ch.execute(
-        """
-        WITH toUInt32(%(step)s) AS step
-        SELECT
-            toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-            argMin(open, bucket_start)  AS open,
-            max(high)                   AS high,
-            min(low)                    AS low,
-            argMax(close, bucket_start) AS close,
-            sum(volume)                 AS volume
-        FROM
-        (
-            SELECT
-                bucket_start,
-                argMinMerge(open_state)  AS open,
-                maxMerge(high_state)     AS high,
-                minMerge(low_state)      AS low,
-                argMaxMerge(close_state) AS close,
-                sumMerge(volume_state)   AS volume
-            FROM trading.all_kline_1s_state
-            WHERE exchange = %(exchange)s
-              AND symbol   = %(symbol)s
-              AND market   = %(market)s
-              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-            GROUP BY bucket_start
-        )
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT %(limit)s
-        """,
-        {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-    )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
-
-
-async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
-    interval_seconds = int(interval_seconds)
-    limit = int(limit)
-    if interval_seconds <= 0:
-        raise ValueError("interval_seconds must be > 0")
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
-
-    exchange = (exchange or "").lower().strip()
-    symbol = (symbol or "").upper().strip()
-    market = (market or "spot").lower().strip()
-
-    end_sec = _to_sec(end) or _utc_now_sec()
-    start_sec = _to_sec(start)
-
-    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
-    if start_sec is None:
-        start_sec = end_sec - (limit * interval_seconds)
-
-    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
-    if end_sec - start_sec > max_range_s:
-        start_sec = end_sec - max_range_s
-
-    if start_sec > end_sec:
-        start_sec, end_sec = end_sec, start_sec
-
-    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
-    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
-
-    # ✅ Pre-Agg first
-    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
-    if preagg_enabled:
-        try:
-            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
-            await ensure_kline_preagg()
-
-            if await _table_exists("trading", "all_kline_1s_state"):
-                if interval_seconds == 1:
-                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
-                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
-        except Exception as e:
-            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
-
-    # Fallback: trades scan (nur wenn PreAgg nicht verfügbar)
-    trades_table = f"{exchange}_trades"
-    if not await _table_exists("trading", trades_table):
-        raise ValueError(f"trades table not found: trading.{trades_table}")
-
-    ch = await _ch()
-
-    query = f"""
-        SELECT
-            toStartOfInterval(timestamp, toIntervalSecond({interval_seconds})) AS ts,
-            argMin(price, (timestamp, trade_id)) AS open,
-            max(price) AS high,
-            min(price) AS low,
-            argMax(price, (timestamp, trade_id)) AS close,
-            sum(size) AS volume
-        FROM trading.{trades_table}
-        WHERE symbol = %(symbol)s
-          AND market = %(market)s
-          AND timestamp >= toDateTime64(%(start)s, 3, 'UTC')
-          AND timestamp <= toDateTime64(%(end)s, 3, 'UTC')
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT {effective_limit}
-    """
-
-    rows = await ch.execute(query, {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec})
-    if not rows:
-        return []
-
-    return [{"time": int(r[0].timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])} for r in rows]
-</file>
-
 <file path="frontend/src/services/ws/useWsLane.ts">
 // frontend/src/services/ws/useWsLane.ts
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -176492,6 +176713,307 @@ export default function App() {
     </TradingProvider>
   );
 }
+</file>
+
+<file path="backend/services/usecases/unified_ohlc.py">
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any, List, Dict
+
+logger = logging.getLogger(__name__)
+
+
+def _to_sec(ts: int | float | None) -> int | None:
+    if ts is None:
+        return None
+    try:
+        n = int(ts)
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    if n >= 1_000_000_000_000:
+        return int(n // 1000)
+    return n
+
+
+def _utc_now_sec() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _env_int(key: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(key)
+    try:
+        n = int(raw) if raw is not None else int(default)
+    except Exception:
+        n = int(default)
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
+    return n
+
+
+async def _ch():
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch_client = get_clickhouse_client()
+    if not ch_client:
+        raise RuntimeError("ClickHouse client not available")
+    return ch_client
+
+
+async def _table_exists(db: str, name: str) -> bool:
+    ch_client = await _ch()
+    rows = await ch_client.execute(
+        """
+        SELECT 1
+        FROM system.tables
+        WHERE database = %(db)s AND name = %(name)s
+        LIMIT 1
+        """,
+        {"db": db, "name": name},
+    )
+    return bool(rows)
+
+
+async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    
+    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
+    use_unified = await _table_exists("trading", "all_kline_1s_state")
+    
+    if use_unified:
+        # Unified table (all_kline_1s_state)
+        rows = await ch.execute(
+            """
+            SELECT
+                bucket_start AS ts,
+                argMinMerge(open_state)  AS open,
+                maxMerge(high_state)     AS high,
+                minMerge(low_state)      AS low,
+                argMaxMerge(close_state) AS close,
+                sumMerge(volume_state)   AS volume
+            FROM trading.all_kline_1s_state
+            WHERE exchange = %(exchange)s
+              AND symbol   = %(symbol)s
+              AND market   = %(market)s
+              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+            GROUP BY bucket_start
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+        )
+    else:
+        # Fallback: Exchange-specific table ({exchange}_kline)
+        exchange_table = f"{exchange}_kline"
+        if not await _table_exists("trading", exchange_table):
+            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+            return []
+        
+        rows = await ch.execute(
+            f"""
+            SELECT
+                bucket_start AS ts,
+                argMinMerge(open_state)  AS open,
+                maxMerge(high_state)     AS high,
+                minMerge(low_state)      AS low,
+                argMaxMerge(close_state) AS close,
+                sumMerge(volume_state)   AS volume
+            FROM trading.{exchange_table}
+            WHERE symbol   = %(symbol)s
+              AND market   = %(market)s
+              AND interval = '1s'
+              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+            GROUP BY bucket_start
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+        )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    
+    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
+    use_unified = await _table_exists("trading", "all_kline_1s_state")
+    
+    if use_unified:
+        # Unified table (all_kline_1s_state)
+        rows = await ch.execute(
+            """
+            WITH toUInt32(%(step)s) AS step
+            SELECT
+                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+                argMin(open, bucket_start)  AS open,
+                max(high)                   AS high,
+                min(low)                    AS low,
+                argMax(close, bucket_start) AS close,
+                sum(volume)                 AS volume
+            FROM
+            (
+                SELECT
+                    bucket_start,
+                    argMinMerge(open_state)  AS open,
+                    maxMerge(high_state)     AS high,
+                    minMerge(low_state)      AS low,
+                    argMaxMerge(close_state) AS close,
+                    sumMerge(volume_state)   AS volume
+                FROM trading.all_kline_1s_state
+                WHERE exchange = %(exchange)s
+                  AND symbol   = %(symbol)s
+                  AND market   = %(market)s
+                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+                GROUP BY bucket_start
+            )
+            GROUP BY ts
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+        )
+    else:
+        # Fallback: Exchange-specific table ({exchange}_kline)
+        exchange_table = f"{exchange}_kline"
+        if not await _table_exists("trading", exchange_table):
+            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+            return []
+        
+        rows = await ch.execute(
+            f"""
+            WITH toUInt32(%(step)s) AS step
+            SELECT
+                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+                argMin(open, bucket_start)  AS open,
+                max(high)                   AS high,
+                min(low)                    AS low,
+                argMax(close, bucket_start) AS close,
+                sum(volume)                 AS volume
+            FROM
+            (
+                SELECT
+                    bucket_start,
+                    argMinMerge(open_state)  AS open,
+                    maxMerge(high_state)     AS high,
+                    minMerge(low_state)      AS low,
+                    argMaxMerge(close_state) AS close,
+                    sumMerge(volume_state)   AS volume
+                FROM trading.{exchange_table}
+                WHERE symbol   = %(symbol)s
+                  AND market   = %(market)s
+                  AND interval = '1s'
+                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+                GROUP BY bucket_start
+            )
+            GROUP BY ts
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+        )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
+    interval_seconds = int(interval_seconds)
+    limit = int(limit)
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be > 0")
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+    exchange = (exchange or "").lower().strip()
+    symbol = (symbol or "").upper().strip()
+    market = (market or "spot").lower().strip()
+
+    end_sec = _to_sec(end) or _utc_now_sec()
+    start_sec = _to_sec(start)
+
+    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
+    if start_sec is None:
+        start_sec = end_sec - (limit * interval_seconds)
+
+    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
+    if end_sec - start_sec > max_range_s:
+        start_sec = end_sec - max_range_s
+
+    if start_sec > end_sec:
+        start_sec, end_sec = end_sec, start_sec
+
+    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
+    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
+
+    # ✅ Pre-Agg first
+    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
+    if preagg_enabled:
+        try:
+            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+            await ensure_kline_preagg()
+
+            if await _table_exists("trading", "all_kline_1s_state"):
+                if interval_seconds == 1:
+                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
+                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
+        except Exception as e:
+            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+
+    # Fallback: trades scan (nur wenn PreAgg nicht verfügbar)
+    trades_table = f"{exchange}_trades"
+    if not await _table_exists("trading", trades_table):
+        raise ValueError(f"trades table not found: trading.{trades_table}")
+
+    ch = await _ch()
+
+    query = f"""
+        SELECT
+            toStartOfInterval(timestamp, toIntervalSecond({interval_seconds})) AS ts,
+            argMin(price, (timestamp, trade_id)) AS open,
+            max(price) AS high,
+            min(price) AS low,
+            argMax(price, (timestamp, trade_id)) AS close,
+            sum(size) AS volume
+        FROM trading.{trades_table}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND timestamp >= toDateTime64(%(start)s, 3, 'UTC')
+          AND timestamp <= toDateTime64(%(end)s, 3, 'UTC')
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT {effective_limit}
+    """
+
+    rows = await ch.execute(query, {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec})
+    if not rows:
+        return []
+
+    return [{"time": int(r[0].timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])} for r in rows]
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
