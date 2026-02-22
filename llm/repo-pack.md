@@ -159829,6 +159829,729 @@ async def reconcile_from_env() -> None:
             logger.warning("[schema-diff] ... (%d more)", len(diffs) - 200)
 </file>
 
+<file path="backend/exchanges/binance/services/rest_api.py">
+#!/usr/bin/env python3
+"""
+Binance REST API Wrapper für ExchangeFactory Integration (Decimal Optimized)
+============================================================================
+
+ExchangeFactory-kompatible Binance REST API Implementierung mit Financial-Grade
+Decimal-Präzision für alle Preis- und Volumen-Berechnungen.
+"""
+
+import logging
+import aiohttp
+import asyncio
+import os
+from decimal import Decimal
+from typing import Dict, List, Optional
+from backend.exchanges.binance.config import BinanceEndpoints
+from backend.services.domain.config_manager import load_user_credentials
+# FIXED: Import zentrale HTTP-Defaults (0ms Latenz - nur Variablen!)
+from backend.exchanges.shared.http_defaults import (
+    HTTP_CONNECTOR_LIMIT, HTTP_CONNECTOR_LIMIT_PER_HOST, HTTP_CONNECTOR_TTL_DNS,
+    HTTP_CONNECTOR_CLEANUP_CLOSED, HTTP_CONNECTOR_KEEPALIVE_TIMEOUT,
+    HTTP_TIMEOUT_TOTAL, HTTP_TIMEOUT_CONNECT, HTTP_TIMEOUT_SOCK_CONNECT, HTTP_TIMEOUT_SOCK_READ,
+    HTTP_HEADERS, BINANCE_TIMEOUT_TOTAL, BINANCE_TIMEOUT_SOCK_READ, BINANCE_CONNECTOR_LIMIT
+)
+
+logger = logging.getLogger("binance-rest-wrapper")
+
+class BinanceRestAPI:
+    """ExchangeFactory kompatible Wrapper Klasse für Binance REST API"""
+    
+    def __init__(self, user_id: str = None):
+        self.user_id = user_id
+        self.base_url = os.getenv('BINANCE_REST_URL', 'https://api.binance.com')
+        self._session = None
+        self._creds = None
+        # CACHE-WAR FIX: Service-Level Cache DEAKTIVIERT  
+        self._symbols_cache = None
+        self._tickers_cache = None
+        
+    async def _ensure_credentials(self):
+        """Lädt Credentials lazy beim ersten Bedarf"""
+        if self._creds is None:
+            self._creds = await load_user_credentials(self.user_id, "binance")
+    
+    async def _get_session(self):
+        """Lazy session creation with connection limits"""
+        if not self._session:
+            # FIXED: Alle Werte aus http_defaults.py (0ms Latenz!)
+            connector = aiohttp.TCPConnector(
+                limit=BINANCE_CONNECTOR_LIMIT,
+                limit_per_host=HTTP_CONNECTOR_LIMIT_PER_HOST,
+                ttl_dns_cache=HTTP_CONNECTOR_TTL_DNS,
+                enable_cleanup_closed=HTTP_CONNECTOR_CLEANUP_CLOSED,
+                keepalive_timeout=HTTP_CONNECTOR_KEEPALIVE_TIMEOUT
+            )
+            timeout = aiohttp.ClientTimeout(
+                total=BINANCE_TIMEOUT_TOTAL,
+                connect=HTTP_TIMEOUT_CONNECT,
+                sock_connect=HTTP_TIMEOUT_SOCK_CONNECT,
+                sock_read=BINANCE_TIMEOUT_SOCK_READ
+            )
+            self._session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout,
+                headers=HTTP_HEADERS,
+                trust_env=True
+            )
+        return self._session
+        
+    def _to_decimal(self, value, default="0") -> Decimal:
+        """Sichere Konvertierung zu Decimal mit Fallback"""
+        try:
+            return Decimal(str(value)) if value is not None else Decimal(default)
+        except:
+            return Decimal(default)
+    
+    async def _prepare_symbol_dynamic(self, symbol: str, market_type: str) -> str:
+        """
+        🎯 UNIVERSELLE Symbol-Konvertierung via SymbolRegistry
+        
+        Args:
+            symbol: Standard symbol (BTCUSDT)
+            market_type: "spot" oder "futures"
+            
+        Returns:
+            Native Exchange Symbol (z.B. BTCUSDT für Binance)
+        """
+        try:
+            from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+            from backend.api.models.keys import Market
+            
+            # Exchange Namen aus Klasse extrahieren (z.B. BinanceRestAPI → binance)
+            exchange_name = self.__class__.__name__.lower().replace('restapi', '')
+            
+            # Market enum bestimmen
+            market = Market.SPOT if market_type == "spot" else Market.FUTURES
+            
+            # Registry-Katalog laden
+            catalog = await SYMBOL_REGISTRY.catalog(exchange_name, market)
+            
+            # Symbol-Info finden
+            symbol_info = next((x for x in catalog if x.get("symbol", x.get("base", "")) + x.get("quote", "") == symbol.upper()), None)
+            
+            if symbol_info:
+                # Registry weiß das EXAKTE Format für diesen Exchange + Market
+                return symbol_info["native_symbol"] 
+            
+            # Fallback zu legacy hardcoded (für Kompatibilität)
+            return self._prepare_symbol_legacy(symbol, market_type)
+            
+        except Exception as e:
+            logger.warning(f"SymbolRegistry lookup failed for {symbol}: {e}")
+            # Fallback zu legacy hardcoded
+            return self._prepare_symbol_legacy(symbol, market_type)
+
+    def _prepare_symbol_legacy(self, symbol: str, market_type: str) -> str:
+        """Legacy hardcoded logic als Fallback"""
+        # Binance nutzt Standard-Format BTCUSDT für beide Markets
+        return symbol.upper()
+
+    def _prepare_symbol(self, symbol: str) -> str:
+        """Umleitung zur dynamischen Funktion"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self._prepare_symbol_dynamic(symbol, "spot"))
+        except:
+            # Sync Fallback für legacy Code
+            return self._prepare_symbol_legacy(symbol, "spot")
+            
+    async def _request(self, endpoint: str, params: dict = None) -> dict:
+        """HTTP request with rate limiting and error handling"""
+        session = await self._get_session()
+        url = f"{self.base_url}{endpoint}"
+        
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 429:  # Rate limit
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    return await self._request(endpoint, params)
+                    
+                response.raise_for_status()
+                return await response.json()
+                
+        except Exception as e:
+            logger.error(f"Binance API request failed: {e}")
+            raise
+            
+    async def _request_futures(self, endpoint: str, params: dict = None) -> dict:
+        """HTTP request for Binance Futures API (different base URL)"""
+        session = await self._get_session()
+        url = f"{os.getenv('BINANCE_FUTURES_URL', 'https://fapi.binance.com')}{endpoint}"
+        
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 429:  # Rate limit
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    return await self._request_futures(endpoint, params)
+                    
+                response.raise_for_status()
+                return await response.json()
+                
+        except Exception as e:
+            logger.error(f"Binance Futures API request failed: {e}")
+            raise
+            
+    async def fetch_symbols(self, market_filter: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch symbols from Binance with optional market filtering
+        
+        Args:
+            market_filter: Filter by market type ("spot", "futures", None for all)
+            
+        Returns:
+            List of symbol dictionaries compatible with ExchangeFactory
+        """
+        try:
+            symbols = []
+            
+            # PARALLEL API CALLS - Spot und Futures gleichzeitig
+            tasks = []
+            
+            # Prepare spot symbols task
+            if not market_filter or market_filter == "spot":
+                tasks.append(("spot", self._request(BinanceEndpoints.EXCHANGE_INFO)))
+            
+            # Prepare USDT-M futures symbols task  
+            if not market_filter or market_filter in ["usdtm", "futures"]:
+                tasks.append(("usdtm", self._request_futures("/fapi/v1/exchangeInfo")))
+            
+            # Prepare Coin-M futures symbols task
+            if not market_filter or market_filter == "coinm" or market_filter == "futures":
+                # Binance Coin-M uses dapi (delivery API)
+                coinm_url = f"{os.getenv('BINANCE_COINM_URL', 'https://dapi.binance.com')}/dapi/v1/exchangeInfo"
+                session = await self._get_session()
+                
+                async def fetch_coinm():
+                    try:
+                        async with session.get(coinm_url) as response:
+                            response.raise_for_status()
+                            return await response.json()
+                    except Exception as e:
+                        logger.error(f"Binance Coin-M API request failed: {e}")
+                        raise
+                
+                tasks.append(("coinm", fetch_coinm()))
+            
+            # Execute all API calls in parallel
+            if tasks:
+                api_calls = [task[1] for task in tasks]
+                results = await asyncio.gather(*api_calls, return_exceptions=True)
+                
+                # Process parallel results
+                for i, (market_type, result) in enumerate(zip([task[0] for task in tasks], results)):
+                    try:
+                        if isinstance(result, Exception):
+                            logger.warning(f"Failed to fetch Binance {market_type} symbols: {result}")
+                            continue
+                            
+                        data = result
+                        if data and "symbols" in data:
+                            for symbol in data["symbols"]:
+                                # Binance Coin-M uses 'contractStatus' instead of 'status'
+                                status_field = "contractStatus" if market_type == "coinm" else "status"
+                                if symbol.get(status_field) == "TRADING":
+                                    symbol_data = {
+                                        "symbol": symbol["symbol"],
+                                        "baseCoin": symbol["baseAsset"],
+                                        "quoteCoin": symbol["quoteAsset"],
+                                        "status": "TRADING",  # Normalized
+                                        "exchange": "binance"
+                                    }
+                                    
+                                    # Set market type based on source
+                                    if market_type == "spot":
+                                        symbol_data["market_type"] = "spot"
+                                    elif market_type == "usdtm":
+                                        symbol_data["market_type"] = "usdtm"
+                                        symbol_data["product_type"] = "USDT-FUTURES"
+                                    elif market_type == "coinm":
+                                        # Distinguish between Coin-M Perpetual and Delivery
+                                        # Delivery futures have deliveryDate != 0
+                                        delivery_date = symbol.get("deliveryDate", 0)
+                                        if delivery_date and delivery_date != 0:
+                                            symbol_data["market_type"] = "delivery"
+                                            symbol_data["product_type"] = "DELIVERY-FUTURES"
+                                            symbol_data["deliveryDate"] = delivery_date
+                                        else:
+                                            symbol_data["market_type"] = "coinm"
+                                            symbol_data["product_type"] = "COIN-FUTURES"
+                                    
+                                    symbols.append(symbol_data)
+                                    
+                    except Exception as e:
+                        logger.warning(f"Failed to process Binance {market_type} symbols: {e}")
+            
+            # self._symbols_cache = symbols  # Middleware handled
+            logger.info(f"✅ Fetched {len(symbols)} symbols from Binance"
+                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
+            
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch Binance symbols: {e}")
+            if self._symbols_cache:
+                logger.info("📦 Returning cached symbols due to fetch failure")
+                return self._symbols_cache
+            return []
+    
+    async def fetch_tickers(self, market_filter: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch tickers from Binance with optional market filtering (Decimal Precision)
+        
+        Args:
+            market_filter: Filter by market type ("spot", "futures", None for all)
+            
+        Returns:
+            List of ticker dictionaries with Decimal precision
+        """
+        try:
+            tickers = []
+            
+            # Fetch spot tickers
+            if not market_filter or market_filter == "spot":
+                try:
+                    # Get 24hr ticker statistics for all symbols
+                    data = await self._request(BinanceEndpoints.TICKER_24HR)
+                    
+                    for ticker in data:
+                        tickers.append({
+                            "symbol": ticker["symbol"],
+                            "last": self._to_decimal(ticker.get("lastPrice")),  # DECIMAL: Binance field mapping
+                            "bid": self._to_decimal(ticker.get("bidPrice")),
+                            "ask": self._to_decimal(ticker.get("askPrice")),
+                            "volume": self._to_decimal(ticker.get("volume")),    # Base volume
+                            "change": self._to_decimal(ticker.get("priceChange")),
+                            "changeRate": self._to_decimal(ticker.get("priceChangePercent")),
+                            "high": self._to_decimal(ticker.get("highPrice")),   # DECIMAL: 24h high
+                            "low": self._to_decimal(ticker.get("lowPrice")),     # DECIMAL: 24h low
+                            "market_type": "spot",
+                            "exchange": "binance"
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to fetch Binance spot tickers: {e}")
+            
+            # Cache result - DEAKTIVIERT
+            # self._tickers_cache = tickers
+            
+            logger.info(f"✅ Fetched {len(tickers)} tickers from Binance (Decimal precision)"
+                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
+            
+            return tickers
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch Binance tickers: {e}")
+            # Return cached data if available
+            if self._tickers_cache:
+                logger.info("📦 Returning cached tickers due to fetch failure")
+                return self._tickers_cache
+            return []
+
+    def _validate_spot_limit(self, limit: int) -> int:
+        """
+        Map any limit to valid Binance Spot API limits
+        Frontend kann beliebige Werte senden, wir mappen intelligent
+        
+        Args:
+            limit: Requested limit from frontend/API
+            
+        Returns:
+            Valid Binance Spot limit (5, 10, 20, 50, 100, 500, 1000, 5000)
+        """
+        # Binance Spot erlaubte Limits (flexibler als Futures)
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
+        
+        # Finde den nächsthöheren erlaubten Wert
+        for valid_limit in valid_limits:
+            if limit <= valid_limit:
+                return valid_limit
+        
+        # Falls limit > 5000, verwende Maximum
+        return 5000
+
+    async def fetch_spot_orderbook(self, symbol: str, limit: int = 100) -> dict:
+        """
+        Fetch spot orderbook from Binance
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of bids/asks to fetch (wird intelligent validiert)
+            
+        Returns:
+            Orderbook dictionary with bids/asks
+        """
+        try:
+            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
+            validated_limit = self._validate_spot_limit(limit)
+            
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": validated_limit  # Immer valider Wert
+            }
+            data = await self._request(BinanceEndpoints.DEPTH, params)
+            
+            return {
+                "symbol": symbol,
+                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
+                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
+                "lastUpdateId": data.get("lastUpdateId"),
+                "timestamp": int(data.get("timestamp", 0)) or None
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot orderbook for {symbol}: {e}")
+            # FIXED: Return empty but valid structure instead of raising
+            import time
+            return {
+                "symbol": symbol,
+                "bids": [],
+                "asks": [],
+                "timestamp": int(time.time() * 1000),
+                "error": str(e)
+            }
+
+    def _validate_futures_limit(self, limit: int) -> int:
+        """
+        Map any limit to valid Binance Futures API limits
+        Frontend kann beliebige Werte senden, wir mappen intelligent
+        
+        Args:
+            limit: Requested limit from frontend/API
+            
+        Returns:
+            Valid Binance Futures limit (5, 10, 20, 50, 100, 500, 1000)
+        """
+        # Binance Futures erlaubte Limits
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000]
+        
+        # Finde den nächsthöheren erlaubten Wert
+        for valid_limit in valid_limits:
+            if limit <= valid_limit:
+                return valid_limit
+        
+        # Falls limit > 1000, verwende Maximum
+        return 1000
+
+    async def fetch_futures_orderbook(self, symbol: str, limit: int = 100) -> dict:
+        """
+        Fetch futures orderbook from Binance
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of bids/asks to fetch (wird intelligent validiert)
+            
+        Returns:
+            Orderbook dictionary with bids/asks
+        """
+        try:
+            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
+            validated_limit = self._validate_futures_limit(limit)
+            
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": validated_limit  # Immer valider Wert
+            }
+            data = await self._request_futures("/fapi/v1/depth", params)
+            
+            return {
+                "symbol": symbol,
+                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
+                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
+                "lastUpdateId": data.get("lastUpdateId"),
+                "timestamp": int(data.get("timestamp", 0)) or None
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures orderbook for {symbol}: {e}")
+            # FIXED: Return empty but valid structure instead of raising
+            import time
+            return {
+                "symbol": symbol,
+                "bids": [],
+                "asks": [],
+                "timestamp": int(time.time() * 1000),
+                "error": str(e)
+            }
+    
+    async def fetch_trades(
+        self, 
+        symbol: str, 
+        limit: int = 100,
+        fromId: int = None,
+        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
+        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
+    ) -> List[Dict]:
+        """
+        Fetch recent trades from Binance Spot
+        Returns UNIFIED trade format!
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of trades (max 1000)
+            fromId: Trade ID to start from (optional, DEPRECATED - use startTime/endTime)
+            startTime: Start time in milliseconds (optional, for time-based backfill)
+            endTime: End time in milliseconds (optional, for time-based backfill)
+            
+        Returns:
+            List of UNIFIED trades
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": min(limit, 1000)
+            }
+            
+            # ✅ ZEIT-BASIERTES BACKFILL: Nutze aggTrades mit startTime/endTime
+            if startTime is not None or endTime is not None:
+                if startTime is not None:
+                    params["startTime"] = startTime
+                if endTime is not None:
+                    params["endTime"] = endTime
+                
+                # aggTrades Endpoint (zeitbasiert)
+                raw_trades = await self._request("/api/v3/aggTrades", params)
+                
+                # ✅ Normalisierung für aggTrades-Format
+                unified_trades = []
+                for t in raw_trades:
+                    unified_trades.append({
+                        "trade_id": str(t["a"]),              # aggTrade ID
+                        "symbol": symbol,
+                        "market": "spot",
+                        "price": str(t["p"]),
+                        "size": str(t["q"]),
+                        "side": "sell" if t["m"] else "buy",
+                        "timestamp": int(t["T"]),
+                    })
+                
+                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (time-based)")
+                return unified_trades
+            
+            # ✅ FALLBACK: Recent trades (ohne fromId - API ignoriert fromId bei /trades)
+            raw_trades = await self._request(BinanceEndpoints.TRADES, params)
+            
+            # ✅ Normalisierung für normale Trades
+            unified_trades = []
+            for t in raw_trades:
+                unified_trades.append({
+                    "trade_id": str(t["id"]),
+                    "symbol": symbol,
+                    "market": "spot",
+                    "price": str(t["price"]),
+                    "size": str(t["qty"]),
+                    "side": "sell" if t["isBuyerMaker"] else "buy",
+                    "timestamp": int(t["time"]),
+                })
+            
+            logger.info(f"✅ Fetched {len(unified_trades)} unified spot trades for {symbol}")
+            return unified_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot trades for {symbol}: {e}")
+            return []
+
+    async def fetch_futures_trades(
+        self,
+        symbol: str,
+        limit: int = 100,
+        fromId: int = None,
+        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
+        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
+    ) -> List[Dict]:
+        """
+        Fetch recent trades from Binance Futures
+        Returns UNIFIED trade format!
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            limit: Number of trades (max 1000)
+            fromId: Trade ID to start from (optional, for historical backfill)
+            startTime: Start time in milliseconds (optional, for time-based backfill)
+            endTime: End time in milliseconds (optional, for time-based backfill)
+            
+        Returns:
+            List of UNIFIED trades in format:
+            {
+                "trade_id": str,
+                "symbol": str,
+                "market": "futures",
+                "price": str,
+                "size": str,
+                "side": "buy" | "sell",
+                "timestamp": int (milliseconds)
+            }
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "limit": min(limit, 1000)
+            }
+            
+            # ✅ ZEIT-BASIERTES BACKFILL: aggTrades
+            if startTime is not None or endTime is not None:
+                if startTime is not None:
+                    params["startTime"] = startTime
+                if endTime is not None:
+                    params["endTime"] = endTime
+                
+                # Futures aggTrades Endpoint
+                raw_trades = await self._request_futures("/fapi/v1/aggTrades", params)
+                
+                # Normalisierung für aggTrades-Format
+                unified_trades = []
+                for t in raw_trades:
+                    unified_trades.append({
+                        "trade_id": str(t["a"]),
+                        "symbol": symbol,
+                        "market": "futures",  # ← Futures statt Spot
+                        "price": str(t["p"]),
+                        "size": str(t["q"]),
+                        "side": "sell" if t["m"] else "buy",
+                        "timestamp": int(t["T"]),
+                    })
+                
+                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (futures, time-based)")
+                return unified_trades
+            
+            # ✅ FALLBACK: Recent trades (bestehende Logik)
+            if fromId is not None:
+                params["fromId"] = fromId
+            
+            raw_trades = await self._request_futures("/fapi/v1/trades", params)
+            
+            # ✅ NORMALISIERUNG!
+            unified_trades = []
+            for t in raw_trades:
+                unified_trades.append({
+                    "trade_id": str(t["id"]),
+                    "symbol": symbol,
+                    "market": "futures",
+                    "price": str(t["price"]),
+                    "size": str(t["qty"]),
+                    "side": "sell" if t["isBuyerMaker"] else "buy",
+                    "timestamp": int(t["time"]),
+                })
+            
+            logger.info(f"✅ Fetched {len(unified_trades)} unified futures trades for {symbol}")
+            return unified_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures trades for {symbol}: {e}")
+            return []
+
+    async def fetch_spot_candles(
+        self, 
+        symbol: str, 
+        interval: str, 
+        limit: int = 500, 
+        endTime: int = None
+    ) -> List[List]:
+        """
+        Fetch historical klines/candlesticks from Binance Spot API
+        
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
+            limit: Number of candles (max 1000)
+            endTime: End time in milliseconds (optional)
+            
+        Returns:
+            List[List]: Binance Kline format:
+            [
+                [
+                    1499040000000,      # 0: Open time
+                    "0.01634000",       # 1: Open
+                    "0.80000000",       # 2: High
+                    "0.01575800",       # 3: Low
+                    "0.01577100",       # 4: Close
+                    "148976.11427815",  # 5: Volume
+                    1499644799999,      # 6: Close time
+                    "2434.19055334",    # 7: Quote asset volume
+                    308,                # 8: Number of trades
+                    "1756.87402397",    # 9: Taker buy base volume
+                    "28.46694368",      # 10: Taker buy quote volume
+                    "0"                 # 11: Ignore
+                ],
+                ...
+            ]
+        
+        Official Docs:
+            https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "interval": interval,
+                "limit": min(limit, 1000)  # Binance max limit
+            }
+            if endTime:
+                params["endTime"] = endTime
+            
+            data = await self._request("/api/v3/klines", params)
+            
+            logger.debug(f"✅ Fetched {len(data)} spot candles for {symbol} ({interval})")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance spot candles for {symbol}: {e}")
+            return []
+
+    async def fetch_futures_candles(
+        self, 
+        symbol: str, 
+        interval: str, 
+        limit: int = 500, 
+        endTime: int = None
+    ) -> List[List]:
+        """
+        Fetch historical klines/candlesticks from Binance Futures API
+        
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
+            limit: Number of candles (max 1500)
+            endTime: End time in milliseconds (optional)
+            
+        Returns:
+            List[List]: Same format as spot (see fetch_spot_candles)
+        
+        Official Docs:
+            https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
+        """
+        try:
+            params = {
+                "symbol": self._prepare_symbol(symbol),
+                "interval": interval,
+                "limit": min(limit, 1500)  # Futures allows up to 1500
+            }
+            if endTime:
+                params["endTime"] = endTime
+            
+            data = await self._request_futures("/fapi/v1/klines", params)
+            
+            logger.debug(f"✅ Fetched {len(data)} futures candles for {symbol} ({interval})")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch Binance futures candles for {symbol}: {e}")
+            return []
+
+    async def close(self):
+        """Close the HTTP session"""
+        if self._session:
+            await self._session.close()
+            self._session = None
+</file>
+
 <file path="backend/exchanges/mexc/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -162233,729 +162956,6 @@ GROUP BY symbol, market, bucket_start;
 -- ✅ Materialized Views: 8 (1s Auto-Aggregation)
 -- ✅ Generiert: Automatisch aus Python Migrations
 -- ========================================
-</file>
-
-<file path="backend/exchanges/binance/services/rest_api.py">
-#!/usr/bin/env python3
-"""
-Binance REST API Wrapper für ExchangeFactory Integration (Decimal Optimized)
-============================================================================
-
-ExchangeFactory-kompatible Binance REST API Implementierung mit Financial-Grade
-Decimal-Präzision für alle Preis- und Volumen-Berechnungen.
-"""
-
-import logging
-import aiohttp
-import asyncio
-import os
-from decimal import Decimal
-from typing import Dict, List, Optional
-from backend.exchanges.binance.config import BinanceEndpoints
-from backend.services.domain.config_manager import load_user_credentials
-# FIXED: Import zentrale HTTP-Defaults (0ms Latenz - nur Variablen!)
-from backend.exchanges.shared.http_defaults import (
-    HTTP_CONNECTOR_LIMIT, HTTP_CONNECTOR_LIMIT_PER_HOST, HTTP_CONNECTOR_TTL_DNS,
-    HTTP_CONNECTOR_CLEANUP_CLOSED, HTTP_CONNECTOR_KEEPALIVE_TIMEOUT,
-    HTTP_TIMEOUT_TOTAL, HTTP_TIMEOUT_CONNECT, HTTP_TIMEOUT_SOCK_CONNECT, HTTP_TIMEOUT_SOCK_READ,
-    HTTP_HEADERS, BINANCE_TIMEOUT_TOTAL, BINANCE_TIMEOUT_SOCK_READ, BINANCE_CONNECTOR_LIMIT
-)
-
-logger = logging.getLogger("binance-rest-wrapper")
-
-class BinanceRestAPI:
-    """ExchangeFactory kompatible Wrapper Klasse für Binance REST API"""
-    
-    def __init__(self, user_id: str = None):
-        self.user_id = user_id
-        self.base_url = os.getenv('BINANCE_REST_URL', 'https://api.binance.com')
-        self._session = None
-        self._creds = None
-        # CACHE-WAR FIX: Service-Level Cache DEAKTIVIERT  
-        self._symbols_cache = None
-        self._tickers_cache = None
-        
-    async def _ensure_credentials(self):
-        """Lädt Credentials lazy beim ersten Bedarf"""
-        if self._creds is None:
-            self._creds = await load_user_credentials(self.user_id, "binance")
-    
-    async def _get_session(self):
-        """Lazy session creation with connection limits"""
-        if not self._session:
-            # FIXED: Alle Werte aus http_defaults.py (0ms Latenz!)
-            connector = aiohttp.TCPConnector(
-                limit=BINANCE_CONNECTOR_LIMIT,
-                limit_per_host=HTTP_CONNECTOR_LIMIT_PER_HOST,
-                ttl_dns_cache=HTTP_CONNECTOR_TTL_DNS,
-                enable_cleanup_closed=HTTP_CONNECTOR_CLEANUP_CLOSED,
-                keepalive_timeout=HTTP_CONNECTOR_KEEPALIVE_TIMEOUT
-            )
-            timeout = aiohttp.ClientTimeout(
-                total=BINANCE_TIMEOUT_TOTAL,
-                connect=HTTP_TIMEOUT_CONNECT,
-                sock_connect=HTTP_TIMEOUT_SOCK_CONNECT,
-                sock_read=BINANCE_TIMEOUT_SOCK_READ
-            )
-            self._session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout,
-                headers=HTTP_HEADERS,
-                trust_env=True
-            )
-        return self._session
-        
-    def _to_decimal(self, value, default="0") -> Decimal:
-        """Sichere Konvertierung zu Decimal mit Fallback"""
-        try:
-            return Decimal(str(value)) if value is not None else Decimal(default)
-        except:
-            return Decimal(default)
-    
-    async def _prepare_symbol_dynamic(self, symbol: str, market_type: str) -> str:
-        """
-        🎯 UNIVERSELLE Symbol-Konvertierung via SymbolRegistry
-        
-        Args:
-            symbol: Standard symbol (BTCUSDT)
-            market_type: "spot" oder "futures"
-            
-        Returns:
-            Native Exchange Symbol (z.B. BTCUSDT für Binance)
-        """
-        try:
-            from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-            from backend.api.models.keys import Market
-            
-            # Exchange Namen aus Klasse extrahieren (z.B. BinanceRestAPI → binance)
-            exchange_name = self.__class__.__name__.lower().replace('restapi', '')
-            
-            # Market enum bestimmen
-            market = Market.SPOT if market_type == "spot" else Market.FUTURES
-            
-            # Registry-Katalog laden
-            catalog = await SYMBOL_REGISTRY.catalog(exchange_name, market)
-            
-            # Symbol-Info finden
-            symbol_info = next((x for x in catalog if x.get("symbol", x.get("base", "")) + x.get("quote", "") == symbol.upper()), None)
-            
-            if symbol_info:
-                # Registry weiß das EXAKTE Format für diesen Exchange + Market
-                return symbol_info["native_symbol"] 
-            
-            # Fallback zu legacy hardcoded (für Kompatibilität)
-            return self._prepare_symbol_legacy(symbol, market_type)
-            
-        except Exception as e:
-            logger.warning(f"SymbolRegistry lookup failed for {symbol}: {e}")
-            # Fallback zu legacy hardcoded
-            return self._prepare_symbol_legacy(symbol, market_type)
-
-    def _prepare_symbol_legacy(self, symbol: str, market_type: str) -> str:
-        """Legacy hardcoded logic als Fallback"""
-        # Binance nutzt Standard-Format BTCUSDT für beide Markets
-        return symbol.upper()
-
-    def _prepare_symbol(self, symbol: str) -> str:
-        """Umleitung zur dynamischen Funktion"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._prepare_symbol_dynamic(symbol, "spot"))
-        except:
-            # Sync Fallback für legacy Code
-            return self._prepare_symbol_legacy(symbol, "spot")
-            
-    async def _request(self, endpoint: str, params: dict = None) -> dict:
-        """HTTP request with rate limiting and error handling"""
-        session = await self._get_session()
-        url = f"{self.base_url}{endpoint}"
-        
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 429:  # Rate limit
-                    retry_after = int(response.headers.get('Retry-After', 1))
-                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    return await self._request(endpoint, params)
-                    
-                response.raise_for_status()
-                return await response.json()
-                
-        except Exception as e:
-            logger.error(f"Binance API request failed: {e}")
-            raise
-            
-    async def _request_futures(self, endpoint: str, params: dict = None) -> dict:
-        """HTTP request for Binance Futures API (different base URL)"""
-        session = await self._get_session()
-        url = f"{os.getenv('BINANCE_FUTURES_URL', 'https://fapi.binance.com')}{endpoint}"
-        
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 429:  # Rate limit
-                    retry_after = int(response.headers.get('Retry-After', 1))
-                    logger.warning(f"Rate limit hit, waiting {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    return await self._request_futures(endpoint, params)
-                    
-                response.raise_for_status()
-                return await response.json()
-                
-        except Exception as e:
-            logger.error(f"Binance Futures API request failed: {e}")
-            raise
-            
-    async def fetch_symbols(self, market_filter: Optional[str] = None) -> List[Dict]:
-        """
-        Fetch symbols from Binance with optional market filtering
-        
-        Args:
-            market_filter: Filter by market type ("spot", "futures", None for all)
-            
-        Returns:
-            List of symbol dictionaries compatible with ExchangeFactory
-        """
-        try:
-            symbols = []
-            
-            # PARALLEL API CALLS - Spot und Futures gleichzeitig
-            tasks = []
-            
-            # Prepare spot symbols task
-            if not market_filter or market_filter == "spot":
-                tasks.append(("spot", self._request(BinanceEndpoints.EXCHANGE_INFO)))
-            
-            # Prepare USDT-M futures symbols task  
-            if not market_filter or market_filter in ["usdtm", "futures"]:
-                tasks.append(("usdtm", self._request_futures("/fapi/v1/exchangeInfo")))
-            
-            # Prepare Coin-M futures symbols task
-            if not market_filter or market_filter == "coinm" or market_filter == "futures":
-                # Binance Coin-M uses dapi (delivery API)
-                coinm_url = f"{os.getenv('BINANCE_COINM_URL', 'https://dapi.binance.com')}/dapi/v1/exchangeInfo"
-                session = await self._get_session()
-                
-                async def fetch_coinm():
-                    try:
-                        async with session.get(coinm_url) as response:
-                            response.raise_for_status()
-                            return await response.json()
-                    except Exception as e:
-                        logger.error(f"Binance Coin-M API request failed: {e}")
-                        raise
-                
-                tasks.append(("coinm", fetch_coinm()))
-            
-            # Execute all API calls in parallel
-            if tasks:
-                api_calls = [task[1] for task in tasks]
-                results = await asyncio.gather(*api_calls, return_exceptions=True)
-                
-                # Process parallel results
-                for i, (market_type, result) in enumerate(zip([task[0] for task in tasks], results)):
-                    try:
-                        if isinstance(result, Exception):
-                            logger.warning(f"Failed to fetch Binance {market_type} symbols: {result}")
-                            continue
-                            
-                        data = result
-                        if data and "symbols" in data:
-                            for symbol in data["symbols"]:
-                                # Binance Coin-M uses 'contractStatus' instead of 'status'
-                                status_field = "contractStatus" if market_type == "coinm" else "status"
-                                if symbol.get(status_field) == "TRADING":
-                                    symbol_data = {
-                                        "symbol": symbol["symbol"],
-                                        "baseCoin": symbol["baseAsset"],
-                                        "quoteCoin": symbol["quoteAsset"],
-                                        "status": "TRADING",  # Normalized
-                                        "exchange": "binance"
-                                    }
-                                    
-                                    # Set market type based on source
-                                    if market_type == "spot":
-                                        symbol_data["market_type"] = "spot"
-                                    elif market_type == "usdtm":
-                                        symbol_data["market_type"] = "usdtm"
-                                        symbol_data["product_type"] = "USDT-FUTURES"
-                                    elif market_type == "coinm":
-                                        # Distinguish between Coin-M Perpetual and Delivery
-                                        # Delivery futures have deliveryDate != 0
-                                        delivery_date = symbol.get("deliveryDate", 0)
-                                        if delivery_date and delivery_date != 0:
-                                            symbol_data["market_type"] = "delivery"
-                                            symbol_data["product_type"] = "DELIVERY-FUTURES"
-                                            symbol_data["deliveryDate"] = delivery_date
-                                        else:
-                                            symbol_data["market_type"] = "coinm"
-                                            symbol_data["product_type"] = "COIN-FUTURES"
-                                    
-                                    symbols.append(symbol_data)
-                                    
-                    except Exception as e:
-                        logger.warning(f"Failed to process Binance {market_type} symbols: {e}")
-            
-            # self._symbols_cache = symbols  # Middleware handled
-            logger.info(f"✅ Fetched {len(symbols)} symbols from Binance"
-                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
-            
-            return symbols
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch Binance symbols: {e}")
-            if self._symbols_cache:
-                logger.info("📦 Returning cached symbols due to fetch failure")
-                return self._symbols_cache
-            return []
-    
-    async def fetch_tickers(self, market_filter: Optional[str] = None) -> List[Dict]:
-        """
-        Fetch tickers from Binance with optional market filtering (Decimal Precision)
-        
-        Args:
-            market_filter: Filter by market type ("spot", "futures", None for all)
-            
-        Returns:
-            List of ticker dictionaries with Decimal precision
-        """
-        try:
-            tickers = []
-            
-            # Fetch spot tickers
-            if not market_filter or market_filter == "spot":
-                try:
-                    # Get 24hr ticker statistics for all symbols
-                    data = await self._request(BinanceEndpoints.TICKER_24HR)
-                    
-                    for ticker in data:
-                        tickers.append({
-                            "symbol": ticker["symbol"],
-                            "last": self._to_decimal(ticker.get("lastPrice")),  # DECIMAL: Binance field mapping
-                            "bid": self._to_decimal(ticker.get("bidPrice")),
-                            "ask": self._to_decimal(ticker.get("askPrice")),
-                            "volume": self._to_decimal(ticker.get("volume")),    # Base volume
-                            "change": self._to_decimal(ticker.get("priceChange")),
-                            "changeRate": self._to_decimal(ticker.get("priceChangePercent")),
-                            "high": self._to_decimal(ticker.get("highPrice")),   # DECIMAL: 24h high
-                            "low": self._to_decimal(ticker.get("lowPrice")),     # DECIMAL: 24h low
-                            "market_type": "spot",
-                            "exchange": "binance"
-                        })
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to fetch Binance spot tickers: {e}")
-            
-            # Cache result - DEAKTIVIERT
-            # self._tickers_cache = tickers
-            
-            logger.info(f"✅ Fetched {len(tickers)} tickers from Binance (Decimal precision)"
-                       f"{f' (filtered: {market_filter})' if market_filter else ''}")
-            
-            return tickers
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch Binance tickers: {e}")
-            # Return cached data if available
-            if self._tickers_cache:
-                logger.info("📦 Returning cached tickers due to fetch failure")
-                return self._tickers_cache
-            return []
-
-    def _validate_spot_limit(self, limit: int) -> int:
-        """
-        Map any limit to valid Binance Spot API limits
-        Frontend kann beliebige Werte senden, wir mappen intelligent
-        
-        Args:
-            limit: Requested limit from frontend/API
-            
-        Returns:
-            Valid Binance Spot limit (5, 10, 20, 50, 100, 500, 1000, 5000)
-        """
-        # Binance Spot erlaubte Limits (flexibler als Futures)
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000, 5000]
-        
-        # Finde den nächsthöheren erlaubten Wert
-        for valid_limit in valid_limits:
-            if limit <= valid_limit:
-                return valid_limit
-        
-        # Falls limit > 5000, verwende Maximum
-        return 5000
-
-    async def fetch_spot_orderbook(self, symbol: str, limit: int = 100) -> dict:
-        """
-        Fetch spot orderbook from Binance
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of bids/asks to fetch (wird intelligent validiert)
-            
-        Returns:
-            Orderbook dictionary with bids/asks
-        """
-        try:
-            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
-            validated_limit = self._validate_spot_limit(limit)
-            
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": validated_limit  # Immer valider Wert
-            }
-            data = await self._request(BinanceEndpoints.DEPTH, params)
-            
-            return {
-                "symbol": symbol,
-                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
-                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
-                "lastUpdateId": data.get("lastUpdateId"),
-                "timestamp": int(data.get("timestamp", 0)) or None
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot orderbook for {symbol}: {e}")
-            # FIXED: Return empty but valid structure instead of raising
-            import time
-            return {
-                "symbol": symbol,
-                "bids": [],
-                "asks": [],
-                "timestamp": int(time.time() * 1000),
-                "error": str(e)
-            }
-
-    def _validate_futures_limit(self, limit: int) -> int:
-        """
-        Map any limit to valid Binance Futures API limits
-        Frontend kann beliebige Werte senden, wir mappen intelligent
-        
-        Args:
-            limit: Requested limit from frontend/API
-            
-        Returns:
-            Valid Binance Futures limit (5, 10, 20, 50, 100, 500, 1000)
-        """
-        # Binance Futures erlaubte Limits
-        valid_limits = [5, 10, 20, 50, 100, 500, 1000]
-        
-        # Finde den nächsthöheren erlaubten Wert
-        for valid_limit in valid_limits:
-            if limit <= valid_limit:
-                return valid_limit
-        
-        # Falls limit > 1000, verwende Maximum
-        return 1000
-
-    async def fetch_futures_orderbook(self, symbol: str, limit: int = 100) -> dict:
-        """
-        Fetch futures orderbook from Binance
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of bids/asks to fetch (wird intelligent validiert)
-            
-        Returns:
-            Orderbook dictionary with bids/asks
-        """
-        try:
-            # INTELLIGENTE LIMIT-VALIDIERUNG für Frontend-Durchreichung
-            validated_limit = self._validate_futures_limit(limit)
-            
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": validated_limit  # Immer valider Wert
-            }
-            data = await self._request_futures("/fapi/v1/depth", params)
-            
-            return {
-                "symbol": symbol,
-                "bids": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["bids"]],
-                "asks": [[self._to_decimal(price), self._to_decimal(qty)] for price, qty in data["asks"]],
-                "lastUpdateId": data.get("lastUpdateId"),
-                "timestamp": int(data.get("timestamp", 0)) or None
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures orderbook for {symbol}: {e}")
-            # FIXED: Return empty but valid structure instead of raising
-            import time
-            return {
-                "symbol": symbol,
-                "bids": [],
-                "asks": [],
-                "timestamp": int(time.time() * 1000),
-                "error": str(e)
-            }
-    
-    async def fetch_trades(
-        self, 
-        symbol: str, 
-        limit: int = 100,
-        fromId: int = None,
-        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
-        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
-    ) -> List[Dict]:
-        """
-        Fetch recent trades from Binance Spot
-        Returns UNIFIED trade format!
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of trades (max 1000)
-            fromId: Trade ID to start from (optional, DEPRECATED - use startTime/endTime)
-            startTime: Start time in milliseconds (optional, for time-based backfill)
-            endTime: End time in milliseconds (optional, for time-based backfill)
-            
-        Returns:
-            List of UNIFIED trades
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": min(limit, 1000)
-            }
-            
-            # ✅ ZEIT-BASIERTES BACKFILL: Nutze aggTrades mit startTime/endTime
-            if startTime is not None or endTime is not None:
-                if startTime is not None:
-                    params["startTime"] = startTime
-                if endTime is not None:
-                    params["endTime"] = endTime
-                
-                # aggTrades Endpoint (zeitbasiert)
-                raw_trades = await self._request("/api/v3/aggTrades", params)
-                
-                # ✅ Normalisierung für aggTrades-Format
-                unified_trades = []
-                for t in raw_trades:
-                    unified_trades.append({
-                        "trade_id": str(t["a"]),              # aggTrade ID
-                        "symbol": symbol,
-                        "market": "spot",
-                        "price": str(t["p"]),
-                        "size": str(t["q"]),
-                        "side": "sell" if t["m"] else "buy",
-                        "timestamp": int(t["T"]),
-                    })
-                
-                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (time-based)")
-                return unified_trades
-            
-            # ✅ FALLBACK: Recent trades (ohne fromId - API ignoriert fromId bei /trades)
-            raw_trades = await self._request(BinanceEndpoints.TRADES, params)
-            
-            # ✅ Normalisierung für normale Trades
-            unified_trades = []
-            for t in raw_trades:
-                unified_trades.append({
-                    "trade_id": str(t["id"]),
-                    "symbol": symbol,
-                    "market": "spot",
-                    "price": str(t["price"]),
-                    "size": str(t["qty"]),
-                    "side": "sell" if t["isBuyerMaker"] else "buy",
-                    "timestamp": int(t["time"]),
-                })
-            
-            logger.info(f"✅ Fetched {len(unified_trades)} unified spot trades for {symbol}")
-            return unified_trades
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot trades for {symbol}: {e}")
-            return []
-
-    async def fetch_futures_trades(
-        self,
-        symbol: str,
-        limit: int = 100,
-        fromId: int = None,
-        startTime: int = None,   # ← NEU! Für Zeit-basiertes Backfill
-        endTime: int = None      # ← NEU! Für Zeit-basiertes Backfill
-    ) -> List[Dict]:
-        """
-        Fetch recent trades from Binance Futures
-        Returns UNIFIED trade format!
-        
-        Args:
-            symbol: Trading symbol (e.g., BTCUSDT)
-            limit: Number of trades (max 1000)
-            fromId: Trade ID to start from (optional, for historical backfill)
-            startTime: Start time in milliseconds (optional, for time-based backfill)
-            endTime: End time in milliseconds (optional, for time-based backfill)
-            
-        Returns:
-            List of UNIFIED trades in format:
-            {
-                "trade_id": str,
-                "symbol": str,
-                "market": "futures",
-                "price": str,
-                "size": str,
-                "side": "buy" | "sell",
-                "timestamp": int (milliseconds)
-            }
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "limit": min(limit, 1000)
-            }
-            
-            # ✅ ZEIT-BASIERTES BACKFILL: aggTrades
-            if startTime is not None or endTime is not None:
-                if startTime is not None:
-                    params["startTime"] = startTime
-                if endTime is not None:
-                    params["endTime"] = endTime
-                
-                # Futures aggTrades Endpoint
-                raw_trades = await self._request_futures("/fapi/v1/aggTrades", params)
-                
-                # Normalisierung für aggTrades-Format
-                unified_trades = []
-                for t in raw_trades:
-                    unified_trades.append({
-                        "trade_id": str(t["a"]),
-                        "symbol": symbol,
-                        "market": "futures",  # ← Futures statt Spot
-                        "price": str(t["p"]),
-                        "size": str(t["q"]),
-                        "side": "sell" if t["m"] else "buy",
-                        "timestamp": int(t["T"]),
-                    })
-                
-                logger.info(f"✅ Fetched {len(unified_trades)} aggTrades for {symbol} (futures, time-based)")
-                return unified_trades
-            
-            # ✅ FALLBACK: Recent trades (bestehende Logik)
-            if fromId is not None:
-                params["fromId"] = fromId
-            
-            raw_trades = await self._request_futures("/fapi/v1/trades", params)
-            
-            # ✅ NORMALISIERUNG!
-            unified_trades = []
-            for t in raw_trades:
-                unified_trades.append({
-                    "trade_id": str(t["id"]),
-                    "symbol": symbol,
-                    "market": "futures",
-                    "price": str(t["price"]),
-                    "size": str(t["qty"]),
-                    "side": "sell" if t["isBuyerMaker"] else "buy",
-                    "timestamp": int(t["time"]),
-                })
-            
-            logger.info(f"✅ Fetched {len(unified_trades)} unified futures trades for {symbol}")
-            return unified_trades
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures trades for {symbol}: {e}")
-            return []
-
-    async def fetch_spot_candles(
-        self, 
-        symbol: str, 
-        interval: str, 
-        limit: int = 500, 
-        endTime: int = None
-    ) -> List[List]:
-        """
-        Fetch historical klines/candlesticks from Binance Spot API
-        
-        Args:
-            symbol: Trading pair (e.g., BTCUSDT)
-            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
-            limit: Number of candles (max 1000)
-            endTime: End time in milliseconds (optional)
-            
-        Returns:
-            List[List]: Binance Kline format:
-            [
-                [
-                    1499040000000,      # 0: Open time
-                    "0.01634000",       # 1: Open
-                    "0.80000000",       # 2: High
-                    "0.01575800",       # 3: Low
-                    "0.01577100",       # 4: Close
-                    "148976.11427815",  # 5: Volume
-                    1499644799999,      # 6: Close time
-                    "2434.19055334",    # 7: Quote asset volume
-                    308,                # 8: Number of trades
-                    "1756.87402397",    # 9: Taker buy base volume
-                    "28.46694368",      # 10: Taker buy quote volume
-                    "0"                 # 11: Ignore
-                ],
-                ...
-            ]
-        
-        Official Docs:
-            https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "interval": interval,
-                "limit": min(limit, 1000)  # Binance max limit
-            }
-            if endTime:
-                params["endTime"] = endTime
-            
-            data = await self._request("/api/v3/klines", params)
-            
-            logger.debug(f"✅ Fetched {len(data)} spot candles for {symbol} ({interval})")
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance spot candles for {symbol}: {e}")
-            return []
-
-    async def fetch_futures_candles(
-        self, 
-        symbol: str, 
-        interval: str, 
-        limit: int = 500, 
-        endTime: int = None
-    ) -> List[List]:
-        """
-        Fetch historical klines/candlesticks from Binance Futures API
-        
-        Args:
-            symbol: Trading pair (e.g., BTCUSDT)
-            interval: Kline interval (1m, 5m, 15m, 1h, 4h, 1d, etc.)
-            limit: Number of candles (max 1500)
-            endTime: End time in milliseconds (optional)
-            
-        Returns:
-            List[List]: Same format as spot (see fetch_spot_candles)
-        
-        Official Docs:
-            https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
-        """
-        try:
-            params = {
-                "symbol": self._prepare_symbol(symbol),
-                "interval": interval,
-                "limit": min(limit, 1500)  # Futures allows up to 1500
-            }
-            if endTime:
-                params["endTime"] = endTime
-            
-            data = await self._request_futures("/fapi/v1/klines", params)
-            
-            logger.debug(f"✅ Fetched {len(data)} futures candles for {symbol} ({interval})")
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch Binance futures candles for {symbol}: {e}")
-            return []
-
-    async def close(self):
-        """Close the HTTP session"""
-        if self._session:
-            await self._session.close()
-            self._session = None
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -172906,17 +172906,37 @@ async def _ch():
 
 async def _table_exists(db: str, name: str) -> bool:
     ch_client = await _ch()
+    
+    # ✅ FIX: Robust count() statt SELECT 1 → unabhängig vom Result-Format
     rows = await ch_client.execute(
         """
-        SELECT 1
+        SELECT count()
         FROM system.tables
         WHERE database = %(db)s AND name = %(name)s
-        LIMIT 1
         """,
         {"db": db, "name": name},
     )
-    exists = bool(rows)
-    logger.info(f"[_table_exists] {db}.{name} = {exists} (rows={rows})")
+    
+    # ✅ Robustes Parsing für verschiedene ClickHouse Client Result-Formate
+    # clickhouse_connect kann zurückgeben: [[n]], [(n,)], [n], oder None
+    n = 0
+    try:
+        if rows is None:
+            n = 0
+        elif isinstance(rows, (list, tuple)) and len(rows) > 0:
+            first = rows[0]
+            if isinstance(first, (list, tuple)) and len(first) > 0:
+                n = int(first[0])
+            else:
+                n = int(first)
+        else:
+            n = int(rows)
+    except Exception as e:
+        logger.warning(f"[_table_exists] Failed to parse result for {db}.{name}: {e}, rows={rows}")
+        n = 0
+    
+    exists = n > 0
+    logger.info(f"[_table_exists] {db}.{name} = {exists} (count={n}, raw_rows={rows})")
     return exists
 
 
@@ -172952,9 +172972,16 @@ async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: i
     else:
         # Fallback: Exchange-specific table ({exchange}_kline)
         exchange_table = f"{exchange}_kline"
-        if not await _table_exists("trading", exchange_table):
-            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+        table_exists = await _table_exists("trading", exchange_table)
+        
+        if not table_exists:
+            logger.error(
+                f"[_query_preagg_1s] CRITICAL: Neither all_kline_1s_state nor {exchange_table} exists. "
+                f"Available tables in 'trading' database should be checked manually."
+            )
             return []
+        
+        logger.info(f"[_query_preagg_1s] Using fallback table: trading.{exchange_table}")
         
         rows = await ch.execute(
             f"""
@@ -173031,9 +173058,16 @@ async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int
     else:
         # Fallback: Exchange-specific table ({exchange}_kline)
         exchange_table = f"{exchange}_kline"
-        if not await _table_exists("trading", exchange_table):
-            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+        table_exists = await _table_exists("trading", exchange_table)
+        
+        if not table_exists:
+            logger.error(
+                f"[_query_preagg_multi] CRITICAL: Neither all_kline_1s_state nor {exchange_table} exists. "
+                f"Available tables in 'trading' database should be checked manually."
+            )
             return []
+        
+        logger.info(f"[_query_preagg_multi] Using fallback table: trading.{exchange_table}")
         
         rows = await ch.execute(
             f"""
