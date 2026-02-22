@@ -375,55 +375,6 @@ backend/
       rs_unified_system.py
       rs_unified_trades.py
       rs_unified.py
-    tables/
-      db_generator/
-        scripts/
-          delete_generator.py
-          run_generator.py
-          validate_generator.py
-        generate_init_sql.py
-      db_market/
-        scripts/
-          delete_exchanges.py
-          delete_whales.py
-          run_exchanges.py
-          run_whales.py
-        exchanges_db.py
-        kline_db.py
-        whale_db.py
-      db_md/
-        scripts/
-          cleanup_all_kline_system.py
-          delete_kline.py
-          delete_orderbook.py
-          delete_whales.py
-          run_kline.py
-          run_orderbook.py
-          run_whales.py
-        all_kline.py
-        all_orderbook_.py
-        all_whales_.py
-      db_system/
-        scripts/
-          delete_user_coin_settings.py
-          delete_user_indicator_settings.py
-          delete_user_secrets.py
-          delete_user_settings.py
-          run_user_coin_settings.py
-          run_user_indicator_settings.py
-          run_user_secrets.py
-          run_user_settings.py
-        user_coin_settings.py
-        user_indicator_settings.py
-        user_secrets.py
-        user_settings.py
-      scripts/
-        bootstrap_all_kline.py
-        cleanup.py
-        run_all.py
-        show_tables.py
-        validate_tables.py
-      000_table.md
     schema_reconcile.py
   exchanges/
     binance/
@@ -16183,3208 +16134,6 @@ class UnifiedRsService:
 
 # Global instance - Backward Compatibility
 unified_rs_service = UnifiedRsService()
-</file>
-
-<file path="backend/database/tables/db_generator/scripts/delete_generator.py">
-#!/usr/bin/env python3
-"""
-DELETE GENERATOR
-Löscht generierte SQL-Strukturen sicher mit Bestätigung
-- Generierte Tabellen und Strukturen
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import generate_init_sql
-sys.path.append(str(Path(__file__).parent.parent))
-
-from generate_init_sql import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE GENERIERTEN STRUKTUREN WERDEN GELÖSCHT!")
-    print("🗑️  Generierte SQL-Strukturen werden PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  SQL GENERATOR - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht generierte SQL-Strukturen PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete generated structures using imported function
-    success = execute_sql("DROP DATABASE IF EXISTS generated", 
-                         "Drop generated database", ignore_errors=True)
-
-    if success:
-        print("✅ GENERIERTE STRUKTUREN GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_generator/scripts/run_generator.py">
-#!/usr/bin/env python3
-"""
-RUN GENERATOR
-Führt den SQL Generator aus
-Erstellt und generiert SQL-Strukturen
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import generate_init_sql
-sys.path.append(str(Path(__file__).parent.parent))
-
-from generate_init_sql import main as run_migration
-
-def main():
-    print("🔧 SQL GENERATOR RUNNER")
-    print("=" * 70)
-    print("⚡ Erstellt und generiert SQL-Strukturen")
-    print("🎯 Automatische SQL-Generierung")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um den SQL Generator zu starten oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ SQL GENERATOR ERFOLGREICH AUSGEFÜHRT!")
-        return True
-    else:
-        print("\n❌ SQL GENERATOR AUSFÜHRUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_generator/scripts/validate_generator.py">
-#!/usr/bin/env python3
-"""
-VALIDATE GENERATOR
-Validiert generierte SQL-Strukturen
-Überprüft die Integrität der generierten Tabellen
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import generate_init_sql
-sys.path.append(str(Path(__file__).parent.parent))
-
-from generate_init_sql import execute_sql
-
-def main():
-    print("✅ SQL GENERATOR VALIDATOR")
-    print("=" * 70)
-    print("🔍 Validiert generierte SQL-Strukturen")
-    print("🎯 Überprüft Integrität der generierten Tabellen")
-    
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-    
-    print("\n🔍 VALIDIERE GENERIERTE STRUKTUREN...")
-    
-    # Check if generated database exists
-    success = execute_sql("SHOW DATABASES LIKE 'generated'", 
-                         "Check generated database", ignore_errors=True)
-    
-    if success:
-        # Check tables in generated database
-        tables_check = execute_sql("SHOW TABLES FROM generated", 
-                                  "Check generated tables", ignore_errors=True)
-        
-        if tables_check:
-            print("\n✅ VALIDATION ERFOLGREICH!")
-            print("✅ Generierte Strukturen sind verfügbar")
-            print("✅ Tabellen sind zugänglich")
-            return True
-        else:
-            print("\n⚠️  VALIDATION WARNUNG!")
-            print("⚠️  Generierte Datenbank existiert, aber keine Tabellen gefunden")
-            return True
-    else:
-        print("\n⚠️  VALIDATION INFO!")
-        print("ℹ️  Keine generierten Strukturen gefunden - das ist normal wenn noch nichts generiert wurde")
-        return True
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_generator/generate_init_sql.py">
-#!/usr/bin/env python3
-"""
-SQL GENERATOR - Generiert init.sql aus Python Migrations
-Single Source of Truth: Python Scripts
-"""
-import os
-import re
-import sys
-from pathlib import Path
-
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def extract_create_statements(file_path):
-    """Extrahiert alle CREATE TABLE Statements aus Python File und expandiert Templates"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Finde alle CREATE TABLE Statements in Triple-Quoted Strings
-    pattern = r'"""[\s\S]*?(CREATE TABLE IF NOT EXISTS.*?)"""'
-    matches = re.findall(pattern, content, re.MULTILINE | re.DOTALL)
-    
-    statements = []
-    for match in matches:
-        # Bereinige SQL Statement - RICHTIGE Einrückung
-        sql = match.strip()
-        
-        # Prüfe ob Template mit {exchange} Platzhalter
-        if '{exchange}' in sql:
-            # Expandiere für jeden Exchange
-            for exchange in EXCHANGES:
-                concrete_sql = sql.replace('{exchange}', exchange)
-                statements.append(concrete_sql)
-        else:
-            # Normale Tabelle ohne Platzhalter
-            statements.append(sql)
-    
-    return statements
-
-def generate_init_sql():
-    """Generiert clickhouse/init.sql aus allen Migration Scripts"""
-    print("🔥 SQL GENERATOR - Generiert init.sql aus Python Migrations")
-    print("=" * 70)
-    
-    # Base directory
-    migrations_dir = Path(__file__).parent
-    output_file = migrations_dir.parent.parent.parent / 'clickhouse' / 'init.sql'
-    
-    # Migration Files in Reihenfolge
-    migration_files = [
-        migrations_dir / 'market_db' / '001_exchanges_db.py',
-        migrations_dir / 'market_db' / '002_whale_db.py',
-        migrations_dir / 'indicator_db' / '001_indicator_tables.py',
-        migrations_dir / 'md_db' / '001_all_kline.py',
-        migrations_dir / 'md_db' / '002_all_orderbook_.py',
-        migrations_dir / 'md_db' / '003_all_whales_.py'
-    ]
-    
-    all_statements = []
-    
-    print("\n📂 Extrahiere CREATE TABLE Statements...")
-    for file_path in migration_files:
-        if file_path.exists():
-            print(f"  ✅ {file_path.name}")
-            statements = extract_create_statements(file_path)
-            all_statements.extend(statements)
-            print(f"     Gefunden: {len(statements)} Tabellen")
-        else:
-            print(f"  ⚠️  {file_path.name} nicht gefunden")
-    
-    print(f"\n✅ Total: {len(all_statements)} CREATE TABLE Statements extrahiert")
-    
-    # Generiere init.sql
-    print(f"\n📝 Generiere {output_file}...")
-    
-    sql_content = """-- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- ========================================
--- TABELLEN (AUTO-GENERIERT)
--- ========================================
-
-"""
-    
-    for i, statement in enumerate(all_statements, 1):
-        sql_content += f"-- Tabelle {i}/{len(all_statements)}\n"
-        sql_content += f"{statement}\n\n"
-    
-    sql_content += """-- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- ✅ Database: trading
--- ✅ Tabellen: """ + str(len(all_statements)) + """
--- ✅ Generiert: Automatisch aus Python Migrations
--- ========================================
-"""
-    
-    # Schreibe init.sql
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(sql_content)
-    
-    print(f"✅ {output_file} erfolgreich generiert!")
-    print(f"✅ {len(all_statements)} Tabellen-Definitionen geschrieben")
-    
-    return True
-
-def main():
-    try:
-        success = generate_init_sql()
-        
-        if success:
-            print("\n🎉 SQL GENERATOR ERFOLGREICH!")
-            print("=" * 70)
-            print("✅ clickhouse/init.sql wurde aktualisiert")
-            print("✅ Single Source of Truth: Python Migration Scripts")
-            print("✅ init.sql ist jetzt synchron mit Migrations")
-            print("\n📝 WICHTIG:")
-            print("  - Bei Änderungen an Python Migrations:")
-            print("  - Dieses Script erneut ausführen:")
-            print("  - python3 backend/db/migrations/000_generate_init_sql.py")
-            return True
-        else:
-            print("\n❌ SQL GENERATOR FEHLER!")
-            return False
-            
-    except Exception as e:
-        print(f"\n❌ FEHLER: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_market/scripts/delete_whales.py">
-#!/usr/bin/env python3
-"""
-DELETE WHALES DB
-Löscht die Whales Tabelle sicher mit Bestätigung
-- whales (Whale Trading Daten)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import whale_db
-sys.path.append(str(Path(__file__).parent.parent))
-
-from whale_db import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE WHALES DATEN WERDEN GELÖSCHT!")
-    print("🗑️  whales (Whale Trading Daten) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  WHALES DB - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Whale Trading Daten PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.whales", 
-                         "Drop whales", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ WHALES TABELLE GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_market/scripts/run_exchanges.py">
-#!/usr/bin/env python3
-"""
-RUN EXCHANGES DB
-Erstellt die Exchanges Tabelle
-Exchange-spezifische Daten und Konfigurationen
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import exchanges_db
-sys.path.append(str(Path(__file__).parent.parent))
-
-from exchanges_db import main as run_migration
-
-def main():
-    print("🏪 EXCHANGES DB MIGRATION RUNNER")
-    print("=" * 70)
-    print("📊 Exchange-spezifische Daten und Konfigurationen")
-    print("🎯 Zentrale Exchange-Verwaltung")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um Exchanges DB zu erstellen oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ EXCHANGES DB ERFOLGREICH ERSTELLT!")
-        return True
-    else:
-        print("\n❌ EXCHANGES DB ERSTELLUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_market/scripts/run_whales.py">
-#!/usr/bin/env python3
-"""
-RUN WHALES DB
-Erstellt die Whales Tabelle
-Whale Trading Daten und Analysen
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import whale_db
-sys.path.append(str(Path(__file__).parent.parent))
-
-from whale_db import main as run_migration
-
-def main():
-    print("🐋 WHALES DB MIGRATION RUNNER")
-    print("=" * 70)
-    print("💰 Whale Trading Daten und Analysen")
-    print("🎯 Große Trading-Bewegungen verfolgen")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um Whales DB zu erstellen oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ WHALES DB ERFOLGREICH ERSTELLT!")
-        return True
-    else:
-        print("\n❌ WHALES DB ERSTELLUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_market/whale_db.py">
-#!/usr/bin/env python3
-"""
-WHALE EVENTS & ORDERS TABELLEN
-Erstellt 16 Tabellen: 8 Exchanges × 2 Tabellen (whale_events + whale_orders)
-MAXIMALE Performance durch separate Tabellen!
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-# 🔥 ALLE 8 EXCHANGES
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_whale_events_tables():
-    """Erstellt WHALE_EVENTS Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE WHALE_EVENTS TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle {exchange}_whale_events...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_whale_events"):
-            success_count += 1
-    
-    return success_count
-
-def create_whale_orders_tables():
-    """Erstellt WHALE_ORDERS Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE WHALE_ORDERS TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle {exchange}_whale_orders...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_whale_orders"):
-            success_count += 1
-    
-    return success_count
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: WHALE EVENTS & ORDERS TABELLEN")
-    print("=" * 70)
-    print("⚡ 16 Tabellen: 8 Exchanges × 2 Tabellen (whale_events + whale_orders)")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # Whale Events Tabellen erstellen
-    events_count = create_whale_events_tables()
-    
-    # Whale Orders Tabellen erstellen
-    orders_count = create_whale_orders_tables()
-    
-    total_tables = len(EXCHANGES) * 2  # 16 Tabellen
-    success_count = events_count + orders_count
-    
-    if success_count == total_tables:
-        print(f"\n🎉 ALLE {total_tables} TABELLEN ERFOLGREICH ERSTELLT!")
-        print("✅ 8 Whale Events Tabellen")
-        print("✅ 8 Whale Orders Tabellen")
-        print("✅ MAXIMALE Performance durch separate Tabellen")
-        
-        print(f"\n📊 TABELLEN-ÜBERSICHT:")
-        for exchange in EXCHANGES:
-            print(f"  🔹 {exchange.upper()}: {exchange}_whale_events, {exchange}_whale_orders")
-        
-        return True
-    else:
-        print(f"\n⚠️  NUR {success_count}/{total_tables} TABELLEN ERSTELLT!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/delete_kline.py">
-#!/usr/bin/env python3
-"""
-DELETE ALL_KLINE TABLE
-Löscht die all_kline Tabelle sicher mit Bestätigung
-- all_kline (Cross-Exchange OHLC Daten)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_kline
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_kline import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE KLINE DATEN WERDEN GELÖSCHT!")
-    print("🗑️  all_kline (Cross-Exchange OHLC) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  ALL_KLINE - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Cross-Exchange OHLC Daten PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.all_kline", 
-                         "Drop all_kline", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ ALL_KLINE TABELLE GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/delete_orderbook.py">
-#!/usr/bin/env python3
-"""
-DELETE ALL_ORDERBOOK TABLE
-Löscht die all_orderbook Tabelle sicher mit Bestätigung
-- all_orderbook (Cross-Exchange Orderbook Daten)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_orderbook_
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_orderbook_ import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE ORDERBOOK DATEN WERDEN GELÖSCHT!")
-    print("🗑️  all_orderbook (Cross-Exchange Orderbook) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  ALL_ORDERBOOK - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Cross-Exchange Orderbook Daten PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.all_orderbook", 
-                         "Drop all_orderbook", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ ALL_ORDERBOOK TABELLE GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/delete_whales.py">
-#!/usr/bin/env python3
-"""
-DELETE ALL_WHALES TABLE
-Löscht die all_whales Tabelle sicher mit Bestätigung
-- all_whales (Cross-Exchange Whales Trading Daten)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_whales_
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_whales_ import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE WHALES DATEN WERDEN GELÖSCHT!")
-    print("🗑️  all_whales (Cross-Exchange Whales Trading) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  ALL_WHALES - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Cross-Exchange Whales Trading Daten PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.all_whales", 
-                         "Drop all_whales", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ ALL_WHALES TABELLE GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/run_kline.py">
-#!/usr/bin/env python3
-"""
-RUN ALL_KLINE TABLE
-Erstellt die Cross-Exchange OHLC Tabelle (Multi-Interval)
-1 Tabelle für alle Exchanges
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_kline
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_kline import main as run_migration
-
-def main():
-    print("📊 ALL_KLINE TABLE RUNNER")
-    print("=" * 70)
-    print("⚡ Cross-Exchange OHLC - Multi-Interval Kline Daten")
-    print("🎯 Eine Tabelle für alle Exchanges (binance, bitget, mexc, etc.)")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um all_kline Tabelle zu erstellen oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ ALL_KLINE TABLE ERFOLGREICH ERSTELLT!")
-        return True
-    else:
-        print("\n❌ ALL_KLINE TABLE ERSTELLUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/run_orderbook.py">
-#!/usr/bin/env python3
-"""
-RUN ALL_ORDERBOOK TABLE
-Erstellt die Cross-Exchange Orderbook Tabelle
-1 Tabelle für alle Exchanges
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_orderbook_
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_orderbook_ import main as run_migration
-
-def main():
-    print("📚 ALL_ORDERBOOK TABLE RUNNER")
-    print("=" * 70)
-    print("📊 Cross-Exchange Orderbook Daten")
-    print("🎯 Eine Tabelle für alle Exchanges (binance, bitget, mexc, etc.)")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um all_orderbook Tabelle zu erstellen oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ ALL_ORDERBOOK TABLE ERFOLGREICH ERSTELLT!")
-        return True
-    else:
-        print("\n❌ ALL_ORDERBOOK TABLE ERSTELLUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/run_whales.py">
-#!/usr/bin/env python3
-"""
-RUN ALL_WHALES TABLE
-Erstellt die Cross-Exchange Whales Tabelle
-1 Tabelle für alle Exchanges
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_whales_
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_whales_ import main as run_migration
-
-def main():
-    print("🐋 ALL_WHALES TABLE RUNNER")
-    print("=" * 70)
-    print("💰 Cross-Exchange Whales Trading Daten")
-    print("🎯 Eine Tabelle für alle Exchanges (binance, bitget, mexc, etc.)")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um all_whales Tabelle zu erstellen oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ ALL_WHALES TABLE ERFOLGREICH ERSTELLT!")
-        return True
-    else:
-        print("\n❌ ALL_WHALES TABLE ERSTELLUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_md/all_orderbook_.py">
-#!/usr/bin/env python3
-"""
-ALL_ORDERBOOK TABELLE - Cross-Exchange OrderBook
-Erstellt 1 Tabelle für alle Exchanges (Best Quotes)
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_all_orderbook_table():
-    """Erstellt all_orderbook Tabelle"""
-    print(f"\n🔥 ERSTELLE ALL_ORDERBOOK TABELLE...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    TTL ts + INTERVAL 1 MONTH
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "all_orderbook")
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: ALL_ORDERBOOK TABELLE")
-    print("=" * 60)
-    print("⚡ Cross-Exchange OrderBook - Best Quotes pro Exchange")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # all_orderbook Tabelle erstellen
-    if create_all_orderbook_table():
-        print(f"\n🎉 ALL_ORDERBOOK TABELLE ERFOLGREICH ERSTELLT!")
-        print("✅ Best Bid/Ask Snapshots pro Exchange")
-        print("✅ TTL: 1 Monat")
-        print("✅ Verwendung: Arbitrage Detection, Liquidity Analysis, Spread Monitoring")
-        return True
-    else:
-        print(f"\n⚠️  FEHLER beim Erstellen der Tabelle!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_md/all_whales_.py">
-#!/usr/bin/env python3
-"""
-ALL_WHALE TABELLE - Cross-Exchange Whale Events
-Erstellt 1 Tabelle für alle Exchanges (Whale Tracking)
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_all_whale_table():
-    """Erstellt all_whale Tabelle"""
-    print(f"\n🔥 ERSTELLE ALL_WHALE TABELLE...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    TTL ts + INTERVAL 3 MONTH
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "all_whale")
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: ALL_WHALE TABELLE")
-    print("=" * 60)
-    print("⚡ Cross-Exchange Whale Events - Global Money Flow")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # all_whale Tabelle erstellen
-    if create_all_whale_table():
-        print(f"\n🎉 ALL_WHALE TABELLE ERFOLGREICH ERSTELLT!")
-        print("✅ Alle Whale-Events über alle Exchanges")
-        print("✅ TTL: 3 Monate")
-        print("✅ Verwendung: Cross-Exchange Whale Tracking, Global Money Flow, Market Impact Analysis")
-        return True
-    else:
-        print(f"\n⚠️  FEHLER beim Erstellen der Tabelle!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/delete_user_coin_settings.py">
-#!/usr/bin/env python3
-"""
-DELETE USER COIN SETTINGS
-Löscht die user_coin_settings Tabelle sicher mit Bestätigung
-- user_coin_settings (L/H/Favorite/Resolution pro Coin)
-"""
-import sys
-import os
-from pathlib import Path
-
-# Add parent directory to path to import user_coin_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_coin_settings import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE COIN SETTINGS WERDEN GELÖSCHT!")
-    print("🗑️  user_coin_settings (L/H/Favorite) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  USER COIN SETTINGS - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht L/H/Favorite Settings PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.user_coin_settings", 
-                         "Drop user_coin_settings", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ USER COIN SETTINGS GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/delete_user_indicator_settings.py">
-#!/usr/bin/env python3
-"""
-DELETE USER INDICATOR SETTINGS
-Löscht die user_indicator_settings Tabelle sicher mit Bestätigung
-- user_indicator_settings (MA/RSI/MACD/BB Settings)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_indicator_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_indicator_settings import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE USER INDICATOR SETTINGS WERDEN GELÖSCHT!")
-    print("🗑️  user_indicator_settings (MA/RSI/MACD/BB Settings) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  USER INDICATOR SETTINGS - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht MA/RSI/MACD/BB Settings PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.user_indicator_settings", 
-                         "Drop user_indicator_settings", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ USER INDICATOR SETTINGS GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/delete_user_secrets.py">
-#!/usr/bin/env python3
-"""
-DELETE USER SECRETS
-Löscht die user_secrets Tabelle sicher mit Bestätigung
-- user_secrets (Encrypted API Keys)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_secrets
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_secrets import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE USER SECRETS WERDEN GELÖSCHT!")
-    print("🗑️  user_secrets (Encrypted API Keys) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  USER SECRETS - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Encrypted API Keys PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.user_secrets", 
-                         "Drop user_secrets", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ USER SECRETS GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/delete_user_settings.py">
-#!/usr/bin/env python3
-"""
-DELETE USER SETTINGS
-Löscht die user_settings_kv Tabelle sicher mit Bestätigung
-- user_settings_kv (Key-Value Settings)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_settings import execute_sql
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE USER SETTINGS WERDEN GELÖSCHT!")
-    print("🗑️  user_settings_kv (Key-Value Settings) wird PERMANENT gelöscht!")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def main():
-    print("🗑️  USER SETTINGS - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht Key-Value Settings PERMANENT")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete table using imported function
-    success = execute_sql("DROP TABLE IF EXISTS trading.user_settings_kv", 
-                         "Drop user_settings_kv", "trading", ignore_errors=True)
-
-    if success:
-        print("✅ USER SETTINGS GELÖSCHT!")
-        return True
-    else:
-        print("❌ LÖSCHUNG FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/run_user_coin_settings.py">
-#!/usr/bin/env python3
-"""
-USER COIN SETTINGS RUNNER
-Führt die User Coin Settings Migration aus
-1 Tabelle: user_coin_settings (L/H/Favorite/Resolution pro Coin)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_coin_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_coin_settings import main as run_migration
-
-def main():
-    print("⚡ USER COIN SETTINGS MIGRATION RUNNER")
-    print("=" * 70)
-    print("🚀 Ultra-Fast L/H Button Toggles mit UInt8 (<5ms)")
-    print("🔄 ReplacingMergeTree für automatische Updates")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um die User Coin Settings Migration zu starten oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Migration abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ USER COIN SETTINGS MIGRATION ERFOLGREICH!")
-        return True
-    else:
-        print("\n❌ USER COIN SETTINGS MIGRATION FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Migration abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/run_user_indicator_settings.py">
-#!/usr/bin/env python3
-"""
-USER INDICATOR SETTINGS RUNNER
-Führt die User Indicator Settings Migration aus
-1 Tabelle: user_indicator_settings (MA/RSI/MACD/BB Settings pro User)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_indicator_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_indicator_settings import main as run_migration
-
-def main():
-    print("📊 USER INDICATOR SETTINGS MIGRATION RUNNER")
-    print("=" * 70)
-    print("📈 MA/RSI/MACD/BB Settings für Technical Analysis")
-    print("🔄 ReplacingMergeTree für automatische Updates")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um die User Indicator Settings Migration zu starten oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Migration abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ USER INDICATOR SETTINGS MIGRATION ERFOLGREICH!")
-        return True
-    else:
-        print("\n❌ USER INDICATOR SETTINGS MIGRATION FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Migration abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/run_user_secrets.py">
-#!/usr/bin/env python3
-"""
-USER SECRETS RUNNER
-Führt die User Secrets Migration aus
-1 Tabelle: user_secrets (Encrypted API Keys mit AES-256-GCM + Key-Rotation)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_secrets
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_secrets import main as run_migration
-
-def main():
-    print("🔐 USER SECRETS MIGRATION RUNNER")
-    print("=" * 70)
-    print("🛡️  AES-256-GCM Verschlüsselung + Key-Rotation")
-    print("🔒 ReplacingMergeTree für automatische Deduplication")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um die User Secrets Migration zu starten oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Migration abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ USER SECRETS MIGRATION ERFOLGREICH!")
-        return True
-    else:
-        print("\n❌ USER SECRETS MIGRATION FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Migration abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/scripts/run_user_settings.py">
-#!/usr/bin/env python3
-"""
-USER SETTINGS KV RUNNER
-Führt die User Settings KV Migration aus
-1 Tabelle: user_settings_kv (Key-Value Settings für system/trading/ui)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import user_settings
-sys.path.append(str(Path(__file__).parent.parent))
-
-from user_settings import main as run_migration
-
-def main():
-    print("🔧 USER SETTINGS KV MIGRATION RUNNER")
-    print("=" * 70)
-    print("⚙️  System/Trading/UI Settings mit JSON Values")
-    print("🗂️  MergeTree für flexibles Key-Value Design")
-    
-    # Bestätigung vom User (außer bei --yes flag)
-    if '--yes' not in sys.argv and '-y' not in sys.argv:
-        try:
-            input("\n⚠️  Drücken Sie ENTER um die User Settings KV Migration zu starten oder CTRL+C zum Abbrechen...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Migration abgebrochen")
-            return False
-    
-    # Führe Migration aus using imported function
-    success = run_migration()
-    
-    if success:
-        print("\n✅ USER SETTINGS KV MIGRATION ERFOLGREICH!")
-        return True
-    else:
-        print("\n❌ USER SETTINGS KV MIGRATION FEHLGESCHLAGEN!")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Migration abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_system/user_coin_settings.py">
-#!/usr/bin/env python3
-"""
-USER COIN SETTINGS MIGRATION - ClickHouse ≥22.x
-Erstellt user_coin_settings Tabelle für L/H/Favorite/Resolution pro Coin
-PERFORMANCE: UInt8 für ultra-schnelle L/H Button Toggles (<5ms)
-"""
-import requests
-import sys
-import os
-import argparse
-
-# Environment Variables (CORRECTED: Ihre ClickHouse Konfiguration)
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')  # ← CORRECTED: 8124 ist richtig für Ihr System
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_user_coin_settings_table():
-    """Erstellt user_coin_settings Tabelle für Coin-spezifische Settings"""
-    print(f"\n⚡ ERSTELLE USER_COIN_SETTINGS TABELLE (L/H/FAVORITE/RESOLUTION)...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.user_coin_settings
-    (
-        user_id          String,
-        exchange         LowCardinality(String),
-        symbol           LowCardinality(String),
-        market           LowCardinality(String),        -- spot | futures
-        store_live       UInt8,                         -- L Button (0/1 für ultra-speed)
-        load_history     UInt8,                         -- H Button (0/1 für ultra-speed)
-        history_until    Nullable(String),              -- Datum bis wann History laden
-        favorite         UInt8,                         -- Favorite Button (0/1)
-        chart_resolution LowCardinality(String),        -- 1m, 5m, 15m, 1h, 4h, 1d
-        db_resolutions   Array(LowCardinality(String)), -- [1s, 1m, 5m, 1h, 1d]
-        updated_at       DateTime,
-        created_at       DateTime DEFAULT now()
-    )
-    ENGINE = ReplacingMergeTree(updated_at)
-    ORDER BY (user_id, exchange, symbol, market, updated_at)
-    TTL updated_at + INTERVAL 2 YEAR
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "user_coin_settings", "trading")
-
-def create_indices():
-    """Erstellt Performance-Indices für user_coin_settings"""
-    print(f"\n⚡ ERSTELLE COIN-PERFORMANCE-INDICES...")
-    
-    indices_sql = [
-        """
-        CREATE INDEX IF NOT EXISTS idx_ucs_user
-        ON trading.user_coin_settings (user_id)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_ucs_x_s_m
-        ON trading.user_coin_settings (exchange, symbol, market)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_ucs_live
-        ON trading.user_coin_settings (store_live)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_ucs_history
-        ON trading.user_coin_settings (load_history)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_ucs_favorite
-        ON trading.user_coin_settings (favorite)
-        TYPE minmax GRANULARITY 1;
-        """
-    ]
-    
-    success_count = 0
-    for i, sql in enumerate(indices_sql, 1):
-        if execute_sql(sql, f"Coin Index {i}/{len(indices_sql)}", "trading"):
-            success_count += 1
-    
-    return success_count == len(indices_sql)
-
-def main():
-    print("⚡ CLICKHOUSE MIGRATION: USER COIN SETTINGS (L/H/FAVORITE)")
-    print("=" * 70)
-    print("🚀 Ultra-Fast L/H Button Toggles mit UInt8 (<5ms)")
-    print("🔄 ReplacingMergeTree für automatische Updates")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen (falls nicht vorhanden)
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # user_coin_settings Tabelle erstellen
-    if not create_user_coin_settings_table():
-        print(f"\n⚠️  FEHLER beim Erstellen der user_coin_settings Tabelle!")
-        return False
-
-    # Indices erstellen
-    if not create_indices():
-        print(f"\n⚠️  FEHLER beim Erstellen der Coin-Performance-Indices!")
-        return False
-
-    # Success Summary
-    print(f"\n🎉 USER COIN SETTINGS TABELLE ERFOLGREICH ERSTELLT!")
-    print("✅ user_coin_settings - Coin-spezifische Settings")
-    print("✅ Ultra-Fast L/H Button Toggles (UInt8)")
-    print("✅ Favorite System für häufig genutzte Coins")
-    print("✅ Chart & DB Resolution Management")
-    print("✅ ReplacingMergeTree für automatische Deduplication")
-    print("✅ Performance-Indices für L/H/Favorite Queries")
-    print("✅ TTL: 2 Jahre für Langzeit-Archivierung")
-    
-    print(f"\n⚡ ULTRA-FAST BUTTON FEATURES:")
-    print("  🟢 L Button: store_live (UInt8) - Live Data Collection")
-    print("  📊 H Button: load_history (UInt8) - Historical Data Loading")
-    print("  ⭐ Favorite: favorite (UInt8) - Quick Access Coins")
-    print("  📈 Resolution: chart_resolution - Display Timeframe")
-    print("  💾 DB Resolutions: db_resolutions - Storage Intervals")
-    
-    print(f"\n🚀 PERFORMANCE OPTIMIERUNGEN:")
-    print("  ⚡ UInt8 statt Boolean: 25x schneller bei Updates")
-    print("  🔍 Specialized Indices: Optimiert für L/H/Favorite Queries")
-    print("  🔄 ReplacingMergeTree: Automatische Latest-State Updates")
-    print("  📊 LowCardinality: Optimierte String-Speicherung")
-    
-    return True
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_system/user_indicator_settings.py">
-#!/usr/bin/env python3
-"""
-USER INDICATOR SETTINGS MIGRATION - ClickHouse ≥22.x
-Erstellt user_indicator_settings Tabelle für Indikator-Parameter und Visibility
-FLEXIBILITÄT: JSON-Values für beliebige Indikator-Konfigurationen
-"""
-import requests
-import sys
-import os
-
-# Environment Variables (CORRECTED: Ihre ClickHouse Konfiguration)
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')  # ← CORRECTED: 8124 ist richtig für Ihr System
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_user_indicator_settings_table():
-    """Erstellt user_indicator_settings Tabelle für Indikator-Konfigurationen"""
-    print(f"\n📊 ERSTELLE USER_INDICATOR_SETTINGS TABELLE (INDIKATOREN CONFIG)...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.user_indicator_settings
-    (
-        user_id    String,
-        indicator  LowCardinality(String),   -- z.B. SMA, EMA, RSI, MACD, Bollinger
-        key        LowCardinality(String),   -- params | visibility | color | style
-        value      String,                   -- JSON Configuration
-        updated_at DateTime,
-        created_at DateTime DEFAULT now()
-    )
-    ENGINE = MergeTree
-    ORDER BY (user_id, indicator, key, updated_at)
-    TTL updated_at + INTERVAL 2 YEAR
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "user_indicator_settings", "trading")
-
-def create_indices():
-    """Erstellt Performance-Indices für user_indicator_settings"""
-    print(f"\n📊 ERSTELLE INDICATOR-PERFORMANCE-INDICES...")
-    
-    indices_sql = [
-        """
-        CREATE INDEX IF NOT EXISTS idx_uis_user_indicator
-        ON trading.user_indicator_settings (user_id, indicator)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_uis_updated
-        ON trading.user_indicator_settings (updated_at)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_uis_indicator
-        ON trading.user_indicator_settings (indicator)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_uis_key
-        ON trading.user_indicator_settings (key)
-        TYPE minmax GRANULARITY 1;
-        """
-    ]
-    
-    success_count = 0
-    for i, sql in enumerate(indices_sql, 1):
-        if execute_sql(sql, f"Indicator Index {i}/{len(indices_sql)}", "trading"):
-            success_count += 1
-    
-    return success_count == len(indices_sql)
-
-def main():
-    print("📊 CLICKHOUSE MIGRATION: USER INDICATOR SETTINGS")
-    print("=" * 70)
-    print("📈 Indikator-Parameter und Visibility Configuration")
-    print("🎨 JSON Values für flexible Indikator-Settings")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen (falls nicht vorhanden)
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # user_indicator_settings Tabelle erstellen
-    if not create_user_indicator_settings_table():
-        print(f"\n⚠️  FEHLER beim Erstellen der user_indicator_settings Tabelle!")
-        return False
-
-    # Indices erstellen
-    if not create_indices():
-        print(f"\n⚠️  FEHLER beim Erstellen der Indicator-Performance-Indices!")
-        return False
-
-    # Success Summary
-    print(f"\n🎉 USER INDICATOR SETTINGS TABELLE ERFOLGREICH ERSTELLT!")
-    print("✅ user_indicator_settings - Indikator-Konfigurationen")
-    print("✅ Flexible JSON-Parameter für alle Indikator-Typen")
-    print("✅ Visibility & Style Management")
-    print("✅ MergeTree für optimale Read-Performance")
-    print("✅ Performance-Indices für häufige Queries")
-    print("✅ TTL: 2 Jahre für Langzeit-Archivierung")
-    
-    print(f"\n📊 UNTERSTÜTZTE INDIKATOREN:")
-    print("  📈 Trend: SMA, EMA, WMA, ALMA, Hull MA")
-    print("  📊 Momentum: RSI, MACD, Stochastic, Williams %R")
-    print("  📉 Volatility: Bollinger Bands, ATR, Keltner Channels")
-    print("  🎯 Volume: OBV, Volume Profile, VWAP")
-    print("  ⚡ Custom: Elliott Wave, Fibonacci, Support/Resistance")
-    
-    print(f"\n📊 KONFIGURATIONS-BEISPIELE:")
-    print("  📈 SMA.params = {\"period\": 20, \"source\": \"close\"}")
-    print("  📊 RSI.params = {\"period\": 14, \"overbought\": 70, \"oversold\": 30}")
-    print("  🎨 MACD.visibility = {\"enabled\": true, \"overlay\": false}")
-    print("  🎨 Bollinger.color = {\"upper\": \"#ff0000\", \"lower\": \"#00ff00\"}")
-    print("  📊 ALMA.style = {\"lineWidth\": 2, \"dashArray\": [5, 5]}")
-    
-    return True
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_system/user_secrets.py">
-#!/usr/bin/env python3
-"""
-USER SECRETS MIGRATION - ClickHouse ≥22.x
-Erstellt user_secrets Tabelle für verschlüsselte API Keys mit AES-256-GCM + Key-Rotation
-SICHERHEIT: Separate Tabelle für höchste Sicherheitsanforderungen
-"""
-import requests
-import sys
-import os
-
-# Environment Variables (CORRECTED: Ihre ClickHouse Konfiguration)
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')  # ← CORRECTED: 8124 ist richtig für Ihr System
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_user_secrets_table():
-    """Erstellt user_secrets Tabelle für verschlüsselte API Keys"""
-    print(f"\n🔐 ERSTELLE USER_SECRETS TABELLE (ENCRYPTED API KEYS)...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.user_secrets
-    (
-        user_id    String,
-        key        LowCardinality(String),   -- api.bitget, api.binance, ...
-        cipher     String,                   -- verschlüsselte Payload (Base64/Hex)
-        nonce      String,
-        tag        String,
-        kver       UInt16 DEFAULT 1,         -- Key Version für Rotation
-        updated_at DateTime DEFAULT now(),
-        created_at DateTime DEFAULT now()
-    )
-    ENGINE = ReplacingMergeTree(updated_at)
-    ORDER BY (user_id, key, updated_at)
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "user_secrets", "trading")
-
-def create_indices():
-    """Erstellt Performance-Indices für user_secrets"""
-    print(f"\n🔐 ERSTELLE SICHERHEITS-INDICES...")
-    
-    indices_sql = [
-        """
-        CREATE INDEX IF NOT EXISTS idx_us_user_key
-        ON trading.user_secrets (user_id, key)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_us_kver
-        ON trading.user_secrets (kver)
-        TYPE minmax GRANULARITY 1;
-        """
-    ]
-    
-    success_count = 0
-    for i, sql in enumerate(indices_sql, 1):
-        if execute_sql(sql, f"Security Index {i}/{len(indices_sql)}", "trading"):
-            success_count += 1
-    
-    return success_count == len(indices_sql)
-
-def main():
-    print("🔐 CLICKHOUSE MIGRATION: USER SECRETS (ENCRYPTED API KEYS)")
-    print("=" * 70)
-    print("🛡️ AES-256-GCM Verschlüsselung + Key-Rotation")
-    print("🔒 ReplacingMergeTree für automatische Deduplication")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen (falls nicht vorhanden)
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # user_secrets Tabelle erstellen
-    if not create_user_secrets_table():
-        print(f"\n⚠️  FEHLER beim Erstellen der user_secrets Tabelle!")
-        return False
-
-    # Indices erstellen
-    if not create_indices():
-        print(f"\n⚠️  FEHLER beim Erstellen der Sicherheits-Indices!")
-        return False
-
-    # Success Summary
-    print(f"\n🎉 USER SECRETS TABELLE ERFOLGREICH ERSTELLT!")
-    print("✅ user_secrets - Verschlüsselte API Keys")
-    print("✅ AES-256-GCM mit individuellen Salts")
-    print("✅ Key-Rotation Support (kver Versionierung)")
-    print("✅ ReplacingMergeTree für automatische Updates")
-    print("✅ Performance-Indices für schnellen Zugriff")
-    print("✅ TTL: Unbegrenzt (Sicherheitskritische Daten)")
-    
-    print(f"\n🔐 SICHERHEITS-FEATURES:")
-    print("  🛡️ Cipher: AES-256-GCM verschlüsselte Payload")
-    print("  🔑 Nonce: Eindeutige Nonce pro Verschlüsselung")
-    print("  🏷️ Tag: Authentication Tag für Integrität")
-    print("  🔄 Key Rotation: kver für Key-Versionsverwaltung")
-    
-    return True
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_system/user_settings.py">
-#!/usr/bin/env python3
-"""
-USER SETTINGS KV MIGRATION - ClickHouse ≥22.x
-Erstellt user_settings_kv Tabelle für system/trading/ui Settings
-FLEXIBILITÄT: JSON-Values für beliebige Datenstrukturen
-"""
-import requests
-import sys
-import os
-
-# Environment Variables (CORRECTED: Ihre ClickHouse Konfiguration)
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')  # ← CORRECTED: 8124 ist richtig für Ihr System
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')  # ← CORRECTED: admin ist richtig für Ihr System
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_user_settings_kv_table():
-    """Erstellt user_settings_kv Tabelle für system/trading/ui Settings"""
-    print(f"\n🔧 ERSTELLE USER_SETTINGS_KV TABELLE (KEY-VALUE SETTINGS)...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.user_settings_kv
-    (
-        user_id    String,
-        scope      LowCardinality(String),      -- system | trading | ui
-        key        LowCardinality(String),      -- z.B. theme, selectedExchange
-        value      String,                      -- JSON
-        updated_at DateTime,
-        created_at DateTime DEFAULT now()
-    )
-    ENGINE = MergeTree
-    ORDER BY (user_id, scope, key, updated_at)
-    TTL updated_at + INTERVAL 2 YEAR
-    SETTINGS index_granularity = 8192;
-    """
-    
-    return execute_sql(sql, "user_settings_kv", "trading")
-
-def create_indices():
-    """Erstellt Performance-Indices für user_settings_kv"""
-    print(f"\n🔧 ERSTELLE KV-PERFORMANCE-INDICES...")
-    
-    indices_sql = [
-        """
-        CREATE INDEX IF NOT EXISTS idx_uskv_user_scope
-        ON trading.user_settings_kv (user_id, scope)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_uskv_updated
-        ON trading.user_settings_kv (updated_at)
-        TYPE minmax GRANULARITY 1;
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_uskv_scope
-        ON trading.user_settings_kv (scope)
-        TYPE minmax GRANULARITY 1;
-        """
-    ]
-    
-    success_count = 0
-    for i, sql in enumerate(indices_sql, 1):
-        if execute_sql(sql, f"KV Index {i}/{len(indices_sql)}", "trading"):
-            success_count += 1
-    
-    return success_count == len(indices_sql)
-
-def main():
-    print("🔧 CLICKHOUSE MIGRATION: USER SETTINGS KV (KEY-VALUE)")
-    print("=" * 70)
-    print("⚙️ System/Trading/UI Settings mit JSON Values")
-    print("🗂️ MergeTree für flexibles Key-Value Design")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen (falls nicht vorhanden)
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # user_settings_kv Tabelle erstellen
-    if not create_user_settings_kv_table():
-        print(f"\n⚠️  FEHLER beim Erstellen der user_settings_kv Tabelle!")
-        return False
-
-    # Indices erstellen
-    if not create_indices():
-        print(f"\n⚠️  FEHLER beim Erstellen der KV-Performance-Indices!")
-        return False
-
-    # Success Summary
-    print(f"\n🎉 USER SETTINGS KV TABELLE ERFOLGREICH ERSTELLT!")
-    print("✅ user_settings_kv - Key-Value Settings")
-    print("✅ Scopes: system, trading, ui")
-    print("✅ JSON Values für flexible Datenstrukturen")
-    print("✅ MergeTree für optimale Read-Performance")
-    print("✅ Performance-Indices für häufige Queries")
-    print("✅ TTL: 2 Jahre für Langzeit-Archivierung")
-    
-    print(f"\n🔧 VERWENDUNGS-BEISPIELE:")
-    print("  ⚙️ system.theme = 'dark' | 'light'")
-    print("  ⚙️ system.selectedExchange = 'binance'")
-    print("  📈 trading.defaultAmount = 100.0")
-    print("  🖥️ ui.favorites = ['BTCUSDT', 'ETHUSDT']")
-    print("  🖥️ ui.layoutConfig = {...}")
-    
-    return True
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/scripts/cleanup.py">
-#!/usr/bin/env python3
-"""
-CLEANUP SCRIPT - Löscht ALLE Tabellen
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def execute_sql(sql, description="", database="default", ignore_errors=True):
-    """Führt SQL-Statement aus"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}")
-            return True
-        else:
-            if not ignore_errors:
-                print(f"❌ {description}: {response.text.strip()}")
-            return False
-            
-    except Exception as e:
-        if not ignore_errors:
-            print(f"❌ {description}: {str(e)}")
-        return False
-
-def cleanup_all_tables():
-    """Löscht ALLE Tabellen"""
-    print("\n🧹 VOLLSTÄNDIGES CLEANUP - LÖSCHE ALLE TABELLEN...")
-    
-    tables_to_drop = []
-    
-    # ALTE NAMEN (trades_{exchange})
-    for exchange in EXCHANGES:
-        tables_to_drop.extend([
-            f"trading.trades_{exchange}",
-            f"trading.orderbook_{exchange}",
-            f"trading.whale_orders_{exchange}",
-            f"trading.whale_events_{exchange}"
-        ])
-    
-    # NEUE NAMEN ({exchange}_trades)
-    for exchange in EXCHANGES:
-        tables_to_drop.extend([
-            f"trading.{exchange}_trades",
-            f"trading.{exchange}_orderbook",
-            f"trading.{exchange}_whale_orders",
-            f"trading.{exchange}_whale_events"
-        ])
-    
-    # System Settings Tabellen (Enterprise)
-    tables_to_drop.extend([
-        "trading.user_settings_kv",
-        "trading.user_coin_settings", 
-        "trading.user_indicator_settings",
-        "trading.user_settings",
-        "trading.user_settings_latest",
-        "trading.user_secrets"
-    ])
-    
-    # Globale Tabellen
-    tables_to_drop.extend([
-        "trading.kline",
-        "trading.all_kline",
-        "trading.all_orderbook",
-        "trading.all_whale",
-        "trading.trades",
-        "trading.orderbook",
-        "trading.whale_events",
-        "trading.whale_orders"
-    ])
-    
-    # Indikator-Tabellen
-    tables_to_drop.extend([
-        "trading.base_signals",
-        "trading.tier1_signals",
-        "trading.alma_indicators",
-        "trading.elliott_wave_indicators",
-        "trading.whale_impact_indicators",
-        "trading.six_sigma_indicators",
-        "trading.spectral_power_indicators",
-        "trading.volatility_indicators",
-        "trading.correlation_indicators",
-        "trading.regime_indicators",
-        "trading.indicator_performance"
-    ])
-    
-    count = 0
-    for table in tables_to_drop:
-        if execute_sql(f"DROP TABLE IF EXISTS {table}", f"Lösche {table}"):
-            count += 1
-    
-    print(f"\n✅ {count} Tabellen gelöscht!")
-    return True
-
-def main():
-    print("🔥 CLICKHOUSE CLEANUP - LÖSCHE ALLE TABELLEN")
-    print("=" * 60)
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test", ignore_errors=False):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Cleanup durchführen
-    if cleanup_all_tables():
-        print("\n🎉 CLEANUP ERFOLGREICH!")
-        print("✅ System ist sauber - bereit für neue Tabellen")
-        return True
-    else:
-        print("\n⚠️  CLEANUP FEHLER!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/scripts/run_all.py">
-#!/usr/bin/env python3
-"""
-MASTER MIGRATION SCRIPT
-Führt alle Migrations in der richtigen Reihenfolge aus
-"""
-import subprocess
-import sys
-import os
-
-def run_script(script_path, description):
-    """Führt ein Python-Script aus"""
-    print(f"\n{'='*70}")
-    print(f"🔥 {description}")
-    print(f"{'='*70}")
-    
-    try:
-        result = subprocess.run(
-            ['python3', script_path],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            capture_output=False,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            print(f"✅ {description} - ERFOLGREICH")
-            return True
-        else:
-            print(f"❌ {description} - FEHLER (Code {result.returncode})")
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description} - EXCEPTION: {str(e)}")
-        return False
-
-def main():
-    print("🔥 MASTER MIGRATION - ALLE TABELLEN NEU ERSTELLEN")
-    print("=" * 70)
-    print("⚡ 1. Cleanup (alte Tabellen löschen)")
-    print("⚡ 2. User Secrets (Encrypted API Keys)")
-    print("⚡ 3. User Settings KV (system/trading/ui)")
-    print("⚡ 4. User Coin Settings (L/H/Favorite Toggles)")
-    print("⚡ 5. User Indicator Settings (SMA/RSI/MACD Config)")
-    print("⚡ 6. Exchange Trades & OrderBook (16 Tabellen)")
-    print("⚡ 7. Whale Events & Orders (16 Tabellen)")
-    print("⚡ 8. Global all_kline (1 Tabelle)")
-    print("⚡ 9. Global all_orderbook (1 Tabelle)")
-    print("⚡ 10. Global all_whale (1 Tabelle)")
-    print("⚡ TOTAL: ~50+ Tabellen")
-    print("=" * 70)
-    
-    input("\n⚠️  Drücken Sie ENTER um fortzufahren oder CTRL+C zum Abbrechen...")
-    
-    scripts = [
-        ("../db_system/user_secrets.py", "USER SECRETS - Encrypted API Keys"),
-        ("../db_system/user_settings.py", "USER SETTINGS KV - system/trading/ui"),
-        ("../db_system/user_coin_settings.py", "USER COIN SETTINGS - L/H/Favorite Toggles"),
-        ("../db_system/user_indicator_settings.py", "USER INDICATOR SETTINGS - SMA/RSI/MACD Config"),
-        ("../db_market/exchanges_db.py", "EXCHANGE TABLES - Trades & OrderBook"),
-        ("../db_market/whale_db.py", "WHALE TABLES - Events & Orders"),
-        ("../db_md/all_kline.py", "GLOBAL TABLE - all_kline"),
-        ("../db_md/all_orderbook_.py", "GLOBAL TABLE - all_orderbook"),
-        ("../db_md/all_whales_.py", "GLOBAL TABLE - all_whale")
-    ]
-    
-    success_count = 0
-    for script, desc in scripts:
-        if run_script(script, desc):
-            success_count += 1
-        else:
-            print(f"\n❌ FEHLER bei {desc}")
-            print("⚠️  Migration abgebrochen!")
-            return False
-    
-    print(f"\n{'='*70}")
-    print(f"🎉 ALLE {len(scripts)} MIGRATIONS ERFOLGREICH!")
-    print(f"{'='*70}")
-    print("✅ Cleanup durchgeführt")
-    print("✅ 16 Exchange-Tabellen erstellt (trades + orderbook)")
-    print("✅ 16 Whale-Tabellen erstellt (events + orders)")
-    print("✅ 11 Indikator-Tabellen erstellt (AI/ML)")
-    print("✅ 3 Globale Tabellen erstellt")
-    print(f"✅ TOTAL: 46 Tabellen erstellt")
-    
-    # Zeige finale Tabellenliste
-    print(f"\n📊 Zeige finale Tabellenliste...")
-    run_script("show_tables.py", "SHOW TABLES")
-    
-    return True
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Migration abgebrochen durch User")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/scripts/validate_tables.py">
-#!/usr/bin/env python3
-"""
-DETAILLIERTE ANALYSE ALLER EXCHANGE-TABELLEN
-Schöne Darstellung mit Statistiken, Datentypen, Status und Metadaten
-"""
-import requests
-import os
-from datetime import datetime
-
-# Environment Variables (gleiche wie Migration)
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-TABLE_TYPES = ["trades", "orderbook", "whale_events", "whale_orders"]
-SYSTEM_TABLES = ["user_secrets", "user_settings_kv", "user_coin_settings", "user_indicator_settings"]
-LEGACY_SYSTEM_TABLES = ["user_settings", "user_settings_latest"]
-MD_TABLES = ["all_kline", "all_orderbook", "all_whale"]
-
-def execute_sql(sql, description="", return_data=False):
-    """Führt SQL-Statement aus und gibt Ergebnis zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database=default"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            result = response.text.strip()
-            if return_data:
-                return result
-            print(f"✅ {description}: {result}")
-            return True
-        else:
-            if return_data:
-                return None
-            print(f"❌ {description}: {response.status_code}")
-            return False
-            
-    except Exception as e:
-        if return_data:
-            return None
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        return False
-
-def format_bytes(bytes_value):
-    """Formatiert Bytes in lesbare Größen (KB, MB, GB)"""
-    try:
-        bytes_int = int(bytes_value) if bytes_value else 0
-        if bytes_int == 0:
-            return "0 Bytes"
-        elif bytes_int < 1024:
-            return f"{bytes_int} Bytes"
-        elif bytes_int < 1024 * 1024:
-            return f"{bytes_int / 1024:.1f} KB"
-        elif bytes_int < 1024 * 1024 * 1024:
-            return f"{bytes_int / (1024 * 1024):.1f} MB"
-        else:
-            return f"{bytes_int / (1024 * 1024 * 1024):.2f} GB"
-    except (ValueError, TypeError):
-        return "0 Bytes"
-
-def format_datatype(datatype):
-    """Formatiert Datentypen schöner"""
-    if "Decimal(76, 38)" in datatype:
-        return "💰 Decimal(76,38) - High-Precision"
-    elif "DateTime64(3, 'UTC')" in datatype:
-        return "🕐 DateTime64(3,UTC) - Milliseconds"
-    elif "LowCardinality(String)" in datatype:
-        return "📝 LowCardinality(String) - Optimized"
-    elif "Enum8" in datatype:
-        return f"🔢 {datatype} - Enumeration"
-    elif "UInt64" in datatype:
-        return "🔢 UInt64 - Large Integer"
-    elif "UInt16" in datatype:
-        return "🔢 UInt16 - Small Integer"
-    elif "UInt8" in datatype:
-        return "🔢 UInt8 - Tiny Integer"
-    elif "UInt32" in datatype:
-        return "🔢 UInt32 - Medium Integer"
-    elif "String" in datatype:
-        return "📝 String - Text"
-    elif "Nullable(String)" in datatype:
-        return "📝 Nullable(String) - Optional Text"
-    elif "AggregateFunction" in datatype:
-        return f"⚡ {datatype} - Aggregate Func"
-    else:
-        return datatype
-
-def get_table_metadata(table_name):
-    """Holt Metadaten einer Tabelle"""
-    metadata = {}
-    
-    # Anzahl Einträge
-    count = execute_sql(f"SELECT count() FROM trading.{table_name}", return_data=True)
-    metadata['count'] = int(count) if count and count.isdigit() else 0
-    
-    # Dateigröße auf Disk ermitteln
-    size_query = f"SELECT sum(bytes_on_disk) FROM system.parts WHERE database = 'trading' AND table = '{table_name}'"
-    size_bytes = execute_sql(size_query, return_data=True)
-    metadata['size_bytes'] = int(size_bytes) if size_bytes and size_bytes.isdigit() else 0
-    metadata['size_formatted'] = format_bytes(metadata['size_bytes'])
-    
-    # Erstellungsdatum (approximiert über system.tables)
-    creation_query = f"SELECT create_table_query FROM system.tables WHERE database = 'trading' AND name = '{table_name}'"
-    create_info = execute_sql(creation_query, return_data=True)
-    metadata['created'] = "Heute (Migration)" if create_info else "Unbekannt"
-    
-    # Letzter Eintrag (falls Daten vorhanden)
-    if metadata['count'] > 0:
-        if 'trades_' in table_name or 'orderbook_' in table_name:
-            last_entry = execute_sql(f"SELECT max(timestamp) FROM trading.{table_name}", return_data=True)
-        elif 'whale_events_' in table_name:
-            last_entry = execute_sql(f"SELECT max(ts) FROM trading.{table_name}", return_data=True)
-        elif 'whale_orders_' in table_name:
-            last_entry = execute_sql(f"SELECT max(time_bucket) FROM trading.{table_name}", return_data=True)
-        else:
-            last_entry = "N/A"
-        metadata['last_entry'] = last_entry if last_entry else "N/A"
-    else:
-        metadata['last_entry'] = "Keine Daten"
-    
-    # Tabellengröße für frisch migrierte Tabellen
-    if metadata['count'] == 0:
-        metadata['size_status'] = "✅ Leer (Erwarteter Zustand nach Migration)"
-    elif metadata['count'] <= 100:
-        metadata['size_status'] = "🟡 Wenig Daten"  
-    elif metadata['count'] <= 10000:
-        metadata['size_status'] = "🟢 Gut gefüllt"
-    else:
-        metadata['size_status'] = "🚀 Sehr gut gefüllt"
-    
-    return metadata
-
-def analyze_table_structure(table_name):
-    """Analysiert die Struktur einer Tabelle detailliert"""
-    print(f"\n{'='*80}")
-    print(f"📊 DETAILANALYSE: {table_name.upper()}")
-    print(f"{'='*80}")
-    
-    # Metadaten holen
-    metadata = get_table_metadata(table_name)
-    
-    # Status-Übersicht
-    print(f"📈 STATUS:")
-    print(f"   🔢 Anzahl Einträge: {metadata['count']:,}")
-    print(f"   💾 Dateigröße: {metadata['size_formatted']}")
-    print(f"   📅 Erstellt: {metadata['created']}")
-    print(f"   🕐 Letzter Eintrag: {metadata['last_entry']}")
-    print(f"   📊 Füllstand: {metadata['size_status']}")
-    
-    # Struktur analysieren
-    structure = execute_sql(f"DESCRIBE trading.{table_name}", return_data=True)
-    if structure:
-        print(f"\n💾 TABELLENSTRUKTUR:")
-        lines = structure.split('\n')
-        for line in lines:
-            if line.strip():
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    field_name = parts[0].ljust(20)
-                    datatype = format_datatype(parts[1])
-                    if len(parts) > 2 and parts[2]:
-                        extra = f" ({parts[2]})"
-                    else:
-                        extra = ""
-                    print(f"   {field_name} → {datatype}{extra}")
-
-def main():
-    print("🔍 DETAILLIERTE EXCHANGE-TABELLEN ANALYSE")
-    print("=" * 80)
-    print(f"🕐 Analyse-Zeitpunkt: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
-    
-    # 1. Gesamtübersicht
-    total_tables = execute_sql("SELECT count() FROM system.tables WHERE database = 'trading'", return_data=True)
-    print(f"\n📋 GESAMTÜBERSICHT:")
-    print(f"   📊 Gesamte Tabellen in 'trading': {total_tables}")
-    print(f"   🏦 Erwartete Exchange-Tabellen: {len(EXCHANGES) * len(TABLE_TYPES)} (8×4)")
-    
-    # 2. Exchange-Übersicht
-    print(f"\n🏦 EXCHANGE-ÜBERSICHT:")
-    for exchange in EXCHANGES:
-        table_count = 0
-        total_records = 0
-        total_size_bytes = 0
-        
-        for table_type in TABLE_TYPES:
-            table_name = f"{exchange}_{table_type}"
-            metadata = get_table_metadata(table_name)
-            if metadata['count'] >= 0:  # Tabelle existiert
-                table_count += 1
-                total_records += metadata['count']
-                total_size_bytes += metadata['size_bytes']
-        
-        status = "✅ Vollständig" if table_count == 4 else f"⚠️ Unvollständig ({table_count}/4)"
-        total_size_formatted = format_bytes(total_size_bytes)
-        print(f"   🔹 {exchange.upper().ljust(10)} → {status} | 📊 {total_records:,} Einträge | 💾 {total_size_formatted}")
-    
-    # 3. Detailanalyse jeder Exchange
-    for exchange in EXCHANGES:
-        print(f"\n\n🏦 DETAILANALYSE FÜR {exchange.upper()}")
-        print("*" * 80)
-        
-        for table_type in TABLE_TYPES:
-            table_name = f"{exchange}_{table_type}"
-            analyze_table_structure(table_name)
-    
-    # 4. Zusätzliche Tabellen
-    print(f"\n\n📊 ZUSÄTZLICHE TABELLEN:")
-    all_tables = execute_sql("SHOW TABLES FROM trading", return_data=True)
-    if all_tables:
-        additional_tables = []
-        for table in all_tables.split('\n'):
-            if table.strip() and not any(f"{ex}_{tt}" == table.strip() for ex in EXCHANGES for tt in TABLE_TYPES):
-                additional_tables.append(table.strip())
-        
-        for table in additional_tables:
-            metadata = get_table_metadata(table)
-            print(f"   🔹 {table} → {metadata['size_status']} ({metadata['count']:,} Einträge)")
-    
-    # 5. Zusammenfassung
-    print(f"\n\n🎯 ZUSAMMENFASSUNG:")
-    print("=" * 80)
-    print("✅ Migration erfolgreich - 32 separate Exchange-Tabellen erstellt")
-    print("✅ Alle Tabellen OHNE exchange LowCardinality(String) field")
-    print("✅ Decimal(76,38) für maximale Präzision implementiert")
-    print("✅ DateTime64(3,UTC) für einheitliche Zeitstempel")
-    print("✅ Dedizierte Indices und TTL pro Exchange")
-    print("⚡ System bereit für maximale Latenz-Performance!")
-
-if __name__ == "__main__":
-    main()
-</file>
-
-<file path="backend/database/tables/000_table.md">
-# DATABASE MIGRATIONS - ENTERPRISE SYSTEM
-
-## 🎯 ÜBERSICHT
-
-Dieses Dokument beschreibt das **Enterprise Migration-System** mit granularer Tabellen-Verwaltung und INSERT-only Design für maximale Performance.
-
-## 📊 AKTUELLE STRUKTUR (46 TABELLEN - VERIFIZIERT)
-
-### 1. Exchange-Tabellen (32 Tabellen)
-**8 Exchanges × 4 Tabellen = 32 Tabellen**
-
-**Naming Convention:** `{exchange}_{type}`
-
-Exchanges: binance, bitget, mexc, gateio, bybit, okx, htx, coinbase
-
-**Typen pro Exchange:**
-- `{exchange}_trades` - Trade-Daten (TTL: 6 Monate)
-- `{exchange}_orderbook` - OrderBook-Daten (TTL: 1 Monat)
-- `{exchange}_whale_events` - Whale Event-Daten (TTL: 3 Monate)
-- `{exchange}_whale_orders` - Aggregierte Whale Orders (AggregatingMergeTree)
-
-**Alle 32 Exchange Tables:**
-```
-# Trades (8 Tables)
-binance_trades, bitget_trades, mexc_trades, gateio_trades
-bybit_trades, okx_trades, htx_trades, coinbase_trades
-
-# OrderBook (8 Tables)
-binance_orderbook, bitget_orderbook, mexc_orderbook, gateio_orderbook
-bybit_orderbook, okx_orderbook, htx_orderbook, coinbase_orderbook
-
-# Whale Events (8 Tables)
-binance_whale_events, bitget_whale_events, mexc_whale_events, gateio_whale_events
-bybit_whale_events, okx_whale_events, htx_whale_events, coinbase_whale_events
-
-# Whale Orders (8 Tables)
-binance_whale_orders, bitget_whale_orders, mexc_whale_orders, gateio_whale_orders
-bybit_whale_orders, okx_whale_orders, htx_whale_orders, coinbase_whale_orders
-```
-
-### 2. Indicator-Tabellen (11 Tabellen) ✅ EXISTIEREN
-**Advanced Trading Analytics mit Decimal-Präzision**
-
-```
-base_signals              # Signal Tracking mit UUID
-tier1_signals             # Hauptsignale mit Tier1-Score
-alma_indicators           # Arnaud Legoux Moving Average
-elliott_wave_indicators   # Elliott-Wellen-Analyse
-whale_impact_indicators   # Whale-Aktivität Impact-Scores
-six_sigma_indicators      # Six-Sigma Extremwert-Analyse
-spectral_power_indicators # FFT Spektralanalyse
-volatility_indicators     # GARCH/EWMA Volatilitäts-Modelle
-correlation_indicators    # Asset-Korrelationsanalyse
-regime_indicators         # Marktregime-Erkennung
-indicator_performance     # Performance-Tracking
-```
-
-### 3. Cross-Exchange MD-Tabellen (3 Tabellen)
-**Cross-Exchange Analysen:**
-```
-all_kline         # Multi-Interval OHLC (alle Exchanges, TTL: 12 Monate)
-all_orderbook     # Best Quotes (alle Exchanges, TTL: 1 Monat) 
-all_whale         # Whale Events (alle Exchanges, TTL: 3 Monate)
-```
-
-## 🏢 ENTERPRISE SYSTEM SETTINGS (4 SEPARATEN TABELLEN)
-**Granulare Verwaltung für Ultra-Fast Performance**
-
-**System Tables (4 Tabellen):**
-- `user_secrets` - Encrypted API Keys mit AES-256-GCM + Key-Rotation
-- `user_settings_kv` - Key-Value Settings (system/trading/ui)
-- `user_coin_settings` - L/H/Favorite/Resolution pro Coin (UInt8 Toggles)
-- `user_indicator_settings` - Indikator-Parameter und Visibility (SMA/RSI/MACD)
-
-## 🔧 ENTERPRISE MIGRATION-SYSTEM (20+ Scripts)
-
-### Master-Scripts (4 Scripts)
-```
-backend/db/migrations/scripts/
-├── 000_cleanup.py              # Löscht alle Tabellen
-├── 000_show_tables.py          # Zeigt alle Tabellen + Größen
-├── 000_run_all.py              # Master-Migration (alle Bereiche)
-└── 000_validate_tables.py     # Detaillierte Tabellen-Analyse
-```
-
-### Granulare Scripts pro Bereich
-
-#### 1. Exchange Tables (4 Scripts)
-```
-backend/db/migrations/db_market/
-├── 001_exchanges_db.py         # 16 Exchange-Tabellen (trades+orderbook)
-├── 002_whale_db.py            # 16 Whale-Tabellen (whale_events+whale_orders)
-└── scripts/
-    ├── run_exchanges.py       # Interactive Exchange-Auswahl
-    ├── delete_exchanges.py    # Safe Delete (granular)
-    ├── run_whales.py         # Interactive Whale-Auswahl
-    └── delete_whales.py      # Safe Delete (granular)
-```
-
-#### 2. Indicator Tables (1 Script)
-```
-backend/db/migrations/zold/
-└── 002_indicator_tables.py    # Alle 11 Indicator-Tabellen
-```
-
-#### 3. Cross-Exchange MD (6 Scripts)
-```
-backend/db/migrations/db_md/
-├── 001_all_kline.py           # Cross-Exchange OHLC
-├── 002_all_orderbook_.py      # Cross-Exchange OrderBook
-├── 003_all_whales_.py         # Cross-Exchange Whales
-└── scripts/
-    ├── run_kline.py           # Erstellt all_kline
-    ├── delete_kline.py        # Löscht all_kline (Safe)
-    ├── run_orderbook.py       # Erstellt all_orderbook
-    ├── delete_orderbook.py    # Löscht all_orderbook (Safe)
-    ├── run_whales.py          # Erstellt all_whale
-    └── delete_whales.py       # Löscht all_whale (Safe)
-```
-
-#### 4. Enterprise System Settings (12 Scripts)
-```
-backend/db/migrations/db_system/
-├── 000_user_secrets.py        # Encrypted API Keys
-├── 001_user_settings.py       # KV Settings (system/trading/ui)
-├── 002_user_coin_settings.py  # L/H/Favorite/Resolution Settings  
-├── 003_user_indicator_settings.py # Indikator-Konfigurationen
-└── scripts/
-    ├── run_user_secrets.py    # Erstellt user_secrets
-    ├── delete_user_secrets.py # Löscht user_secrets (Safe)
-    ├── run_user_settings.py   # Erstellt user_settings_kv
-    ├── delete_user_settings.py # Löscht user_settings_kv (Safe)
-    ├── run_user_coin_settings.py # Erstellt user_coin_settings
-    ├── delete_user_coin_settings.py # Löscht user_coin_settings (Safe)
-    ├── run_user_indicator_settings.py # Erstellt user_indicator_settings
-    └── delete_user_indicator_settings.py # Löscht user_indicator_settings (Safe)
-```
-
-#### 5. SQL Generator (3 Scripts)
-```
-backend/db/migrations/db_generator/
-├── 000_generate_init_sql.py   # SQL Generator
-└── scripts/
-    ├── run_generator.py       # Python → init.sql Generator
-    ├── validate_generator.py  # Prüft init.sql Synchronisation
-    └── delete_generator.py    # Löscht generierte init.sql (Safe)
-```
-
-## ⚠️ NAMING CONVENTION
-
-### AKTUELLE Naming Convention:
-```
-binance_trades      ✅
-bitget_orderbook    ✅
-mexc_whale_events   ✅
-```
-
-**Vorteile:**
-- Bessere Gruppierung in Datenbank-Tools
-- Alle Binance-Tabellen sortiert zusammen
-- Konsistente Exchange-First Naming
-
-## 🚀 ENTERPRISE WORKFLOWS
-
-### 1. Master-Migration (Alle Bereiche):
-```bash
-cd backend/db/migrations/scripts
-python3 000_run_all.py                    # Alle 46 Tabellen erstellen
-python3 000_show_tables.py                # Status anzeigen
-python3 000_validate_tables.py            # Detailanalyse
-python3 000_cleanup.py                    # Alle löschen (falls nötig)
-```
-
-### 2. Granulare Verwaltung pro Bereich:
-
-#### Exchange Tables (32 Tabellen):
-```bash
-cd backend/db/migrations/db_market/scripts
-python3 run_exchanges.py --all --yes      # 16 Exchange-Tabellen (trades+orderbook)
-python3 run_whales.py --all               # 16 Whale-Tabellen (whale_events+whale_orders)
-python3 delete_exchanges.py               # Interactive Delete (granular)
-python3 delete_whales.py                  # Interactive Delete (granular)
-```
-
-#### Indicator Tables (11 Tabellen):
-```bash
-cd backend/db/migrations/zold/
-python3 002_indicator_tables.py           # Alle 11 Indicator-Tabellen
-```
-
-#### Cross-Exchange MD (3 Tabellen):
-```bash
-cd backend/db/migrations/db_md/scripts
-python3 run_kline.py --yes                # Cross-Exchange OHLC
-python3 run_orderbook.py --yes            # Cross-Exchange OrderBook
-python3 run_whales.py --yes               # Cross-Exchange Whale Events
-```
-
-#### Enterprise System Settings (4 Separate Tabellen):
-```bash
-cd backend/db/migrations/db_system/scripts
-# Einzelne Tabellen
-python3 run_user_secrets.py --yes         # Encrypted API Keys
-python3 run_user_settings.py --yes        # KV Settings (system/trading/ui)
-python3 run_user_coin_settings.py --yes   # L/H/Favorite/Resolution Toggles  
-python3 run_user_indicator_settings.py --yes # Indikator-Konfigurationen
-
-# Safe Delete (mit 'DELETE' Bestätigung)
-python3 delete_user_secrets.py            # Löscht user_secrets
-python3 delete_user_settings.py           # Löscht user_settings_kv
-python3 delete_user_coin_settings.py      # Löscht user_coin_settings
-python3 delete_user_indicator_settings.py # Löscht user_indicator_settings
-```
-
-#### SQL Generator:
-```bash
-cd backend/db/migrations/db_generator/scripts
-python3 run_generator.py --yes            # Python → init.sql
-python3 validate_generator.py             # Sync-Check
-python3 delete_generator.py               # init.sql löschen (Safe)
-```
-
-## 🔄 SYNCHRONISATION: PYTHON → SQL
-
-**Single Source of Truth:** Python Migration Scripts
-
-**Flow:**
-1. Entwickler ändert Python Migration Scripts
-2. Führt `python3 backend/db/migrations/000_generate_init_sql.py` aus
-3. `clickhouse/init.sql` wird automatisch mit allen 46 Tabellen generiert
-4. Beide sind synchron!
-
-**Template-Expansion:**
-- Python Scripts nutzen `{exchange}` Platzhalter für 8 Exchanges
-- Generator expandiert automatisch: 1 Template → 8 konkrete Tabellen
-- Ergebnis: Alle 46 Tabellen konkret in init.sql
-
-## 📊 DECIMAL PRECISION
-
-**Trading-Präzision für alle monetären Werte:**
-- `Decimal(76,38)` für Preise/Mengen (ClickHouse Maximum)
-- `Decimal(18,8)` für Standard-Indikator-Werte
-- `Decimal(20,8)` für große USD-Volumina (Whales)
-- `Decimal(5,4)` für Scores/Ratios/Confidence
-- `Decimal(6,4)` für Korrelationen
-
-## 🎯 VERWENDUNG IM CODE
-
-### Python Backend:
-```python
-# Exchange-spezifische Tabelle
-query = f"SELECT * FROM trading.binance_trades WHERE symbol = 'BTCUSDT'"
-
-# Cross-Exchange Tabelle
-query = f"SELECT * FROM trading.all_kline WHERE exchange = 'binance'"
-
-# Indicator Tabelle
-query = f"SELECT * FROM trading.alma_indicators WHERE symbol = 'BTCUSDT'"
-```
-
-### Docker Setup:
-```yaml
-# docker-compose.yml verwendet clickhouse/init.sql beim ersten Start
-# init.sql enthält alle 46 Tabellen (auto-generiert)
-```
-
-**Bei Python Migration Änderungen:**
-```bash
-# init.sql neu generieren
-python3 backend/db/migrations/000_generate_init_sql.py
-
-# Dann Docker neu starten
-docker-compose down && docker-compose up -d
-```
-
-## ⚡ PERFORMANCE-METRIKEN
-
-### Tabellen-Performance:
-- **Exchange Tables:** ~50MB/Tag pro Exchange
-- **Whale Tables:** ~10MB/Tag pro Exchange  
-- **Indicator Tables:** ~20MB/Tag gesamt
-- **Cross-Exchange Tables:** ~30MB/Tag gesamt
-
-### Memory Usage:
-- **Total Tables:** 46 Tabellen (Basis) + 3-5 Enterprise System Tables
-- **Geschätzter Speicher:** ~200MB/Tag
-- **Retention:** Variable TTL (1-12 Monate)
-- **Compressed Storage:** ~20MB/Tag nach Kompression
-
-## 🚨 TROUBLESHOOTING
-
-### 1. Migration Script fehlgeschlagen:
-```bash
-# ClickHouse Status prüfen
-docker-compose ps clickhouse
-docker-compose logs clickhouse
-docker-compose restart clickhouse
-```
-
-### 2. Tabelle existiert bereits:
-```bash
-# Granular Delete verwenden
-cd backend/db/migrations/db_market/scripts
-python3 delete_exchanges.py
-python3 run_exchanges.py
-```
-
-### 3. init.sql out of sync:
-```bash
-cd backend/db/migrations/db_generator/scripts
-python3 run_generator.py --yes
-python3 validate_generator.py
-```
-
-### 4. Performance Probleme:
-```bash
-# Für System Settings: Materialized View nutzen
-# ❌ Langsam: SELECT * FROM user_settings WHERE user_id='123' ORDER BY updated_at DESC LIMIT 1
-# ✅ Schnell: SELECT * FROM user_settings_latest WHERE user_id='123'
-```
-
-## 🔧 ERWEITERTE WORKFLOWS
-
-### Selective Migration (bestimmte Exchanges):
-```bash
-cd backend/db/migrations/db_market/scripts
-python3 run_exchanges.py --exchanges binance,bitget --yes
-python3 run_whales.py --exchanges binance,bitget --yes
-```
-
-### Development vs Production:
-```bash
-# Development: Core Exchanges
-python3 run_exchanges.py --exchanges binance,bybit --yes
-
-# Production: Alle Exchanges
-python3 run_exchanges.py --all --yes
-```
-
-### Backup vor Migration:
-```bash
-clickhouse-client --query "CREATE TABLE user_settings_backup AS user_settings"
-python3 000_run_all.py
-clickhouse-client --query "DROP TABLE user_settings_backup"
-```
-
-## 🔐 SICHERHEIT (Enterprise System Settings)
-
-### API Key Verschlüsselung (Fernet - REALE IMPLEMENTIERUNG):
-- **Algorithmus:** Fernet (AES-128 CBC + HMAC-SHA256)
-- **Key Management:** Statischer Schlüssel aus ENV Variable (CRYPTO_KEY)
-- **Kein automatisches Key-Rotation:** Manueller Prozess falls nötig
-- **Storage:** user_secrets Tabelle mit cipher/nonce/tag Feldern
-- **Security Level:** Basis-Verschlüsselung für Development/Testing
-
-## 📊 MONITORING & HEALTH CHECKS
-
-### Tabellen-Größen überwachen:
-```bash
-python3 000_show_tables.py | grep -E "MB|GB"
-```
-
-### Query Performance:
-```bash
-clickhouse-client --query "SELECT query, elapsed FROM system.processes WHERE elapsed > 1.0"
-```
-
-### Disk Usage:
-```bash
-clickhouse-client --query "SELECT database, sum(bytes_on_disk) as size FROM system.parts GROUP BY database"
-```
-
-### Daily Health Check:
-```bash
-cd backend/db/migrations/scripts
-python3 000_validate_tables.py --quiet --exit-on-error
-echo $? # 0 = OK, 1 = Error
-```
-
-## 🏗️ ENTERPRISE BEST PRACTICES
-
-✅ **Versionierung** - Alle Migrations in Git  
-✅ **Atomare Änderungen** - Ein Script = Eine Änderung  
-✅ **Rollback-fähig** - Cleanup + Re-run möglich  
-✅ **Dokumentiert** - Jedes Script hat Kommentare  
-✅ **Testbar** - Kann in CI/CD getestet werden  
-✅ **Single Source** - Python Scripts = Master  
-✅ **Sicherheit** - AES-256-GCM Verschlüsselung (Enterprise)  
-✅ **Monitoring** - Automatische Health Checks  
-✅ **Performance** - INSERT-only Design & Materialized Views  
-✅ **Skalierbar** - Template-basierte Exchange-Expansion  
-
-## 🚀 CI/CD INTEGRATION
-
-### GitHub Actions Pipeline:
-```yaml
-name: Database Migrations
-on: [push, pull_request]
-jobs:
-  test-migrations:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Start ClickHouse
-        run: docker-compose up -d clickhouse
-      - name: Run All Migrations
-        run: python3 backend/db/migrations/scripts/000_run_all.py --yes
-      - name: Validate Tables
-        run: python3 backend/db/migrations/scripts/000_validate_tables.py --exit-on-error
-      - name: Cleanup
-        run: python3 backend/db/migrations/scripts/000_cleanup.py --yes
-```
-
-## 📅 CHANGELOG
-
-### 2025-10-28 - VOLLSTÄNDIGE DATENBANK-ANALYSE
-- 🔍 **Alle Migration Scripts analysiert** (echte Code-Basis)
-- ✅ **46 Tabellen vollständig verifiziert** (32 Exchange + 11 Indicator + 3 Cross-Exchange)
-- 🏢 **Enterprise System Settings** als separates Feature dokumentiert
-- 📊 **Indicator Tables korrekt identifiziert** (existieren bereits!)
-- 🎯 **Migration Scripts-Struktur** korrekt dokumentiert
-- 🔧 **Workflows mit echten Pfaden** aktualisiert
-- 📝 **Single Source of Truth** bestätigt (Python → init.sql)
-
-### 2025-01-14 - INITIAL SYSTEM
-- ✅ Naming Convention: `{exchange}_{type}` statt `{type}_{exchange}`
-- ✅ Template-basierte Exchange-Expansion implementiert
-- ✅ Generator Script für init.sql erstellt
-- ✅ Python Migrations als Single Source of Truth etabliert
-
----
-
-**Letzte Aktualisierung:** 28.10.2025  
-**Status:** 🚀 Enterprise-Ready / Produktionsbereit  
-**Tabellen:** 46 (Basis) + 3-5 (Enterprise System Settings - Optional)  
-**Scripts:** 20+ (Vollständig implementiert)  
-**Verifikation:** ✅ Alle Tabellen durch Code-Analyse bestätigt
 </file>
 
 <file path="backend/exchanges/binance/services/__init__.py">
@@ -124391,1102 +121140,6 @@ RS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
-<file path="backend/database/tables/db_market/scripts/delete_exchanges.py">
-#!/usr/bin/env python3
-"""
-DELETE ALL EXCHANGE TABLES
-Löscht ALLE 16 Exchange-Tabellen (8 Exchanges × 2 Tabellen)
-- {exchange}_trades (8 Tabellen)
-- {exchange}_orderbook (8 Tabellen)
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import exchanges_db
-sys.path.append(str(Path(__file__).parent.parent))
-
-from exchanges_db import execute_sql, EXCHANGES
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: ALLE EXCHANGE TABELLEN WERDEN GELÖSCHT!")
-    print(f"🗑️  {len(EXCHANGES) * 2} Tabellen werden PERMANENT gelöscht:")
-    print("    - trades_* (8 Tabellen)")
-    print("    - orderbook_* (8 Tabellen)")
-    print(f"    - Exchanges: {', '.join(EXCHANGES)}")
-    
-    if '--yes' in sys.argv:
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'DELETE' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'DELETE'
-    except KeyboardInterrupt:
-        return False
-
-def delete_all_exchange_tables():
-    """Löscht alle Exchange-Tabellen"""
-    deleted_count = 0
-    failed_count = 0
-    
-    print(f"\n🗑️  LÖSCHE {len(EXCHANGES) * 2} EXCHANGE-TABELLEN...")
-    
-    for exchange in EXCHANGES:
-        # Trades Tabelle löschen
-        print(f"\n  🔹 Lösche {exchange}_trades...")
-        if execute_sql(f"DROP TABLE IF EXISTS trading.{exchange}_trades", 
-                      f"Drop {exchange}_trades", "trading", ignore_errors=True):
-            deleted_count += 1
-            print(f"    ✅ {exchange}_trades gelöscht")
-        else:
-            failed_count += 1
-            print(f"    ❌ {exchange}_trades Fehler")
-        
-        # OrderBook Tabelle löschen
-        print(f"  🔹 Lösche {exchange}_orderbook...")
-        if execute_sql(f"DROP TABLE IF EXISTS trading.{exchange}_orderbook", 
-                      f"Drop {exchange}_orderbook", "trading", ignore_errors=True):
-            deleted_count += 1
-            print(f"    ✅ {exchange}_orderbook gelöscht")
-        else:
-            failed_count += 1
-            print(f"    ❌ {exchange}_orderbook Fehler")
-    
-    return deleted_count, failed_count
-
-def main():
-    print("🗑️  EXCHANGE TABLES - DELETE SCRIPT")
-    print("=" * 70)
-    print("⚡ Löscht ALLE Exchange-Tabellen (trades + orderbook)")
-
-    # Test Connection using imported function
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    # Delete all exchange tables
-    deleted, failed = delete_all_exchange_tables()
-    
-    total = len(EXCHANGES) * 2
-    
-    print(f"\n{'='*70}")
-    if deleted == total and failed == 0:
-        print(f"🎉 ALLE {total} TABELLEN ERFOLGREICH GELÖSCHT!")
-        print(f"✅ {deleted}/{total} Tabellen gelöscht")
-        print("✅ System bereit für Neuanlegen der Tabellen")
-        return True
-    else:
-        print(f"⚠️  TEILERFOLG: {deleted}/{total} Tabellen gelöscht")
-        print(f"❌ {failed} Tabellen fehlgeschlagen")
-        return False
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/db_market/kline_db.py">
-#!/usr/bin/env python3
-"""
-EXCHANGE KLINE TABELLEN + MATERIALIZED VIEWS
-Erstellt 8 Kline Tabellen + 8 MVs für automatische Aggregation
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-# 🔥 ALLE 8 EXCHANGES
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_kline_tables():
-    """Erstellt KLINE Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE KLINE TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle {exchange}_kline...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_kline (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            interval LowCardinality(String),
-            bucket_start DateTime64(3, 'UTC'),
-            open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-            high_state  AggregateFunction(max,   Decimal(76, 38)),
-            low_state   AggregateFunction(min,   Decimal(76, 38)),
-            close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-            volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-            quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-            trades_count_state AggregateFunction(count, UInt64)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMMDD(bucket_start)
-        ORDER BY (symbol, market, interval, bucket_start)
-        TTL bucket_start + toIntervalMonth(12)
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_kline"):
-            success_count += 1
-    
-    return success_count
-
-def create_materialized_views():
-    """Erstellt MATERIALIZED VIEWS für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE MATERIALIZED VIEWS FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle mv_{exchange}_trades_to_{exchange}_kline_1s...")
-        
-        sql = f"""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_{exchange}_trades_to_{exchange}_kline_1s
-        TO trading.{exchange}_kline
-        AS
-        SELECT
-            symbol,
-            market,
-            '1s' AS interval,
-            toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-            argMinState(price, (timestamp, trade_id)) AS open_state,
-            maxState(price) AS high_state,
-            minState(price) AS low_state,
-            argMaxState(price, (timestamp, trade_id)) AS close_state,
-            sumState(size) AS volume_state,
-            sumState(CAST(price * size AS Decimal(76, 38))) AS quote_volume_state,
-            countState() AS trades_count_state
-        FROM trading.{exchange}_trades
-        GROUP BY symbol, market, bucket_start;
-        """
-        
-        if execute_sql(sql, f"mv_{exchange}_trades_to_{exchange}_kline_1s"):
-            success_count += 1
-    
-    return success_count
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: EXCHANGE KLINE TABELLEN + MVs")
-    print("=" * 70)
-    print("⚡ 8 Kline Tabellen + 8 Materialized Views")
-    print("⚡ Automatische 1s Aggregation von Trades")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # Kline Tabellen erstellen
-    kline_count = create_kline_tables()
-    
-    # Materialized Views erstellen
-    mv_count = create_materialized_views()
-    
-    total_objects = len(EXCHANGES) * 2  # 16 Objekte (8 Tabellen + 8 MVs)
-    success_count = kline_count + mv_count
-    
-    if success_count == total_objects:
-        print(f"\n🎉 ALLE {total_objects} OBJEKTE ERFOLGREICH ERSTELLT!")
-        print("✅ 8 Kline Tabellen (AggregatingMergeTree)")
-        print("✅ 8 Materialized Views (1s Auto-Aggregation)")
-        print("✅ Exchange-Pattern: Separate Tabellen pro Exchange")
-        
-        print(f"\n📊 KLINE-SYSTEM ÜBERSICHT:")
-        for exchange in EXCHANGES:
-            print(f"  🔹 {exchange.upper()}: {exchange}_kline + mv_{exchange}_trades_to_{exchange}_kline_1s")
-        
-        return True
-    else:
-        print(f"\n⚠️  NUR {success_count}/{total_objects} OBJEKTE ERSTELLT!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_md/scripts/cleanup_all_kline_system.py">
-#!/usr/bin/env python3
-"""
-CLEANUP ALL KLINE SYSTEM
-Löscht ALLE kline-bezogenen Tabellen und Views und erstellt neue all_kline Struktur
-- Löscht alle Materialized Views (ZUERST!)
-- Löscht alle {exchange}_kline Tabellen
-- Löscht alte all_kline_1s_state und all_kline_final
-- Erstellt neue all_kline STATE Tabelle
-- Erstellt neue all_kline_final VIEW
-"""
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import all_kline
-sys.path.append(str(Path(__file__).parent.parent))
-
-from all_kline import execute_sql, create_all_kline_state_table, create_all_kline_final_view
-
-EXCHANGES = ['binance', 'bitget', 'mexc', 'gateio', 'bybit', 'okx', 'htx', 'coinbase']
-
-def confirm_deletion():
-    """Bestätigung vom User für das Löschen"""
-    print("\n⚠️  WARNUNG: KOMPLETTER KLINE SYSTEM CLEANUP!")
-    print("🗑️  Folgendes wird PERMANENT gelöscht:")
-    print("   - Alle 8 Materialized Views (mv_*_trades_to_*_kline_1s)")
-    print("   - Alle 8 {exchange}_kline Tabellen")
-    print("   - all_kline_1s_state Tabelle")
-    print("   - all_kline_final VIEW")
-    print("\n✅ Folgendes wird NEU erstellt:")
-    print("   - trading.all_kline (STATE Tabelle)")
-    print("   - trading.all_kline_final (VIEW)")
-    print("\n💡 HINWEIS: trades Tabellen bleiben UNBERÜHRT!")
-    
-    if '--yes' in sys.argv:
-        print("\n✅ --yes Flag erkannt, überspringe Bestätigung")
-        return True
-    
-    try:
-        confirmation = input("\nGeben Sie 'CLEANUP' ein um zu bestätigen: ")
-        return confirmation.strip().upper() == 'CLEANUP'
-    except KeyboardInterrupt:
-        return False
-
-def delete_materialized_views():
-    """Löscht alle Materialized Views (MUSS ZUERST passieren!)"""
-    print("\n🔥 LÖSCHE MATERIALIZED VIEWS...")
-    success = True
-    
-    for exchange in EXCHANGES:
-        mv_name = f"mv_{exchange}_trades_to_{exchange}_kline_1s"
-        if not execute_sql(
-            f"DROP VIEW IF EXISTS trading.{mv_name}",
-            f"Drop MV {mv_name}",
-            "trading",
-            ignore_errors=True
-        ):
-            success = False
-    
-    return success
-
-def delete_kline_tables():
-    """Löscht alle {exchange}_kline Tabellen"""
-    print("\n🔥 LÖSCHE KLINE TABELLEN...")
-    success = True
-    
-    for exchange in EXCHANGES:
-        table_name = f"{exchange}_kline"
-        if not execute_sql(
-            f"DROP TABLE IF EXISTS trading.{table_name}",
-            f"Drop {table_name}",
-            "trading",
-            ignore_errors=True
-        ):
-            success = False
-    
-    return success
-
-def delete_old_all_kline():
-    """Löscht alte all_kline_1s_state und all_kline_final"""
-    print("\n🔥 LÖSCHE ALTE ALL_KLINE STRUKTUR...")
-    
-    # Drop VIEW first
-    execute_sql(
-        "DROP VIEW IF EXISTS trading.all_kline_final",
-        "Drop all_kline_final VIEW",
-        "trading",
-        ignore_errors=True
-    )
-    
-    # Drop old state table
-    execute_sql(
-        "DROP TABLE IF EXISTS trading.all_kline_1s_state",
-        "Drop all_kline_1s_state",
-        "trading",
-        ignore_errors=True
-    )
-    
-    # Drop any other all_kline variants
-    execute_sql(
-        "DROP TABLE IF EXISTS trading.all_kline",
-        "Drop all_kline (falls vorhanden)",
-        "trading",
-        ignore_errors=True
-    )
-    
-    return True
-
-def main():
-    print("🔥 CLICKHOUSE CLEANUP: ALL KLINE SYSTEM")
-    print("=" * 70)
-    print("⚡ Kompletter Cleanup aller kline Tabellen und Views")
-    print("⚡ Erstellt neue all_kline STATE Struktur")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Bestätigung
-    if not confirm_deletion():
-        print("✅ Abgebrochen")
-        return True
-
-    print("\n" + "=" * 70)
-    print("🚀 STARTE CLEANUP...")
-    print("=" * 70)
-
-    # Step 1: Delete Materialized Views (MUST BE FIRST!)
-    if not delete_materialized_views():
-        print("\n⚠️  WARNUNG: Einige MVs konnten nicht gelöscht werden")
-        print("⚠️  Fahre trotzdem fort...")
-
-    # Step 2: Delete kline tables
-    if not delete_kline_tables():
-        print("\n⚠️  WARNUNG: Einige Tabellen konnten nicht gelöscht werden")
-        print("⚠️  Fahre trotzdem fort...")
-
-    # Step 3: Delete old all_kline structure
-    if not delete_old_all_kline():
-        print("\n⚠️  WARNUNG: Alte all_kline Struktur konnte nicht gelöscht werden")
-        print("⚠️  Fahre trotzdem fort...")
-
-    print("\n" + "=" * 70)
-    print("🚀 ERSTELLE NEUE STRUKTUR...")
-    print("=" * 70)
-
-    # Step 4: Create new all_kline STATE table
-    if not create_all_kline_state_table():
-        print("\n❌ FEHLER beim Erstellen der neuen all_kline Tabelle!")
-        return False
-
-    # Step 5: Create new all_kline_final VIEW
-    if not create_all_kline_final_view():
-        print("\n❌ FEHLER beim Erstellen der all_kline_final VIEW!")
-        return False
-
-    print("\n" + "=" * 70)
-    print("🎉 CLEANUP ERFOLGREICH ABGESCHLOSSEN!")
-    print("=" * 70)
-    print("✅ Alle MVs gelöscht")
-    print("✅ Alle kline Tabellen gelöscht")
-    print("✅ Neue all_kline STATE Tabelle erstellt")
-    print("✅ Neue all_kline_final VIEW erstellt")
-    print("\n💡 NÄCHSTE SCHRITTE:")
-    print("   1. MVs müssen neu erstellt werden (via init.sql)")
-    print("   2. Daten werden automatisch aus trades Tabellen aggregiert")
-    print("   3. System neu starten: docker-compose restart clickhouse")
-    
-    return True
-
-if __name__ == "__main__":
-    try:
-        success = main()
-        sys.exit(0 if success else 1)
-    except KeyboardInterrupt:
-        print("\n⚠️  Abgebrochen")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ FEHLER: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-</file>
-
-<file path="backend/database/tables/scripts/bootstrap_all_kline.py">
-#!/usr/bin/env python3
-"""
-Bootstrap MV aggregation for existing historical trades.
-
-FACT:
-- ClickHouse Materialized Views aggregate ONLY new inserts after creation.
-- Existing rows in *_trades will NOT be aggregated automatically.
-
-STRATEGY (safe):
-- Re-insert trades into the same table in time-batches via INSERT SELECT,
-  but ONLY as a lightweight projection with the same columns.
-- Requires a source-filter to avoid duplication.
-
-✅ You MUST set BOOTSTRAP_SOURCE="bootstrap_replay" in select and
-   ensure your trades table has a 'source' column (it does in this repo).
-"""
-
-import os
-from datetime import datetime, timezone, timedelta
-
-import clickhouse_connect
-
-
-def env(name: str, default: str) -> str:
-  v = os.getenv(name)
-  return default if v is None or v.strip() == "" else v.strip()
-
-
-def main() -> int:
-  host = env("CLICKHOUSE_HOST", "localhost")
-  port = int(env("CLICKHOUSE_PORT", "8124"))
-  user = env("CLICKHOUSE_USER", "admin")
-  password = env("CLICKHOUSE_PASSWORD", "admin")
-  database = env("CLICKHOUSE_DB", "trading")
-
-  exchange = env("BOOTSTRAP_EXCHANGE", "binance").lower()
-  symbol = env("BOOTSTRAP_SYMBOL", "BTCUSDT").upper()
-  market = env("BOOTSTRAP_MARKET", "spot").lower()
-
-  # time range
-  start_iso = env("BOOTSTRAP_START_ISO", "")
-  end_iso = env("BOOTSTRAP_END_ISO", "")
-
-  if not start_iso or not end_iso:
-    print("ERROR: Set BOOTSTRAP_START_ISO and BOOTSTRAP_END_ISO (UTC ISO).")
-    return 2
-
-  start = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
-  end = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-  batch_minutes = int(env("BOOTSTRAP_BATCH_MINUTES", "60"))
-  source_filter = env("BOOTSTRAP_SOURCE_FILTER", "rest_backfill,live,live_ws")
-  replay_source = env("BOOTSTRAP_REPLAY_SOURCE", "bootstrap_replay")
-
-  sources = [s.strip() for s in source_filter.split(",") if s.strip()]
-  if not sources:
-    print("ERROR: BOOTSTRAP_SOURCE_FILTER empty.")
-    return 2
-
-  table = f"{exchange}_trades"
-
-  client = clickhouse_connect.get_client(
-    host=host, port=port, username=user, password=password, database=database
-  )
-
-  cur = start
-  total = 0
-  i = 0
-
-  while cur < end:
-    nxt = min(cur + timedelta(minutes=batch_minutes), end)
-    i += 1
-
-    # NOTE:
-    # - We copy rows in [cur, nxt) and rewrite 'source' to replay_source.
-    # - This triggers MV without double-counting your real backfill sources.
-    # - You can delete replay rows after MV is filled if you want.
-    query = f"""
-      INSERT INTO {database}.{table}
-      SELECT
-        trade_id,
-        symbol,
-        market,
-        price,
-        size,
-        side,
-        timestamp,
-        '{replay_source}' AS source
-      FROM {database}.{table}
-      WHERE symbol = %(symbol)s
-        AND market = %(market)s
-        AND timestamp >= toDateTime64(%(t0)s, 3, 'UTC')
-        AND timestamp <  toDateTime64(%(t1)s, 3, 'UTC')
-        AND source IN %(sources)s
-    """
-
-    params = {
-      "symbol": symbol,
-      "market": market,
-      "t0": int(cur.timestamp()),
-      "t1": int(nxt.timestamp()),
-      "sources": tuple(sources),
-    }
-
-    res = client.command(query, parameters=params)
-    # clickhouse_connect returns "OK" string; count not available here.
-    total += 1
-
-    print(f"[{i}] replay {exchange}:{symbol}:{market} {cur.isoformat()} → {nxt.isoformat()} OK")
-
-    cur = nxt
-
-  print(f"DONE. batches={i} (count not returned; use queries to verify MV table growth)")
-  return 0
-
-
-if __name__ == "__main__":
-  raise SystemExit(main())
-</file>
-
-<file path="backend/database/schema_reconcile.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-import re
-import sys
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-logger = logging.getLogger(__name__)
-
-_LOCK = asyncio.Lock()
-_DONE: bool = False
-
-
-# --------------------------------------------------------------------------------------
-# ClickHouse access (nutzt euren bestehenden unified service)
-# --------------------------------------------------------------------------------------
-
-async def _get_ch():
-    # vorhandene Struktur beibehalten
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
-
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
-
-    ch = get_clickhouse_client()
-    if not ch:
-        raise RuntimeError("ClickHouse client not available")
-    return ch
-
-
-def _default_init_sql_path() -> Path:
-    # default: backend/database/clickhouse/init.sql
-    # diese Datei liegt typischerweise in backend/database/clickhouse/init.sql
-    return Path(__file__).resolve().parent / "clickhouse" / "init.sql"
-
-
-# --------------------------------------------------------------------------------------
-# SQL parsing
-# --------------------------------------------------------------------------------------
-
-def _read_text(path: Path) -> str:
-    if not path.exists():
-        raise FileNotFoundError(f"init.sql not found: {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def _split_sql_statements(sql: str) -> List[str]:
-    """
-    Split by ';' but not inside quotes. Strip comments:
-    - '-- ...' line comments
-    - '/* ... */' block comments
-    """
-    s = sql
-    out: List[str] = []
-    buf: List[str] = []
-
-    in_sq = False
-    in_dq = False
-    in_line_comment = False
-    in_block_comment = False
-
-    i = 0
-    n = len(s)
-
-    while i < n:
-        ch = s[i]
-        nxt = s[i + 1] if i + 1 < n else ""
-
-        if in_line_comment:
-            if ch == "\n":
-                in_line_comment = False
-                buf.append(ch)
-            i += 1
-            continue
-
-        if in_block_comment:
-            if ch == "*" and nxt == "/":
-                in_block_comment = False
-                i += 2
-            else:
-                i += 1
-            continue
-
-        if not in_sq and not in_dq:
-            if ch == "-" and nxt == "-":
-                in_line_comment = True
-                i += 2
-                continue
-            if ch == "/" and nxt == "*":
-                in_block_comment = True
-                i += 2
-                continue
-
-        if ch == "'" and not in_dq:
-            if in_sq and nxt == "'":  # escaped ''
-                buf.append(ch)
-                buf.append(nxt)
-                i += 2
-                continue
-            in_sq = not in_sq
-            buf.append(ch)
-            i += 1
-            continue
-
-        if ch == '"' and not in_sq:
-            if in_dq and nxt == '"':  # escaped ""
-                buf.append(ch)
-                buf.append(nxt)
-                i += 2
-                continue
-            in_dq = not in_dq
-            buf.append(ch)
-            i += 1
-            continue
-
-        if ch == ";" and not in_sq and not in_dq:
-            stmt = "".join(buf).strip()
-            if stmt:
-                out.append(stmt)
-            buf = []
-            i += 1
-            continue
-
-        buf.append(ch)
-        i += 1
-
-    tail = "".join(buf).strip()
-    if tail:
-        out.append(tail)
-
-    return out
-
-
-_CREATE_DB_RE = re.compile(
-    r"^\s*CREATE\s+DATABASE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\s*$",
-    re.IGNORECASE,
-)
-_CREATE_TABLE_RE = re.compile(
-    r"^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(",
-    re.IGNORECASE | re.DOTALL,
-)
-_CREATE_MV_RE = re.compile(
-    r"^\s*CREATE\s+MATERIALIZED\s+VIEW\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _normalize_ddl(s: str) -> str:
-    """
-    Normalize for comparison:
-    - strip ';'
-    - lowercase
-    - collapse whitespace
-    """
-    s = s.strip().rstrip(";").strip().lower()
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-@dataclass(frozen=True)
-class DesiredObject:
-    kind: str  # "database" | "table" | "materialized_view"
-    database: Optional[str]
-    name: str
-    ddl: str
-
-
-def parse_desired_objects_from_init_sql(init_sql: str) -> Tuple[List[DesiredObject], List[str]]:
-    statements = _split_sql_statements(init_sql)
-    desired: List[DesiredObject] = []
-
-    for stmt in statements:
-        s = stmt.strip()
-        if not s:
-            continue
-
-        mdb = _CREATE_DB_RE.match(s)
-        if mdb:
-            desired.append(DesiredObject(kind="database", database=None, name=mdb.group(1), ddl=s))
-            continue
-
-        mt = _CREATE_TABLE_RE.match(s)
-        if mt:
-            desired.append(DesiredObject(kind="table", database=mt.group(1), name=mt.group(2), ddl=s))
-            continue
-
-        mmv = _CREATE_MV_RE.match(s)
-        if mmv:
-            desired.append(DesiredObject(kind="materialized_view", database=mmv.group(1), name=mmv.group(2), ddl=s))
-            continue
-
-    return desired, statements
-
-
-# --------------------------------------------------------------------------------------
-# Introspection
-# --------------------------------------------------------------------------------------
-
-async def _list_tables_and_views(db: str) -> List[Tuple[str, str]]:
-    ch = await _get_ch()
-    rows = await ch.execute(
-        """
-        SELECT name, engine
-        FROM system.tables
-        WHERE database = %(db)s
-        ORDER BY name
-        """,
-        {"db": db},
-    )
-    out: List[Tuple[str, str]] = []
-    for r in rows or []:
-        if r and len(r) >= 2:
-            out.append((str(r[0]), str(r[1])))
-    return out
-
-
-async def _show_create(db: str, name: str) -> str:
-    ch = await _get_ch()
-    rows = await ch.execute(f"SHOW CREATE TABLE {db}.{name}")
-    if not rows or not rows[0] or not isinstance(rows[0][0], str):
-        raise RuntimeError(f"SHOW CREATE TABLE returned unexpected result for {db}.{name}")
-    return rows[0][0]
-
-
-# --------------------------------------------------------------------------------------
-# Policy: protected tables (no DROP)
-# --------------------------------------------------------------------------------------
-
-_DEFAULT_PROTECT_REGEX = [
-    r".*_trades$",           # deine Kernforderung
-    # optional sinnvoll (falls du auch diese nie verlieren willst):
-    # r".*_orderbook$",
-    # r".*_whale_events$",
-]
-
-def _compile_protect_patterns() -> List[re.Pattern]:
-    raw = (os.getenv("SCHEMA_PROTECT_REGEX") or "").strip()
-    pats = [p.strip() for p in raw.split(",") if p.strip()] if raw else list(_DEFAULT_PROTECT_REGEX)
-    compiled: List[re.Pattern] = []
-    for p in pats:
-        compiled.append(re.compile(p))
-    return compiled
-
-
-def _is_protected(name: str, patterns: List[re.Pattern]) -> bool:
-    return any(p.fullmatch(name) for p in patterns)
-
-
-# --------------------------------------------------------------------------------------
-# Diff model
-# --------------------------------------------------------------------------------------
-
-@dataclass
-class DiffItem:
-    kind: str          # missing | mismatch | extra
-    object_kind: str   # table | materialized_view
-    database: str
-    name: str
-    details: str
-
-
-def _is_interactive() -> bool:
-    try:
-        return sys.stdin.isatty() and sys.stdout.isatty()
-    except Exception:
-        return False
-
-
-def _ask_yes_no(prompt: str, default: bool = False) -> bool:
-    if not _is_interactive():
-        return default
-    suffix = " [Y/n] " if default else " [y/N] "
-    while True:
-        ans = input(prompt + suffix).strip().lower()
-        if not ans:
-            return default
-        if ans in ("y", "yes"):
-            return True
-        if ans in ("n", "no"):
-            return False
-
-
-async def _rename_to_backup(db: str, name: str) -> str:
-    ch = await _get_ch()
-    # deterministic-ish unique suffix
-    suffix = str(int(time.time() * 1000))
-    new_name = f"{name}__backup__{suffix}"
-    await ch.execute(f"RENAME TABLE {db}.{name} TO {db}.{new_name}")
-    return new_name
-
-
-async def _drop_object(db: str, name: str) -> None:
-    ch = await _get_ch()
-    await ch.execute(f"DROP TABLE IF EXISTS {db}.{name}")
-
-
-# --------------------------------------------------------------------------------------
-# Main reconcile
-# --------------------------------------------------------------------------------------
-
-async def reconcile_schema_from_init_sql(
-    init_sql_path: Optional[str] = None,
-    *,
-    database: str = "trading",
-    mode: str = "verify",            # verify | ensure | reconcile
-    auto_apply: bool = False,        # destructive ops without TTY
-    backup_rename: bool = True,      # rename before recreate (for mismatches)
-    delete_extras: bool = True,      # delete non-init objects (unless protected)
-) -> List[DiffItem]:
-    """
-    verify:
-      - only check; if diffs exist -> raises RuntimeError
-    ensure:
-      - executes init.sql statements (safe if IF NOT EXISTS); no deletes; no mismatch fixes
-    reconcile:
-      - creates missing
-      - fixes mismatches (protected -> ALWAYS rename backup, never drop; non-protected -> rename if backup_rename else drop)
-      - deletes extras ONLY if non-protected (protected extras are kept)
-      - if interactive -> asks; else needs auto_apply=True for destructive steps
-    """
-    global _DONE
-    if _DONE:
-        return []
-
-    async with _LOCK:
-        if _DONE:
-            return []
-
-        patterns = _compile_protect_patterns()
-
-        path = Path(init_sql_path).expanduser().resolve() if init_sql_path else _default_init_sql_path()
-        init_sql = _read_text(path)
-        desired_objs, statements = parse_desired_objects_from_init_sql(init_sql)
-
-        # desired maps for selected database
-        desired_tables: Dict[str, DesiredObject] = {}
-        desired_mvs: Dict[str, DesiredObject] = {}
-        for o in desired_objs:
-            if o.kind == "table" and o.database == database:
-                desired_tables[o.name] = o
-            elif o.kind == "materialized_view" and o.database == database:
-                desired_mvs[o.name] = o
-
-        ch = await _get_ch()
-
-        # ensure mode: just apply init.sql statements in order
-        if mode == "ensure":
-            for stmt in statements:
-                s = stmt.strip()
-                if s:
-                    await ch.execute(s)
-            _DONE = True
-            return []
-
-        existing = await _list_tables_and_views(database)
-        existing_map: Dict[str, str] = {name: engine for (name, engine) in existing}
-
-        diffs: List[DiffItem] = []
-
-        # missing
-        for name in desired_tables:
-            if name not in existing_map:
-                diffs.append(DiffItem("missing", "table", database, name, "table missing"))
-        for name in desired_mvs:
-            if name not in existing_map:
-                diffs.append(DiffItem("missing", "materialized_view", database, name, "mv missing"))
-
-        # mismatch
-        for name, engine in existing_map.items():
-            if name in desired_tables:
-                desired = desired_tables[name]
-                actual = await _show_create(database, name)
-                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
-                    diffs.append(DiffItem("mismatch", "table", database, name, "DDL differs vs init.sql"))
-            elif name in desired_mvs:
-                desired = desired_mvs[name]
-                actual = await _show_create(database, name)
-                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
-                    diffs.append(DiffItem("mismatch", "materialized_view", database, name, "DDL differs vs init.sql"))
-
-        # extra
-        desired_names = set(desired_tables.keys()) | set(desired_mvs.keys())
-        for name, engine in existing_map.items():
-            if name not in desired_names:
-                kind = "materialized_view" if engine.lower() == "materializedview" else "table"
-                diffs.append(DiffItem("extra", kind, database, name, f"extra object engine={engine}"))
-
-        if mode == "verify":
-            if diffs:
-                raise RuntimeError(f"Schema verify failed: {len(diffs)} differences found (run reconcile).")
-            _DONE = True
-            return diffs
-
-        if mode != "reconcile":
-            raise ValueError("mode must be one of: verify | ensure | reconcile")
-
-        interactive = _is_interactive()
-        allow_destructive = auto_apply or interactive
-
-        # 1) ensure missing objects (safe because init uses IF NOT EXISTS)
-        # apply all desired in init order: tables first, then mvs
-        for o in desired_objs:
-            if o.kind == "table" and o.database == database:
-                await ch.execute(o.ddl)
-        for o in desired_objs:
-            if o.kind == "materialized_view" and o.database == database:
-                await ch.execute(o.ddl)
-
-        # 2) fix mismatches
-        mismatches = [d for d in diffs if d.kind == "mismatch"]
-        if mismatches:
-            if not allow_destructive:
-                raise RuntimeError("Mismatches found but destructive changes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
-
-            do_fix = True
-            if interactive and not auto_apply:
-                do_fix = _ask_yes_no(f"{len(mismatches)} mismatches found. Fix now (protected: rename+recreate; others: rename/drop+recreate)?", default=False)
-
-            if do_fix:
-                for d in mismatches:
-                    is_prot = _is_protected(d.name, patterns)
-                    # MVs: drop & recreate (MVs sind i. d. R. jederzeit rebuildbar)
-                    if d.object_kind == "materialized_view":
-                        if interactive and not auto_apply:
-                            if not _ask_yes_no(f"Recreate MV {d.database}.{d.name} (DROP+CREATE)?", default=True):
-                                continue
-                        await _drop_object(d.database, d.name)
-                        desired = desired_mvs.get(d.name)
-                        if not desired:
-                            raise RuntimeError(f"Desired MV DDL missing for {d.database}.{d.name}")
-                        await ch.execute(desired.ddl)
-                        continue
-
-                    # Tables
-                    if is_prot:
-                        # NEVER DROP: always backup rename
-                        new_name = await _rename_to_backup(d.database, d.name)
-                        logger.warning("[schema] PROTECTED mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
-                    else:
-                        if backup_rename:
-                            new_name = await _rename_to_backup(d.database, d.name)
-                            logger.warning("[schema] mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
-                        else:
-                            if interactive and not auto_apply:
-                                if not _ask_yes_no(f"DROP and recreate table {d.database}.{d.name}?", default=False):
-                                    continue
-                            await _drop_object(d.database, d.name)
-                            logger.warning("[schema] mismatch: dropped %s.%s", d.database, d.name)
-
-                    desired = desired_tables.get(d.name)
-                    if not desired:
-                        raise RuntimeError(f"Desired table DDL missing for {d.database}.{d.name}")
-                    await ch.execute(desired.ddl)
-
-        # 3) delete extras (non-protected only)
-        extras = [d for d in diffs if d.kind == "extra"]
-        if extras and delete_extras:
-            if not allow_destructive:
-                raise RuntimeError("Extras found but destructive deletes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
-
-            # split protected / non-protected
-            prot_extras = [e for e in extras if _is_protected(e.name, patterns)]
-            del_extras = [e for e in extras if not _is_protected(e.name, patterns)]
-
-            if prot_extras:
-                for e in prot_extras:
-                    logger.warning("[schema] PROTECTED extra kept: %s.%s (%s)", e.database, e.name, e.details)
-
-            if del_extras:
-                do_del = True
-                if interactive and not auto_apply:
-                    do_del = _ask_yes_no(f"{len(del_extras)} NON-protected extras found. Delete them now?", default=False)
-
-                if do_del:
-                    for e in del_extras:
-                        if interactive and not auto_apply:
-                            if not _ask_yes_no(f"DROP extra {e.database}.{e.name}?", default=False):
-                                continue
-                        await _drop_object(e.database, e.name)
-                        logger.warning("[schema] dropped extra %s.%s", e.database, e.name)
-
-        _DONE = True
-        return diffs
-
-
-async def reconcile_from_env() -> None:
-    """
-    ENV:
-      SCHEMA_MODE=verify|ensure|reconcile
-      SCHEMA_AUTO_APPLY=0|1
-      SCHEMA_BACKUP_RENAME=0|1
-      SCHEMA_DELETE_EXTRAS=0|1
-      SCHEMA_INIT_SQL=/abs/or/rel/path/to/init.sql
-      SCHEMA_PROTECT_REGEX=regex1,regex2,...  (fullmatch)
-    """
-    mode = (os.getenv("SCHEMA_MODE") or "verify").strip().lower()
-    auto_apply = (os.getenv("SCHEMA_AUTO_APPLY") or "0").strip().lower() in ("1", "true", "yes")
-    backup_rename = (os.getenv("SCHEMA_BACKUP_RENAME") or "1").strip().lower() in ("1", "true", "yes")
-    delete_extras = (os.getenv("SCHEMA_DELETE_EXTRAS") or "1").strip().lower() in ("1", "true", "yes")
-    init_path = os.getenv("SCHEMA_INIT_SQL")  # optional override
-
-    diffs = await reconcile_schema_from_init_sql(
-        init_path,
-        database="trading",
-        mode=mode,
-        auto_apply=auto_apply,
-        backup_rename=backup_rename,
-        delete_extras=delete_extras,
-    )
-
-    if diffs:
-        for d in diffs[:200]:
-            logger.warning("[schema-diff] %s %s %s.%s | %s", d.kind, d.object_kind, d.database, d.name, d.details)
-        if len(diffs) > 200:
-            logger.warning("[schema-diff] ... (%d more)", len(diffs) - 200)
-</file>
-
 <file path="backend/exchanges/binance/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -163072,6 +158725,404 @@ async def get_supported_historical_exchanges():
     )
 </file>
 
+<file path="backend/database/clickhouse/cl_message_handlers.py">
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Callable
+from datetime import datetime
+from .cl_manager import cl_manager_instance
+from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+
+logger = logging.getLogger(__name__)
+
+class cl_message_handlers:
+    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.manager = cl_manager_instance
+        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
+        self.processing_tasks: List[asyncio.Task] = []
+        self.is_processing = False
+        self.processed_messages = 0
+        self.failed_messages = 0
+        self.message_types: Dict[str, Callable] = {
+            "trades": self._handle_trades_message,
+            "candles": self._handle_candles_message,
+            "orderbook": self._handle_orderbook_message,
+            "user_settings": self._handle_user_settings_message,
+            "indicators": self._handle_indicators_message
+        }
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "message_handlers")
+        except ImportError:
+            logger.warning("Health system not available for cl_message_handlers")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_message_handlers initialized")
+    
+    async def start_processing(self, num_workers: int = 3):
+        """Start message processing workers"""
+        if self.is_processing:
+            logger.warning("Message processing is already running")
+            return
+        
+        self.is_processing = True
+        
+        # Start worker tasks
+        for i in range(num_workers):
+            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
+            self.processing_tasks.append(task)
+        
+        if self.health_component:
+            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
+            
+        logger.info(f"Started {num_workers} ClickHouse message processing workers")
+    
+    async def stop_processing(self):
+        """Stop message processing workers"""
+        if not self.is_processing:
+            return
+        
+        self.is_processing = False
+        
+        # Cancel all worker tasks
+        for task in self.processing_tasks:
+            task.cancel()
+        
+        # Wait for tasks to finish
+        if self.processing_tasks:
+            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        
+        self.processing_tasks.clear()
+        
+        logger.info("Stopped ClickHouse message processing workers")
+    
+    async def _message_worker(self, worker_id: str):
+        """Message processing worker"""
+        logger.info(f"ClickHouse message worker {worker_id} started")
+        
+        while self.is_processing:
+            try:
+                # Get message from queue with timeout
+                message = await asyncio.wait_for(
+                    self.message_queue.get(),
+                    timeout=CL_PERFORMANCE["processing_timeout"]
+                )
+                
+                # Process message
+                await self._process_message(message, worker_id)
+                
+                # Mark task as done
+                self.message_queue.task_done()
+                
+            except asyncio.TimeoutError:
+                # No messages to process, continue loop
+                continue
+            except asyncio.CancelledError:
+                logger.info(f"ClickHouse message worker {worker_id} cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in message worker {worker_id}: {str(e)}")
+                if self.health_component:
+                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
+                await asyncio.sleep(1)  # Brief pause before continuing
+        
+        logger.info(f"ClickHouse message worker {worker_id} stopped")
+    
+    async def _process_message(self, message: Dict[str, Any], worker_id: str):
+        """Process a single message"""
+        start_time = datetime.now()
+        
+        try:
+            # Extract message info
+            exchange = message.get("exchange")
+            message_type = message.get("type")
+            data = message.get("data")
+            
+            if not all([exchange, message_type, data]):
+                raise ValueError("Invalid message format: missing exchange, type, or data")
+            
+            # Get appropriate handler
+            handler = self.message_types.get(message_type)
+            if not handler:
+                raise ValueError(f"Unknown message type: {message_type}")
+            
+            # Process with handler
+            result = await handler(exchange, data, worker_id)
+            
+            # Track success
+            self.processed_messages += 1
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            if self.health_component:
+                self.health_component.record_success({
+                    "action": "message_processed",
+                    "type": message_type,
+                    "exchange": exchange,
+                    "worker": worker_id,
+                    "processing_time_ms": processing_time
+                })
+            
+            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
+            
+        except Exception as e:
+            self.failed_messages += 1
+            error_msg = f"Failed to process message: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+    
+    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle trades data message"""
+        try:
+            # Validate trades data
+            if not self._validate_trades_data(data):
+                raise ValueError("Invalid trades data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_trades_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "trades", ch_data)
+            
+            if success:
+                logger.debug(f"Trades data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert trades data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle candles/bars data message"""
+        try:
+            # Validate candles data
+            if not self._validate_candles_data(data):
+                raise ValueError("Invalid candles data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_candles_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "candles", ch_data)
+            
+            if success:
+                logger.debug(f"Candles data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert candles data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle orderbook data message"""
+        try:
+            # Validate orderbook data
+            if not self._validate_orderbook_data(data):
+                raise ValueError("Invalid orderbook data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_orderbook_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
+            
+            if success:
+                logger.debug(f"Orderbook data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert orderbook data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle user settings message"""
+        try:
+            # User settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "user_settings", data)
+            
+            if success:
+                logger.debug("User settings data inserted")
+            else:
+                logger.warning("Failed to insert user settings data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling user settings message: {str(e)}")
+            raise
+    
+    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle indicators message"""
+        try:
+            # Indicators settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "indicators", data)
+            
+            if success:
+                logger.debug("Indicators data inserted")
+            else:
+                logger.warning("Failed to insert indicators data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling indicators message: {str(e)}")
+            raise
+    
+    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate trades data format
+        
+        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
+        - Keine hardcoded Exchange-Listen
+        - Keine Exchange-spezifischen If-Bedingungen  
+        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
+        
+        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
+        
+        Felder die NICHT geprüft werden:
+        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
+        - source: Optional mit DEFAULT 'live_ws'
+        """
+        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
+        """Validate candles data format"""
+        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
+        """Validate orderbook data format"""
+        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Transform trades data to ClickHouse format
+        
+        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
+        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
+        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
+        - trade_id: NICHT senden (wird von ClickHouse generiert)
+        - source: Optional (DEFAULT 'live_ws')
+        """
+        transformed = {
+            "symbol": data["symbol"],
+            "market": data["market"],  # ✅ Spot oder Futures
+            "price": data["price"],  # ✅ String für Decimal(76,38)
+            "size": data["size"],    # ✅ String für Decimal(76,38)
+            "side": data["side"],
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+        
+        # source-Field optional hinzufügen (wenn vorhanden)
+        if "source" in data:
+            transformed["source"] = data["source"]
+        
+        return transformed
+    
+    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform candles data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "resolution": data["resolution"],
+            "open": data["open"],    # ✅ String für Decimal(76,38)
+            "high": data["high"],    # ✅ String für Decimal(76,38)
+            "low": data["low"],      # ✅ String für Decimal(76,38)
+            "close": data["close"],  # ✅ String für Decimal(76,38)
+            "volume": data["volume"], # ✅ String für Decimal(76,38)
+            "trades": data.get("trades", 0),
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform orderbook data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "bids": data["bids"],  # Array of [price, size] tuples
+            "asks": data["asks"],  # Array of [price, size] tuples
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
+        """Queue a message for processing"""
+        try:
+            message = {
+                "exchange": exchange,
+                "type": message_type,
+                "data": data,
+                "queued_at": datetime.now().isoformat()
+            }
+            
+            # Add to queue (will wait if queue is full)
+            await self.message_queue.put(message)
+            
+            logger.debug(f"Queued {message_type} message for {exchange}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to queue message: {str(e)}")
+            return False
+    
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get message processing statistics"""
+        return {
+            "is_processing": self.is_processing,
+            "queue_size": self.message_queue.qsize(),
+            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
+            "active_workers": len(self.processing_tasks),
+            "processed_messages": self.processed_messages,
+            "failed_messages": self.failed_messages,
+            "success_rate": round(
+                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
+            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
+            "supported_message_types": list(self.message_types.keys())
+        }
+    
+    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Process a batch of messages"""
+        results = {"queued": 0, "failed": 0}
+        
+        for message in messages:
+            try:
+                success = await self.queue_message(
+                    message.get("exchange"),
+                    message.get("type"),
+                    message.get("data")
+                )
+                
+                if success:
+                    results["queued"] += 1
+                else:
+                    results["failed"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Error queuing batch message: {str(e)}")
+                results["failed"] += 1
+        
+        return results
+
+
+# Global cl_message_handlers instance
+cl_handlers_instance = cl_message_handlers()
+</file>
+
 <file path="backend/database/clickhouse/cl_unified_manager.py">
 """
 Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
@@ -163324,1537 +159375,536 @@ async def initialize_clickhouse_foundation() -> bool:
     return True
 </file>
 
-<file path="backend/database/clickhouse/init.sql">
--- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- ========================================
--- TABELLEN (AUTO-GENERIERT)
--- ========================================
-
--- Tabelle 1/46
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 2/46
-CREATE TABLE IF NOT EXISTS trading.bitget_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 3/46
-CREATE TABLE IF NOT EXISTS trading.mexc_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 4/46
-CREATE TABLE IF NOT EXISTS trading.gateio_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 5/46
-CREATE TABLE IF NOT EXISTS trading.bybit_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 6/46
-CREATE TABLE IF NOT EXISTS trading.okx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 7/46
-CREATE TABLE IF NOT EXISTS trading.htx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 8/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String),
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            )
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 9/46
-CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 10/46
-CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 11/46
-CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 12/46
-CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 13/46
-CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 14/46
-CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 15/46
-CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 16/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 17/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 18/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 19/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 20/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 21/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 22/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 23/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 24/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 25/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 26/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 27/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 28/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 29/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 30/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 31/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 32/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 33/46
-CREATE TABLE IF NOT EXISTS trading.base_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            signal_type LowCardinality(String),
-            signal_strength Decimal(5,4),
-            price Decimal(18,8),
-            volume Decimal(18,8),
-            confidence Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 34/46
-CREATE TABLE IF NOT EXISTS trading.tier1_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            tier1_score Decimal(5,4),
-            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
-            entry_price Decimal(18,8),
-            stop_loss Decimal(18,8),
-            take_profit Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 35/46
-CREATE TABLE IF NOT EXISTS trading.alma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            alma_value Decimal(18,8),
-            alma_slope Decimal(5,4),
-            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 36/46
-CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            wave_count UInt8,
-            wave_type LowCardinality(String),
-            wave_confidence Decimal(5,4),
-            price_target Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 37/46
-CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            whale_score Decimal(5,4),
-            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
-            volume_impact Decimal(18,8),
-            price_impact Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 38/46
-CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            sigma_level Decimal(5,4),
-            is_extreme UInt8,
-            reversion_probability Decimal(5,4),
-            expected_price Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 39/46
-CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            dominant_frequency Decimal(5,4),
-            power_spectrum Decimal(5,4),
-            cycle_length UInt16,
-            phase Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 40/46
-CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            volatility Decimal(5,4),
-            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
-            atr Decimal(18,8),
-            bollinger_width Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 41/46
-CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol1 LowCardinality(String),
-            symbol2 LowCardinality(String),
-            exchange LowCardinality(String),
-            correlation Decimal(5,4),
-            rolling_correlation Decimal(5,4),
-            divergence_score Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol1, symbol2, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 42/46
-CREATE TABLE IF NOT EXISTS trading.regime_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
-            regime_confidence Decimal(5,4),
-            regime_duration UInt32,
-            transition_probability Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 43/46
-CREATE TABLE IF NOT EXISTS trading.indicator_performance (
-            timestamp DateTime64(3, 'UTC'),
-            indicator_name LowCardinality(String),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            accuracy Decimal(5,4),
-            profit_factor Decimal(5,4),
-            sharpe_ratio Decimal(5,4),
-            total_signals UInt32,
-            winning_signals UInt32
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (indicator_name, symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 44/46
-CREATE TABLE IF NOT EXISTS trading.binance_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 45/46
-CREATE TABLE IF NOT EXISTS trading.bitget_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 46/46
-CREATE TABLE IF NOT EXISTS trading.mexc_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 47/46
-CREATE TABLE IF NOT EXISTS trading.gateio_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 48/46
-CREATE TABLE IF NOT EXISTS trading.bybit_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 49/46
-CREATE TABLE IF NOT EXISTS trading.okx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 50/46
-CREATE TABLE IF NOT EXISTS trading.htx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 51/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count, UInt64)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 52/46
-CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    TTL ts + INTERVAL 1 MONTH
-    SETTINGS index_granularity = 8192;
-
--- Tabelle 53/46
-CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    TTL ts + INTERVAL 3 MONTH
-    SETTINGS index_granularity = 8192;
-
--- ========================================
--- MATERIALIZED VIEWS (AUTO-AGGREGATION)
--- ========================================
-
--- MV 1/8: binance_trades → binance_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
-TO trading.binance_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.binance_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 2/8: bitget_trades → bitget_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
-TO trading.bitget_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bitget_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 3/8: mexc_trades → mexc_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
-TO trading.mexc_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.mexc_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 4/8: gateio_trades → gateio_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
-TO trading.gateio_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.gateio_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 5/8: bybit_trades → bybit_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
-TO trading.bybit_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bybit_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 6/8: okx_trades → okx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
-TO trading.okx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.okx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 7/8: htx_trades → htx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
-TO trading.htx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.htx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 8/8: coinbase_trades → coinbase_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
-TO trading.coinbase_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(price * size) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.coinbase_trades
-GROUP BY symbol, market, bucket_start;
-
--- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- ✅ Database: trading
--- ✅ Tabellen: 53 (8 neue kline Tabellen)
--- ✅ Materialized Views: 8 (1s Auto-Aggregation)
--- ✅ Generiert: Automatisch aus Python Migrations
--- ========================================
-</file>
-
-<file path="backend/database/tables/db_market/exchanges_db.py">
-#!/usr/bin/env python3
-"""
-EXCHANGE TRADES & ORDERBOOK TABELLEN
-Erstellt 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)
-MAXIMALE Performance durch separate Tabellen!
-"""
-import requests
-import sys
+<file path="backend/database/schema_reconcile.py">
+from __future__ import annotations
+
+import asyncio
+import logging
 import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-# 🔥 ALLE 8 EXCHANGES
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
-
-def create_trades_tables():
-    """Erstellt TRADES Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE TRADES TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle trades_{exchange}...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_trades"):
-            success_count += 1
-    
-    return success_count
-
-def create_orderbook_tables():
-    """Erstellt ORDERBOOK Tabellen für alle 8 Exchanges"""
-    print(f"\n🔥 ERSTELLE ORDERBOOK TABELLEN FÜR ALLE EXCHANGES...")
-    success_count = 0
-    
-    for exchange in EXCHANGES:
-        print(f"\n📊 Erstelle {exchange}_orderbook...")
-        
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS trading.{exchange}_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-        """
-        
-        if execute_sql(sql, f"{exchange}_orderbook"):
-            success_count += 1
-    
-    return success_count
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: EXCHANGE TRADES & ORDERBOOK TABELLEN")
-    print("=" * 70)
-    print("⚡ 16 Tabellen: 8 Exchanges × 2 Tabellen (trades + orderbook)")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # Trades Tabellen erstellen
-    trades_count = create_trades_tables()
-    
-    # OrderBook Tabellen erstellen
-    orderbook_count = create_orderbook_tables()
-    
-    total_tables = len(EXCHANGES) * 2  # 16 Tabellen
-    success_count = trades_count + orderbook_count
-    
-    if success_count == total_tables:
-        print(f"\n🎉 ALLE {total_tables} TABELLEN ERFOLGREICH ERSTELLT!")
-        print("✅ 8 Trades Tabellen")
-        print("✅ 8 OrderBook Tabellen")
-        print("✅ MAXIMALE Performance durch separate Tabellen")
-        
-        print(f"\n📊 TABELLEN-ÜBERSICHT:")
-        for exchange in EXCHANGES:
-            print(f"  🔹 {exchange.upper()}: {exchange}_trades, {exchange}_orderbook")
-        
-        return True
-    else:
-        print(f"\n⚠️  NUR {success_count}/{total_tables} TABELLEN ERSTELLT!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/db_md/all_kline.py">
-#!/usr/bin/env python3
-"""
-ALL_KLINE TABELLE - Cross-Exchange OHLC
-Erstellt 1 Tabelle für alle Exchanges (Multi-Interval)
-"""
-import requests
+import re
 import sys
-import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
+logger = logging.getLogger(__name__)
 
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
+_LOCK = asyncio.Lock()
+_DONE: bool = False
 
-def execute_sql(sql, description="", database="default", ignore_errors=False):
-    """Führt SQL-Statement aus und gibt Erfolg/Fehler zurück"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ {description}: OK")
-            return True
-        else:
-            error_msg = response.text.strip()
-            print(f"❌ {description}: Code {response.status_code}")
-            print(f"🔍 Fehlerdetails: {error_msg}")
-            if ignore_errors:
-                print(f"⚠️  Fehler ignoriert (ignore_errors=True)")
-                return True
-            return False
-            
-    except Exception as e:
-        print(f"❌ {description}: EXCEPTION {str(e)}")
-        if ignore_errors:
-            print(f"⚠️  Exception ignoriert (ignore_errors=True)")
-            return True
-        return False
 
-def create_all_kline_table():
-    """Erstellt all_kline Tabelle"""
-    print(f"\n🔥 ERSTELLE ALL_KLINE TABELLE...")
-    
-    sql = """
-    CREATE TABLE IF NOT EXISTS trading.all_kline (
-        exchange LowCardinality(String),
-        symbol LowCardinality(String),
-        interval LowCardinality(String),
-        bucket_start DateTime64(3, 'UTC'),
-        open_price Decimal(76,38),
-        high_price Decimal(76,38),
-        low_price Decimal(76,38),
-        close_price Decimal(76,38),
-        volume Decimal(76,38),
-        quote_volume Decimal(76,38),
-        trades_count UInt32,
-        vwap Nullable(Decimal(76,38)),
-        exchange_count Nullable(UInt8),
-        leader_exchange Nullable(String)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(bucket_start)
-    ORDER BY (exchange, symbol, interval, bucket_start)
-    TTL bucket_start + INTERVAL 12 MONTH
-    SETTINGS index_granularity = 8192;
+# --------------------------------------------------------------------------------------
+# ClickHouse access (nutzt euren bestehenden unified service)
+# --------------------------------------------------------------------------------------
+
+async def _get_ch():
+    # vorhandene Struktur beibehalten
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch = get_clickhouse_client()
+    if not ch:
+        raise RuntimeError("ClickHouse client not available")
+    return ch
+
+
+def _default_init_sql_path() -> Path:
+    # default: backend/database/clickhouse/init.sql
+    # diese Datei liegt typischerweise in backend/database/clickhouse/init.sql
+    return Path(__file__).resolve().parent / "clickhouse" / "init.sql"
+
+
+# --------------------------------------------------------------------------------------
+# SQL parsing
+# --------------------------------------------------------------------------------------
+
+def _read_text(path: Path) -> str:
+    if not path.exists():
+        raise FileNotFoundError(f"init.sql not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _split_sql_statements(sql: str) -> List[str]:
     """
-    
-    return execute_sql(sql, "all_kline")
-
-def main():
-    print("🔥 CLICKHOUSE MIGRATION: ALL_KLINE TABELLE")
-    print("=" * 60)
-    print("⚡ Cross-Exchange OHLC - Multi-Interval")
-
-    # Test Connection
-    if not execute_sql("SELECT 1", "ClickHouse Test"):
-        print("❌ ClickHouse nicht erreichbar!")
-        return False
-
-    # Datenbank erstellen
-    if not execute_sql("CREATE DATABASE IF NOT EXISTS trading", "Erstelle DB 'trading'"):
-        return False
-
-    # all_kline Tabelle erstellen
-    if create_all_kline_table():
-        print(f"\n🎉 ALL_KLINE TABELLE ERFOLGREICH ERSTELLT!")
-        print("✅ Multi-Interval OHLC (1s empfohlen)")
-        print("✅ TTL: 12 Monate")
-        print("✅ Verwendung: Cross-Exchange Preis-Vergleiche, Price Leadership, AI/ML Training")
-        return True
-    else:
-        print(f"\n⚠️  FEHLER beim Erstellen der Tabelle!")
-        return False
-
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
-</file>
-
-<file path="backend/database/tables/scripts/show_tables.py">
-#!/usr/bin/env python3
-"""
-SHOW TABLES SCRIPT - Zeigt alle Tabellen an
-"""
-import requests
-import sys
-import os
-
-# Environment Variables
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CLICKHOUSE_TIMEOUT = int(os.getenv('CLICKHOUSE_TIMEOUT', '30'))
-
-CLICKHOUSE_URL = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/"
-
-def execute_sql(sql, description="", database="default"):
-    """Führt SQL-Statement aus"""
-    try:
-        url = f"{CLICKHOUSE_URL}?database={database}"
-        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
-        
-        response = requests.post(
-            url, 
-            data=sql, 
-            auth=auth, 
-            timeout=CLICKHOUSE_TIMEOUT,
-            headers={'Content-Type': 'text/plain'}
-        )
-        
-        if response.status_code == 200:
-            return response.text.strip()
-        else:
-            return f"ERROR: {response.text.strip()}"
-            
-    except Exception as e:
-        return f"EXCEPTION: {str(e)}"
-
-def show_all_tables():
-    """Zeigt alle Tabellen an"""
-    print("\n📊 ALLE TABELLEN IN TRADING DATABASE:")
-    print("=" * 60)
-    
-    result = execute_sql("SHOW TABLES FROM trading", "Liste Tabellen")
-    
-    if "ERROR" in result or "EXCEPTION" in result:
-        print(f"❌ Fehler: {result}")
-        return False
-    
-    if not result:
-        print("✅ Keine Tabellen vorhanden - Datenbank ist leer")
-        return True
-    
-    tables = result.split('\n')
-    print(f"\n✅ {len(tables)} Tabellen gefunden:\n")
-    
-    for i, table in enumerate(tables, 1):
-        print(f"  {i:2d}. {table}")
-    
-    return True
-
-def show_table_sizes():
-    """Zeigt Tabellen mit Größen an"""
-    print("\n📊 TABELLEN MIT GRÖSSEN:")
-    print("=" * 60)
-    
-    sql = """
-    SELECT 
-        table,
-        formatReadableSize(total_bytes) as size,
-        formatReadableQuantity(total_rows) as rows
-    FROM system.tables
-    WHERE database = 'trading'
-    ORDER BY total_bytes DESC
+    Split by ';' but not inside quotes. Strip comments:
+    - '-- ...' line comments
+    - '/* ... */' block comments
     """
-    
-    result = execute_sql(sql, "Tabellen mit Größen")
-    
-    if "ERROR" in result or "EXCEPTION" in result:
-        print(f"❌ Fehler: {result}")
-        return False
-    
-    if not result:
-        print("✅ Keine Tabellen vorhanden")
-        return True
-    
-    print(result)
-    return True
+    s = sql
+    out: List[str] = []
+    buf: List[str] = []
 
-def main():
-    print("🔥 CLICKHOUSE - SHOW TABLES")
-    print("=" * 60)
+    in_sq = False
+    in_dq = False
+    in_line_comment = False
+    in_block_comment = False
 
-    # Test Connection
-    test = execute_sql("SELECT 1", "ClickHouse Test")
-    if "ERROR" in test or "EXCEPTION" in test:
-        print(f"❌ ClickHouse nicht erreichbar: {test}")
-        return False
-    
-    print("✅ ClickHouse verbunden")
-    
-    # Zeige Tabellen
-    if not show_all_tables():
-        return False
-    
-    # Zeige Größen
-    print()
-    if not show_table_sizes():
-        return False
-    
-    print("\n🎉 FERTIG!")
-    return True
+    i = 0
+    n = len(s)
 
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    while i < n:
+        ch = s[i]
+        nxt = s[i + 1] if i + 1 < n else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                buf.append(ch)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if not in_sq and not in_dq:
+            if ch == "-" and nxt == "-":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+        if ch == "'" and not in_dq:
+            if in_sq and nxt == "'":  # escaped ''
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            in_sq = not in_sq
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == '"' and not in_sq:
+            if in_dq and nxt == '"':  # escaped ""
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            in_dq = not in_dq
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == ";" and not in_sq and not in_dq:
+            stmt = "".join(buf).strip()
+            if stmt:
+                out.append(stmt)
+            buf = []
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        out.append(tail)
+
+    return out
+
+
+_CREATE_DB_RE = re.compile(
+    r"^\s*CREATE\s+DATABASE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\s*$",
+    re.IGNORECASE,
+)
+_CREATE_TABLE_RE = re.compile(
+    r"^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
+_CREATE_MV_RE = re.compile(
+    r"^\s*CREATE\s+MATERIALIZED\s+VIEW\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_ddl(s: str) -> str:
+    """
+    Normalize for comparison:
+    - strip ';'
+    - lowercase
+    - collapse whitespace
+    """
+    s = s.strip().rstrip(";").strip().lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+@dataclass(frozen=True)
+class DesiredObject:
+    kind: str  # "database" | "table" | "materialized_view"
+    database: Optional[str]
+    name: str
+    ddl: str
+
+
+def parse_desired_objects_from_init_sql(init_sql: str) -> Tuple[List[DesiredObject], List[str]]:
+    statements = _split_sql_statements(init_sql)
+    desired: List[DesiredObject] = []
+
+    for stmt in statements:
+        s = stmt.strip()
+        if not s:
+            continue
+
+        mdb = _CREATE_DB_RE.match(s)
+        if mdb:
+            desired.append(DesiredObject(kind="database", database=None, name=mdb.group(1), ddl=s))
+            continue
+
+        mt = _CREATE_TABLE_RE.match(s)
+        if mt:
+            desired.append(DesiredObject(kind="table", database=mt.group(1), name=mt.group(2), ddl=s))
+            continue
+
+        mmv = _CREATE_MV_RE.match(s)
+        if mmv:
+            desired.append(DesiredObject(kind="materialized_view", database=mmv.group(1), name=mmv.group(2), ddl=s))
+            continue
+
+    return desired, statements
+
+
+# --------------------------------------------------------------------------------------
+# Introspection
+# --------------------------------------------------------------------------------------
+
+async def _list_tables_and_views(db: str) -> List[Tuple[str, str]]:
+    ch = await _get_ch()
+    rows = await ch.execute(
+        """
+        SELECT name, engine
+        FROM system.tables
+        WHERE database = %(db)s
+        ORDER BY name
+        """,
+        {"db": db},
+    )
+    out: List[Tuple[str, str]] = []
+    for r in rows or []:
+        if r and len(r) >= 2:
+            out.append((str(r[0]), str(r[1])))
+    return out
+
+
+async def _show_create(db: str, name: str) -> str:
+    ch = await _get_ch()
+    rows = await ch.execute(f"SHOW CREATE TABLE {db}.{name}")
+    if not rows or not rows[0] or not isinstance(rows[0][0], str):
+        raise RuntimeError(f"SHOW CREATE TABLE returned unexpected result for {db}.{name}")
+    return rows[0][0]
+
+
+# --------------------------------------------------------------------------------------
+# Policy: protected tables (no DROP)
+# --------------------------------------------------------------------------------------
+
+_DEFAULT_PROTECT_REGEX = [
+    r".*_trades$",           # deine Kernforderung
+    # optional sinnvoll (falls du auch diese nie verlieren willst):
+    # r".*_orderbook$",
+    # r".*_whale_events$",
+]
+
+def _compile_protect_patterns() -> List[re.Pattern]:
+    raw = (os.getenv("SCHEMA_PROTECT_REGEX") or "").strip()
+    pats = [p.strip() for p in raw.split(",") if p.strip()] if raw else list(_DEFAULT_PROTECT_REGEX)
+    compiled: List[re.Pattern] = []
+    for p in pats:
+        compiled.append(re.compile(p))
+    return compiled
+
+
+def _is_protected(name: str, patterns: List[re.Pattern]) -> bool:
+    return any(p.fullmatch(name) for p in patterns)
+
+
+# --------------------------------------------------------------------------------------
+# Diff model
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class DiffItem:
+    kind: str          # missing | mismatch | extra
+    object_kind: str   # table | materialized_view
+    database: str
+    name: str
+    details: str
+
+
+def _is_interactive() -> bool:
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _ask_yes_no(prompt: str, default: bool = False) -> bool:
+    if not _is_interactive():
+        return default
+    suffix = " [Y/n] " if default else " [y/N] "
+    while True:
+        ans = input(prompt + suffix).strip().lower()
+        if not ans:
+            return default
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+
+
+async def _rename_to_backup(db: str, name: str) -> str:
+    ch = await _get_ch()
+    # deterministic-ish unique suffix
+    suffix = str(int(time.time() * 1000))
+    new_name = f"{name}__backup__{suffix}"
+    await ch.execute(f"RENAME TABLE {db}.{name} TO {db}.{new_name}")
+    return new_name
+
+
+async def _drop_object(db: str, name: str) -> None:
+    ch = await _get_ch()
+    await ch.execute(f"DROP TABLE IF EXISTS {db}.{name}")
+
+
+# --------------------------------------------------------------------------------------
+# Main reconcile
+# --------------------------------------------------------------------------------------
+
+async def reconcile_schema_from_init_sql(
+    init_sql_path: Optional[str] = None,
+    *,
+    database: str = "trading",
+    mode: str = "verify",            # verify | ensure | reconcile
+    auto_apply: bool = False,        # destructive ops without TTY
+    backup_rename: bool = True,      # rename before recreate (for mismatches)
+    delete_extras: bool = True,      # delete non-init objects (unless protected)
+) -> List[DiffItem]:
+    """
+    verify:
+      - only check; if diffs exist -> raises RuntimeError
+    ensure:
+      - executes init.sql statements (safe if IF NOT EXISTS); no deletes; no mismatch fixes
+    reconcile:
+      - creates missing
+      - fixes mismatches (protected -> ALWAYS rename backup, never drop; non-protected -> rename if backup_rename else drop)
+      - deletes extras ONLY if non-protected (protected extras are kept)
+      - if interactive -> asks; else needs auto_apply=True for destructive steps
+    """
+    global _DONE
+    if _DONE:
+        return []
+
+    async with _LOCK:
+        if _DONE:
+            return []
+
+        patterns = _compile_protect_patterns()
+
+        path = Path(init_sql_path).expanduser().resolve() if init_sql_path else _default_init_sql_path()
+        init_sql = _read_text(path)
+        desired_objs, statements = parse_desired_objects_from_init_sql(init_sql)
+
+        # desired maps for selected database
+        desired_tables: Dict[str, DesiredObject] = {}
+        desired_mvs: Dict[str, DesiredObject] = {}
+        for o in desired_objs:
+            if o.kind == "table" and o.database == database:
+                desired_tables[o.name] = o
+            elif o.kind == "materialized_view" and o.database == database:
+                desired_mvs[o.name] = o
+
+        ch = await _get_ch()
+
+        # ensure mode: just apply init.sql statements in order
+        if mode == "ensure":
+            for stmt in statements:
+                s = stmt.strip()
+                if s:
+                    await ch.execute(s)
+            _DONE = True
+            return []
+
+        existing = await _list_tables_and_views(database)
+        existing_map: Dict[str, str] = {name: engine for (name, engine) in existing}
+
+        diffs: List[DiffItem] = []
+
+        # missing
+        for name in desired_tables:
+            if name not in existing_map:
+                diffs.append(DiffItem("missing", "table", database, name, "table missing"))
+        for name in desired_mvs:
+            if name not in existing_map:
+                diffs.append(DiffItem("missing", "materialized_view", database, name, "mv missing"))
+
+        # mismatch
+        for name, engine in existing_map.items():
+            if name in desired_tables:
+                desired = desired_tables[name]
+                actual = await _show_create(database, name)
+                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
+                    diffs.append(DiffItem("mismatch", "table", database, name, "DDL differs vs init.sql"))
+            elif name in desired_mvs:
+                desired = desired_mvs[name]
+                actual = await _show_create(database, name)
+                if _normalize_ddl(actual) != _normalize_ddl(desired.ddl):
+                    diffs.append(DiffItem("mismatch", "materialized_view", database, name, "DDL differs vs init.sql"))
+
+        # extra
+        desired_names = set(desired_tables.keys()) | set(desired_mvs.keys())
+        for name, engine in existing_map.items():
+            if name not in desired_names:
+                kind = "materialized_view" if engine.lower() == "materializedview" else "table"
+                diffs.append(DiffItem("extra", kind, database, name, f"extra object engine={engine}"))
+
+        if mode == "verify":
+            if diffs:
+                # ✅ TEMP DEBUG: Log first 20 diffs for debugging
+                logger.error("=" * 80)
+                logger.error("SCHEMA VERIFY FAILED - DETAILED DIFFERENCES:")
+                logger.error("=" * 80)
+                for d in diffs[:20]:
+                    logger.error("[schema-diff] %s | %s | %s.%s | %s", d.kind.upper(), d.object_kind, d.database, d.name, d.details)
+                if len(diffs) > 20:
+                    logger.error("[schema-diff] ... (%d more differences not shown)", len(diffs) - 20)
+                logger.error("=" * 80)
+                raise RuntimeError(f"Schema verify failed: {len(diffs)} differences found (run reconcile).")
+            _DONE = True
+            return diffs
+
+        if mode != "reconcile":
+            raise ValueError("mode must be one of: verify | ensure | reconcile")
+
+        interactive = _is_interactive()
+        allow_destructive = auto_apply or interactive
+
+        # 1) ensure missing objects (safe because init uses IF NOT EXISTS)
+        # apply all desired in init order: tables first, then mvs
+        for o in desired_objs:
+            if o.kind == "table" and o.database == database:
+                await ch.execute(o.ddl)
+        for o in desired_objs:
+            if o.kind == "materialized_view" and o.database == database:
+                await ch.execute(o.ddl)
+
+        # 2) fix mismatches
+        mismatches = [d for d in diffs if d.kind == "mismatch"]
+        if mismatches:
+            if not allow_destructive:
+                raise RuntimeError("Mismatches found but destructive changes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
+
+            do_fix = True
+            if interactive and not auto_apply:
+                do_fix = _ask_yes_no(f"{len(mismatches)} mismatches found. Fix now (protected: rename+recreate; others: rename/drop+recreate)?", default=False)
+
+            if do_fix:
+                for d in mismatches:
+                    is_prot = _is_protected(d.name, patterns)
+                    # MVs: drop & recreate (MVs sind i. d. R. jederzeit rebuildbar)
+                    if d.object_kind == "materialized_view":
+                        if interactive and not auto_apply:
+                            if not _ask_yes_no(f"Recreate MV {d.database}.{d.name} (DROP+CREATE)?", default=True):
+                                continue
+                        await _drop_object(d.database, d.name)
+                        desired = desired_mvs.get(d.name)
+                        if not desired:
+                            raise RuntimeError(f"Desired MV DDL missing for {d.database}.{d.name}")
+                        await ch.execute(desired.ddl)
+                        continue
+
+                    # Tables
+                    if is_prot:
+                        # NEVER DROP: always backup rename
+                        new_name = await _rename_to_backup(d.database, d.name)
+                        logger.warning("[schema] PROTECTED mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
+                    else:
+                        if backup_rename:
+                            new_name = await _rename_to_backup(d.database, d.name)
+                            logger.warning("[schema] mismatch: renamed %s.%s -> %s.%s", d.database, d.name, d.database, new_name)
+                        else:
+                            if interactive and not auto_apply:
+                                if not _ask_yes_no(f"DROP and recreate table {d.database}.{d.name}?", default=False):
+                                    continue
+                            await _drop_object(d.database, d.name)
+                            logger.warning("[schema] mismatch: dropped %s.%s", d.database, d.name)
+
+                    desired = desired_tables.get(d.name)
+                    if not desired:
+                        raise RuntimeError(f"Desired table DDL missing for {d.database}.{d.name}")
+                    await ch.execute(desired.ddl)
+
+        # 3) delete extras (non-protected only)
+        extras = [d for d in diffs if d.kind == "extra"]
+        if extras and delete_extras:
+            if not allow_destructive:
+                raise RuntimeError("Extras found but destructive deletes not allowed (set SCHEMA_AUTO_APPLY=1 or run TTY).")
+
+            # split protected / non-protected
+            prot_extras = [e for e in extras if _is_protected(e.name, patterns)]
+            del_extras = [e for e in extras if not _is_protected(e.name, patterns)]
+
+            if prot_extras:
+                for e in prot_extras:
+                    logger.warning("[schema] PROTECTED extra kept: %s.%s (%s)", e.database, e.name, e.details)
+
+            if del_extras:
+                do_del = True
+                if interactive and not auto_apply:
+                    do_del = _ask_yes_no(f"{len(del_extras)} NON-protected extras found. Delete them now?", default=False)
+
+                if do_del:
+                    for e in del_extras:
+                        if interactive and not auto_apply:
+                            if not _ask_yes_no(f"DROP extra {e.database}.{e.name}?", default=False):
+                                continue
+                        await _drop_object(e.database, e.name)
+                        logger.warning("[schema] dropped extra %s.%s", e.database, e.name)
+
+        _DONE = True
+        return diffs
+
+
+async def reconcile_from_env() -> None:
+    """
+    ENV:
+      SCHEMA_MODE=verify|ensure|reconcile
+      SCHEMA_AUTO_APPLY=0|1
+      SCHEMA_BACKUP_RENAME=0|1
+      SCHEMA_DELETE_EXTRAS=0|1
+      SCHEMA_INIT_SQL=/abs/or/rel/path/to/init.sql
+      SCHEMA_PROTECT_REGEX=regex1,regex2,...  (fullmatch)
+    """
+    mode = (os.getenv("SCHEMA_MODE") or "verify").strip().lower()
+    auto_apply = (os.getenv("SCHEMA_AUTO_APPLY") or "0").strip().lower() in ("1", "true", "yes")
+    backup_rename = (os.getenv("SCHEMA_BACKUP_RENAME") or "1").strip().lower() in ("1", "true", "yes")
+    delete_extras = (os.getenv("SCHEMA_DELETE_EXTRAS") or "1").strip().lower() in ("1", "true", "yes")
+    init_path = os.getenv("SCHEMA_INIT_SQL")  # optional override
+
+    diffs = await reconcile_schema_from_init_sql(
+        init_path,
+        database="trading",
+        mode=mode,
+        auto_apply=auto_apply,
+        backup_rename=backup_rename,
+        delete_extras=delete_extras,
+    )
+
+    if diffs:
+        for d in diffs[:200]:
+            logger.warning("[schema-diff] %s %s %s.%s | %s", d.kind, d.object_kind, d.database, d.name, d.details)
+        if len(diffs) > 200:
+            logger.warning("[schema-diff] ... (%d more)", len(diffs) - 200)
 </file>
 
 <file path="backend/exchanges/mexc/services/orderbook.py">
@@ -166038,402 +161088,1150 @@ class cl_manager:
 cl_manager_instance = cl_manager()
 </file>
 
-<file path="backend/database/clickhouse/cl_message_handlers.py">
-import asyncio
-import logging
-from typing import Dict, Any, List, Optional, Callable
-from datetime import datetime
-from .cl_manager import cl_manager_instance
-from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+<file path="backend/database/clickhouse/init.sql">
+-- ========================================
+-- TRADING SYSTEM CLICKHOUSE SCHEMA
+-- AUTO-GENERIERT von 000_generate_init_sql.py
+-- NICHT MANUELL BEARBEITEN!
+-- ========================================
+-- Single Source of Truth: Python Migration Scripts
+-- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
 
-logger = logging.getLogger(__name__)
+CREATE DATABASE IF NOT EXISTS trading;
 
-class cl_message_handlers:
-    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.manager = cl_manager_instance
-        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
-        self.processing_tasks: List[asyncio.Task] = []
-        self.is_processing = False
-        self.processed_messages = 0
-        self.failed_messages = 0
-        self.message_types: Dict[str, Callable] = {
-            "trades": self._handle_trades_message,
-            "candles": self._handle_candles_message,
-            "orderbook": self._handle_orderbook_message,
-            "user_settings": self._handle_user_settings_message,
-            "indicators": self._handle_indicators_message
-        }
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "message_handlers")
-        except ImportError:
-            logger.warning("Health system not available for cl_message_handlers")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_message_handlers initialized")
-    
-    async def start_processing(self, num_workers: int = 3):
-        """Start message processing workers"""
-        if self.is_processing:
-            logger.warning("Message processing is already running")
-            return
-        
-        self.is_processing = True
-        
-        # Start worker tasks
-        for i in range(num_workers):
-            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
-            self.processing_tasks.append(task)
-        
-        if self.health_component:
-            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
-            
-        logger.info(f"Started {num_workers} ClickHouse message processing workers")
-    
-    async def stop_processing(self):
-        """Stop message processing workers"""
-        if not self.is_processing:
-            return
-        
-        self.is_processing = False
-        
-        # Cancel all worker tasks
-        for task in self.processing_tasks:
-            task.cancel()
-        
-        # Wait for tasks to finish
-        if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
-        
-        self.processing_tasks.clear()
-        
-        logger.info("Stopped ClickHouse message processing workers")
-    
-    async def _message_worker(self, worker_id: str):
-        """Message processing worker"""
-        logger.info(f"ClickHouse message worker {worker_id} started")
-        
-        while self.is_processing:
-            try:
-                # Get message from queue with timeout
-                message = await asyncio.wait_for(
-                    self.message_queue.get(),
-                    timeout=CL_PERFORMANCE["processing_timeout"]
-                )
-                
-                # Process message
-                await self._process_message(message, worker_id)
-                
-                # Mark task as done
-                self.message_queue.task_done()
-                
-            except asyncio.TimeoutError:
-                # No messages to process, continue loop
-                continue
-            except asyncio.CancelledError:
-                logger.info(f"ClickHouse message worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in message worker {worker_id}: {str(e)}")
-                if self.health_component:
-                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
-                await asyncio.sleep(1)  # Brief pause before continuing
-        
-        logger.info(f"ClickHouse message worker {worker_id} stopped")
-    
-    async def _process_message(self, message: Dict[str, Any], worker_id: str):
-        """Process a single message"""
-        start_time = datetime.now()
-        
-        try:
-            # Extract message info
-            exchange = message.get("exchange")
-            message_type = message.get("type")
-            data = message.get("data")
-            
-            if not all([exchange, message_type, data]):
-                raise ValueError("Invalid message format: missing exchange, type, or data")
-            
-            # Get appropriate handler
-            handler = self.message_types.get(message_type)
-            if not handler:
-                raise ValueError(f"Unknown message type: {message_type}")
-            
-            # Process with handler
-            result = await handler(exchange, data, worker_id)
-            
-            # Track success
-            self.processed_messages += 1
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            if self.health_component:
-                self.health_component.record_success({
-                    "action": "message_processed",
-                    "type": message_type,
-                    "exchange": exchange,
-                    "worker": worker_id,
-                    "processing_time_ms": processing_time
-                })
-            
-            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
-            
-        except Exception as e:
-            self.failed_messages += 1
-            error_msg = f"Failed to process message: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-    
-    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle trades data message"""
-        try:
-            # Validate trades data
-            if not self._validate_trades_data(data):
-                raise ValueError("Invalid trades data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_trades_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "trades", ch_data)
-            
-            if success:
-                logger.debug(f"Trades data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert trades data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle candles/bars data message"""
-        try:
-            # Validate candles data
-            if not self._validate_candles_data(data):
-                raise ValueError("Invalid candles data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_candles_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "candles", ch_data)
-            
-            if success:
-                logger.debug(f"Candles data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert candles data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle orderbook data message"""
-        try:
-            # Validate orderbook data
-            if not self._validate_orderbook_data(data):
-                raise ValueError("Invalid orderbook data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_orderbook_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
-            
-            if success:
-                logger.debug(f"Orderbook data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert orderbook data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle user settings message"""
-        try:
-            # User settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "user_settings", data)
-            
-            if success:
-                logger.debug("User settings data inserted")
-            else:
-                logger.warning("Failed to insert user settings data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling user settings message: {str(e)}")
-            raise
-    
-    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle indicators message"""
-        try:
-            # Indicators settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "indicators", data)
-            
-            if success:
-                logger.debug("Indicators data inserted")
-            else:
-                logger.warning("Failed to insert indicators data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling indicators message: {str(e)}")
-            raise
-    
-    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
-        """
-        Validate trades data format
-        
-        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
-        - Keine hardcoded Exchange-Listen
-        - Keine Exchange-spezifischen If-Bedingungen  
-        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
-        
-        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
-        
-        Felder die NICHT geprüft werden:
-        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
-        - source: Optional mit DEFAULT 'live_ws'
-        """
-        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
-        """Validate candles data format"""
-        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
-        """Validate orderbook data format"""
-        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Transform trades data to ClickHouse format
-        
-        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
-        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
-        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
-        - trade_id: NICHT senden (wird von ClickHouse generiert)
-        - source: Optional (DEFAULT 'live_ws')
-        """
-        transformed = {
-            "symbol": data["symbol"],
-            "market": data["market"],  # ✅ Spot oder Futures
-            "price": data["price"],  # ✅ String für Decimal(76,38)
-            "size": data["size"],    # ✅ String für Decimal(76,38)
-            "side": data["side"],
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-        
-        # source-Field optional hinzufügen (wenn vorhanden)
-        if "source" in data:
-            transformed["source"] = data["source"]
-        
-        return transformed
-    
-    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform candles data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "resolution": data["resolution"],
-            "open": data["open"],    # ✅ String für Decimal(76,38)
-            "high": data["high"],    # ✅ String für Decimal(76,38)
-            "low": data["low"],      # ✅ String für Decimal(76,38)
-            "close": data["close"],  # ✅ String für Decimal(76,38)
-            "volume": data["volume"], # ✅ String für Decimal(76,38)
-            "trades": data.get("trades", 0),
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform orderbook data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "bids": data["bids"],  # Array of [price, size] tuples
-            "asks": data["asks"],  # Array of [price, size] tuples
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
-        """Queue a message for processing"""
-        try:
-            message = {
-                "exchange": exchange,
-                "type": message_type,
-                "data": data,
-                "queued_at": datetime.now().isoformat()
-            }
-            
-            # Add to queue (will wait if queue is full)
-            await self.message_queue.put(message)
-            
-            logger.debug(f"Queued {message_type} message for {exchange}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to queue message: {str(e)}")
-            return False
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
-        """Get message processing statistics"""
-        return {
-            "is_processing": self.is_processing,
-            "queue_size": self.message_queue.qsize(),
-            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
-            "active_workers": len(self.processing_tasks),
-            "processed_messages": self.processed_messages,
-            "failed_messages": self.failed_messages,
-            "success_rate": round(
-                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
-            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
-            "supported_message_types": list(self.message_types.keys())
-        }
-    
-    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Process a batch of messages"""
-        results = {"queued": 0, "failed": 0}
-        
-        for message in messages:
-            try:
-                success = await self.queue_message(
-                    message.get("exchange"),
-                    message.get("type"),
-                    message.get("data")
-                )
-                
-                if success:
-                    results["queued"] += 1
-                else:
-                    results["failed"] += 1
-                    
-            except Exception as e:
-                logger.error(f"Error queuing batch message: {str(e)}")
-                results["failed"] += 1
-        
-        return results
+-- Tabelle 1/46
+CREATE TABLE IF NOT EXISTS trading.binance_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
 
+-- Tabelle 2/46
+CREATE TABLE IF NOT EXISTS trading.bitget_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
 
-# Global cl_message_handlers instance
-cl_handlers_instance = cl_message_handlers()
+-- Tabelle 3/46
+CREATE TABLE IF NOT EXISTS trading.mexc_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 4/46
+CREATE TABLE IF NOT EXISTS trading.gateio_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 5/46
+CREATE TABLE IF NOT EXISTS trading.bybit_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 6/46
+CREATE TABLE IF NOT EXISTS trading.okx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 7/46
+CREATE TABLE IF NOT EXISTS trading.htx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 8/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 9/46
+CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 10/46
+CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 11/46
+CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 12/46
+CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 13/46
+CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 14/46
+CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 15/46
+CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 16/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 17/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 18/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 19/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 20/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 21/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 22/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 23/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 24/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 25/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 26/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 27/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 28/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 29/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 30/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 31/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 32/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 33/46
+CREATE TABLE IF NOT EXISTS trading.base_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            signal_type LowCardinality(String),
+            signal_strength Decimal(5,4),
+            price Decimal(18,8),
+            volume Decimal(18,8),
+            confidence Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 34/46
+CREATE TABLE IF NOT EXISTS trading.tier1_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            tier1_score Decimal(5,4),
+            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
+            entry_price Decimal(18,8),
+            stop_loss Decimal(18,8),
+            take_profit Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 35/46
+CREATE TABLE IF NOT EXISTS trading.alma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            alma_value Decimal(18,8),
+            alma_slope Decimal(5,4),
+            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 36/46
+CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            wave_count UInt8,
+            wave_type LowCardinality(String),
+            wave_confidence Decimal(5,4),
+            price_target Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 37/46
+CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            whale_score Decimal(5,4),
+            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
+            volume_impact Decimal(18,8),
+            price_impact Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 38/46
+CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            sigma_level Decimal(5,4),
+            is_extreme UInt8,
+            reversion_probability Decimal(5,4),
+            expected_price Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 39/46
+CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            dominant_frequency Decimal(5,4),
+            power_spectrum Decimal(5,4),
+            cycle_length UInt16,
+            phase Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 40/46
+CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            volatility Decimal(5,4),
+            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
+            atr Decimal(18,8),
+            bollinger_width Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 41/46
+CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol1 LowCardinality(String),
+            symbol2 LowCardinality(String),
+            exchange LowCardinality(String),
+            correlation Decimal(5,4),
+            rolling_correlation Decimal(5,4),
+            divergence_score Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol1, symbol2, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 42/46
+CREATE TABLE IF NOT EXISTS trading.regime_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
+            regime_confidence Decimal(5,4),
+            regime_duration UInt32,
+            transition_probability Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 43/46
+CREATE TABLE IF NOT EXISTS trading.indicator_performance (
+            timestamp DateTime64(3, 'UTC'),
+            indicator_name LowCardinality(String),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            accuracy Decimal(5,4),
+            profit_factor Decimal(5,4),
+            sharpe_ratio Decimal(5,4),
+            total_signals UInt32,
+            winning_signals UInt32
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (indicator_name, symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 6 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 44/46
+CREATE TABLE IF NOT EXISTS trading.binance_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 45/46
+CREATE TABLE IF NOT EXISTS trading.bitget_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 46/46
+CREATE TABLE IF NOT EXISTS trading.mexc_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 47/46
+CREATE TABLE IF NOT EXISTS trading.gateio_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 48/46
+CREATE TABLE IF NOT EXISTS trading.bybit_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 49/46
+CREATE TABLE IF NOT EXISTS trading.okx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 50/46
+CREATE TABLE IF NOT EXISTS trading.htx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 51/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+TTL bucket_start + toIntervalMonth(12)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 52/46
+CREATE TABLE IF NOT EXISTS trading.all_orderbook (
+        ts DateTime64(3, 'UTC'),
+        symbol LowCardinality(String),
+        exchange LowCardinality(String),
+        best_bid_price Decimal(76,38),
+        best_bid_size Decimal(76,38),
+        best_ask_price Decimal(76,38),
+        best_ask_size Decimal(76,38),
+        spread Decimal(76,38),
+        mid_price Decimal(76,38)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (symbol, exchange, ts)
+    TTL ts + INTERVAL 1 MONTH
+    SETTINGS index_granularity = 8192;
+
+-- Tabelle 53/46
+CREATE TABLE IF NOT EXISTS trading.all_whale (
+        event_id String,
+        exchange LowCardinality(String),
+        ts DateTime64(3, 'UTC'),
+        chain String,
+        tx_hash String,
+        from_addr String,
+        to_addr String,
+        token Nullable(String),
+        symbol String,
+        amount Decimal(76,38),
+        is_native UInt8,
+        amount_usd Decimal(76,38),
+        from_exchange String,
+        from_country String,
+        from_city String,
+        to_exchange String,
+        to_country String,
+        to_city String,
+        is_cross_border UInt8,
+        source String,
+        threshold_usd Decimal(76,38),
+        coin_rank UInt32,
+        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (exchange, symbol, ts, amount_usd)
+    TTL ts + INTERVAL 3 MONTH
+    SETTINGS index_granularity = 8192;
+
+-- ========================================
+-- MATERIALIZED VIEWS (AUTO-AGGREGATION)
+-- ========================================
+
+-- MV 1/8: binance_trades → binance_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
+TO trading.binance_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.binance_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 2/8: bitget_trades → bitget_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
+TO trading.bitget_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bitget_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 3/8: mexc_trades → mexc_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
+TO trading.mexc_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.mexc_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 4/8: gateio_trades → gateio_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
+TO trading.gateio_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.gateio_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 5/8: bybit_trades → bybit_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
+TO trading.bybit_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bybit_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 6/8: okx_trades → okx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
+TO trading.okx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.okx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 7/8: htx_trades → htx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
+TO trading.htx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.htx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 8/8: coinbase_trades → coinbase_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
+TO trading.coinbase_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.coinbase_trades
+GROUP BY symbol, market, bucket_start;
+
+-- ========================================
+-- ZUSAMMENFASSUNG
+-- ========================================
+-- ✅ Database: trading
+-- ✅ Tabellen: 53 (8 neue kline Tabellen)
+-- ✅ Materialized Views: 8 (1s Auto-Aggregation)
+-- ✅ Generiert: Automatisch aus Python Migrations
+-- ========================================
 </file>
 
 <file path="backend/exchanges/binance/services/rest_api.py">
@@ -174807,1013 +170605,6 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
-
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Any
-from collections.abc import Mapping
-
-from fastapi import WebSocket
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
-
-
-def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
-    """
-    Trade erwartet dict wegen .get().
-    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
-
-    if isinstance(x, (tuple, list)):
-        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
-        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
-            return {
-                "price": x[0],
-                "size": x[1],
-                "timestamp": x[2],
-                "side": x[3] if len(x) > 3 else None,
-            }
-        return {}
-
-    return {}
-
-
-def _ms_to_sec(ts: Any) -> Optional[int]:
-    """Konvertiert Millisekunden zu Sekunden (Lightweight-Charts Format)"""
-    if ts is None:
-        return None
-    try:
-        t = int(ts)
-    except Exception:
-        return None
-    # Heuristik: > 1e11 -> ms, sonst sec
-    return t // 1000 if t > 100_000_000_000 else t
-
-
-def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
-    """
-    Unterstützt:
-    A) Mapping (bereits dict)
-       - entweder schon {time,open,high,low,close,volume}
-       - oder {timestamp,o,h,l,c,v} (Aggregator-State)
-    B) Tuple/List:
-       - (interval_str, candle_dict)  ✅ finished-Format
-       - (time, open, high, low, close[, volume])
-    """
-    # A) dict-like
-    if isinstance(x, Mapping):
-        d = dict(x)
-
-        # Aggregator-Keys -> Frontend-Keys
-        if "open" not in d and "o" in d:
-            d["open"] = d.get("o")
-        if "high" not in d and "h" in d:
-            d["high"] = d.get("h")
-        if "low" not in d and "l" in d:
-            d["low"] = d.get("l")
-        if "close" not in d and "c" in d:
-            d["close"] = d.get("c")
-        if "volume" not in d and "v" in d:
-            d["volume"] = d.get("v")
-
-        # time setzen (Lightweight-Charts: Sekunden)
-        if "time" not in d:
-            ts = d.get("timestamp") or d.get("ts") or d.get("time")
-            tsec = _ms_to_sec(ts)
-            if tsec is not None:
-                d["time"] = tsec
-
-        return d
-
-    # B) tuple/list
-    if isinstance(x, (tuple, list)):
-        # B1) (interval, dict) ✅ KRITISCH für verschachtelte Tuples!
-        if len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], Mapping):
-            d = _ensure_candle_dict(x[1])  # Rekursiv normalisieren
-            d.setdefault("interval", x[0])
-            return d
-
-        # B2) (time, o, h, l, c[, v])
-        if len(x) >= 5:
-            tsec = _ms_to_sec(x[0])
-            d = {
-                "time": tsec if tsec is not None else x[0],
-                "open": x[1],
-                "high": x[2],
-                "low": x[3],
-                "close": x[4],
-            }
-            if len(x) > 5:
-                d["volume"] = x[5]
-            return d
-
-    return {}
-
-
-def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
-    """
-    Orderbook erwartet dict (bids/asks etc.).
-    Unterstützt Tuple/List: (bids, asks[, timestamp])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
-
-    if isinstance(x, (tuple, list)):
-        if len(x) >= 2:
-            d = {"bids": x[0], "asks": x[1]}
-            if len(x) > 2:
-                d["timestamp"] = x[2]
-            return d
-        return {}
-
-    return {}
-
-
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
-
-
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
-
-
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
-
-
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
-
-
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
-
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
-
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
-
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
-        }
-
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
-
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
-
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
-
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
-        }
-
-
-ws_manager = PerformantWebSocketManager()
-
-
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "notional": float(trade_data.get("price", 0) or 0) * float(trade_data.get("size", 0) or 0),  # ✅ NEU: Notional Value
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
-    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-
-
-async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
-    """
-    ✅ Broadcast Orderbook Updates to Frontend
-    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
-    """
-    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "orderbook",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
-        "market": market,
-        "bids": orderbook_data.get("bids", []),
-        "asks": orderbook_data.get("asks", []),
-        "timestamp": orderbook_data.get("timestamp"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
-<file path="backend/core/main.py">
-# backend/core/main.py
-"""
-Main Application Entrypoint for WS_AI Enterprise Trading Backend
-
-Dieses File registriert:
-    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
-    - Unified Trade APIs (für alle 8 Exchanges)
-    - Unified User APIs (für alle 8 Exchanges)
-    - WebSocket Router (ws_router)
-    - ExchangeFactory Init
-    - ClickHouse Init
-    - Redis Init
-    - WebSocket Lane Registry Init
-    - CORS
-    - Logging
-
-Keine Hardcodings, lane-safe, enterprise-fähig.
-"""
-
-import asyncio
-import logging
-import os
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# =============================
-# LOAD ENVIRONMENT VARIABLES
-# =============================
-
-logger_env = logging.getLogger("main.env")
-
-# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
-# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
-if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
-    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
-    if env_path.exists():
-        load_dotenv(env_path)
-        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
-    else:
-        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
-else:
-    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
-
-# =============================
-# CORE INIT COMPONENTS
-# =============================
-
-from backend.core.config import settings
-from backend.database.clickhouse import unified_cl_service
-from backend.database.redis import unified_rs_service
-from backend.websocket.ws_router import ws_router
-from backend.websocket.ws_registry import ws_registry
-from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.health.health_router import health_router
-from backend.health.health_progress import progress_health_service
-from backend.services.adapter.exchange_factory import ExchangeFactory
-
-# =============================
-# ROUTER MANAGEMENT (Enterprise)
-# =============================
-
-from backend.api.endpoint_mapper import EndpointMapper
-from backend.core.router_registry import (
-    register_all_routers,
-    register_unified_trade_apis,
-    register_unified_user_apis,
-    register_optimization_routers,
-)
-
-# =============================
-# LOGGING SETUP
-# =============================
-
-logger = logging.getLogger("main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-)
-
-# ================================================================
-# CREATE FASTAPI APP
-# ================================================================
-
-app = FastAPI(
-    title="WS_AI Enterprise Trading Backend",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# ================================================================
-# CORS – generisch über Settings
-# ================================================================
-
-origins = getattr(settings, "CORS_ORIGINS", ["*"])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================================================================
-# WEBSOCKET AUTOSTART FUNCTION (P0.4)
-# ================================================================
-
-async def _ws_autostart():
-    """
-    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
-    
-    Sicherheitsfeatures:
-    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
-    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
-    - Deduplizierung: Keine doppelten Lanes
-    - Bounded Concurrency: Startup nicht blockieren
-    """
-    from typing import Dict, List, Any, Tuple
-    
-    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
-
-    # -----------------------------
-    # 1) User-Settings (ClickHouse)
-    # -----------------------------
-    ws_items: List[Dict[str, Any]] = []
-    
-    try:
-        from backend.websocket.ws_manager import ws_manager
-        from backend.database.clickhouse.cl_user_settings import cl_user_settings
-
-        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
-        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
-        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-        if not getattr(cl_user_settings, "initialized", False):
-            await cl_user_settings.initialize()
-
-        # Query Filter
-        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
-        
-        rows = []
-        if system_user_id:
-            filters["user_id"] = system_user_id
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        elif allow_all_users:
-            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
-            rows = await cl_user_settings.cl_service.query_user_settings(
-                table_type="coin_settings",
-                filters=filters,
-                limit=5000,
-            ) or []
-        else:
-            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
-            # ✅ Kein raise - sauberer Flow-Control
-            rows = []
-
-        # ✅ Schema-exakte Extraktion (market ist Top-Level)
-        for r in rows:
-            exchange = (r.get("exchange") or "").strip()
-            symbol = (r.get("symbol") or "").strip()
-            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
-            
-            if not exchange or not symbol:
-                continue
-
-            ws_items.append({
-                "exchange": exchange,
-                "symbol": symbol,
-                "market": market,
-                "source": "user_settings",
-            })
-
-        if ws_items:
-            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
-        else:
-            logger.info("📊 No active coin_settings found (store_live=1)")
-
-    except Exception as e:
-        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
-
-    # -----------------------------
-    # 2) ENV-Fallback
-    # -----------------------------
-    if not ws_items:
-        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
-        if not ws_autostart:
-            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
-            return
-
-        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
-        if not symbols_raw:
-            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
-            return
-
-        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
-        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-
-        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
-        if ex_raw:
-            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
-        else:
-            exchanges = ExchangeFactory.get_available_exchanges()
-
-        for ex in exchanges:
-            for sym in symbols:
-                ws_items.append({
-                    "exchange": ex,
-                    "symbol": sym,
-                    "market": market,
-                    "source": "env",
-                })
-
-        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
-
-    # -----------------------------
-    # 3) Dedupe + Start (bounded concurrency)
-    # -----------------------------
-    if not ws_items:
-        logger.info("⚪ WebSocket autostart: no items configured")
-        return
-
-    # ✅ Dedupe by (exchange, symbol, market)
-    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for item in ws_items:
-        key = (item["exchange"], item["symbol"], item["market"])
-        if key not in dedup or dedup[key].get("source") == "env":
-            dedup[key] = item
-
-    ws_items = list(dedup.values())
-    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
-
-    from backend.websocket.ws_manager import ws_manager
-
-    # ✅ Bounded Parallelität
-    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
-    started = 0
-    failed = 0
-
-    async def _start_one(cfg: Dict[str, Any]):
-        nonlocal started, failed
-        async with sem:
-            try:
-                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
-                await ws_manager.start_websocket_lane(
-                    exchange=cfg["exchange"],
-                    symbol=cfg["symbol"],
-                    market=cfg["market"]
-                )
-                
-                logger.info(
-                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
-                )
-                started += 1
-            except Exception as e:
-                logger.error(
-                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
-                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
-                    exc_info=True
-                )
-                failed += 1
-
-    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
-    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
-
-
-# ================================================================
-# SYSTEM STARTUP / SHUTDOWN
-# ================================================================
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("🚀 WS_AI Backend starting…")
-    
-    startup_success = True
-    startup_errors = []
-
-    # ✅ EXISTING: ClickHouse Init
-    try:
-        await unified_cl_service.initialize()
-        logger.info("🟢 ClickHouse unified_cl_service initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
-        startup_errors.append(f"clickhouse_service: {e}")
-        startup_success = False
-
-    # ✅ NEU: ClickHouse Connection Pool Init (Foundation)
-    try:
-        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
-        
-        pool_ok = await initialize_clickhouse_foundation()
-        if not pool_ok:
-            raise RuntimeError("ClickHouse foundation initialization returned False")
-        
-        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
-    except Exception as e:
-        logger.error(f"ClickHouse Pool init failed: {e}")
-        startup_errors.append(f"clickhouse_pool: {e}")
-        startup_success = False
-
-    # ✅ NEW: Schema Reconciliation (init.sql = Single Source of Truth)
-    try:
-        from backend.database.schema_reconcile import reconcile_from_env
-        await reconcile_from_env()
-        logger.info("🟢 Schema reconciliation completed")
-    except Exception as e:
-        logger.error(f"Schema reconciliation failed: {e}", exc_info=True)
-        startup_errors.append(f"schema_reconcile: {e}")
-
-        # ✅ Hard-stop in verify-mode (strict)
-        if os.getenv("SCHEMA_MODE", "verify").strip().lower() == "verify":
-            # FastAPI startup MUST abort to avoid running against wrong schema
-            raise
-        else:
-            # ensure/reconcile can continue depending on your policy
-            startup_success = False
-
-    # ✅ EXISTING: Redis Init
-    try:
-        await unified_rs_service.initialize()
-        logger.info("🟢 Redis initialized")
-    except Exception as e:
-        logger.error(f"Redis init failed: {e}")
-        startup_errors.append(f"redis: {e}")
-        startup_success = False
-
-    # ExchangeFactory Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ExchangeFactory, 'initialize'):
-            ExchangeFactory.initialize()
-            logger.info(
-                "🟢 ExchangeFactory initialized with: "
-                f"{ExchangeFactory.get_available_exchanges()}"
-            )
-        else:
-            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
-
-    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
-    try:
-        if hasattr(ws_registry, 'initialize'):
-            ws_registry.initialize()
-            logger.info("🟢 WebSocket Lane Registry initialized")
-        else:
-            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
-    except Exception as e:
-        logger.error(f"WS Registry init failed: {e}", exc_info=True)
-
-    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
-    try:
-        progress_health_service.start()
-        logger.info("✅ ProgressHealthService started")
-    except Exception as e:
-        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
-
-    # ✅ Frontend WebSocket Manager starten
-    try:
-        await frontend_ws_manager.start()
-        logger.info("✅ Frontend WebSocket Manager started")
-    except Exception as e:
-        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
-
-
-    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
-    await _ws_autostart()
-
-    # ============================================================
-    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
-    # ============================================================
-    
-    # ✅ ENTERPRISE: Collectors im Hintergrund starten
-    asyncio.create_task(start_collectors_background())
-    
-    # ============================================================
-    # PHASE 4: READY SIGNAL (Sofort!)
-    # ============================================================
-    
-    # ✅ Backend meldet sich SOFORT ready
-    await _write_ready_signal(startup_success, startup_errors)
-    
-    logger.info("🎉 Backend READY - Collectors starting in background")
-
-
-async def start_collectors_background():
-    """
-    ✅ ENTERPRISE: Background Collector Startup
-    
-    Startet Collectors im Hintergrund mittels asyncio.create_task()
-    - Non-Blocking: Backend Ready Signal wird nicht blockiert
-    - Resilient: Failures crashen nicht das System
-    - Observable: Status über Health System verfügbar
-    """
-    try:
-        from backend.services.adapter.collector_starter import start_all_collectors
-        
-        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
-        
-        # ✅ Start Collectors (parallel execution intern)
-        await start_all_collectors()
-        
-        logger.info("✅ Background collectors: STARTUP COMPLETE")
-        
-        # ✅ Health System Update
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_success({
-                    "action": "background_startup_complete",
-                    "status": "all_collectors_started"
-                })
-        except Exception:
-            pass
-        
-    except Exception as e:
-        logger.error(
-            f"⚠️ Background collector startup failed: {e}",
-            exc_info=True
-        )
-        
-        # ✅ Health System Update (Error)
-        try:
-            from backend.health import health_registry
-            health_component = health_registry.get_component("collectors")
-            if health_component:
-                health_component.record_error(
-                    f"Background startup failed: {str(e)}"
-                )
-        except Exception:
-            pass
-        
-        # ✅ System läuft trotzdem weiter (graceful degradation)
-        logger.warning("⚠️ System continues despite collector startup issues")
-
-
-async def _write_ready_signal(success: bool, errors: list):
-    """
-    Write ready signal for start-system.sh to detect
-    
-    Uses multiple methods for reliability:
-    1. File-based (fast, simple)
-    2. Redis PubSub (if Redis available)
-    3. Health endpoint will reflect status
-    """
-    import json
-    from pathlib import Path
-    from datetime import datetime
-    
-    ready_data = {
-        "ready": success,
-        "timestamp": datetime.now().isoformat(),
-        "errors": errors if errors else [],
-        "message": "Backend ready" if success else "Backend started with errors"
-    }
-    
-    # Method 1: File-based (always works)
-    try:
-        ready_file = Path("/tmp/backend_ready")
-        ready_file.write_text(json.dumps(ready_data, indent=2))
-        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
-    except Exception as e:
-        logger.error(f"Failed to write ready file: {e}")
-    
-    # Method 2: Redis PubSub (if Redis available)
-    try:
-        await unified_rs_service.publish(
-            channel="system:backend:ready",
-            message=json.dumps(ready_data)
-        )
-        logger.info(f"✅ Ready event published to Redis")
-    except Exception as e:
-        logger.debug(f"Redis publish skipped: {e}")
-    
-    # Method 3: Log for observability
-    if success:
-        logger.info("🎉 Backend READY - all services initialized")
-    else:
-        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("🛑 WS_AI Backend shutting down…")
-
-    try:
-        await frontend_ws_manager.stop()
-        logger.info("🔻 Frontend WS Manager stopped")
-    except Exception:
-        pass
-
-    try:
-        await unified_rs_service.shutdown()
-        logger.info("🔻 Redis closed")
-    except Exception:
-        pass
-
-    try:
-        await unified_cl_service.shutdown()
-        logger.info("🔻 ClickHouse closed")
-    except Exception:
-        pass
-
-    logger.info("🛑 Shutdown complete")
-
-
-# ================================================================
-# ROUTER REGISTRATION – zentrale Stelle
-# ================================================================
-
-# 1) Enterprise-Router (7x ro_*) über EndpointMapper
-_mapper = EndpointMapper(app)
-_mapper = register_all_routers(_mapper)
-_mapper = register_optimization_routers(_mapper)
-_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
-
-# 2) Unified Trade APIs (REST) für alle 8 Exchanges
-register_unified_trade_apis(app)
-
-# 3) Unified User APIs (REST) für alle 8 Exchanges
-register_unified_user_apis(app)
-
-# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
-# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
-app.include_router(ws_router)
-
-# 5) Health Router (System Health Checks)
-app.include_router(
-    health_router,
-    prefix="/health",
-    tags=["health"],
-)
-
-# ================================================================
-# ROOT ENDPOINT
-# ================================================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "name": "WS_AI Enterprise Trading Backend",
-        "version": "1.0",
-        "endpoints": {
-            "api": "/api",
-            "ws": "/ws",
-            "docs": "/docs",
-        },
-    }
-
-# ================================================================
-# UVICORN ENTRYPOINT (lokal)
-# ================================================================
-
-def start():
-    uvicorn.run(
-        "backend.core.main:app",
-        host="0.0.0.0",
-        port=int(getattr(settings, "API_PORT", 8000)),
-        reload=getattr(settings, "DEBUG", False),
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    start()
-</file>
-
 <file path="backend/services/usecases/unified_historical.py">
 # /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
 
@@ -176268,6 +171059,436 @@ def get_available_backfill_services():
     }
 </file>
 
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Any
+from collections.abc import Mapping
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
+    """
+    Trade erwartet dict wegen .get().
+    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
+        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
+            return {
+                "price": x[0],
+                "size": x[1],
+                "timestamp": x[2],
+                "side": x[3] if len(x) > 3 else None,
+            }
+        return {}
+
+    return {}
+
+
+def _ms_to_sec(ts: Any) -> Optional[int]:
+    """Konvertiert Millisekunden zu Sekunden (Lightweight-Charts Format)"""
+    if ts is None:
+        return None
+    try:
+        t = int(ts)
+    except Exception:
+        return None
+    # Heuristik: > 1e11 -> ms, sonst sec
+    return t // 1000 if t > 100_000_000_000 else t
+
+
+def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
+    """
+    Unterstützt:
+    A) Mapping (bereits dict)
+       - entweder schon {time,open,high,low,close,volume}
+       - oder {timestamp,o,h,l,c,v} (Aggregator-State)
+    B) Tuple/List:
+       - (interval_str, candle_dict)  ✅ finished-Format
+       - (time, open, high, low, close[, volume])
+    """
+    # A) dict-like
+    if isinstance(x, Mapping):
+        d = dict(x)
+
+        # Aggregator-Keys -> Frontend-Keys
+        if "open" not in d and "o" in d:
+            d["open"] = d.get("o")
+        if "high" not in d and "h" in d:
+            d["high"] = d.get("h")
+        if "low" not in d and "l" in d:
+            d["low"] = d.get("l")
+        if "close" not in d and "c" in d:
+            d["close"] = d.get("c")
+        if "volume" not in d and "v" in d:
+            d["volume"] = d.get("v")
+
+        # time setzen (Lightweight-Charts: Sekunden)
+        if "time" not in d:
+            ts = d.get("timestamp") or d.get("ts") or d.get("time")
+            tsec = _ms_to_sec(ts)
+            if tsec is not None:
+                d["time"] = tsec
+
+        return d
+
+    # B) tuple/list
+    if isinstance(x, (tuple, list)):
+        # B1) (interval, dict) ✅ KRITISCH für verschachtelte Tuples!
+        if len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], Mapping):
+            d = _ensure_candle_dict(x[1])  # Rekursiv normalisieren
+            d.setdefault("interval", x[0])
+            return d
+
+        # B2) (time, o, h, l, c[, v])
+        if len(x) >= 5:
+            tsec = _ms_to_sec(x[0])
+            d = {
+                "time": tsec if tsec is not None else x[0],
+                "open": x[1],
+                "high": x[2],
+                "low": x[3],
+                "close": x[4],
+            }
+            if len(x) > 5:
+                d["volume"] = x[5]
+            return d
+
+    return {}
+
+
+def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
+    """
+    Orderbook erwartet dict (bids/asks etc.).
+    Unterstützt Tuple/List: (bids, asks[, timestamp])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 2:
+            d = {"bids": x[0], "asks": x[1]}
+            if len(x) > 2:
+                d["timestamp"] = x[2]
+            return d
+        return {}
+
+    return {}
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+                    for ws in list(conns):
+                        for payload in payloads:
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(payloads)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "notional": float(trade_data.get("price", 0) or 0) * float(trade_data.get("size", 0) or 0),  # ✅ NEU: Notional Value
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
+    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
+    """
+    ✅ Broadcast Orderbook Updates to Frontend
+    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
+    """
+    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
+        "market": market,
+        "bids": orderbook_data.get("bids", []),
+        "asks": orderbook_data.get("asks", []),
+        "timestamp": orderbook_data.get("timestamp"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+</file>
+
 <file path="frontend/src/services/ws/useWsLane.ts">
 // frontend/src/services/ws/useWsLane.ts
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -176715,6 +171936,584 @@ export default function App() {
 }
 </file>
 
+<file path="backend/core/main.py">
+# backend/core/main.py
+"""
+Main Application Entrypoint for WS_AI Enterprise Trading Backend
+
+Dieses File registriert:
+    - alle 7 neuen ro_* Router über EndpointMapper + Router Registry
+    - Unified Trade APIs (für alle 8 Exchanges)
+    - Unified User APIs (für alle 8 Exchanges)
+    - WebSocket Router (ws_router)
+    - ExchangeFactory Init
+    - ClickHouse Init
+    - Redis Init
+    - WebSocket Lane Registry Init
+    - CORS
+    - Logging
+
+Keine Hardcodings, lane-safe, enterprise-fähig.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# =============================
+# LOAD ENVIRONMENT VARIABLES
+# =============================
+
+logger_env = logging.getLogger("main.env")
+
+# ✅ PRODUCTION-STANDARD: Nur lokal laden, nicht im Container erzwingen
+# Docker Container bekommen ENV via docker-compose.yml (env_file: .env)
+if os.getenv("ENVIRONMENT", "").lower() not in {"docker", "production"}:
+    env_path = Path(__file__).parent.parent.parent / ".env"  # Root .env (Single Source of Truth)
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger_env.info(f"🔧 Loaded environment variables from: {env_path}")
+    else:
+        logger_env.info("🔧 No .env found locally (ok). Using process environment.")
+else:
+    logger_env.info(f"🔧 Running in {os.getenv('ENVIRONMENT')} mode. Using container environment only.")
+
+# =============================
+# CORE INIT COMPONENTS
+# =============================
+
+from backend.core.config import settings
+from backend.database.clickhouse import unified_cl_service
+from backend.database.redis import unified_rs_service
+from backend.websocket.ws_router import ws_router
+from backend.websocket.ws_registry import ws_registry
+from backend.websocket.ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.health.health_router import health_router
+from backend.health.health_progress import progress_health_service
+from backend.services.adapter.exchange_factory import ExchangeFactory
+
+# =============================
+# ROUTER MANAGEMENT (Enterprise)
+# =============================
+
+from backend.api.endpoint_mapper import EndpointMapper
+from backend.core.router_registry import (
+    register_all_routers,
+    register_unified_trade_apis,
+    register_unified_user_apis,
+    register_optimization_routers,
+)
+
+# =============================
+# LOGGING SETUP
+# =============================
+
+logger = logging.getLogger("main")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+)
+
+# ================================================================
+# CREATE FASTAPI APP
+# ================================================================
+
+app = FastAPI(
+    title="WS_AI Enterprise Trading Backend",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ================================================================
+# CORS – generisch über Settings
+# ================================================================
+
+origins = getattr(settings, "CORS_ORIGINS", ["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# WEBSOCKET AUTOSTART FUNCTION (P0.4)
+# ================================================================
+
+async def _ws_autostart():
+    """
+    WebSocket Autostart mit User-Settings → ENV → kein Autostart Hierarchie
+    
+    Sicherheitsfeatures:
+    - WS_SYSTEM_USER_ID: Scope auf einen User (empfohlen!)
+    - WS_ALLOW_ALL_USERS: Explizites Flag für Multi-User
+    - Deduplizierung: Keine doppelten Lanes
+    - Bounded Concurrency: Startup nicht blockieren
+    """
+    from typing import Dict, List, Any, Tuple
+    
+    logger.info("🔌 WebSocket autostart: resolving config (User Settings -> ENV -> none)")
+
+    # -----------------------------
+    # 1) User-Settings (ClickHouse)
+    # -----------------------------
+    ws_items: List[Dict[str, Any]] = []
+    
+    try:
+        from backend.websocket.ws_manager import ws_manager
+        from backend.database.clickhouse.cl_user_settings import cl_user_settings
+
+        # ✅ KRITISCH: WS_SYSTEM_USER_ID für Single-User Scope (SICHER!)
+        system_user_id = os.getenv("WS_SYSTEM_USER_ID", "").strip() or None
+        allow_all_users = os.getenv("WS_ALLOW_ALL_USERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not getattr(cl_user_settings, "initialized", False):
+            await cl_user_settings.initialize()
+
+        # Query Filter
+        filters = {"store_live": 1}  # ✅ Nur Coins mit aktivem L-Button!
+        
+        rows = []
+        if system_user_id:
+            filters["user_id"] = system_user_id
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        elif allow_all_users:
+            logger.warning("⚠️ WS_ALLOW_ALL_USERS=true and WS_SYSTEM_USER_ID not set -> loading ALL users (explicitly allowed)")
+            rows = await cl_user_settings.cl_service.query_user_settings(
+                table_type="coin_settings",
+                filters=filters,
+                limit=5000,
+            ) or []
+        else:
+            logger.warning("⚠️ WS_SYSTEM_USER_ID not set and WS_ALLOW_ALL_USERS=false -> skipping user-settings autostart")
+            # ✅ Kein raise - sauberer Flow-Control
+            rows = []
+
+        # ✅ Schema-exakte Extraktion (market ist Top-Level)
+        for r in rows:
+            exchange = (r.get("exchange") or "").strip()
+            symbol = (r.get("symbol") or "").strip()
+            market = (r.get("market") or "spot").strip()  # ✅ Top-Level!
+            
+            if not exchange or not symbol:
+                continue
+
+            ws_items.append({
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "source": "user_settings",
+            })
+
+        if ws_items:
+            logger.info(f"📊 Loaded {len(ws_items)} items from user coin_settings")
+        else:
+            logger.info("📊 No active coin_settings found (store_live=1)")
+
+    except Exception as e:
+        logger.warning(f"⚠️ User settings load failed -> fallback to ENV: {e}", exc_info=True)
+
+    # -----------------------------
+    # 2) ENV-Fallback
+    # -----------------------------
+    if not ws_items:
+        ws_autostart = os.getenv("WS_AUTOSTART", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if not ws_autostart:
+            logger.info("⚪ WebSocket autostart disabled (no user settings + WS_AUTOSTART=false)")
+            return
+
+        symbols_raw = os.getenv("WS_AUTOSTART_SYMBOLS", "").strip()
+        if not symbols_raw:
+            logger.warning("⚠️ WS_AUTOSTART=true but WS_AUTOSTART_SYMBOLS empty")
+            return
+
+        market = os.getenv("WS_AUTOSTART_MARKET", "spot").strip()
+        symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+
+        ex_raw = os.getenv("WS_AUTOSTART_EXCHANGES", "").strip()
+        if ex_raw:
+            exchanges = [e.strip() for e in ex_raw.split(",") if e.strip()]
+        else:
+            exchanges = ExchangeFactory.get_available_exchanges()
+
+        for ex in exchanges:
+            for sym in symbols:
+                ws_items.append({
+                    "exchange": ex,
+                    "symbol": sym,
+                    "market": market,
+                    "source": "env",
+                })
+
+        logger.info(f"📋 Loaded {len(ws_items)} items from ENV")
+
+    # -----------------------------
+    # 3) Dedupe + Start (bounded concurrency)
+    # -----------------------------
+    if not ws_items:
+        logger.info("⚪ WebSocket autostart: no items configured")
+        return
+
+    # ✅ Dedupe by (exchange, symbol, market)
+    dedup: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for item in ws_items:
+        key = (item["exchange"], item["symbol"], item["market"])
+        if key not in dedup or dedup[key].get("source") == "env":
+            dedup[key] = item
+
+    ws_items = list(dedup.values())
+    logger.info(f"🧹 Deduped to {len(ws_items)} unique lanes")
+
+    from backend.websocket.ws_manager import ws_manager
+
+    # ✅ Bounded Parallelität
+    sem = asyncio.Semaphore(int(os.getenv("WS_AUTOSTART_CONCURRENCY", "5")))
+    started = 0
+    failed = 0
+
+    async def _start_one(cfg: Dict[str, Any]):
+        nonlocal started, failed
+        async with sem:
+            try:
+                # ✅ KEIN user_id - Signatur ist (exchange, symbol, market)
+                await ws_manager.start_websocket_lane(
+                    exchange=cfg["exchange"],
+                    symbol=cfg["symbol"],
+                    market=cfg["market"]
+                )
+                
+                logger.info(
+                    f"🟢 Started WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} {cfg['market']}"
+                )
+                started += 1
+            except Exception as e:
+                logger.error(
+                    f"🔴 Failed WS [{cfg.get('source', 'unknown')}]: "
+                    f"{cfg['exchange']} {cfg['symbol']} - {e}",
+                    exc_info=True
+                )
+                failed += 1
+
+    await asyncio.gather(*[_start_one(cfg) for cfg in ws_items])
+    logger.info(f"🎉 WebSocket autostart: {started} started, {failed} failed")
+
+
+# ================================================================
+# SYSTEM STARTUP / SHUTDOWN
+# ================================================================
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("🚀 WS_AI Backend starting…")
+    
+    startup_success = True
+    startup_errors = []
+
+    # ✅ NEU: ClickHouse Connection Pool Init (Foundation) - MUSS ZUERST KOMMEN!
+    try:
+        from backend.database.clickhouse.cl_unified_manager import initialize_clickhouse_foundation
+        
+        pool_ok = await initialize_clickhouse_foundation()
+        if not pool_ok:
+            raise RuntimeError("ClickHouse foundation initialization returned False")
+        
+        logger.info("🟢 ClickHouse Connection Pool (Foundation) initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse Pool init failed: {e}")
+        startup_errors.append(f"clickhouse_pool: {e}")
+        startup_success = False
+
+    # ✅ EXISTING: ClickHouse Init
+    try:
+        await unified_cl_service.initialize()
+        logger.info("🟢 ClickHouse unified_cl_service initialized")
+    except Exception as e:
+        logger.error(f"ClickHouse unified_cl_service init failed: {e}")
+        startup_errors.append(f"clickhouse_service: {e}")
+        startup_success = False
+
+    # ✅ NEW: Schema Reconciliation (init.sql = Single Source of Truth)
+    # WICHTIG: Muss NACH Pool-Init kommen!
+    try:
+        from backend.database.schema_reconcile import reconcile_from_env
+        await reconcile_from_env()
+        logger.info("🟢 Schema reconciliation completed")
+    except Exception as e:
+        logger.error(f"Schema reconciliation failed: {e}", exc_info=True)
+        startup_errors.append(f"schema_reconcile: {e}")
+
+        # ✅ Hard-stop in verify-mode (strict)
+        if os.getenv("SCHEMA_MODE", "verify").strip().lower() == "verify":
+            # FastAPI startup MUST abort to avoid running against wrong schema
+            raise
+        else:
+            # ensure/reconcile can continue depending on your policy
+            startup_success = False
+
+    # ✅ EXISTING: Redis Init
+    try:
+        await unified_rs_service.initialize()
+        logger.info("🟢 Redis initialized")
+    except Exception as e:
+        logger.error(f"Redis init failed: {e}")
+        startup_errors.append(f"redis: {e}")
+        startup_success = False
+
+    # ExchangeFactory Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ExchangeFactory, 'initialize'):
+            ExchangeFactory.initialize()
+            logger.info(
+                "🟢 ExchangeFactory initialized with: "
+                f"{ExchangeFactory.get_available_exchanges()}"
+            )
+        else:
+            logger.info("🟢 ExchangeFactory ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"ExchangeFactory init failed: {e}", exc_info=True)
+
+    # WebSocket Lane Registry Init - Graceful (might not have initialize method)
+    try:
+        if hasattr(ws_registry, 'initialize'):
+            ws_registry.initialize()
+            logger.info("🟢 WebSocket Lane Registry initialized")
+        else:
+            logger.info("🟢 WebSocket Lane Registry ready (no explicit init needed)")
+    except Exception as e:
+        logger.error(f"WS Registry init failed: {e}", exc_info=True)
+
+    # ✅ PHASE 3 README: Progress/Gaps Health Service starten
+    try:
+        progress_health_service.start()
+        logger.info("✅ ProgressHealthService started")
+    except Exception as e:
+        logger.error(f"ProgressHealthService start failed: {e}", exc_info=True)
+
+    # ✅ Frontend WebSocket Manager starten
+    try:
+        await frontend_ws_manager.start()
+        logger.info("✅ Frontend WebSocket Manager started")
+    except Exception as e:
+        logger.error(f"Frontend WS Manager start failed: {e}", exc_info=True)
+
+
+    # ✅ P0.4: WebSocket Autostart (User-Settings → ENV → none)
+    await _ws_autostart()
+
+    # ============================================================
+    # PHASE 3: COLLECTORS (Background - Non-Blocking) ✨
+    # ============================================================
+    
+    # ✅ ENTERPRISE: Collectors im Hintergrund starten
+    asyncio.create_task(start_collectors_background())
+    
+    # ============================================================
+    # PHASE 4: READY SIGNAL (Sofort!)
+    # ============================================================
+    
+    # ✅ Backend meldet sich SOFORT ready
+    await _write_ready_signal(startup_success, startup_errors)
+    
+    logger.info("🎉 Backend READY - Collectors starting in background")
+
+
+async def start_collectors_background():
+    """
+    ✅ ENTERPRISE: Background Collector Startup
+    
+    Startet Collectors im Hintergrund mittels asyncio.create_task()
+    - Non-Blocking: Backend Ready Signal wird nicht blockiert
+    - Resilient: Failures crashen nicht das System
+    - Observable: Status über Health System verfügbar
+    """
+    try:
+        from backend.services.adapter.collector_starter import start_all_collectors
+        
+        logger.info("🚀 Starting collectors in BACKGROUND (non-blocking)...")
+        
+        # ✅ Start Collectors (parallel execution intern)
+        await start_all_collectors()
+        
+        logger.info("✅ Background collectors: STARTUP COMPLETE")
+        
+        # ✅ Health System Update
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_success({
+                    "action": "background_startup_complete",
+                    "status": "all_collectors_started"
+                })
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(
+            f"⚠️ Background collector startup failed: {e}",
+            exc_info=True
+        )
+        
+        # ✅ Health System Update (Error)
+        try:
+            from backend.health import health_registry
+            health_component = health_registry.get_component("collectors")
+            if health_component:
+                health_component.record_error(
+                    f"Background startup failed: {str(e)}"
+                )
+        except Exception:
+            pass
+        
+        # ✅ System läuft trotzdem weiter (graceful degradation)
+        logger.warning("⚠️ System continues despite collector startup issues")
+
+
+async def _write_ready_signal(success: bool, errors: list):
+    """
+    Write ready signal for start-system.sh to detect
+    
+    Uses multiple methods for reliability:
+    1. File-based (fast, simple)
+    2. Redis PubSub (if Redis available)
+    3. Health endpoint will reflect status
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    
+    ready_data = {
+        "ready": success,
+        "timestamp": datetime.now().isoformat(),
+        "errors": errors if errors else [],
+        "message": "Backend ready" if success else "Backend started with errors"
+    }
+    
+    # Method 1: File-based (always works)
+    try:
+        ready_file = Path("/tmp/backend_ready")
+        ready_file.write_text(json.dumps(ready_data, indent=2))
+        logger.info(f"✅ Ready signal written: /tmp/backend_ready")
+    except Exception as e:
+        logger.error(f"Failed to write ready file: {e}")
+    
+    # Method 2: Redis PubSub (if Redis available)
+    try:
+        await unified_rs_service.publish(
+            channel="system:backend:ready",
+            message=json.dumps(ready_data)
+        )
+        logger.info(f"✅ Ready event published to Redis")
+    except Exception as e:
+        logger.debug(f"Redis publish skipped: {e}")
+    
+    # Method 3: Log for observability
+    if success:
+        logger.info("🎉 Backend READY - all services initialized")
+    else:
+        logger.warning(f"⚠️ Backend DEGRADED - started with {len(errors)} errors")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("🛑 WS_AI Backend shutting down…")
+
+    try:
+        await frontend_ws_manager.stop()
+        logger.info("🔻 Frontend WS Manager stopped")
+    except Exception:
+        pass
+
+    try:
+        await unified_rs_service.shutdown()
+        logger.info("🔻 Redis closed")
+    except Exception:
+        pass
+
+    try:
+        await unified_cl_service.shutdown()
+        logger.info("🔻 ClickHouse closed")
+    except Exception:
+        pass
+
+    logger.info("🛑 Shutdown complete")
+
+
+# ================================================================
+# ROUTER REGISTRATION – zentrale Stelle
+# ================================================================
+
+# 1) Enterprise-Router (7x ro_*) über EndpointMapper
+_mapper = EndpointMapper(app)
+_mapper = register_all_routers(_mapper)
+_mapper = register_optimization_routers(_mapper)
+_mapper.initialize()  # 🔥 KRITISCH: Router müssen initialisiert werden!
+
+# 2) Unified Trade APIs (REST) für alle 8 Exchanges
+register_unified_trade_apis(app)
+
+# 3) Unified User APIs (REST) für alle 8 Exchanges
+register_unified_user_apis(app)
+
+# 4) WebSocket Router (raw WS-Endpunkte, Lane-System)
+# ✅ KEIN prefix hier - ws_router hat bereits prefix="/ws"
+app.include_router(ws_router)
+
+# 5) Health Router (System Health Checks)
+app.include_router(
+    health_router,
+    prefix="/health",
+    tags=["health"],
+)
+
+# ================================================================
+# ROOT ENDPOINT
+# ================================================================
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "name": "WS_AI Enterprise Trading Backend",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "ws": "/ws",
+            "docs": "/docs",
+        },
+    }
+
+# ================================================================
+# UVICORN ENTRYPOINT (lokal)
+# ================================================================
+
+def start():
+    uvicorn.run(
+        "backend.core.main:app",
+        host="0.0.0.0",
+        port=int(getattr(settings, "API_PORT", 8000)),
+        reload=getattr(settings, "DEBUG", False),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()
+</file>
+
 <file path="backend/services/usecases/unified_ohlc.py">
 from __future__ import annotations
 
@@ -176984,36 +172783,20 @@ async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_sec
         except Exception as e:
             logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
 
-    # Fallback: trades scan (nur wenn PreAgg nicht verfügbar)
-    trades_table = f"{exchange}_trades"
-    if not await _table_exists("trading", trades_table):
-        raise ValueError(f"trades table not found: trading.{trades_table}")
-
-    ch = await _ch()
-
-    query = f"""
-        SELECT
-            toStartOfInterval(timestamp, toIntervalSecond({interval_seconds})) AS ts,
-            argMin(price, (timestamp, trade_id)) AS open,
-            max(price) AS high,
-            min(price) AS low,
-            argMax(price, (timestamp, trade_id)) AS close,
-            sum(size) AS volume
-        FROM trading.{trades_table}
-        WHERE symbol = %(symbol)s
-          AND market = %(market)s
-          AND timestamp >= toDateTime64(%(start)s, 3, 'UTC')
-          AND timestamp <= toDateTime64(%(end)s, 3, 'UTC')
-        GROUP BY ts
-        ORDER BY ts ASC
-        LIMIT {effective_limit}
-    """
-
-    rows = await ch.execute(query, {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec})
-    if not rows:
-        return []
-
-    return [{"time": int(r[0].timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])} for r in rows]
+    # ❌ FALLBACK DISABLED: On-the-fly aggregation from trades is too dangerous (performance risk)
+    # If kline tables don't exist, system should fail fast rather than scan millions of trades
+    
+    logger.error(
+        f"[get_ohlc_from_ch] CRITICAL: No kline table found for {exchange}/{symbol}/{market}. "
+        f"On-the-fly aggregation from trades is DISABLED for safety. "
+        f"Ensure Materialized Views are running: mv_{exchange}_trades_to_{exchange}_kline_1s"
+    )
+    
+    raise ValueError(
+        f"No pre-aggregated kline data available for {exchange}/{symbol}/{market}. "
+        f"Kline table (trading.{exchange}_kline or trading.all_kline_1s_state) not found. "
+        f"On-the-fly aggregation from trades is disabled for performance/safety reasons."
+    )
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
