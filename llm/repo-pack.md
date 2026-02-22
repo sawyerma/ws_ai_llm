@@ -126499,84 +126499,6 @@ export * from './types';
 export * from './chartThemes';
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx">
-// frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx
-import React, { useEffect, useMemo, useState } from "react";
-import type { FillBlock } from "@/services/ws/useWsLane";
-
-type Props = {
-  chartRef: React.MutableRefObject<any>;
-  enabled: boolean;
-  block: FillBlock | null;
-};
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-export default function LoadingBlockOverlay({ chartRef, enabled, block }: Props) {
-  const [coords, setCoords] = useState<{ left: number; right: number } | null>(null);
-
-  const key = useMemo(() => {
-    if (!block) return "";
-    return `${block.start_sec}:${block.end_sec}:${block.stage}:${block.progress}:${block.batch}:${block.total}`;
-  }, [block]);
-
-  useEffect(() => {
-    if (!enabled || !block) {
-      setCoords(null);
-      return;
-    }
-
-    let raf = 0;
-    const tick = () => {
-      const chart = chartRef.current;
-      if (!chart || !chart.timeScale) {
-        setCoords(null);
-        raf = window.requestAnimationFrame(tick);
-        return;
-      }
-
-      const ts = chart.timeScale();
-      const left = ts.timeToCoordinate(block.start_sec);
-      const right = ts.timeToCoordinate(block.end_sec);
-
-      if (isFiniteNum(left) && isFiniteNum(right)) {
-        const l = Math.min(left, right);
-        const r = Math.max(left, right);
-        setCoords({ left: l, right: r });
-      } else {
-        setCoords(null);
-      }
-
-      raf = window.requestAnimationFrame(tick);
-    };
-
-    raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
-  }, [enabled, block, chartRef, key]);
-
-  if (!enabled || !block || !coords) return null;
-
-  const width = Math.max(0, coords.right - coords.left);
-
-  return (
-    <div className="absolute inset-0 pointer-events-none z-20">
-      <div
-        style={{
-          position: "absolute",
-          left: `${coords.left}px`,
-          width: `${width}px`,
-          top: 0,
-          bottom: 0,
-          background: "rgba(255, 0, 0, 0.12)",
-        }}
-      />
-    </div>
-  );
-}
-</file>
-
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
 // frontend/src/shared/components/PriceDisplay.tsx
 type Props = {
@@ -160534,6 +160456,85 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx">
+// frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx
+import React, { useEffect, useMemo, useState } from "react";
+import type { FillBlock } from "@/services/ws/useWsLane";
+
+type Props = {
+  chartRef: React.MutableRefObject<any>;
+  enabled: boolean;
+  block: FillBlock | null;
+};
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+export default function LoadingBlockOverlay({ chartRef, enabled, block }: Props) {
+  const [coords, setCoords] = useState<{ left: number; right: number } | null>(null);
+
+  const key = useMemo(() => {
+    if (!block) return "";
+    return `${block.start_sec}:${block.end_sec}:${block.stage}:${block.progress}:${block.batch}:${block.total}`;
+  }, [block]);
+
+  useEffect(() => {
+    if (!enabled || !block) {
+      setCoords(null);
+      return;
+    }
+
+    let raf = 0;
+    const tick = () => {
+      const chart = chartRef.current;
+      if (!chart || !chart.timeScale) {
+        setCoords(null);
+        raf = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      const ts = chart.timeScale();
+      const left = ts.timeToCoordinate(block.start_sec);
+      const right = ts.timeToCoordinate(block.end_sec);
+
+      if (isFiniteNum(left) && isFiniteNum(right)) {
+        const l = Math.min(left, right);
+        const r = Math.max(left, right);
+        setCoords({ left: l, right: r });
+      } else {
+        setCoords(null);
+      }
+
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [enabled, block, chartRef, key]);
+
+  if (!enabled || !block || !coords) return null;
+
+  const width = Math.max(0, coords.right - coords.left);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-20">
+      <div
+        style={{
+          position: "absolute",
+          left: `${coords.left}px`,
+          width: `${width}px`,
+          top: 0,
+          bottom: 0,
+          background: "rgba(255, 0, 0, 0.12)",
+          pointerEvents: "none",
+        }}
+      />
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/vite-env.d.ts">
 /// <reference types="vite/client" />
 
@@ -163190,112 +163191,6 @@ const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) 
 export default TimeButtons;
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
-/**
- * CandleChart Component
- * =====================
- * 
- * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
- * 
- * Features:
- * - Lazy-Loading der TradingView Lightweight Charts Library
- * - Automatische Dark/Light Mode Synchronisation
- * - WebSocket Integration für Live-Daten
- * - Responsive Design
- * 
- * Usage:
- * ```tsx
- * <CandleChart 
- *   symbol="BTCUSDT"
- *   exchange="binance"
- *   market="spot"
- *   interval="1h"
- *   limit={100}
- * />
- * ```
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
- * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
- */
-
-import React, { useEffect, useRef } from 'react';
-import { useCandleChart } from './useCandleChart';
-import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
-import type { CandleChartProps } from './types';
-
-const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
-
-const CandleChart: React.FC<CandleChartProps> = ({
-  symbol,
-  exchange,
-  market,
-  interval,
-  limit = DEFAULT_LIMIT,
-  className = '',
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-
-  // ✅ Chart Hook (Init, Theme, Resize)
-  const { isChartReady, setChartData, setInitialVisibleRangeOnce } = useCandleChart({
-    interval,
-    containerRef: chartContainerRef,
-  });
-
-  // ✅ Data Hook (WebSocket Integration)
-  const { chartData, loading, error, meta } = useChartView(
-    symbol,
-    market,
-    exchange,
-    interval,
-    limit
-  );
-
-  // Load Chart Data when ready
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0) {
-      setChartData(chartData);
-      setInitialVisibleRangeOnce(chartData);
-    }
-  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
-
-  return (
-    <div className={`flex flex-col gap-2 ${className}`}>
-      <div className="text-xs opacity-70">
-        Historical: {meta.historicalCount} | Live: {meta.liveCount} | TotalPoints:{" "}
-        {meta.totalCount} | Real: {meta.realCount} | Whitespace: {meta.whitespaceCount}
-      </div>
-
-      <div
-        className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden"
-      >
-        {/* Chart Container */}
-        <div className="relative w-full h-full">
-          <div ref={chartContainerRef} className="chart-container w-full h-full" />
-
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div>
-        )}
-
-          {/* Error State */}
-          {error && (
-            <div className="absolute inset-0 flex items-center justify-center z-10">
-              <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
-                {error.message || String(error)}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default CandleChart;
-</file>
-
 <file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
 /**
  * CandleChart Themes
@@ -164769,6 +164664,130 @@ const TradingPage = () => {
 export default TradingPage;
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
+/**
+ * CandleChart Component
+ * =====================
+ * 
+ * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
+ * 
+ * Features:
+ * - Lazy-Loading der TradingView Lightweight Charts Library
+ * - Automatische Dark/Light Mode Synchronisation
+ * - WebSocket Integration für Live-Daten
+ * - Responsive Design
+ * 
+ * Usage:
+ * ```tsx
+ * <CandleChart 
+ *   symbol="BTCUSDT"
+ *   exchange="binance"
+ *   market="spot"
+ *   interval="1h"
+ *   limit={100}
+ * />
+ * ```
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
+ * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
+ */
+
+import React, { useEffect, useRef } from 'react';
+import { useCandleChart } from './useCandleChart';
+import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
+import type { CandleChartProps } from './types';
+import LoadingBlockOverlay from './LoadingBlockOverlay';
+import { useShowLoadingBlockOverlay } from '../../state/uiPrefs';
+
+const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
+
+const CandleChart: React.FC<CandleChartProps> = ({
+  symbol,
+  exchange,
+  market,
+  interval,
+  limit = DEFAULT_LIMIT,
+  className = '',
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // ✅ Chart Hook (Init, Theme, Resize)
+  const { isChartReady, setChartData, setInitialVisibleRangeOnce, chartInstance } = useCandleChart({
+    interval,
+    containerRef: chartContainerRef,
+  });
+
+  // ✅ Data Hook (WebSocket Integration)
+  const { chartData, loading, error, meta, fillBlock } = useChartView(
+    symbol,
+    market,
+    exchange,
+    interval,
+    limit
+  );
+
+  // ✅ Overlay Preference
+  const overlayPref = useShowLoadingBlockOverlay();
+
+  // 🔍 DEBUG: Log fillBlock state
+  useEffect(() => {
+    console.log('[CandleChart] fillBlock state:', fillBlock);
+    console.log('[CandleChart] overlayPref.enabled:', overlayPref.enabled);
+  }, [fillBlock, overlayPref.enabled]);
+
+  // Load Chart Data when ready
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0) {
+      setChartData(chartData);
+      setInitialVisibleRangeOnce(chartData);
+    }
+  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
+
+  return (
+    <div className={`flex flex-col gap-2 ${className}`}>
+      <div className="text-xs opacity-70">
+        Historical: {meta.historicalCount} | Live: {meta.liveCount} | TotalPoints:{" "}
+        {meta.totalCount} | Real: {meta.realCount} | Whitespace: {meta.whitespaceCount}
+      </div>
+
+      <div
+        className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden"
+      >
+        {/* Chart Container */}
+        <div className="relative w-full h-full">
+          <div ref={chartContainerRef} className="chart-container w-full h-full" />
+
+          {/* ✅ Loading Block Overlay */}
+          <LoadingBlockOverlay 
+            chartRef={chartInstance}
+            enabled={overlayPref.enabled}
+            block={fillBlock}
+          />
+
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+
+          {/* Error State */}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
+                {error.message || String(error)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CandleChart;
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/types.ts">
 /**
  * CandleChart Types
@@ -165708,164 +165727,6 @@ CL_SCHEMAS: Dict[str, Dict[str, str]] = {
 }
 </file>
 
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
-                    market_safe = market if market else "spot"
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market_safe,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market_safe,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    mk = (market or "spot").lower()
-
-                    # Robust mapping (keine Annahmen über extra Enum-Members)
-                    if mk == "spot":
-                        market_enum = Market.SPOT
-                    elif mk in ("usdtm", "usdt", "futures"):
-                        market_enum = Market.USDTM
-                    else:
-                        market_enum = Market.SPOT
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
-                    symbols = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": mk,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="frontend/src/config/exchangeSupport.ts">
 // frontend/src/config/exchangeSupport.ts
 
@@ -166791,219 +166652,6 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 };
 
 export default CoinSelector;
-</file>
-
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from "react";
-import { useWsLane } from "../../../services/ws/useWsLane";
-import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
-
-/**
- * ENTERPRISE POLICY:
- * - limit counts ONLY real candles (OHLC)
- * - gaps are visualized via Whitespace bars (time-only)
- * - NO synthetic OHLC is ever generated ("kein Interpolieren")
- * - fully ENV driven (no hardcoded behavior)
- */
-
-function envInt(key: string, def: number, min: number, max: number): number {
-  const raw = (import.meta as any).env?.[key];
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-// default real-candle limit from ENV (0 = unlimited)
-const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
-
-// max whitespace points inserted per single gap
-const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
-
-function intervalToSec(interval: string | undefined): number {
-  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (!Number.isFinite(n) || n <= 0) return 60;
-
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  if (u === "w") return n * 604800;
-  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
-  if (u === "M") return n * 2592000;
-
-  return 60;
-}
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function isRealBar(b: any): b is CandleBar {
-  return (
-    isFiniteNum(b?.time) &&
-    isFiniteNum(b?.open) &&
-    isFiniteNum(b?.high) &&
-    isFiniteNum(b?.low) &&
-    isFiniteNum(b?.close)
-  );
-}
-
-/**
- * Inserts Whitespace points between REAL points to visualize missing buckets.
- * Never generates OHLC -> no interpolation.
- *
- * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
- */
-function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
-  if (sortedReal.length <= 1) return sortedReal;
-  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
-
-  const stepMs = stepSec * 1000;
-  const out: CandleData[] = [];
-
-  for (let i = 0; i < sortedReal.length; i++) {
-    const cur = sortedReal[i];
-    if (!cur) continue;
-    out.push(cur);
-
-    const nxt = sortedReal[i + 1];
-    if (!nxt) break;
-
-    const dtMs = nxt.time - cur.time;
-    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
-
-    const missingBars = Math.floor(dtMs / stepMs) - 1;
-    if (missingBars <= 0) continue;
-
-    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
-    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
-
-    for (let k = 1; k <= missingBars; k += stride) {
-      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
-    }
-  }
-
-  return out;
-}
-
-/**
- * Applies real-candle limit (N), WITHOUT counting whitespace.
- * Returns last N real candles, then injects whitespace gaps inside that window.
- */
-function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
-  if (realSorted.length === 0) return [];
-
-  let windowReal = realSorted;
-  if (maxReal > 0 && realSorted.length > maxReal) {
-    windowReal = realSorted.slice(realSorted.length - maxReal);
-  }
-
-  return injectWhitespaceGaps(windowReal, stepSec);
-}
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit?: number
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status } = useWsLane(exchange, symbol, market, interval);
-  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const maxReal = useMemo(() => {
-    const n = Number(limit);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return ENV_MAX_REAL;
-  }, [limit]);
-
-  const chartData = useMemo<CandleData[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    if (hist.length === 0 && live.length === 0) return [];
-
-    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
-    const map = new Map<number, CandleBar>();
-
-    const push = (c: any) => {
-      const tSec = Number(c?.t);
-      if (!Number.isFinite(tSec) || tSec <= 0) return;
-
-      const timeMs = Math.floor(tSec) * 1000;
-
-      const bar: CandleBar = {
-        time: timeMs,
-        open: Number(c?.o),
-        high: Number(c?.h),
-        low: Number(c?.l),
-        close: Number(c?.c),
-        volume: Number(c?.v),
-      };
-
-      if (!isRealBar(bar)) return;
-      map.set(timeMs, bar);
-    };
-
-    for (const c of hist) push(c);
-    for (const c of live) push(c);
-
-    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
-
-    // ✅ limit counts ONLY real candles
-    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
-  }, [historical, candles, stepSec, maxReal]);
-
-  const meta = useMemo(() => {
-    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
-    const whitespaceCount = chartData.length - realCount;
-    return {
-      status,
-      interval,
-      stepSec,
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      realCount,
-      whitespaceCount,
-      maxRealCandles: maxReal,
-      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
-    };
-  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
-
-  useEffect(() => {
-    if (status === "OPEN") {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
-      }
-      return;
-    }
-    if (status === "ERROR") {
-      setLoading(false);
-      setError(new Error("WebSocket connection failed"));
-      return;
-    }
-    setLoading(true);
-  }, [status, chartData.length]);
-
-  return {
-    chartData,
-    loading,
-    error,
-    meta,
-  };
-}
 </file>
 
 <file path="frontend/src/services/ws/WebSocketPool.ts">
@@ -169820,6 +169468,386 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    import logging
+                    
+                    logger = logging.getLogger("ws_router")
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
+                    market_safe = market if market else "spot"
+                    
+                    logger.info(f"[WS Historical Request] exchange={exchange}, symbol={symbol}, market={market_safe}, interval={normalized}, limit={limit}")
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market_safe,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    logger.info(f"[WS Historical Response] Got {len(candles)} candles for {exchange}/{symbol}/{market_safe}/{normalized}")
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market_safe,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    logger.error(f"[WS Historical Error] {exchange}/{symbol}/{market_safe}: {str(e)}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    mk = (market or "spot").lower()
+
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated ("kein Interpolieren")
+ * - fully ENV driven (no hardcoded behavior)
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+// default real-candle limit from ENV (0 = unlimited)
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+
+// max whitespace points inserted per single gap
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
+  if (u === "M") return n * 2592000;
+
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+/**
+ * Inserts Whitespace points between REAL points to visualize missing buckets.
+ * Never generates OHLC -> no interpolation.
+ *
+ * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
+ */
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies real-candle limit (N), WITHOUT counting whitespace.
+ * Returns last N real candles, then injects whitespace gaps inside that window.
+ */
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit?: number
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+
+    // ✅ limit counts ONLY real candles
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
+    const whitespaceCount = chartData.length - realCount;
+    return {
+      status,
+      interval,
+      stepSec,
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+      maxRealCandles: maxReal,
+      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
+    };
+  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+    if (status === "ERROR") {
+      setLoading(false);
+      setError(new Error("WebSocket connection failed"));
+      return;
+    }
+    setLoading(true);
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+    fillBlock,
+  };
+}
+</file>
+
 <file path="frontend/src/main.tsx">
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -171489,407 +171517,6 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
-const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
-const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
-
-function clampInt(n: number, def: number, min: number, max: number): number {
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number; // seconds
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function toSec(ts: unknown): number {
-  const n = Number(ts);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
-  return Math.floor(n); // already sec
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
-  if (!incoming.length) return prev;
-
-  const map = new Map<number, LiveCandle>();
-  for (const c of prev) map.set(c.t, c);
-
-  let changed = false;
-  for (const c of incoming) {
-    const old = map.get(c.t);
-    if (
-      !old ||
-      old.o !== c.o ||
-      old.h !== c.h ||
-      old.l !== c.l ||
-      old.c !== c.c ||
-      old.v !== c.v
-    ) {
-      map.set(c.t, c);
-      changed = true;
-    }
-  }
-
-  if (!changed) return prev;
-  return Array.from(map.values()).sort((a, b) => a.t - b.t);
-}
-
-export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-
-  // Backend limits (from "connection" message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  // Historical request policy (client-side, ENV-driven)
-  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
-  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
-  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
-  const histLastCountRef = useRef<number>(0);
-  const histNoGrowthRef = useRef<number>(0);
-  const histTimerRef = useRef<number | null>(null);
-  const histInFlightRef = useRef<boolean>(false);
-  const histLastReqAtRef = useRef<number>(0);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  // Reset state on lane key change
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-
-    histLastCountRef.current = 0;
-    histNoGrowthRef.current = 0;
-    histInFlightRef.current = false;
-    histLastReqAtRef.current = 0;
-
-    if (histTimerRef.current !== null) {
-      window.clearInterval(histTimerRef.current);
-      histTimerRef.current = null;
-    }
-  }, [exchange, symbol, market, interval]);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const requestHistorical = () => {
-      // throttle: avoid spamming
-      const now = Date.now();
-      if (histInFlightRef.current) return;
-      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
-
-      histInFlightRef.current = true;
-      histLastReqAtRef.current = now;
-
-      // Protocol: "historical:<interval>:<limit>"
-      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
-    };
-
-    const stopHistoricalPolling = () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-    };
-
-    const startHistoricalPolling = () => {
-      if (histTimerRef.current !== null) return;
-
-      // initial request immediately
-      requestHistorical();
-
-      // then poll until stable (no growth)
-      histTimerRef.current = window.setInterval(() => {
-        // stop condition: stable data for N cycles
-        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
-          stopHistoricalPolling();
-          return;
-        }
-        requestHistorical();
-      }, histPollMsRef.current);
-    };
-
-    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
-      setStatus(newStatus);
-
-      if (newStatus === "OPEN") {
-        // start polling historical (works even if backend doesn't push)
-        startHistoricalPolling();
-      }
-
-      if (newStatus === "CLOSED" || newStatus === "ERROR") {
-        stopHistoricalPolling();
-      }
-    });
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-
-        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
-        const hl = Number((limits as any).historicalLimit);
-        const hp = Number((limits as any).historicalPollMs);
-        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
-        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
-
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        // trades buffer (RAF)
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        // build live candle from trades (client-side agg)
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket,
-            o: t.price,
-            h: t.price,
-            l: t.price,
-            c: t.price,
-            v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        // optional backend candle stream; keep compatible
-        const m: any = msg;
-        const tSec = toSec(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
-        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        // mark request as completed
-        histInFlightRef.current = false;
-
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw
-          .map((raw: any) => ({
-            exchange: msg.exchange || exchange,
-            symbol: msg.symbol || symbol,
-            market: (msg as any).market || market,
-            interval: (msg as any).interval || interval,
-            t: toSec(raw.time ?? raw.t),
-            o: toNum(raw.open ?? raw.o),
-            h: toNum(raw.high ?? raw.h),
-            l: toNum(raw.low ?? raw.l),
-            c: toNum(raw.close ?? raw.c),
-            v: toNum(raw.volume ?? raw.v),
-          }))
-          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
-
-        setHistorical((prev) => mergeCandles(prev, hist));
-
-        // stop heuristic: if total historical size does not grow for N polls, stop polling
-        // (works even if backend always returns same "last N" window)
-        const incomingCount = hist.length;
-        const prevTotal = histLastCountRef.current;
-
-        // we need the full state size, but we only have incoming; use a conservative heuristic:
-        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
-        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
-        if (incomingCount <= 0) {
-          histNoGrowthRef.current += 1;
-        } else if (incomingCount === prevTotal) {
-          histNoGrowthRef.current += 1;
-        } else {
-          histNoGrowthRef.current = 0;
-          histLastCountRef.current = incomingCount;
-        }
-
-        return;
-      }
-    });
-
-    return () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-      window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
-      }, 100);
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  // ✅ Chart series must include historical + live
-  // Live should overwrite historical at same t (more recent values)
-  const mergedSeries = useMemo(() => {
-    const map = new Map<number, LiveCandle>();
-    for (const c of historical) map.set(c.t, c);
-    for (const c of candles) map.set(c.t, c); // live overwrites
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
-  }, [historical, candles]);
-
-  return { status, trades, candles: mergedSeries, orderbook, historical };
-}
-</file>
-
 <file path="frontend/src/App.tsx">
 // frontend/src/App.tsx
 
@@ -172514,289 +172141,430 @@ if __name__ == "__main__":
     start()
 </file>
 
-<file path="backend/services/usecases/unified_ohlc.py">
-from __future__ import annotations
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
 
-import logging
-import os
-from datetime import datetime, timezone
-from typing import Any, List, Dict
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
 
-logger = logging.getLogger(__name__)
+function clampInt(n: number, def: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
 
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
 
-def _to_sec(ts: int | float | None) -> int | None:
-    if ts is None:
-        return None
-    try:
-        n = int(ts)
-    except Exception:
-        return None
-    if n <= 0:
-        return None
-    if n >= 1_000_000_000_000:
-        return int(n // 1000)
-    return n
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number; // seconds
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
 
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
 
-def _utc_now_sec() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
+export type FillBlock = {
+  start_sec: number;
+  end_sec: number;
+  stage: string;
+  progress: number;
+  batch: number;
+  total: number;
+};
 
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
 
-def _env_int(key: str, default: int, lo: int, hi: int) -> int:
-    raw = os.getenv(key)
-    try:
-        n = int(raw) if raw is not None else int(default)
-    except Exception:
-        n = int(default)
-    if n < lo:
-        return lo
-    if n > hi:
-        return hi
-    return n
+function toSec(ts: unknown): number {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
 
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
 
-async def _ch():
-    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
 
-    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
-        await unified_cl_service.initialize()
+function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
+  if (!incoming.length) return prev;
 
-    ch_client = get_clickhouse_client()
-    if not ch_client:
-        raise RuntimeError("ClickHouse client not available")
-    return ch_client
+  const map = new Map<number, LiveCandle>();
+  for (const c of prev) map.set(c.t, c);
 
+  let changed = false;
+  for (const c of incoming) {
+    const old = map.get(c.t);
+    if (
+      !old ||
+      old.o !== c.o ||
+      old.h !== c.h ||
+      old.l !== c.l ||
+      old.c !== c.c ||
+      old.v !== c.v
+    ) {
+      map.set(c.t, c);
+      changed = true;
+    }
+  }
 
-async def _table_exists(db: str, name: str) -> bool:
-    ch_client = await _ch()
-    rows = await ch_client.execute(
-        """
-        SELECT 1
-        FROM system.tables
-        WHERE database = %(db)s AND name = %(name)s
-        LIMIT 1
-        """,
-        {"db": db, "name": name},
-    )
-    return bool(rows)
+  if (!changed) return prev;
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
+}
 
+export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+  const [fillBlock, setFillBlock] = useState<FillBlock | null>(null);
 
-async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    
-    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
-    use_unified = await _table_exists("trading", "all_kline_1s_state")
-    
-    if use_unified:
-        # Unified table (all_kline_1s_state)
-        rows = await ch.execute(
-            """
-            SELECT
-                bucket_start AS ts,
-                argMinMerge(open_state)  AS open,
-                maxMerge(high_state)     AS high,
-                minMerge(low_state)      AS low,
-                argMaxMerge(close_state) AS close,
-                sumMerge(volume_state)   AS volume
-            FROM trading.all_kline_1s_state
-            WHERE exchange = %(exchange)s
-              AND symbol   = %(symbol)s
-              AND market   = %(market)s
-              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-            GROUP BY bucket_start
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
-        )
-    else:
-        # Fallback: Exchange-specific table ({exchange}_kline)
-        exchange_table = f"{exchange}_kline"
-        if not await _table_exists("trading", exchange_table):
-            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
-            return []
-        
-        rows = await ch.execute(
-            f"""
-            SELECT
-                bucket_start AS ts,
-                argMinMerge(open_state)  AS open,
-                maxMerge(high_state)     AS high,
-                minMerge(low_state)      AS low,
-                argMaxMerge(close_state) AS close,
-                sumMerge(volume_state)   AS volume
-            FROM trading.{exchange_table}
-            WHERE symbol   = %(symbol)s
-              AND market   = %(market)s
-              AND interval = '1s'
-              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-            GROUP BY bucket_start
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
-        )
+  // Backend limits (from "connection" message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
 
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
+  // Historical request policy (client-side, ENV-driven)
+  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
+  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
+  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
+  const histLastCountRef = useRef<number>(0);
+  const histNoGrowthRef = useRef<number>(0);
+  const histTimerRef = useRef<number | null>(null);
+  const histInFlightRef = useRef<boolean>(false);
+  const histLastReqAtRef = useRef<number>(0);
 
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
 
-async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    
-    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
-    use_unified = await _table_exists("trading", "all_kline_1s_state")
-    
-    if use_unified:
-        # Unified table (all_kline_1s_state)
-        rows = await ch.execute(
-            """
-            WITH toUInt32(%(step)s) AS step
-            SELECT
-                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-                argMin(open, bucket_start)  AS open,
-                max(high)                   AS high,
-                min(low)                    AS low,
-                argMax(close, bucket_start) AS close,
-                sum(volume)                 AS volume
-            FROM
-            (
-                SELECT
-                    bucket_start,
-                    argMinMerge(open_state)  AS open,
-                    maxMerge(high_state)     AS high,
-                    minMerge(low_state)      AS low,
-                    argMaxMerge(close_state) AS close,
-                    sumMerge(volume_state)   AS volume
-                FROM trading.all_kline_1s_state
-                WHERE exchange = %(exchange)s
-                  AND symbol   = %(symbol)s
-                  AND market   = %(market)s
-                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-                GROUP BY bucket_start
-            )
-            GROUP BY ts
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-        )
-    else:
-        # Fallback: Exchange-specific table ({exchange}_kline)
-        exchange_table = f"{exchange}_kline"
-        if not await _table_exists("trading", exchange_table):
-            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
-            return []
-        
-        rows = await ch.execute(
-            f"""
-            WITH toUInt32(%(step)s) AS step
-            SELECT
-                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-                argMin(open, bucket_start)  AS open,
-                max(high)                   AS high,
-                min(low)                    AS low,
-                argMax(close, bucket_start) AS close,
-                sum(volume)                 AS volume
-            FROM
-            (
-                SELECT
-                    bucket_start,
-                    argMinMerge(open_state)  AS open,
-                    maxMerge(high_state)     AS high,
-                    minMerge(low_state)      AS low,
-                    argMaxMerge(close_state) AS close,
-                    sumMerge(volume_state)   AS volume
-                FROM trading.{exchange_table}
-                WHERE symbol   = %(symbol)s
-                  AND market   = %(market)s
-                  AND interval = '1s'
-                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-                GROUP BY bucket_start
-            )
-            GROUP BY ts
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-        )
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
 
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
+  // Reset state on lane key change
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
 
+    histLastCountRef.current = 0;
+    histNoGrowthRef.current = 0;
+    histInFlightRef.current = false;
+    histLastReqAtRef.current = 0;
 
-async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
-    interval_seconds = int(interval_seconds)
-    limit = int(limit)
-    if interval_seconds <= 0:
-        raise ValueError("interval_seconds must be > 0")
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
+    if (histTimerRef.current !== null) {
+      window.clearInterval(histTimerRef.current);
+      histTimerRef.current = null;
+    }
+  }, [exchange, symbol, market, interval]);
 
-    exchange = (exchange or "").lower().strip()
-    symbol = (symbol or "").upper().strip()
-    market = (market or "spot").lower().strip()
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
 
-    end_sec = _to_sec(end) or _utc_now_sec()
-    start_sec = _to_sec(start)
+    const requestHistorical = () => {
+      // throttle: avoid spamming
+      const now = Date.now();
+      if (histInFlightRef.current) return;
+      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
 
-    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
-    if start_sec is None:
-        start_sec = end_sec - (limit * interval_seconds)
+      histInFlightRef.current = true;
+      histLastReqAtRef.current = now;
 
-    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
-    if end_sec - start_sec > max_range_s:
-        start_sec = end_sec - max_range_s
+      // Protocol: "historical:<interval>:<limit>"
+      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
+    };
 
-    if start_sec > end_sec:
-        start_sec, end_sec = end_sec, start_sec
+    const stopHistoricalPolling = () => {
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+    };
 
-    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
-    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
+    const startHistoricalPolling = () => {
+      if (histTimerRef.current !== null) return;
 
-    # ✅ Pre-Agg first
-    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
-    if preagg_enabled:
-        try:
-            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
-            await ensure_kline_preagg()
+      // initial request immediately
+      requestHistorical();
 
-            if await _table_exists("trading", "all_kline_1s_state"):
-                if interval_seconds == 1:
-                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
-                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
-        except Exception as e:
-            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+      // then poll until stable (no growth)
+      histTimerRef.current = window.setInterval(() => {
+        // stop condition: stable data for N cycles
+        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
+          stopHistoricalPolling();
+          return;
+        }
+        requestHistorical();
+      }, histPollMsRef.current);
+    };
 
-    # ❌ FALLBACK DISABLED: On-the-fly aggregation from trades is too dangerous (performance risk)
-    # If kline tables don't exist, system should fail fast rather than scan millions of trades
-    
-    logger.error(
-        f"[get_ohlc_from_ch] CRITICAL: No kline table found for {exchange}/{symbol}/{market}. "
-        f"On-the-fly aggregation from trades is DISABLED for safety. "
-        f"Ensure Materialized Views are running: mv_{exchange}_trades_to_{exchange}_kline_1s"
-    )
-    
-    raise ValueError(
-        f"No pre-aggregated kline data available for {exchange}/{symbol}/{market}. "
-        f"Kline table (trading.{exchange}_kline or trading.all_kline_1s_state) not found. "
-        f"On-the-fly aggregation from trades is disabled for performance/safety reasons."
-    )
+    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
+      setStatus(newStatus);
+
+      if (newStatus === "OPEN") {
+        // start polling historical (works even if backend doesn't push)
+        startHistoricalPolling();
+      }
+
+      if (newStatus === "CLOSED" || newStatus === "ERROR") {
+        stopHistoricalPolling();
+      }
+    });
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+
+        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
+        const hl = Number((limits as any).historicalLimit);
+        const hp = Number((limits as any).historicalPollMs);
+        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
+        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
+
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        // trades buffer (RAF)
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        // build live candle from trades (client-side agg)
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket,
+            o: t.price,
+            h: t.price,
+            l: t.price,
+            c: t.price,
+            v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        // optional backend candle stream; keep compatible
+        const m: any = msg;
+        const tSec = toSec(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
+        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        // mark request as completed
+        histInFlightRef.current = false;
+
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw
+          .map((raw: any) => ({
+            exchange: msg.exchange || exchange,
+            symbol: msg.symbol || symbol,
+            market: (msg as any).market || market,
+            interval: (msg as any).interval || interval,
+            t: toSec(raw.time ?? raw.t),
+            o: toNum(raw.open ?? raw.o),
+            h: toNum(raw.high ?? raw.h),
+            l: toNum(raw.low ?? raw.l),
+            c: toNum(raw.close ?? raw.c),
+            v: toNum(raw.volume ?? raw.v),
+          }))
+          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
+
+        setHistorical((prev) => mergeCandles(prev, hist));
+
+        // stop heuristic: if total historical size does not grow for N polls, stop polling
+        // (works even if backend always returns same "last N" window)
+        const incomingCount = hist.length;
+        const prevTotal = histLastCountRef.current;
+
+        // we need the full state size, but we only have incoming; use a conservative heuristic:
+        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
+        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
+        if (incomingCount <= 0) {
+          histNoGrowthRef.current += 1;
+        } else if (incomingCount === prevTotal) {
+          histNoGrowthRef.current += 1;
+        } else {
+          histNoGrowthRef.current = 0;
+          histLastCountRef.current = incomingCount;
+        }
+
+        return;
+      }
+
+      if (msg.type === "fill_block") {
+        const m = msg as any;
+        const block = {
+          start_sec: m.start_sec || 0,
+          end_sec: m.end_sec || 0,
+          stage: m.stage || "gap",
+          progress: m.progress || 0,
+          batch: m.batch || 0,
+          total: m.total || 0,
+        };
+        console.log('[useWsLane] Received fill_block message:', block);
+        setFillBlock(block);
+        return;
+      }
+    });
+
+    return () => {
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+      window.setTimeout(() => {
+        try { offStatus(); } catch {}
+        try { offMsg(); } catch {}
+      }, 100);
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  // ✅ Chart series must include historical + live
+  // Live should overwrite historical at same t (more recent values)
+  const mergedSeries = useMemo(() => {
+    const map = new Map<number, LiveCandle>();
+    for (const c of historical) map.set(c.t, c);
+    for (const c of candles) map.set(c.t, c); // live overwrites
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  }, [historical, candles]);
+
+  return { status, trades, candles: mergedSeries, orderbook, historical, fillBlock };
+}
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
@@ -173080,6 +172848,293 @@ class BackfillLoopService:
         finally:
             self._running = False
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
+<file path="backend/services/usecases/unified_ohlc.py">
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any, List, Dict
+
+logger = logging.getLogger(__name__)
+
+
+def _to_sec(ts: int | float | None) -> int | None:
+    if ts is None:
+        return None
+    try:
+        n = int(ts)
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    if n >= 1_000_000_000_000:
+        return int(n // 1000)
+    return n
+
+
+def _utc_now_sec() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _env_int(key: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(key)
+    try:
+        n = int(raw) if raw is not None else int(default)
+    except Exception:
+        n = int(default)
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
+    return n
+
+
+async def _ch():
+    from backend.database.clickhouse import unified_cl_service, get_clickhouse_client
+
+    if not getattr(unified_cl_service, "is_initialized", False) and not getattr(unified_cl_service, "initialized", False):
+        await unified_cl_service.initialize()
+
+    ch_client = get_clickhouse_client()
+    if not ch_client:
+        raise RuntimeError("ClickHouse client not available")
+    return ch_client
+
+
+async def _table_exists(db: str, name: str) -> bool:
+    ch_client = await _ch()
+    rows = await ch_client.execute(
+        """
+        SELECT 1
+        FROM system.tables
+        WHERE database = %(db)s AND name = %(name)s
+        LIMIT 1
+        """,
+        {"db": db, "name": name},
+    )
+    exists = bool(rows)
+    logger.info(f"[_table_exists] {db}.{name} = {exists} (rows={rows})")
+    return exists
+
+
+async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    
+    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
+    use_unified = await _table_exists("trading", "all_kline_1s_state")
+    
+    if use_unified:
+        # Unified table (all_kline_1s_state)
+        rows = await ch.execute(
+            """
+            SELECT
+                bucket_start AS ts,
+                argMinMerge(open_state)  AS open,
+                maxMerge(high_state)     AS high,
+                minMerge(low_state)      AS low,
+                argMaxMerge(close_state) AS close,
+                sumMerge(volume_state)   AS volume
+            FROM trading.all_kline_1s_state
+            WHERE exchange = %(exchange)s
+              AND symbol   = %(symbol)s
+              AND market   = %(market)s
+              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+            GROUP BY bucket_start
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+        )
+    else:
+        # Fallback: Exchange-specific table ({exchange}_kline)
+        exchange_table = f"{exchange}_kline"
+        if not await _table_exists("trading", exchange_table):
+            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+            return []
+        
+        rows = await ch.execute(
+            f"""
+            SELECT
+                bucket_start AS ts,
+                argMinMerge(open_state)  AS open,
+                maxMerge(high_state)     AS high,
+                minMerge(low_state)      AS low,
+                argMaxMerge(close_state) AS close,
+                sumMerge(volume_state)   AS volume
+            FROM trading.{exchange_table}
+            WHERE symbol   = %(symbol)s
+              AND market   = %(market)s
+              AND interval = '1s'
+              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+            GROUP BY bucket_start
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+        )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+    ch = await _ch()
+    
+    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
+    use_unified = await _table_exists("trading", "all_kline_1s_state")
+    
+    if use_unified:
+        # Unified table (all_kline_1s_state)
+        rows = await ch.execute(
+            """
+            WITH toUInt32(%(step)s) AS step
+            SELECT
+                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+                argMin(open, bucket_start)  AS open,
+                max(high)                   AS high,
+                min(low)                    AS low,
+                argMax(close, bucket_start) AS close,
+                sum(volume)                 AS volume
+            FROM
+            (
+                SELECT
+                    bucket_start,
+                    argMinMerge(open_state)  AS open,
+                    maxMerge(high_state)     AS high,
+                    minMerge(low_state)      AS low,
+                    argMaxMerge(close_state) AS close,
+                    sumMerge(volume_state)   AS volume
+                FROM trading.all_kline_1s_state
+                WHERE exchange = %(exchange)s
+                  AND symbol   = %(symbol)s
+                  AND market   = %(market)s
+                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+                GROUP BY bucket_start
+            )
+            GROUP BY ts
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+        )
+    else:
+        # Fallback: Exchange-specific table ({exchange}_kline)
+        exchange_table = f"{exchange}_kline"
+        if not await _table_exists("trading", exchange_table):
+            logger.warning(f"Neither all_kline_1s_state nor {exchange_table} exists")
+            return []
+        
+        rows = await ch.execute(
+            f"""
+            WITH toUInt32(%(step)s) AS step
+            SELECT
+                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+                argMin(open, bucket_start)  AS open,
+                max(high)                   AS high,
+                min(low)                    AS low,
+                argMax(close, bucket_start) AS close,
+                sum(volume)                 AS volume
+            FROM
+            (
+                SELECT
+                    bucket_start,
+                    argMinMerge(open_state)  AS open,
+                    maxMerge(high_state)     AS high,
+                    minMerge(low_state)      AS low,
+                    argMaxMerge(close_state) AS close,
+                    sumMerge(volume_state)   AS volume
+                FROM trading.{exchange_table}
+                WHERE symbol   = %(symbol)s
+                  AND market   = %(market)s
+                  AND interval = '1s'
+                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+                GROUP BY bucket_start
+            )
+            GROUP BY ts
+            ORDER BY ts ASC
+            LIMIT %(limit)s
+            """,
+            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+        )
+
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+    return out
+
+
+async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_seconds: int, start: int | None = None, end: int | None = None, limit: int = 500):
+    interval_seconds = int(interval_seconds)
+    limit = int(limit)
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be > 0")
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+    exchange = (exchange or "").lower().strip()
+    symbol = (symbol or "").upper().strip()
+    market = (market or "spot").lower().strip()
+
+    end_sec = _to_sec(end) or _utc_now_sec()
+    start_sec = _to_sec(start)
+
+    # ✅ ENTERPRISE: rolling window default (kein MIN(timestamp) Scan)
+    if start_sec is None:
+        start_sec = end_sec - (limit * interval_seconds)
+
+    max_range_s = _env_int("OHLC_MAX_RANGE_SECONDS", 180 * 24 * 3600, 60, 10 * 365 * 24 * 3600)
+    if end_sec - start_sec > max_range_s:
+        start_sec = end_sec - max_range_s
+
+    if start_sec > end_sec:
+        start_sec, end_sec = end_sec, start_sec
+
+    needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
+    effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
+
+    # ✅ Pre-Agg first
+    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
+    if preagg_enabled:
+        try:
+            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
+            await ensure_kline_preagg()
+
+            if await _table_exists("trading", "all_kline_1s_state"):
+                if interval_seconds == 1:
+                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
+                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
+        except Exception as e:
+            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+
+    # ❌ FALLBACK DISABLED: On-the-fly aggregation from trades is too dangerous (performance risk)
+    # If kline tables don't exist, system should fail fast rather than scan millions of trades
+    
+    logger.error(
+        f"[get_ohlc_from_ch] CRITICAL: No kline table found for {exchange}/{symbol}/{market}. "
+        f"On-the-fly aggregation from trades is DISABLED for safety. "
+        f"Ensure Materialized Views are running: mv_{exchange}_trades_to_{exchange}_kline_1s"
+    )
+    
+    raise ValueError(
+        f"No pre-aggregated kline data available for {exchange}/{symbol}/{market}. "
+        f"Kline table (trading.{exchange}_kline or trading.all_kline_1s_state) not found. "
+        f"On-the-fly aggregation from trades is disabled for performance/safety reasons."
+    )
 </file>
 
 </files>
