@@ -160130,6 +160130,300 @@ CL_SCHEMAS: Dict[str, Dict[str, str]] = {
 }
 </file>
 
+<file path="backend/database/clickhouse/cl_manager.py">
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from .cl_lanes import cl_lane, cl_status
+from .cl_registry import cl_registry_instance
+from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
+
+logger = logging.getLogger(__name__)
+
+class cl_manager:
+    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.registry = cl_registry_instance
+        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
+        self.connection_pool = None
+        self.is_initialized = False
+        self.startup_time = datetime.now()
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "manager")
+        except ImportError:
+            logger.warning("Health system not available for cl_manager")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_manager initialized")
+    
+    async def initialize(self):
+        """Initialize ClickHouse connection pool and basic infrastructure"""
+        if self.is_initialized:
+            return
+        
+        try:
+            # Initialize connection pool (will be implemented when we have clickhouse-connect)
+            await self._setup_connection_pool()
+            
+            # Register core lanes for all exchanges
+            await self._register_core_lanes()
+            
+            self.is_initialized = True
+            
+            if self.health_component:
+                self.health_component.record_success({"action": "manager_initialized"})
+                
+            logger.info("ClickHouse cl_manager successfully initialized")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize cl_manager: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+            raise
+    
+    async def _setup_connection_pool(self):
+        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
+            
+            # ✅ 1) Pool holen
+            self.connection_pool = get_clickhouse_connection_pool()
+            
+            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
+            ok = await initialize_clickhouse_foundation()
+            if not ok:
+                raise RuntimeError("ClickHouse foundation initialization failed")
+            
+            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
+            client = self.connection_pool.get_client()
+            if not client:
+                raise RuntimeError("ClickHouse client not available after initialization")
+            
+            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
+            raise
+    
+    async def _register_core_lanes(self):
+        """Register core lanes for all 8 exchanges"""
+        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
+        operations = ["trades", "candles", "orderbook"]
+        
+        for exchange in exchanges:
+            for operation in operations:
+                try:
+                    lane = self.registry.register_lane(exchange, operation)
+                    # Set REAL ClickHouse connection reference
+                    lane.clickhouse_connection = self.connection_pool
+                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
+    
+    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
+        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
+        if not self.is_initialized:
+            await self.initialize()
+        
+        try:
+            # Get or register lane
+            lane = self.registry.get_lane(exchange, operation_type)
+            if not lane:
+                lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            
+            # Setup ClickHouse connection for this lane
+            await self._setup_lane_connection(lane)
+            
+            # Update lane status to connecting
+            lane.status = cl_status.CONNECTING
+            
+            # Test connection and set to connected
+            if await self._test_lane_connection(lane):
+                lane.record_operation_success(0.0, {"action": "lane_started"})
+                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
+            else:
+                lane.record_operation_error("Connection test failed")
+                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
+            
+            return lane
+            
+        except Exception as e:
+            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
+            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
+            
+            # Create error lane
+            lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            lane.record_operation_error(error_msg)
+            
+            raise
+    
+    async def _setup_lane_connection(self, lane: cl_lane):
+        """Setup ClickHouse connection for specific lane"""
+        try:
+            # Get exchange-specific config
+            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
+            
+            # Create lane-specific connection metadata
+            connection_info = {
+                "exchange": lane.exchange,
+                "operation": lane.operation_type,
+                "database": exchange_config.get("database", lane.exchange),
+                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
+                "tables": exchange_config.get("tables", []),
+                "priority": exchange_config.get("priority", "medium")
+            }
+            
+            # Set REAL connection reference
+            lane.clickhouse_connection = connection_info
+            
+            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
+            raise
+    
+    async def _test_lane_connection(self, lane: cl_lane) -> bool:
+        """Test ClickHouse connection for lane - ECHTER Test mit asyncio.to_thread!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            
+            # ✅ FIX: Run in thread to get thread-local client
+            def _test():
+                client = pool.get_client()
+                if not client:
+                    raise RuntimeError("ClickHouse client not available")
+                result = client.command("SELECT 1")
+                return result == 1
+            
+            success = await asyncio.to_thread(_test)
+            
+            if success:
+                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
+            else:
+                logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
+            return False
+    
+    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
+        """Insert data into ClickHouse via lane - THREAD-SAFE mit asyncio.to_thread"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            logger.error(f"No lane found for {exchange}.{operation_type}")
+            return False
+        
+        try:
+            start_time = datetime.now()
+            
+            # ✅ FIX: Run INSERT in thread to get thread-local client
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            
+            # Determine table name based on operation_type
+            table_map = {
+                "trades": f"{exchange}_trades",
+                "candles": f"{exchange}_kline", 
+                "orderbook": f"{exchange}_orderbook"
+            }
+            
+            table_name = table_map.get(operation_type)
+            if not table_name:
+                raise Exception(f"Unknown operation type: {operation_type}")
+            
+            full_table = f"trading.{table_name}"
+            columns = list(data.keys())
+            values = list(data.values())
+            
+            # ✅ Execute INSERT in thread (thread-local client)
+            def _insert():
+                client = pool.get_client()
+                if not client:
+                    raise RuntimeError("ClickHouse client not available")
+                client.insert(full_table, [values], column_names=columns)
+            
+            await asyncio.to_thread(_insert)
+            
+            end_time = datetime.now()
+            latency_ms = (end_time - start_time).total_seconds() * 1000
+            
+            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
+            
+            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Insert failed: {str(e)}"
+            lane.record_operation_error(error_msg)
+            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
+            return False
+    
+    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
+        """Get status for specific lane"""
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            return None
+        
+        return lane.get_health()
+    
+    def get_all_lane_status(self) -> List[Dict[str, Any]]:
+        """Get status for all lanes"""
+        return self.registry.get_lane_health_details()
+    
+    def get_manager_health(self) -> Dict[str, Any]:
+        """Get manager health status"""
+        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
+        
+        return {
+            "component": "clickhouse.manager",
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_pool": self.connection_pool,
+            "active_connections": len(self.connections),
+            "registry_health": self.registry.get_system_health()
+        }
+    
+    async def shutdown(self):
+        """Graceful shutdown of all ClickHouse operations"""
+        logger.info("Shutting down ClickHouse cl_manager...")
+        
+        try:
+            # Shutdown all lanes
+            await self.registry.shutdown_all()
+            
+            # Close connection pool - cl_unified_manager handles cleanup
+            if self.connection_pool:
+                self.connection_pool = None
+            
+            # Clear connections
+            self.connections.clear()
+            
+            self.is_initialized = False
+            
+            logger.info("ClickHouse cl_manager shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during cl_manager shutdown: {str(e)}")
+            raise
+
+
+# Global cl_manager instance
+cl_manager_instance = cl_manager()
+</file>
+
 <file path="backend/database/schema_reconcile.py">
 from __future__ import annotations
 
@@ -161626,300 +161920,6 @@ cl_manager = cl_manager_instance
 cl_checker = cl_checker_instance
 cl_handlers = cl_handlers_instance
 unified_clickhouse = unified_cl_service
-</file>
-
-<file path="backend/database/clickhouse/cl_manager.py">
-import asyncio
-import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from .cl_lanes import cl_lane, cl_status
-from .cl_registry import cl_registry_instance
-from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
-
-logger = logging.getLogger(__name__)
-
-class cl_manager:
-    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.registry = cl_registry_instance
-        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
-        self.connection_pool = None
-        self.is_initialized = False
-        self.startup_time = datetime.now()
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "manager")
-        except ImportError:
-            logger.warning("Health system not available for cl_manager")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_manager initialized")
-    
-    async def initialize(self):
-        """Initialize ClickHouse connection pool and basic infrastructure"""
-        if self.is_initialized:
-            return
-        
-        try:
-            # Initialize connection pool (will be implemented when we have clickhouse-connect)
-            await self._setup_connection_pool()
-            
-            # Register core lanes for all exchanges
-            await self._register_core_lanes()
-            
-            self.is_initialized = True
-            
-            if self.health_component:
-                self.health_component.record_success({"action": "manager_initialized"})
-                
-            logger.info("ClickHouse cl_manager successfully initialized")
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize cl_manager: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-            raise
-    
-    async def _setup_connection_pool(self):
-        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
-            
-            # ✅ 1) Pool holen
-            self.connection_pool = get_clickhouse_connection_pool()
-            
-            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
-            ok = await initialize_clickhouse_foundation()
-            if not ok:
-                raise RuntimeError("ClickHouse foundation initialization failed")
-            
-            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
-            client = self.connection_pool.get_client()
-            if not client:
-                raise RuntimeError("ClickHouse client not available after initialization")
-            
-            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
-            raise
-    
-    async def _register_core_lanes(self):
-        """Register core lanes for all 8 exchanges"""
-        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
-        operations = ["trades", "candles", "orderbook"]
-        
-        for exchange in exchanges:
-            for operation in operations:
-                try:
-                    lane = self.registry.register_lane(exchange, operation)
-                    # Set REAL ClickHouse connection reference
-                    lane.clickhouse_connection = self.connection_pool
-                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
-    
-    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
-        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
-        if not self.is_initialized:
-            await self.initialize()
-        
-        try:
-            # Get or register lane
-            lane = self.registry.get_lane(exchange, operation_type)
-            if not lane:
-                lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            
-            # Setup ClickHouse connection for this lane
-            await self._setup_lane_connection(lane)
-            
-            # Update lane status to connecting
-            lane.status = cl_status.CONNECTING
-            
-            # Test connection and set to connected
-            if await self._test_lane_connection(lane):
-                lane.record_operation_success(0.0, {"action": "lane_started"})
-                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
-            else:
-                lane.record_operation_error("Connection test failed")
-                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
-            
-            return lane
-            
-        except Exception as e:
-            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
-            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
-            
-            # Create error lane
-            lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            lane.record_operation_error(error_msg)
-            
-            raise
-    
-    async def _setup_lane_connection(self, lane: cl_lane):
-        """Setup ClickHouse connection for specific lane"""
-        try:
-            # Get exchange-specific config
-            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
-            
-            # Create lane-specific connection metadata
-            connection_info = {
-                "exchange": lane.exchange,
-                "operation": lane.operation_type,
-                "database": exchange_config.get("database", lane.exchange),
-                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
-                "tables": exchange_config.get("tables", []),
-                "priority": exchange_config.get("priority", "medium")
-            }
-            
-            # Set REAL connection reference
-            lane.clickhouse_connection = connection_info
-            
-            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
-            raise
-    
-    async def _test_lane_connection(self, lane: cl_lane) -> bool:
-        """Test ClickHouse connection for lane - ECHTER Test mit asyncio.to_thread!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            
-            # ✅ FIX: Run in thread to get thread-local client
-            def _test():
-                client = pool.get_client()
-                if not client:
-                    raise RuntimeError("ClickHouse client not available")
-                result = client.command("SELECT 1")
-                return result == 1
-            
-            success = await asyncio.to_thread(_test)
-            
-            if success:
-                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
-            else:
-                logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
-            return False
-    
-    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
-        """Insert data into ClickHouse via lane - THREAD-SAFE mit asyncio.to_thread"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            logger.error(f"No lane found for {exchange}.{operation_type}")
-            return False
-        
-        try:
-            start_time = datetime.now()
-            
-            # ✅ FIX: Run INSERT in thread to get thread-local client
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            
-            # Determine table name based on operation_type
-            table_map = {
-                "trades": f"{exchange}_trades",
-                "candles": f"{exchange}_kline", 
-                "orderbook": f"{exchange}_orderbook"
-            }
-            
-            table_name = table_map.get(operation_type)
-            if not table_name:
-                raise Exception(f"Unknown operation type: {operation_type}")
-            
-            full_table = f"trading.{table_name}"
-            columns = list(data.keys())
-            values = list(data.values())
-            
-            # ✅ Execute INSERT in thread (thread-local client)
-            def _insert():
-                client = pool.get_client()
-                if not client:
-                    raise RuntimeError("ClickHouse client not available")
-                client.insert(full_table, [values], column_names=columns)
-            
-            await asyncio.to_thread(_insert)
-            
-            end_time = datetime.now()
-            latency_ms = (end_time - start_time).total_seconds() * 1000
-            
-            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
-            
-            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
-            return True
-            
-        except Exception as e:
-            error_msg = f"Insert failed: {str(e)}"
-            lane.record_operation_error(error_msg)
-            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
-            return False
-    
-    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
-        """Get status for specific lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            return None
-        
-        return lane.get_health()
-    
-    def get_all_lane_status(self) -> List[Dict[str, Any]]:
-        """Get status for all lanes"""
-        return self.registry.get_lane_health_details()
-    
-    def get_manager_health(self) -> Dict[str, Any]:
-        """Get manager health status"""
-        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
-        
-        return {
-            "component": "clickhouse.manager",
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "connection_pool": self.connection_pool,
-            "active_connections": len(self.connections),
-            "registry_health": self.registry.get_system_health()
-        }
-    
-    async def shutdown(self):
-        """Graceful shutdown of all ClickHouse operations"""
-        logger.info("Shutting down ClickHouse cl_manager...")
-        
-        try:
-            # Shutdown all lanes
-            await self.registry.shutdown_all()
-            
-            # Close connection pool - cl_unified_manager handles cleanup
-            if self.connection_pool:
-                self.connection_pool = None
-            
-            # Clear connections
-            self.connections.clear()
-            
-            self.is_initialized = False
-            
-            logger.info("ClickHouse cl_manager shutdown complete")
-            
-        except Exception as e:
-            logger.error(f"Error during cl_manager shutdown: {str(e)}")
-            raise
-
-
-# Global cl_manager instance
-cl_manager_instance = cl_manager()
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -165192,6 +165192,1686 @@ volumes:
   redis-data:
 </file>
 
+<file path="start-system.sh">
+#!/bin/bash
+
+# =============================================================================
+# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
+# =============================================================================
+
+# Strict Bash Setup - Production Hardening for Apple Silicon
+set -euo pipefail
+set +m    # keine Job-Control Meldungen
+IFS=$'\n\t'
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+echo "=================================================="
+echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
+echo "=================================================="
+echo ""
+
+# =============================================================================
+# INTERACTIVE VERBOSE MODE SELECTION
+# =============================================================================
+
+# Check if already set via env var
+if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
+  echo "🔧 Startup Logging Mode:"
+  echo "  1) Normal  - Standard output (recommended)"
+  echo "  2) Verbose - Detailed logs & all steps visible"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " mode_choice
+  
+  case "${mode_choice:-1}" in
+    2)
+      export STARTUP_VERBOSE=1
+      echo "✅ VERBOSE MODE activated - all logs visible"
+      ;;
+    *)
+      export STARTUP_VERBOSE=0
+      echo "✅ NORMAL MODE activated - standard output"
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# BUILD MODE SELECTION
+# =============================================================================
+
+# Interactive build mode selection (unless --clean flag was used)
+CLEAN_BUILD_MODE=0
+if [[ "${1:-}" == "--clean" ]]; then
+  CLEAN_BUILD_MODE=1
+  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
+  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
+  echo ""
+else
+  echo "🏗️  Docker Build Mode:"
+  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
+  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
+  echo ""
+  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
+  echo ""
+  read -p "Select mode (1/2) [default: 1]: " build_choice
+  
+  case "${build_choice:-1}" in
+    2)
+      CLEAN_BUILD_MODE=1
+      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
+      echo "   This will take 10-15 minutes..."
+      ;;
+    *)
+      CLEAN_BUILD_MODE=0
+      echo "✅ FAST START MODE activated - using existing images"
+      echo "   Starting in 10-30 seconds..."
+      ;;
+  esac
+  echo ""
+fi
+
+# =============================================================================
+# DEPENDENCY MANAGEMENT
+# =============================================================================
+
+# Critical dependency checker
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: Missing required dependency: $1"
+    exit 1
+  }
+}
+
+# Check required dependencies
+need jq
+need redis-cli
+need curl
+need nc
+need python3
+need docker
+
+# =============================================================================
+# DOCKER DAEMON CHECK & AUTO-START
+# =============================================================================
+
+echo "🐳 Checking Docker status..."
+
+if ! docker info >/dev/null 2>&1; then
+  echo "⚠️  Docker is not running - attempting auto-start..."
+  echo ""
+  
+  # Starte Docker Desktop
+  open -a Docker
+  
+  # Warte bis bereit (max 60s)
+  echo "⏳ Waiting for Docker to be ready..."
+  timeout=60
+  elapsed=0
+  
+  while ! docker info >/dev/null 2>&1; do
+    if (( elapsed >= timeout )); then
+      echo ""
+      echo "❌ Docker startup timeout after ${timeout}s"
+      echo ""
+      echo "Please start Docker Desktop manually:"
+      echo "  1. Open Docker Desktop from Applications"
+      echo "  2. Wait for whale icon in menu bar to stop animating"
+      echo "  3. Run ./start-system.sh again"
+      echo ""
+      exit 1
+    fi
+    
+    printf "\r   Waiting for Docker... %ds/%ds" "$elapsed" "$timeout"
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  
+  echo ""
+  echo "✅ Docker is ready!"
+  echo ""
+else
+  echo "✅ Docker is already running"
+  echo ""
+fi
+
+# Robust timeout wrapper with macOS compatibility
+with_timeout() {
+  local s="$1"; shift
+  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
+  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
+  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
+  fi
+}
+
+# Docker Compose V2 compatibility wrapper
+dc() {
+  if command -v docker >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    echo "ERROR: Docker not found"
+    exit 1
+  fi
+}
+
+# Safe pkill wrapper - prevents set -e from killing script when no process found
+safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
+
+# WS-CAT soft fallback - graceful handling with vendor support
+if ! command -v wscat >/dev/null 2>&1; then
+  # Try to install from vendor if available
+  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
+    echo "Installing wscat from vendor..."
+    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
+  fi
+
+  # Check again after potential install
+  if ! command -v wscat >/dev/null 2>&1; then
+    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
+    WS_CAT_SKIP=1
+  else
+    WS_CAT_SKIP=0
+  fi
+else
+  WS_CAT_SKIP=0
+fi
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# TTY-sichere Farben
+isatty() { [[ -t 1 ]]; }
+if isatty; then
+  readonly GREEN=$'\033[0;32m'
+  readonly CYAN=$'\033[0;36m'
+  readonly YELLOW=$'\033[1;33m'
+  readonly RED=$'\033[0;31m'
+  readonly NC=$'\033[0m'
+else
+  readonly GREEN=
+  readonly CYAN=
+  readonly YELLOW=
+  readonly RED=
+  readonly NC=
+fi
+
+# Exchange Configuration
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+SPOT_SYMBOL_DEFAULT="BTCUSDT"
+COINBASE_SPOT_SYMBOL="BTC-USD"
+
+# GUM SPINNER SYSTEM - Professional and stable with vendor support
+if ! command -v gum >/dev/null 2>&1; then
+  # Try to install from vendor if available (future-ready)
+  if [[ -f "vendor/system/file_linux/gum" ]]; then
+    echo "Installing gum from vendor..."
+    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
+    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
+    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
+  fi
+
+  # Fallback to brew if still not available
+  if ! command -v gum >/dev/null 2>&1; then
+    echo "Installing gum via homebrew..."
+    brew install gum >/dev/null 2>&1 || {
+      echo "⚠ gum installation failed - using simple spinner fallback"
+      GUM_AVAILABLE=0
+    }
+  fi
+fi
+
+# Check if gum is available after installation attempts
+if command -v gum >/dev/null 2>&1; then
+  GUM_AVAILABLE=1
+  gum_spin() {  # gum_spin "Titel" CMD...
+    local title="$1"; shift
+    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
+      gum spin --title "$title" -- "$@"
+  }
+else
+  GUM_AVAILABLE=0
+  # Fallback spinner function using simple dots
+  gum_spin() {
+    local title="$1"; shift
+    printf "⠋ %s..." "$title"
+    "$@" >/dev/null 2>&1
+    local result=$?
+    printf "\r"
+    return $result
+  }
+fi
+
+# Professional Status Symbols
+readonly SYMBOL_SUCCESS="✔"
+readonly SYMBOL_FAILURE="✖"
+readonly SYMBOL_WARNING="⚠"
+readonly SYMBOL_INFO="ℹ"
+readonly SYMBOL_SKIP="○"
+
+# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
+ucfirst() {
+  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
+}
+
+# Status display functions
+show_success() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
+}
+show_failure() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
+}
+show_warning() {
+  local message="$1" detail="${2:-}"
+  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
+}
+
+show_skip() {
+  local message="$1"
+  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
+}
+
+# Timing Windows (configurable via environment)
+REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
+CH_GROW_WIN="${CH_GROW_WIN:-30}"
+BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
+COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
+RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
+
+# =============================================================================
+# INTELLIGENT STARTUP CONFIGURATION
+# =============================================================================
+
+# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
+export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
+export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
+export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
+export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
+
+# ✅ Feature Flags (enable/disable new behavior)
+export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
+export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
+export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
+
+# ✅ Observability
+export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
+
+# Log configuration
+if [[ "$STARTUP_VERBOSE" == "1" ]]; then
+  echo "=================================================="
+  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
+  echo "=================================================="
+  echo ""
+  echo "📊 Retry & Timeout Configuration:"
+  echo "   MAX_RETRIES=$MAX_RETRIES"
+  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
+  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
+  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
+  echo ""
+  echo "🎯 Feature Flags:"
+  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
+  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
+  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
+  echo ""
+  echo "🚀 Collector Configuration:"
+  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
+  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
+  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
+  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
+  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
+  echo ""
+  echo "📍 System Paths:"
+  echo "   Working Directory: $(pwd)"
+  echo "   Python: $(which python3)"
+  echo "   Docker: $(which docker)"
+  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
+  echo ""
+  echo "=================================================="
+  echo ""
+  
+  # Enable bash command tracing for full visibility
+  echo "🔍 Enabling bash command tracing (set -x)..."
+  echo "   All commands will be printed before execution"
+  echo ""
+  set -x  # Print commands as they execute
+fi
+
+# Optional Features (configurable via environment)
+SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
+RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
+
+# =============================================================================
+# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
+# =============================================================================
+
+# Präzise Latenz-Messung aus pipeline_test.sh
+CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
+CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
+
+# Warm-Up Function
+warm_up() {
+  local url="$1"
+  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
+}
+
+# Präzise Latenzermittlung
+measure_latency() {
+  local url="$1"
+  local timeout="${2:-5}"
+  local tmpfile
+  tmpfile="$(mktemp -t resp.XXXXXX)"
+
+  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
+  local line
+  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
+  local http_code ttfb_s total_s
+  read -r http_code ttfb_s total_s <<<"$line"
+
+  # Convert to milliseconds
+  local ttfb_ms total_ms
+  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
+  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
+
+  # Body for validation
+  local body
+  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
+  rm -f "$tmpfile" 2>/dev/null || true
+
+  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
+  printf "%s" "$body"
+}
+
+# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
+get_available_symbols() {
+  local exchange="$1"
+  local market="${2:-spot}"  # Default to spot market
+  local limit="${3:-5}"      # Default top 5 symbols
+  
+  # Query SymbolRegistry for real available symbols
+  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
+    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
+    head -n "$limit" || echo ""
+}
+
+# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
+get_test_symbols() {
+  local exchange="$1"
+  
+  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
+  local symbols_output
+  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
+  
+  if [[ -n "$symbols_output" ]]; then
+    echo "$symbols_output"
+  else
+    case "$exchange" in
+      coinbase) 
+        echo "BTC-USD"
+        echo "ETH-USD"
+        ;;
+      *) 
+        echo "BTCUSDT"
+        echo "ETHUSDT"
+        ;;
+    esac
+  fi
+}
+
+# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
+test_symbol_api() {
+  local exchange="$1" symbol="$2" market="${3:-spot}"
+  local endpoint_suffix
+  
+  case "$market" in
+    spot) endpoint_suffix="spot" ;;
+    futures) endpoint_suffix="futures" ;;
+    *) endpoint_suffix="spot" ;;
+  esac
+  
+  local response1 response2 h1 h2 a1 a2
+  
+  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
+  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
+  
+  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
+  a1=$(echo "$response1" | tail -n+2)
+  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
+  a2=$(echo "$response2" | tail -n+2)
+  
+  local trades_count=0 orderbook_ok=0
+  
+  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
+    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
+  fi
+  
+  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
+    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
+      orderbook_ok=1
+    fi
+  fi
+  
+  echo $((trades_count + orderbook_ok))
+}
+
+# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
+fetch_multi_symbol_counts() {
+  local exchange="$1"
+  local total_api_count=0 successful_symbols=0 working_symbols=()
+  local symbol_count=0
+  
+  while IFS= read -r symbol; do
+    [[ -z "$symbol" ]] && continue
+    [[ $symbol_count -ge 3 ]] && break
+    
+    local spot_score futures_score=0
+    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
+    
+    if [[ "$exchange" != "coinbase" ]]; then
+      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
+    fi
+    
+    local symbol_total=$((spot_score + futures_score))
+    if [[ $symbol_total -gt 0 ]]; then
+      total_api_count=$((total_api_count + symbol_total))
+      successful_symbols=$((successful_symbols + 1))
+      working_symbols+=("$symbol")
+    fi
+    
+    symbol_count=$((symbol_count + 1))
+  done < <(get_test_symbols "$exchange")
+  
+  local working_list
+  if [[ ${#working_symbols[@]} -gt 0 ]]; then
+    working_list=$(IFS=,; echo "${working_symbols[*]}")
+  else
+    working_list=""
+  fi
+  echo "$total_api_count:$successful_symbols:$working_list"
+}
+
+# LEGACY FUNCTION - Kept for backward compatibility
+fetch_api_counts() {
+  local ex="$1" spot_sym="$2" fut_sym="$3"
+  local result
+  result=$(fetch_multi_symbol_counts "$ex")
+  echo "${result%%:*}"
+}
+
+# Enhanced API health check with multiple fallback patterns
+api_spot_ok() {
+  local exchange="$1"
+  local symbol="$2"
+
+  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
+  local meta body http_status
+  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
+  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
+  body="$(echo "$meta" | awk 'NR>1{print}')"
+
+  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
+}
+
+# =============================================================================
+# REDIS FUNCTIONS - SCAN-based for production
+# =============================================================================
+
+keys_count() {
+  local pattern="$1"
+  local cursor=0
+  local count=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    local new_cursor
+    local batch=0
+
+    if [[ -n "$scan_result" ]]; then
+      local first_line=true
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          [[ -n "$line" ]] && batch=$((batch + 1))
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+      count=$((count + batch))
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$count"
+}
+
+sum_xlen_pattern() {
+  local pattern="$1"
+  local cursor=0
+  local total=0
+
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+
+    if [[ -n "$scan_result" ]]; then
+      local new_cursor
+      local first_line=true
+
+      while IFS= read -r line; do
+        if [[ "$first_line" == "true" ]]; then
+          new_cursor="$line"
+          first_line=false
+        else
+          if [[ -n "$line" ]]; then
+            local length
+            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
+            total=$((total + length))
+          fi
+        fi
+      done <<< "$scan_result"
+
+      cursor="$new_cursor"
+    fi
+
+    [[ "$cursor" == "0" ]] && break
+  done
+
+  echo "$total"
+}
+
+growth_window() {
+  local pattern="$1"
+  local window="${2:-$REDIS_GROW_WIN}"
+  local before after
+
+  before=$(sum_xlen_pattern "$pattern")
+  sleep "$window"
+  after=$(sum_xlen_pattern "$pattern")
+  echo $((after - before))
+}
+
+persist_growth() {
+  local exchange="$1"
+  local window="${2:-$CH_GROW_WIN}"
+  local before after
+
+  before=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$before" =~ ^[0-9]+$ ]] || before=0
+
+  sleep 10
+
+  after=$(curl -sS --max-time 5 \
+    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
+    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
+
+  [[ "$after" =~ ^[0-9]+$ ]] || after=0
+
+  echo $((after - before))
+}
+
+# =============================================================================
+# WEBSOCKET TEST FUNCTIONS
+# =============================================================================
+
+ws_test_coinbase_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
+    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
+    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
+}
+
+ws_test_mexc_spot() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
+    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
+    head -n 3 | grep -q '"code":0' 2>/dev/null
+}
+
+ws_test_mexc_futures() {
+  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
+
+  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
+    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
+    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
+}
+
+# =============================================================================
+# SYSTEM INITIALIZATION
+# =============================================================================
+
+mkdir -p logs pids
+
+if [[ ! -f .deps_installed ]]; then
+  echo "Installing Python dependencies..."
+  if [[ -d "vendor/backend" ]]; then
+    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
+  fi
+
+  echo "Installing System dependencies..."
+  if [[ -d "vendor/system" ]]; then
+    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
+
+    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
+      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
+    fi
+  fi
+
+  echo "Installing Frontend dependencies..."
+  if [[ -d "frontend" ]]; then
+    (cd frontend && npm install --silent)
+  fi
+
+  echo "Installing project in editable mode..."
+  pip3 install --break-system-packages -e .
+
+  touch .deps_installed
+  echo "Dependencies installed."
+fi
+
+if [[ ! -d "frontend/node_modules" ]]; then
+  echo "Installing missing frontend dependencies..."
+  (cd frontend && npm install --silent)
+fi
+
+if [[ -f backend/config/.env ]]; then
+  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
+elif [[ -f backend/.env ]]; then
+  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
+else
+  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
+  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
+fi
+
+# =============================================================================
+# GRACEFUL SHUTDOWN SEQUENCE
+# =============================================================================
+
+echo ""
+echo "🛑 Stopping existing processes..."
+echo ""
+
+if nc -z localhost 8100 >/dev/null 2>&1; then
+  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
+else
+  show_skip "Collectors - Backend not running"
+fi
+
+gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
+show_success "Frontend - Stopped"
+
+gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
+show_success "Backend - Stopped"
+
+gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
+show_success "Desktop GUI - Stopped"
+
+gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker - Stopped"
+
+gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
+show_success "Docker Cache - Cleaned"
+
+echo ""
+
+# =============================================================================
+# SERVICE STARTUP SEQUENCE
+# =============================================================================
+
+echo "Starting Docker services..."
+
+# ✅ START SERVICES - Conditional Build based on user selection
+if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
+  echo "🔨 Building Docker images from scratch (--no-cache)..."
+  echo "   This will take 10-15 minutes - downloading & compiling everything"
+  echo ""
+  dc build --no-cache
+  dc up -d --no-build
+else
+  echo "⚡ Using existing Docker images (fast start)..."
+  echo "   Starting in 10-30 seconds"
+  echo ""
+  dc up -d --no-build
+fi
+
+echo "🔄 Waiting for Docker Services..."
+echo ""
+
+wait_for_service() {
+  local service=$1
+  local host=$2
+  local port=$3
+
+  if gum_spin "$service - Service Ready" bash -c "
+    for i in {1..30}; do
+      nc -z $host $port >/dev/null 2>&1 && exit 0
+      sleep 1
+    done
+    exit 1
+  "; then
+    show_success "$service - Service" "Ready"
+    return 0
+  else
+    show_failure "$service - Service" "Timeout"
+    return 1
+  fi
+}
+
+wait_for_service "Redis" localhost 6380
+wait_for_service "ClickHouse" localhost 8124
+wait_for_service "Backend API" localhost 8100
+
+echo ""
+
+# =============================================================================
+# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
+# =============================================================================
+
+# ✅ Exponential Backoff Retry Logic
+wait_for_service_smart() {
+    local service_name=$1
+    local check_cmd=$2
+    local max_retries=${3:-$MAX_RETRIES}
+    local initial_delay=${4:-$INITIAL_DELAY}
+    
+    local retry=0
+    local delay=$initial_delay
+    
+    echo "⏳ Waiting for $service_name..."
+    
+    while (( retry < max_retries )); do
+        if eval "$check_cmd" >/dev/null 2>&1; then
+            echo "✅ $service_name ready after $retry retries"
+            return 0
+        fi
+        
+        if (( retry < max_retries - 1 )); then
+            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
+            sleep "$delay"
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            delay=$((delay * 2))
+        fi
+        
+        retry=$((retry + 1))
+    done
+    
+    echo "❌ $service_name failed after $max_retries retries"
+    return 1
+}
+
+# ✅ Parallele Service Checks
+wait_for_all_services_parallel() {
+    local services=("redis:6380" "clickhouse:8124" "backend:8100")
+    local pids=()
+    local temp_dir=$(mktemp -d)
+    
+    echo "🔄 Starting parallel service checks..."
+    
+    # Starte alle Checks parallel
+    for service in "${services[@]}"; do
+        IFS=':' read -r name port <<< "$service"
+        (
+            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
+                echo "0" > "$temp_dir/check_${name}.status"
+            else
+                echo "1" > "$temp_dir/check_${name}.status"
+            fi
+        ) &
+        pids+=($!)
+    done
+    
+    # Warte auf alle (mit Gesamttimeout)
+    local timeout=$SERVICE_CHECK_TIMEOUT
+    local elapsed=0
+    local all_done=false
+    
+    while (( elapsed < timeout )); do
+        all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        
+        [[ "$all_done" == "true" ]] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    # Kill stragglers
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+    done
+    
+    # Prüfe Ergebnisse
+    local failed=0
+    for service in "${services[@]}"; do
+        IFS=':' read -r name _ <<< "$service"
+        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
+        if [[ "$status" != "0" ]]; then
+            echo "❌ $name check failed"
+            failed=$((failed + 1))
+        else
+            echo "✅ $name check passed"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    return $failed
+}
+
+# ✅ Event-driven Backend Ready Check - DOCKER AWARE
+wait_for_backend_ready() {
+    local timeout=$BACKEND_READY_TIMEOUT
+    local elapsed=0
+    
+    echo "⏳ Waiting for backend ready signal..."
+    
+    # Docker-aware check: Poll /health/ready endpoint directly
+    while (( elapsed < timeout )); do
+        # Check if health endpoint is responding
+        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
+        
+        if [[ -n "$health_response" ]]; then
+            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
+            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
+            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
+            
+            # Accept if:
+            # 1. ready=true (ideal), OR
+            # 2. At least 50% components healthy (degraded but operational)
+            if [[ "$ready_bool" == "true" ]]; then
+                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
+                return 0
+            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
+                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
+                return 0
+            else
+                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
+            fi
+        fi
+        
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    
+    echo "❌ Backend ready timeout after ${timeout}s"
+    echo ""
+    
+    # =============================================================================
+    # ✅ Schema Reconciliation Diagnostics (Backend logs)
+    # =============================================================================
+    echo "🔍 Checking for Schema Reconciliation errors..."
+    echo ""
+
+    # Resolve backend container id robustly (no hardcoded name)
+    backend_cid="$(docker compose ps -q backend 2>/dev/null | head -n 1 || true)"
+
+    if [[ -z "$backend_cid" ]]; then
+      echo "⚠️  Backend container not found via docker compose ps -q backend"
+    else
+      backend_logs="$(docker logs "$backend_cid" 2>&1 | tail -200)"
+
+      # Detect schema-related log lines
+      if echo "$backend_logs" | grep -qiE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff"; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "⚠️  SCHEMA RECONCILIATION / VERIFY ERROR DETECTED"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "📋 Relevant Log Entries (filtered):"
+        echo ""
+        echo "$backend_logs" | grep -iE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff" | tail -80
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+
+        # Try to read SCHEMA_MODE from .env (best-effort)
+        schema_mode_hint="${SCHEMA_MODE:-}"
+        if [[ -z "$schema_mode_hint" ]] && [[ -f ".env" ]]; then
+          schema_mode_hint="$(grep -E '^SCHEMA_MODE=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+        fi
+        schema_mode_hint="${schema_mode_hint:-verify}"
+
+        echo "💡 Hints:"
+        echo "   - SCHEMA_MODE (effective hint): ${schema_mode_hint}"
+        echo "   - If this is dev maintenance: set SCHEMA_MODE=reconcile and (non-TTY) SCHEMA_AUTO_APPLY=1"
+        echo "   - If production strict: keep SCHEMA_MODE=verify and align ClickHouse schema to init.sql"
+        echo ""
+      else
+        echo "ℹ️  No schema errors detected - last 50 backend log lines:"
+        echo ""
+        echo "$backend_logs" | tail -50
+        echo ""
+      fi
+    fi
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    echo "🏥 Starting automatic health diagnostic..."
+    echo ""
+    ./start-health.sh
+    return 1
+}
+
+wait_for_backend() {
+  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
+  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
+    if wait_for_all_services_parallel; then
+      echo "✅ All services responding"
+    else
+      echo "⚠️ Some services failed - continuing with resilient mode"
+    fi
+  else
+    # Legacy: Serial checks
+    echo "Using legacy serial checks..."
+  fi
+  
+  echo ""
+  
+  # ✅ STEP 2: Event-driven backend ready check
+  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
+    if wait_for_backend_ready; then
+      echo "✅ Backend fully initialized"
+    else
+      echo "⚠️ Backend timeout - checking resilient health"
+      
+      # Fallback: Check resilient health endpoint
+      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
+        echo "✅ Backend operational in degraded mode"
+      else
+        echo "❌ Backend not responding"
+        echo ""
+        echo "🏥 Starting automatic health diagnostic..."
+        echo ""
+        ./start-health.sh
+        return 1
+      fi
+    fi
+  else
+    # Legacy: Polling-based check
+    echo "Using legacy polling-based check..."
+    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
+      for i in {1..60}; do
+        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
+        sleep 1
+      done
+      exit 1
+    '; then
+      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
+    else
+      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
+      return 1
+    fi
+  fi
+  
+  echo ""
+  echo "🚀 Backend startup complete"
+  echo ""
+  
+  # ✅ STEP 3: Warm-up exchanges (non-blocking)
+  echo "🔄 Warming up exchanges (background)..."
+  for exchange in "${EXCHANGES[@]}"; do
+    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
+  done
+  
+  # Give exchanges a moment to respond, but don't block
+  sleep 3
+  
+  # Continue with collector verification (existing code)
+  local collector_success=0
+  local collector_failed=0
+
+  for exchange in "${EXCHANGES[@]}"; do
+      case "$exchange" in
+        "binance") display_name="Binance" ;;
+        "bitget") display_name="Bitget" ;;
+        "mexc") display_name="MEXC" ;;
+        "gateio") display_name="Gate.io" ;;
+        "bybit") display_name="Bybit" ;;
+        "okx") display_name="OKX" ;;
+        "htx") display_name="HTX" ;;
+        "coinbase") display_name="Coinbase" ;;
+        *) display_name="$(ucfirst "$exchange")" ;;
+      esac
+
+      formatted_name=$(printf "%-8s" "$display_name")
+
+      local working_symbol="" symbol_count=0
+      
+      while IFS= read -r symbol; do
+        [[ -z "$symbol" ]] && continue
+        [[ $symbol_count -ge 2 ]] && break
+        
+        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
+        
+        if [[ "$http_test" == "200" ]]; then
+          working_symbol="$symbol"
+          break
+        fi
+        
+        symbol_count=$((symbol_count + 1))
+      done < <(get_test_symbols "$exchange")
+      
+      if [[ -z "$working_symbol" ]]; then
+        case "$exchange" in
+          coinbase) working_symbol="BTC-USD" ;;
+          *) working_symbol="BTCUSDT" ;;
+        esac
+      fi
+
+      echo "🔄 $formatted_name - Collector Starting (background)"
+      
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
+      
+      local started=false
+      if [[ "$http_code" == "200" ]]; then
+        echo "✅ $formatted_name - Collector Started (API accessible)"
+        collector_success=$((collector_success + 1))
+        started=true
+      else
+        echo "⚠️  $formatted_name - Collector Started (API warming up)"
+        started=true
+      fi
+
+      if [[ "$started" == "false" ]]; then
+        collector_failed=$((collector_failed + 1))
+        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
+      fi
+    done
+
+    if [[ $collector_failed -gt 0 ]]; then
+      echo ""
+      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
+    fi
+
+    echo ""
+    echo "✅ All Exchange Collectors: STARTED"
+    echo "ℹ️  Background Health Monitoring: ACTIVE" 
+    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
+    echo ""
+    return 0
+}
+
+wait_for_backend
+
+auto_enable_test_coins() {
+  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
+  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
+  
+  for coin in "${test_coins[@]}"; do
+    for exchange in "${EXCHANGES[@]}"; do
+      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
+        -X POST -H "Content-Type: application/json" \
+        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
+        >/dev/null 2>&1 || true
+    done
+  done
+  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
+}
+
+auto_enable_test_coins
+
+echo ""
+
+gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
+if [[ -f monitor-backend.sh ]]; then
+  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
+  MONITOR_PID=$!
+  echo $MONITOR_PID > pids/backend_monitor.pid
+  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
+else
+  show_warning "Backend Monitor - Not found"
+fi
+
+gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
+show_success "Vite Cache - Cleaned"
+
+# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
+echo "🚀 Starting Frontend in new terminal window..."
+osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
+  echo "⚠️  Could not open new terminal - trying background mode"
+  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  echo "$FRONTEND_PID" > ../pids/frontend.pid
+  cd ..
+}
+show_success "Frontend - Started in new terminal"
+
+echo ""
+echo "=================================================="
+echo "SYSTEM STATUS"
+echo "=================================================="
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+echo "🔍 Docker Container Status..."
+echo ""
+
+DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
+
+for service in "${DOCKER_SERVICES[@]}"; do
+  case "$service" in
+    "backend") display_name="Backend" ;;
+    "clickhouse") display_name="ClickHouse" ;;
+    "redis") display_name="Redis" ;;
+    "trade-router") display_name="Trade-Router" ;;
+    "unified-aggregator") display_name="Unified-Agg" ;;
+    *) display_name="$(ucfirst "$service")" ;;
+  esac
+
+  status=$(gum_spin "$display_name - Container Checking" bash -c "
+    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
+  ")
+
+  if [[ "$status" == "running" ]]; then
+    show_success "$display_name - Container" "Running"
+  elif [[ "$status" == "not found" ]]; then
+    show_failure "$display_name - Container" "Not Found"
+  else
+    show_warning "$display_name - Container" "$status"
+  fi
+done
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
+# =============================================================================
+
+pipeline_table_snapshot() {
+  echo ""
+  echo "=================================================="
+  echo "PIPELINE DATA FLOW SNAPSHOT"
+  echo "=================================================="
+  echo ""
+  
+  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
+  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
+    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
+  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
+  
+  local h=0 p=0 f=0
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Display-Name
+    local display_name
+    case "$exchange" in
+      "binance")  display_name="Binance" ;;
+      "bitget")   display_name="Bitget" ;;
+      "mexc")     display_name="MEXC" ;;
+      "gateio")   display_name="Gate.io" ;;
+      "bybit")    display_name="Bybit" ;;
+      "okx")      display_name="OKX" ;;
+      "htx")      display_name="HTX" ;;
+      "coinbase") display_name="Coinbase" ;;
+      *)          display_name="$(ucfirst "$exchange")" ;;
+    esac
+    
+    # Test-Symbol pro Exchange
+    local test_symbol
+    if [[ "$exchange" == "coinbase" ]]; then
+      test_symbol="BTC-USD"
+    else
+      test_symbol="BTCUSDT"
+    fi
+    
+    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
+    local redis_spot redis_usdtm redis_coinm redis_usdcm
+
+    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
+    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
+    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
+    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
+
+    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
+    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
+    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
+    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
+    
+    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
+    
+    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
+    local api_response api_trades api_latency
+    api_response=$(
+      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
+        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
+      || echo -e "[]\n0"
+    )
+
+    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
+    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
+
+    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
+    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
+    
+    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
+    local ch_trades_5min
+    ch_trades_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
+    
+    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
+    local ch_candles_5min
+    ch_candles_5min=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE bucket_start > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
+    )
+    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
+    
+    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
+    local ch_backfill
+    ch_backfill=$(
+      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
+    )
+    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
+    
+    # 6) GW-API Status
+    local gw_status
+    if (( api_trades > 0 )); then
+      gw_status="✓"
+    else
+      gw_status="✗"
+    fi
+    
+    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
+    local ws_status
+    if (( redis_total > 0 )); then
+      ws_status="✓"
+    else
+      ws_status="✗"
+    fi
+    
+    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
+    local ch_write_status
+    if (( ch_trades_5min > 0 )); then
+      ch_write_status="✓"
+    else
+      ch_write_status="✗"
+    fi
+    
+    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
+    local status="FAILED"
+    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
+      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
+    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
+      status="PARTIAL"
+    fi
+
+    case "$status" in
+      HEALTHY) ((h++)) ;;
+      PARTIAL) ((p++)) ;;
+      *)       ((f++)) ;;
+    esac
+    
+    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
+    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
+      "$display_name" "$test_symbol" \
+      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
+      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
+  done
+  
+  echo "-------------------------------------------------------------------------------------------------------------------------------"
+  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
+  echo ""
+  
+  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
+  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  for exchange in "${EXCHANGES[@]}"; do
+    # Skip if no backfill data
+    local bf_count
+    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
+    
+    if [[ "$bf_count" -gt 0 ]]; then
+      local bf_oldest bf_newest
+      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
+      
+      printf "  %-10s: %10s trades | Range: %s → %s\n" \
+        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
+    fi
+  done
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "=================================================="
+}
+
+# =============================================================================
+# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
+echo "=================================================="
+echo ""
+
+# Health-Block darf das Script nicht killen → Fehler explizit abfangen
+set +e
+
+# /health/ready – Kubernetes Readiness Probe
+HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
+HEALTH_READY_CODE="$HEALTH_READY_RAW"
+if [[ "$HEALTH_READY_CODE" == "" ]]; then
+  HEALTH_READY_CODE="000"
+fi
+
+# /health/detailed – System-Gesamtstatus
+HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
+
+# /health/components – alle Health-Lanes
+HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
+
+# /health/critical – nur kritische Komponenten
+HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
+
+# Default-Werte
+total_components=0
+healthy_components=0
+degraded_components=0
+unhealthy_components=0
+stale_components=0
+offline_components=0
+
+critical_total=0
+critical_healthy=0
+
+# Komponenten zählen (effective_status basiert)
+if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
+
+  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
+  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
+  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
+  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
+  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
+  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
+fi
+
+# Kritische Komponenten
+if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
+  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
+  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
+fi
+
+# Detaillierter Systemstatus
+system_status="unknown"
+readiness_message=""
+
+if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
+  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
+  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
+fi
+
+echo "Health Endpoints:"
+echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
+echo "  /health/detailed   → system_status=$system_status"
+echo "  /health/components → components=$total_components"
+echo "  /health/critical   → critical=$critical_healthy/$critical_total"
+echo ""
+
+echo "Component Status Breakdown (effective_status):"
+printf "  healthy:   %3d\n" "$healthy_components"
+printf "  degraded:  %3d\n" "$degraded_components"
+printf "  unhealthy: %3d\n" "$unhealthy_components"
+printf "  stale:     %3d\n" "$stale_components"
+printf "  offline:   %3d\n" "$offline_components"
+echo ""
+
+
+# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
+HEALTH_SUMMARY_HEALTHY="$healthy_components"
+HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
+HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
+
+export HEALTH_SUMMARY_HEALTHY
+export HEALTH_SUMMARY_PARTIAL
+export HEALTH_SUMMARY_FAILED
+set -e  # ab hier wieder strikt
+
+# =============================================================================
+# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
+# =============================================================================
+
+echo ""
+if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
+  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
+  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+  echo ""
+  echo "🔍 PROBLEMATIC COMPONENTS:"
+  echo ""
+  
+  # Tabellenkopf für problematische Komponenten
+  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
+  echo "------------------------------------------------------------------------------------------------"
+  
+  # Zeige NUR problematische Komponenten (effective_status != healthy)
+  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
+    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
+    while read -r comp; do
+      c_name=$(echo "$comp"   | jq -r '.name // "-"')
+      c_type=$(echo "$comp"   | jq -r '.type // "-"')
+      c_crit=$(echo "$comp"   | jq -r '.critical // false')
+      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
+      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
+      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
+      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
+      c_stale=$(echo "$comp"  | jq -r '.stale // false')
+      
+      m_summary=$(echo "$comp" | jq -r '
+        .metrics as $m |
+        (if ($m | type) == "object" and ($m | length) > 0
+         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
+         else "-"
+         end
+        )
+      ' 2>/dev/null || echo "-")
+      m_short=$(printf '%.50s' "$m_summary")
+      
+      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
+        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
+    done
+  fi
+  
+  echo "------------------------------------------------------------------------------------------------"
+else
+  # ✅ ALLES OK - Kompakte Anzeige
+  echo "✅ ALL COMPONENTS HEALTHY"
+  echo ""
+  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
+  printf "   /health/detailed   → system_status=%s\n" "$system_status"
+  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
+    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
+  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
+fi
+
+echo ""
+
+# =============================================================================
+# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
+# =============================================================================
+
+# Error handling for pipeline snapshot
+set +e  # Don't exit on errors in pipeline snapshot
+pipeline_table_snapshot
+set -e  # Re-enable strict error handling
+
+echo ""
+
+# =============================================
+# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
+# =============================================
+ENTERPRISE_DIAG="enterprise_diag.py"
+if [[ -f "$ENTERPRISE_DIAG" ]]; then
+  mkdir -p logs diag_py
+  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
+  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
+  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
+else
+  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
+fi
+
+# =============================================
+# PROFESSIONAL PIPELINE TEST SYSTEM
+# =============================================
+PIPELINE_TEST="test/pipeline_test.py"
+if [[ -f "$PIPELINE_TEST" ]]; then
+  echo ""
+  echo "🔧 Running Professional Pipeline Tests..."
+  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
+  
+  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
+    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
+  else
+    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
+  fi
+else
+  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
+fi
+
+# =============================================================================
+# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
+echo "=================================================="
+echo ""
+
+# Hole neueste Backfill-Loop Logs aus Docker
+BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
+  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
+  tail -10 2>/dev/null || echo "")
+
+if [[ -n "$BACKFILL_LOGS" ]]; then
+  echo "📜 Recent Backfill Activity:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$BACKFILL_LOGS"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+else
+  echo "⚠️  No backfill activity detected yet"
+  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
+fi
+
+echo ""
+
+# =============================================================================
+# FINAL SYSTEM STATUS & EXIT
+# =============================================================================
+
+echo ""
+echo "=================================================="
+echo "System Information:"
+echo "Frontend:      http://localhost:8080"
+echo "Backend API:   http://localhost:8100/docs"
+echo "ClickHouse:    http://localhost:8124"
+echo "Redis:         localhost:6380"
+echo ""
+
+failed_count=${HEALTH_SUMMARY_FAILED:-0}
+partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
+ready_http="$HEALTH_READY_CODE"
+
+# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
+if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
+  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
+  exit_code=0
+elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
+  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
+  exit_code=2
+else
+  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
+  echo ""
+  echo "🏥 Starting automatic health diagnostic..."
+  echo ""
+  ./start-health.sh
+  exit_code=1
+fi
+
+echo ""
+echo "=================================================="
+echo "STARTUP COMPLETED"
+echo "=================================================="
+echo ""
+echo "🔄 Starting Continuous System Monitor..."
+echo "   Monitor will refresh every 10 seconds"
+echo "   Check: logs/monitor/system_monitor.log"
+echo ""
+
+# ✅ Write Health Diagnostic Report
+mkdir -p monitoring
+curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
+  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
+
+echo "📊 Health Diagnostic Report:"
+echo "   Latest: monitoring/health_diagnostic_latest.json"
+if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
+  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
+  echo "   Time: $LATEST_TIMESTAMP"
+fi
+echo ""
+
+# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
+if ! pgrep -f "monitor-system.sh" > /dev/null; then
+  echo "✅ Starting Live Monitor in new terminal window..."
+  echo "   Updates every 10 seconds"
+  echo "   Press Ctrl+C in monitor window to stop"
+  echo ""
+  
+  # Open new Terminal window with monitor script (macOS)
+  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
+    echo "⚠️  Could not open new terminal - starting monitor in background"
+    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
+    echo "   Monitor logs: logs/monitor_console.log"
+  }
+  
+  sleep 1
+else
+  echo "ℹ️  Monitor already running - check other terminal"
+fi
+
+echo ""
+echo "=================================================="
+echo "✅ STARTUP COMPLETE - Monitor running in separate window"
+echo "=================================================="
+echo ""
+
+exit $exit_code
+</file>
+
 <file path="backend/database/clickhouse/init.sql">
 -- ========================================
 -- TRADING SYSTEM CLICKHOUSE SCHEMA
@@ -167403,1686 +169083,6 @@ const GlobalNav = () => {
 };
 
 export default GlobalNav;
-</file>
-
-<file path="start-system.sh">
-#!/bin/bash
-
-# =============================================================================
-# PROFESSIONAL TRADING SYSTEM STARTUP - M4 MacBook Compatible
-# =============================================================================
-
-# Strict Bash Setup - Production Hardening for Apple Silicon
-set -euo pipefail
-set +m    # keine Job-Control Meldungen
-IFS=$'\n\t'
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
-
-echo "=================================================="
-echo "PROFESSIONAL TRADING SYSTEM - STARTUP"
-echo "=================================================="
-echo ""
-
-# =============================================================================
-# INTERACTIVE VERBOSE MODE SELECTION
-# =============================================================================
-
-# Check if already set via env var
-if [[ -z "${STARTUP_VERBOSE:-}" ]]; then
-  echo "🔧 Startup Logging Mode:"
-  echo "  1) Normal  - Standard output (recommended)"
-  echo "  2) Verbose - Detailed logs & all steps visible"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " mode_choice
-  
-  case "${mode_choice:-1}" in
-    2)
-      export STARTUP_VERBOSE=1
-      echo "✅ VERBOSE MODE activated - all logs visible"
-      ;;
-    *)
-      export STARTUP_VERBOSE=0
-      echo "✅ NORMAL MODE activated - standard output"
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# BUILD MODE SELECTION
-# =============================================================================
-
-# Interactive build mode selection (unless --clean flag was used)
-CLEAN_BUILD_MODE=0
-if [[ "${1:-}" == "--clean" ]]; then
-  CLEAN_BUILD_MODE=1
-  echo "⚠️  CLEAN BUILD MODE ACTIVATED (via --clean flag)"
-  echo "Building Docker images WITHOUT cache (10-15 minutes expected)"
-  echo ""
-else
-  echo "🏗️  Docker Build Mode:"
-  echo "  1) Fast Start   - Use existing images (10-30 seconds, recommended)"
-  echo "  2) Clean Build  - Rebuild all images (10-15 minutes, only if needed)"
-  echo ""
-  echo "💡 Tip: Code changes are auto-loaded via Hot Reload (no rebuild needed!)"
-  echo ""
-  read -p "Select mode (1/2) [default: 1]: " build_choice
-  
-  case "${build_choice:-1}" in
-    2)
-      CLEAN_BUILD_MODE=1
-      echo "✅ CLEAN BUILD MODE activated - rebuilding all images"
-      echo "   This will take 10-15 minutes..."
-      ;;
-    *)
-      CLEAN_BUILD_MODE=0
-      echo "✅ FAST START MODE activated - using existing images"
-      echo "   Starting in 10-30 seconds..."
-      ;;
-  esac
-  echo ""
-fi
-
-# =============================================================================
-# DEPENDENCY MANAGEMENT
-# =============================================================================
-
-# Critical dependency checker
-need() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "ERROR: Missing required dependency: $1"
-    exit 1
-  }
-}
-
-# Check required dependencies
-need jq
-need redis-cli
-need curl
-need nc
-need python3
-need docker
-
-# =============================================================================
-# DOCKER DAEMON CHECK & AUTO-START
-# =============================================================================
-
-echo "🐳 Checking Docker status..."
-
-if ! docker info >/dev/null 2>&1; then
-  echo "⚠️  Docker is not running - attempting auto-start..."
-  echo ""
-  
-  # Starte Docker Desktop
-  open -a Docker
-  
-  # Warte bis bereit (max 60s)
-  echo "⏳ Waiting for Docker to be ready..."
-  timeout=60
-  elapsed=0
-  
-  while ! docker info >/dev/null 2>&1; do
-    if (( elapsed >= timeout )); then
-      echo ""
-      echo "❌ Docker startup timeout after ${timeout}s"
-      echo ""
-      echo "Please start Docker Desktop manually:"
-      echo "  1. Open Docker Desktop from Applications"
-      echo "  2. Wait for whale icon in menu bar to stop animating"
-      echo "  3. Run ./start-system.sh again"
-      echo ""
-      exit 1
-    fi
-    
-    printf "\r   Waiting for Docker... %ds/%ds" "$elapsed" "$timeout"
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-  
-  echo ""
-  echo "✅ Docker is ready!"
-  echo ""
-else
-  echo "✅ Docker is already running"
-  echo ""
-fi
-
-# Robust timeout wrapper with macOS compatibility
-with_timeout() {
-  local s="$1"; shift
-  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
-  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
-  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
-  fi
-}
-
-# Docker Compose V2 compatibility wrapper
-dc() {
-  if command -v docker >/dev/null 2>&1; then
-    docker compose "$@"
-  else
-    echo "ERROR: Docker not found"
-    exit 1
-  fi
-}
-
-# Safe pkill wrapper - prevents set -e from killing script when no process found
-safe_pkill() { pkill -f "$1" >/dev/null 2>&1 || true; }
-
-# WS-CAT soft fallback - graceful handling with vendor support
-if ! command -v wscat >/dev/null 2>&1; then
-  # Try to install from vendor if available
-  if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" && ! -f .deps_installed ]]; then
-    echo "Installing wscat from vendor..."
-    npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || true
-  fi
-
-  # Check again after potential install
-  if ! command -v wscat >/dev/null 2>&1; then
-    echo "⚠ wscat not found — WS-CAT-Tests werden übersprungen"
-    WS_CAT_SKIP=1
-  else
-    WS_CAT_SKIP=0
-  fi
-else
-  WS_CAT_SKIP=0
-fi
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# TTY-sichere Farben
-isatty() { [[ -t 1 ]]; }
-if isatty; then
-  readonly GREEN=$'\033[0;32m'
-  readonly CYAN=$'\033[0;36m'
-  readonly YELLOW=$'\033[1;33m'
-  readonly RED=$'\033[0;31m'
-  readonly NC=$'\033[0m'
-else
-  readonly GREEN=
-  readonly CYAN=
-  readonly YELLOW=
-  readonly RED=
-  readonly NC=
-fi
-
-# Exchange Configuration
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-SPOT_SYMBOL_DEFAULT="BTCUSDT"
-COINBASE_SPOT_SYMBOL="BTC-USD"
-
-# GUM SPINNER SYSTEM - Professional and stable with vendor support
-if ! command -v gum >/dev/null 2>&1; then
-  # Try to install from vendor if available (future-ready)
-  if [[ -f "vendor/system/file_linux/gum" ]]; then
-    echo "Installing gum from vendor..."
-    cp vendor/system/file_linux/gum /usr/local/bin/gum 2>/dev/null || \
-    cp vendor/system/file_linux/gum "$HOME/.local/bin/gum" 2>/dev/null || true
-    chmod +x /usr/local/bin/gum 2>/dev/null || chmod +x "$HOME/.local/bin/gum" 2>/dev/null || true
-  fi
-
-  # Fallback to brew if still not available
-  if ! command -v gum >/dev/null 2>&1; then
-    echo "Installing gum via homebrew..."
-    brew install gum >/dev/null 2>&1 || {
-      echo "⚠ gum installation failed - using simple spinner fallback"
-      GUM_AVAILABLE=0
-    }
-  fi
-fi
-
-# Check if gum is available after installation attempts
-if command -v gum >/dev/null 2>&1; then
-  GUM_AVAILABLE=1
-  gum_spin() {  # gum_spin "Titel" CMD...
-    local title="$1"; shift
-    GUM_SPIN_SHOW_OUTPUT=false GUM_SPIN_SPINNER=line \
-      gum spin --title "$title" -- "$@"
-  }
-else
-  GUM_AVAILABLE=0
-  # Fallback spinner function using simple dots
-  gum_spin() {
-    local title="$1"; shift
-    printf "⠋ %s..." "$title"
-    "$@" >/dev/null 2>&1
-    local result=$?
-    printf "\r"
-    return $result
-  }
-fi
-
-# Professional Status Symbols
-readonly SYMBOL_SUCCESS="✔"
-readonly SYMBOL_FAILURE="✖"
-readonly SYMBOL_WARNING="⚠"
-readonly SYMBOL_INFO="ℹ"
-readonly SYMBOL_SKIP="○"
-
-# POSIX-compatible string functions for macOS Bash 3.2 - BULLETPROOF
-ucfirst() {
-  printf '%s' "$1" | sed 's/^\(.\)/\U\1/'
-}
-
-# Status display functions
-show_success() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$GREEN" "$SYMBOL_SUCCESS" "$NC" "$message" "${GREEN}${detail}${NC}"
-}
-show_failure() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$RED" "$SYMBOL_FAILURE" "$NC" "$message" "${RED}${detail}${NC}"
-}
-show_warning() {
-  local message="$1" detail="${2:-}"
-  printf "\r%b%s%b %-50s %b\n" "$YELLOW" "$SYMBOL_WARNING" "$NC" "$message" "${YELLOW}${detail}${NC}"
-}
-
-show_skip() {
-  local message="$1"
-  printf "\r${SYMBOL_SKIP} %-50s %s\n" "$message" "${CYAN}Skipped${NC}"
-}
-
-# Timing Windows (configurable via environment)
-REDIS_GROW_WIN="${REDIS_GROW_WIN:-15}"
-CH_GROW_WIN="${CH_GROW_WIN:-30}"
-BACKEND_STARTUP_TIMEOUT="${BACKEND_STARTUP_TIMEOUT:-60}"
-COLLECTOR_TIMEOUT="${COLLECTOR_TIMEOUT:-8}"
-RUN_OPTIONALS="${RUN_OPTIONALS:-0}"
-
-# =============================================================================
-# INTELLIGENT STARTUP CONFIGURATION
-# =============================================================================
-
-# ✅ Retry Configuration (via env vars, mit sinnvollen Defaults)
-export MAX_RETRIES="${MAX_RETRIES:-5}"              # Max retry attempts
-export INITIAL_DELAY="${INITIAL_DELAY:-1}"          # Initial delay in seconds
-export BACKEND_READY_TIMEOUT="${BACKEND_READY_TIMEOUT:-60}"  # Backend ready timeout
-export SERVICE_CHECK_TIMEOUT="${SERVICE_CHECK_TIMEOUT:-30}"  # Service check timeout
-
-# ✅ Feature Flags (enable/disable new behavior)
-export USE_PARALLEL_CHECKS="${USE_PARALLEL_CHECKS:-1}"      # 1=parallel, 0=serial
-export USE_EVENT_DRIVEN_READY="${USE_EVENT_DRIVEN_READY:-1}" # 1=events, 0=polling
-export USE_EXPONENTIAL_BACKOFF="${USE_EXPONENTIAL_BACKOFF:-1}" # 1=yes, 0=no
-
-# ✅ Observability
-export STARTUP_VERBOSE="${STARTUP_VERBOSE:-0}"  # 1=verbose logging, 0=normal
-
-# Log configuration
-if [[ "$STARTUP_VERBOSE" == "1" ]]; then
-  echo "=================================================="
-  echo "🔧 VERBOSE MODE - DETAILED STARTUP CONFIGURATION"
-  echo "=================================================="
-  echo ""
-  echo "📊 Retry & Timeout Configuration:"
-  echo "   MAX_RETRIES=$MAX_RETRIES"
-  echo "   INITIAL_DELAY=${INITIAL_DELAY}s"
-  echo "   BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT}s"
-  echo "   SERVICE_CHECK_TIMEOUT=${SERVICE_CHECK_TIMEOUT}s"
-  echo ""
-  echo "🎯 Feature Flags:"
-  echo "   USE_PARALLEL_CHECKS=$USE_PARALLEL_CHECKS"
-  echo "   USE_EVENT_DRIVEN_READY=$USE_EVENT_DRIVEN_READY"
-  echo "   USE_EXPONENTIAL_BACKOFF=$USE_EXPONENTIAL_BACKOFF"
-  echo ""
-  echo "🚀 Collector Configuration:"
-  echo "   COLLECTOR_SYMBOLS=${COLLECTOR_SYMBOLS:-BTCUSDT,ETHUSDT,ADAUSDT}"
-  echo "   COLLECTOR_MARKETS=${COLLECTOR_MARKETS:-spot,usdtm}"
-  echo "   COLLECTOR_PARALLEL=${COLLECTOR_PARALLEL:-1}"
-  echo "   COLLECTOR_BACKGROUND=${COLLECTOR_BACKGROUND:-1}"
-  echo "   COLLECTOR_MAX_CONCURRENT=${COLLECTOR_MAX_CONCURRENT:-48}"
-  echo ""
-  echo "📍 System Paths:"
-  echo "   Working Directory: $(pwd)"
-  echo "   Python: $(which python3)"
-  echo "   Docker: $(which docker)"
-  echo "   Node: $(which node 2>/dev/null || echo 'not found')"
-  echo ""
-  echo "=================================================="
-  echo ""
-  
-  # Enable bash command tracing for full visibility
-  echo "🔍 Enabling bash command tracing (set -x)..."
-  echo "   All commands will be printed before execution"
-  echo ""
-  set -x  # Print commands as they execute
-fi
-
-# Optional Features (configurable via environment)
-SHOW_GROWTH_VALUES="${SHOW_GROWTH_VALUES:-0}"
-RUN_WEBSOCKET_TESTS="${RUN_WEBSOCKET_TESTS:-0}"
-
-# =============================================================================
-# UTILITY FUNCTIONS FROM PIPELINE_TEST.SH
-# =============================================================================
-
-# Präzise Latenz-Messung aus pipeline_test.sh
-CURL_BASE_OPTS=( -sS --max-time 8 --http1.1 --connect-timeout 1 --keepalive-time 30 --resolve localhost:8100:127.0.0.1 )
-CURL_WRITE_FMT="%{http_code} %{time_starttransfer} %{time_total}\n"
-
-# Warm-Up Function
-warm_up() {
-  local url="$1"
-  curl -sS --max-time 3 --connect-timeout 1 -o /dev/null "${url}" >/dev/null 2>&1 || true
-}
-
-# Präzise Latenzermittlung
-measure_latency() {
-  local url="$1"
-  local timeout="${2:-5}"
-  local tmpfile
-  tmpfile="$(mktemp -t resp.XXXXXX)"
-
-  local -a opts=( "${CURL_BASE_OPTS[@]}" --max-time "$timeout" -o "$tmpfile" -w "$CURL_WRITE_FMT" )
-  local line
-  line="$(curl "${opts[@]}" "$url" 2>/dev/null || echo "000 0 0")"
-  local http_code ttfb_s total_s
-  read -r http_code ttfb_s total_s <<<"$line"
-
-  # Convert to milliseconds
-  local ttfb_ms total_ms
-  ttfb_ms=$(awk -v t="$ttfb_s" 'BEGIN{printf "%.0f", t*1000}')
-  total_ms=$(awk -v t="$total_s" 'BEGIN{printf "%.0f", t*1000}')
-
-  # Body for validation
-  local body
-  body="$(cat "$tmpfile" 2>/dev/null || echo "")"
-  rm -f "$tmpfile" 2>/dev/null || true
-
-  printf "%s %s %s\n" "$http_code" "$ttfb_ms" "$total_ms"
-  printf "%s" "$body"
-}
-
-# 🚀 DYNAMIC SYMBOL DISCOVERY - No hardcoded symbols, uses SymbolRegistry
-get_available_symbols() {
-  local exchange="$1"
-  local market="${2:-spot}"  # Default to spot market
-  local limit="${3:-5}"      # Default top 5 symbols
-  
-  # Query SymbolRegistry for real available symbols
-  curl -s --max-time 5 "http://localhost:8100/api/market/symbols?exchange=$exchange&market=$market&limit=$limit" 2>/dev/null | \
-    jq -r --arg limit "$limit" '.[:($limit|tonumber)] | .[] | select(.native_symbol != null) | .native_symbol' 2>/dev/null | \
-    head -n "$limit" || echo ""
-}
-
-# 🎯 SMART SYMBOL SELECTION - Exchange-specific fallback logic (macOS Bash 3.2 compatible)
-get_test_symbols() {
-  local exchange="$1"
-  
-  # Try to get top 3 symbols from SymbolRegistry - macOS compatible
-  local symbols_output
-  symbols_output=$(get_available_symbols "$exchange" "spot" 3)
-  
-  if [[ -n "$symbols_output" ]]; then
-    echo "$symbols_output"
-  else
-    case "$exchange" in
-      coinbase) 
-        echo "BTC-USD"
-        echo "ETH-USD"
-        ;;
-      *) 
-        echo "BTCUSDT"
-        echo "ETHUSDT"
-        ;;
-    esac
-  fi
-}
-
-# 🔬 MULTI-SYMBOL API TEST - Tests multiple symbols for robust health check
-test_symbol_api() {
-  local exchange="$1" symbol="$2" market="${3:-spot}"
-  local endpoint_suffix
-  
-  case "$market" in
-    spot) endpoint_suffix="spot" ;;
-    futures) endpoint_suffix="futures" ;;
-    *) endpoint_suffix="spot" ;;
-  esac
-  
-  local response1 response2 h1 h2 a1 a2
-  
-  response1=$(measure_latency "http://localhost:8100/api/market/trades?exchange=$exchange&symbol=$symbol&limit=1" 3 2>/dev/null || echo -e "000 0 0\n[]")
-  response2=$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 3 2>/dev/null || echo -e "000 0 0\n{}")
-  
-  h1=$(echo "$response1" | head -n1 | awk '{print $1}')
-  a1=$(echo "$response1" | tail -n+2)
-  h2=$(echo "$response2" | head -n1 | awk '{print $1}')
-  a2=$(echo "$response2" | tail -n+2)
-  
-  local trades_count=0 orderbook_ok=0
-  
-  if [[ "$h1" == "200" ]] && [[ -n "$a1" ]]; then
-    trades_count=$(printf "%s\n" "$a1" | jq -r 'length // 0' 2>/dev/null || echo 0)
-  fi
-  
-  if [[ "$h2" == "200" ]] && [[ -n "$a2" ]]; then
-    if echo "$a2" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1; then
-      orderbook_ok=1
-    fi
-  fi
-  
-  echo $((trades_count + orderbook_ok))
-}
-
-# 🎯 ENHANCED MULTI-SYMBOL API COUNTS - Dynamic symbol testing (macOS Bash 3.2 compatible)
-fetch_multi_symbol_counts() {
-  local exchange="$1"
-  local total_api_count=0 successful_symbols=0 working_symbols=()
-  local symbol_count=0
-  
-  while IFS= read -r symbol; do
-    [[ -z "$symbol" ]] && continue
-    [[ $symbol_count -ge 3 ]] && break
-    
-    local spot_score futures_score=0
-    spot_score=$(test_symbol_api "$exchange" "$symbol" "spot")
-    
-    if [[ "$exchange" != "coinbase" ]]; then
-      futures_score=$(test_symbol_api "$exchange" "$symbol" "futures")
-    fi
-    
-    local symbol_total=$((spot_score + futures_score))
-    if [[ $symbol_total -gt 0 ]]; then
-      total_api_count=$((total_api_count + symbol_total))
-      successful_symbols=$((successful_symbols + 1))
-      working_symbols+=("$symbol")
-    fi
-    
-    symbol_count=$((symbol_count + 1))
-  done < <(get_test_symbols "$exchange")
-  
-  local working_list
-  if [[ ${#working_symbols[@]} -gt 0 ]]; then
-    working_list=$(IFS=,; echo "${working_symbols[*]}")
-  else
-    working_list=""
-  fi
-  echo "$total_api_count:$successful_symbols:$working_list"
-}
-
-# LEGACY FUNCTION - Kept for backward compatibility
-fetch_api_counts() {
-  local ex="$1" spot_sym="$2" fut_sym="$3"
-  local result
-  result=$(fetch_multi_symbol_counts "$ex")
-  echo "${result%%:*}"
-}
-
-# Enhanced API health check with multiple fallback patterns
-api_spot_ok() {
-  local exchange="$1"
-  local symbol="$2"
-
-  warm_up "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5"
-  local meta body http_status
-  meta="$(measure_latency "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 5)"
-  http_status="$(echo "$meta" | awk 'NR==1{print $1}')"
-  body="$(echo "$meta" | awk 'NR>1{print}')"
-
-  [[ "$http_status" == "200" ]] && echo "$body" | jq -e '.bids[0] // .data.bids[0] // .orderbook.bids[0]' >/dev/null 2>&1
-}
-
-# =============================================================================
-# REDIS FUNCTIONS - SCAN-based for production
-# =============================================================================
-
-keys_count() {
-  local pattern="$1"
-  local cursor=0
-  local count=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    local new_cursor
-    local batch=0
-
-    if [[ -n "$scan_result" ]]; then
-      local first_line=true
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          [[ -n "$line" ]] && batch=$((batch + 1))
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-      count=$((count + batch))
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$count"
-}
-
-sum_xlen_pattern() {
-  local pattern="$1"
-  local cursor=0
-  local total=0
-
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p 6380 --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-
-    if [[ -n "$scan_result" ]]; then
-      local new_cursor
-      local first_line=true
-
-      while IFS= read -r line; do
-        if [[ "$first_line" == "true" ]]; then
-          new_cursor="$line"
-          first_line=false
-        else
-          if [[ -n "$line" ]]; then
-            local length
-            length=$(redis-cli -p 6380 XLEN "$line" 2>/dev/null || echo 0)
-            total=$((total + length))
-          fi
-        fi
-      done <<< "$scan_result"
-
-      cursor="$new_cursor"
-    fi
-
-    [[ "$cursor" == "0" ]] && break
-  done
-
-  echo "$total"
-}
-
-growth_window() {
-  local pattern="$1"
-  local window="${2:-$REDIS_GROW_WIN}"
-  local before after
-
-  before=$(sum_xlen_pattern "$pattern")
-  sleep "$window"
-  after=$(sum_xlen_pattern "$pattern")
-  echo $((after - before))
-}
-
-persist_growth() {
-  local exchange="$1"
-  local window="${2:-$CH_GROW_WIN}"
-  local before after
-
-  before=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$before" =~ ^[0-9]+$ ]] || before=0
-
-  sleep 10
-
-  after=$(curl -sS --max-time 5 \
-    "http://localhost:8100/api/market/trades/count?exchange=$exchange&window_sec=$window" 2>/dev/null | \
-    jq -r '.count // .data.count // 0' 2>/dev/null || echo 0)
-
-  [[ "$after" =~ ^[0-9]+$ ]] || after=0
-
-  echo $((after - before))
-}
-
-# =============================================================================
-# WEBSOCKET TEST FUNCTIONS
-# =============================================================================
-
-ws_test_coinbase_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://advanced-trade-ws.coinbase.com \
-    --execute '{"type":"subscribe","channel":"market_trades","product_ids":["BTC-USD"]}' 2>/dev/null | \
-    head -n 5 | grep -q '"channel":"market_trades"' 2>/dev/null
-}
-
-ws_test_mexc_spot() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://wbs-api.mexc.com/ws \
-    --execute '{"method":"SUBSCRIPTION","params":["spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT"]}' 2>/dev/null | \
-    head -n 3 | grep -q '"code":0' 2>/dev/null
-}
-
-ws_test_mexc_futures() {
-  [[ "${WS_CAT_SKIP}" -eq 1 ]] && return 0
-
-  with_timeout 6 wscat -c wss://contract.mexc.com/edge \
-    --execute '{"method":"sub.deal","param":{"symbol":"BTC_USDT","compress":false}}' 2>/dev/null | \
-    head -n 10 | grep -qi '"deals"\|"symbol":"BTC_USDT"\|"data"' 2>/dev/null
-}
-
-# =============================================================================
-# SYSTEM INITIALIZATION
-# =============================================================================
-
-mkdir -p logs pids
-
-if [[ ! -f .deps_installed ]]; then
-  echo "Installing Python dependencies..."
-  if [[ -d "vendor/backend" ]]; then
-    (cd vendor/backend && pip3 install --break-system-packages --no-index --find-links ./file_linux -r backend_requirements_paths.txt)
-  fi
-
-  echo "Installing System dependencies..."
-  if [[ -d "vendor/system" ]]; then
-    (cd vendor/system && pip3 install --break-system-packages --no-index --find-links ./file_linux -r system_requirements_paths.txt)
-
-    if [[ -f "vendor/system/file_linux/wscat-6.1.0.tgz" ]]; then
-      npm install -g vendor/system/file_linux/wscat-6.1.0.tgz --silent 2>/dev/null || echo "wscat install skipped"
-    fi
-  fi
-
-  echo "Installing Frontend dependencies..."
-  if [[ -d "frontend" ]]; then
-    (cd frontend && npm install --silent)
-  fi
-
-  echo "Installing project in editable mode..."
-  pip3 install --break-system-packages -e .
-
-  touch .deps_installed
-  echo "Dependencies installed."
-fi
-
-if [[ ! -d "frontend/node_modules" ]]; then
-  echo "Installing missing frontend dependencies..."
-  (cd frontend && npm install --silent)
-fi
-
-if [[ -f backend/config/.env ]]; then
-  echo "ℹ️  Using .env file from backend/config/.env (optional fallback)"
-elif [[ -f backend/.env ]]; then
-  echo "ℹ️  Using .env file from backend/.env (optional fallback)"
-else
-  echo "ℹ️  No .env file found - using ClickHouse user keys only (modern approach)"
-  echo "   System will use PUBLIC_ACCESS for exchanges without user keys"
-fi
-
-# =============================================================================
-# GRACEFUL SHUTDOWN SEQUENCE
-# =============================================================================
-
-echo ""
-echo "🛑 Stopping existing processes..."
-echo ""
-
-if nc -z localhost 8100 >/dev/null 2>&1; then
-  show_skip "Collectors - Graceful API shutdown skipped (zu langsam)"
-else
-  show_skip "Collectors - Backend not running"
-fi
-
-gum_spin "Frontend - Stopping" bash -c 'pkill -f "npm run dev" >/dev/null 2>&1 || true; sleep 1'
-show_success "Frontend - Stopped"
-
-gum_spin "Backend - Stopping" bash -c 'pkill -f "uvicorn" >/dev/null 2>&1 || true; sleep 1'
-show_success "Backend - Stopped"
-
-gum_spin "Desktop GUI - Stopping" bash -c 'pkill -f "python.*desktop_gui" >/dev/null 2>&1 || true; sleep 1'
-show_success "Desktop GUI - Stopped"
-
-gum_spin "Docker - Stopping" bash -c 'docker compose down --remove-orphans >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker - Stopped"
-
-gum_spin "Docker Cache - Cleaning" bash -c 'docker system prune -f >/dev/null 2>&1 && docker builder prune -f >/dev/null 2>&1 || true; sleep 1'
-show_success "Docker Cache - Cleaned"
-
-echo ""
-
-# =============================================================================
-# SERVICE STARTUP SEQUENCE
-# =============================================================================
-
-echo "Starting Docker services..."
-
-# ✅ START SERVICES - Conditional Build based on user selection
-if [[ $CLEAN_BUILD_MODE -eq 1 ]]; then
-  echo "🔨 Building Docker images from scratch (--no-cache)..."
-  echo "   This will take 10-15 minutes - downloading & compiling everything"
-  echo ""
-  dc build --no-cache
-  dc up -d --no-build
-else
-  echo "⚡ Using existing Docker images (fast start)..."
-  echo "   Starting in 10-30 seconds"
-  echo ""
-  dc up -d --no-build
-fi
-
-echo "🔄 Waiting for Docker Services..."
-echo ""
-
-wait_for_service() {
-  local service=$1
-  local host=$2
-  local port=$3
-
-  if gum_spin "$service - Service Ready" bash -c "
-    for i in {1..30}; do
-      nc -z $host $port >/dev/null 2>&1 && exit 0
-      sleep 1
-    done
-    exit 1
-  "; then
-    show_success "$service - Service" "Ready"
-    return 0
-  else
-    show_failure "$service - Service" "Timeout"
-    return 1
-  fi
-}
-
-wait_for_service "Redis" localhost 6380
-wait_for_service "ClickHouse" localhost 8124
-wait_for_service "Backend API" localhost 8100
-
-echo ""
-
-# =============================================================================
-# INTELLIGENT WAIT FUNCTIONS - EVENT-DRIVEN & EXPONENTIAL BACKOFF
-# =============================================================================
-
-# ✅ Exponential Backoff Retry Logic
-wait_for_service_smart() {
-    local service_name=$1
-    local check_cmd=$2
-    local max_retries=${3:-$MAX_RETRIES}
-    local initial_delay=${4:-$INITIAL_DELAY}
-    
-    local retry=0
-    local delay=$initial_delay
-    
-    echo "⏳ Waiting for $service_name..."
-    
-    while (( retry < max_retries )); do
-        if eval "$check_cmd" >/dev/null 2>&1; then
-            echo "✅ $service_name ready after $retry retries"
-            return 0
-        fi
-        
-        if (( retry < max_retries - 1 )); then
-            echo "   Retry $((retry+1))/$max_retries in ${delay}s"
-            sleep "$delay"
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            delay=$((delay * 2))
-        fi
-        
-        retry=$((retry + 1))
-    done
-    
-    echo "❌ $service_name failed after $max_retries retries"
-    return 1
-}
-
-# ✅ Parallele Service Checks
-wait_for_all_services_parallel() {
-    local services=("redis:6380" "clickhouse:8124" "backend:8100")
-    local pids=()
-    local temp_dir=$(mktemp -d)
-    
-    echo "🔄 Starting parallel service checks..."
-    
-    # Starte alle Checks parallel
-    for service in "${services[@]}"; do
-        IFS=':' read -r name port <<< "$service"
-        (
-            if wait_for_service_smart "$name" "nc -z localhost $port" 10 1; then
-                echo "0" > "$temp_dir/check_${name}.status"
-            else
-                echo "1" > "$temp_dir/check_${name}.status"
-            fi
-        ) &
-        pids+=($!)
-    done
-    
-    # Warte auf alle (mit Gesamttimeout)
-    local timeout=$SERVICE_CHECK_TIMEOUT
-    local elapsed=0
-    local all_done=false
-    
-    while (( elapsed < timeout )); do
-        all_done=true
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-                break
-            fi
-        done
-        
-        [[ "$all_done" == "true" ]] && break
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    # Kill stragglers
-    for pid in "${pids[@]}"; do
-        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
-    done
-    
-    # Prüfe Ergebnisse
-    local failed=0
-    for service in "${services[@]}"; do
-        IFS=':' read -r name _ <<< "$service"
-        local status=$(cat "$temp_dir/check_${name}.status" 2>/dev/null || echo "1")
-        if [[ "$status" != "0" ]]; then
-            echo "❌ $name check failed"
-            failed=$((failed + 1))
-        else
-            echo "✅ $name check passed"
-        fi
-    done
-    
-    rm -rf "$temp_dir"
-    
-    return $failed
-}
-
-# ✅ Event-driven Backend Ready Check - DOCKER AWARE
-wait_for_backend_ready() {
-    local timeout=$BACKEND_READY_TIMEOUT
-    local elapsed=0
-    
-    echo "⏳ Waiting for backend ready signal..."
-    
-    # Docker-aware check: Poll /health/ready endpoint directly
-    while (( elapsed < timeout )); do
-        # Check if health endpoint is responding
-        local health_response=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null || echo "")
-        
-        if [[ -n "$health_response" ]]; then
-            local system_status=$(echo "$health_response" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-            local ready_bool=$(echo "$health_response" | jq -r '.ready // false' 2>/dev/null || echo "false")
-            local healthy_count=$(echo "$health_response" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo "0")
-            local total_count=$(echo "$health_response" | jq -r '.summary.total_components // 0' 2>/dev/null || echo "0")
-            
-            # Accept if:
-            # 1. ready=true (ideal), OR
-            # 2. At least 50% components healthy (degraded but operational)
-            if [[ "$ready_bool" == "true" ]]; then
-                echo "✅ Backend ready (status: $system_status, components: $healthy_count/$total_count)"
-                return 0
-            elif (( healthy_count >= total_count / 2 )) && (( healthy_count > 0 )); then
-                echo "✅ Backend operational in degraded mode ($healthy_count/$total_count healthy)"
-                return 0
-            else
-                echo "   Backend starting: $healthy_count/$total_count healthy (waiting...)"
-            fi
-        fi
-        
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    
-    echo "❌ Backend ready timeout after ${timeout}s"
-    echo ""
-    
-    # =============================================================================
-    # ✅ Schema Reconciliation Diagnostics (Backend logs)
-    # =============================================================================
-    echo "🔍 Checking for Schema Reconciliation errors..."
-    echo ""
-
-    # Resolve backend container id robustly (no hardcoded name)
-    backend_cid="$(docker compose ps -q backend 2>/dev/null | head -n 1 || true)"
-
-    if [[ -z "$backend_cid" ]]; then
-      echo "⚠️  Backend container not found via docker compose ps -q backend"
-    else
-      backend_logs="$(docker logs "$backend_cid" 2>&1 | tail -200)"
-
-      # Detect schema-related log lines
-      if echo "$backend_logs" | grep -qiE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff"; then
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "⚠️  SCHEMA RECONCILIATION / VERIFY ERROR DETECTED"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        echo "📋 Relevant Log Entries (filtered):"
-        echo ""
-        echo "$backend_logs" | grep -iE "schema[_ -]?reconcil|schema reconciliation|schema verify failed|schema-diff" | tail -80
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-
-        # Try to read SCHEMA_MODE from .env (best-effort)
-        schema_mode_hint="${SCHEMA_MODE:-}"
-        if [[ -z "$schema_mode_hint" ]] && [[ -f ".env" ]]; then
-          schema_mode_hint="$(grep -E '^SCHEMA_MODE=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
-        fi
-        schema_mode_hint="${schema_mode_hint:-verify}"
-
-        echo "💡 Hints:"
-        echo "   - SCHEMA_MODE (effective hint): ${schema_mode_hint}"
-        echo "   - If this is dev maintenance: set SCHEMA_MODE=reconcile and (non-TTY) SCHEMA_AUTO_APPLY=1"
-        echo "   - If production strict: keep SCHEMA_MODE=verify and align ClickHouse schema to init.sql"
-        echo ""
-      else
-        echo "ℹ️  No schema errors detected - last 50 backend log lines:"
-        echo ""
-        echo "$backend_logs" | tail -50
-        echo ""
-      fi
-    fi
-
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    
-    echo "🏥 Starting automatic health diagnostic..."
-    echo ""
-    ./start-health.sh
-    return 1
-}
-
-wait_for_backend() {
-  # ✅ STEP 1: Parallel service checks (Redis, ClickHouse, Backend port)
-  if [[ "$USE_PARALLEL_CHECKS" == "1" ]]; then
-    if wait_for_all_services_parallel; then
-      echo "✅ All services responding"
-    else
-      echo "⚠️ Some services failed - continuing with resilient mode"
-    fi
-  else
-    # Legacy: Serial checks
-    echo "Using legacy serial checks..."
-  fi
-  
-  echo ""
-  
-  # ✅ STEP 2: Event-driven backend ready check
-  if [[ "$USE_EVENT_DRIVEN_READY" == "1" ]]; then
-    if wait_for_backend_ready; then
-      echo "✅ Backend fully initialized"
-    else
-      echo "⚠️ Backend timeout - checking resilient health"
-      
-      # Fallback: Check resilient health endpoint
-      if curl -sf --max-time 3 "http://localhost:8100/health/ready-resilient" >/dev/null 2>&1; then
-        echo "✅ Backend operational in degraded mode"
-      else
-        echo "❌ Backend not responding"
-        echo ""
-        echo "🏥 Starting automatic health diagnostic..."
-        echo ""
-        ./start-health.sh
-        return 1
-      fi
-    fi
-  else
-    # Legacy: Polling-based check
-    echo "Using legacy polling-based check..."
-    if gum spin --spinner line --title "Backend API - Starting" -- bash -c '
-      for i in {1..60}; do
-        curl -s --max-time 2 http://localhost:8100/health >/dev/null && exit 0
-        sleep 1
-      done
-      exit 1
-    '; then
-      printf "%b✔%b Backend API    - Ready\n" "$GREEN" "$NC"
-    else
-      printf "%b✖%b Backend API    - Failed\n" "$RED" "$NC"
-      return 1
-    fi
-  fi
-  
-  echo ""
-  echo "🚀 Backend startup complete"
-  echo ""
-  
-  # ✅ STEP 3: Warm-up exchanges (non-blocking)
-  echo "🔄 Warming up exchanges (background)..."
-  for exchange in "${EXCHANGES[@]}"; do
-    curl -s --max-time 15 "http://localhost:8100/api/market/symbols?exchange=$exchange" >/dev/null 2>&1 &
-  done
-  
-  # Give exchanges a moment to respond, but don't block
-  sleep 3
-  
-  # Continue with collector verification (existing code)
-  local collector_success=0
-  local collector_failed=0
-
-  for exchange in "${EXCHANGES[@]}"; do
-      case "$exchange" in
-        "binance") display_name="Binance" ;;
-        "bitget") display_name="Bitget" ;;
-        "mexc") display_name="MEXC" ;;
-        "gateio") display_name="Gate.io" ;;
-        "bybit") display_name="Bybit" ;;
-        "okx") display_name="OKX" ;;
-        "htx") display_name="HTX" ;;
-        "coinbase") display_name="Coinbase" ;;
-        *) display_name="$(ucfirst "$exchange")" ;;
-      esac
-
-      formatted_name=$(printf "%-8s" "$display_name")
-
-      local working_symbol="" symbol_count=0
-      
-      while IFS= read -r symbol; do
-        [[ -z "$symbol" ]] && continue
-        [[ $symbol_count -ge 2 ]] && break
-        
-        http_test=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-          "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$symbol&limit=5" 2>/dev/null || echo "000")
-        
-        if [[ "$http_test" == "200" ]]; then
-          working_symbol="$symbol"
-          break
-        fi
-        
-        symbol_count=$((symbol_count + 1))
-      done < <(get_test_symbols "$exchange")
-      
-      if [[ -z "$working_symbol" ]]; then
-        case "$exchange" in
-          coinbase) working_symbol="BTC-USD" ;;
-          *) working_symbol="BTCUSDT" ;;
-        esac
-      fi
-
-      echo "🔄 $formatted_name - Collector Starting (background)"
-      
-      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        "http://localhost:8100/api/market/orderbook?exchange=$exchange&symbol=$working_symbol&limit=5" 2>/dev/null || echo "000")
-      
-      local started=false
-      if [[ "$http_code" == "200" ]]; then
-        echo "✅ $formatted_name - Collector Started (API accessible)"
-        collector_success=$((collector_success + 1))
-        started=true
-      else
-        echo "⚠️  $formatted_name - Collector Started (API warming up)"
-        started=true
-      fi
-
-      if [[ "$started" == "false" ]]; then
-        collector_failed=$((collector_failed + 1))
-        printf "%b✖%b %-8s - Collector   %bFailed%b (API or Redis)\n" "$RED" "$NC" "$formatted_name" "$RED" "$NC"
-      fi
-    done
-
-    if [[ $collector_failed -gt 0 ]]; then
-      echo ""
-      printf "%b⚠%b  Collector Status: %d OK, %d Failed\n" "$YELLOW" "$NC" $collector_success $collector_failed
-    fi
-
-    echo ""
-    echo "✅ All Exchange Collectors: STARTED"
-    echo "ℹ️  Background Health Monitoring: ACTIVE" 
-    echo "🌐 Frontend Health Dashboard: http://localhost:8080/health"
-    echo ""
-    return 0
-}
-
-wait_for_backend
-
-auto_enable_test_coins() {
-  echo "📋 Auto-enabling test coins für ClickHouse Tests..."
-  local test_coins=("BTCUSDT" "ETHUSDT" "BTC-USD")
-  
-  for coin in "${test_coins[@]}"; do
-    for exchange in "${EXCHANGES[@]}"; do
-      curl -s --max-time 2 "http://localhost:8100/api/settings/coin-settings" \
-        -X POST -H "Content-Type: application/json" \
-        -d "{\"exchange\":\"$exchange\", \"symbol\":\"$coin\", \"live_enabled\":true, \"historical_enabled\":true}" \
-        >/dev/null 2>&1 || true
-    done
-  done
-  echo "✅ Test coins auto-enable completed (falls API verfügbar)"
-}
-
-auto_enable_test_coins
-
-echo ""
-
-gum_spin "Backend Monitor - Starting" bash -c 'chmod +x monitor-backend.sh 2>/dev/null || true'
-if [[ -f monitor-backend.sh ]]; then
-  nohup ./monitor-backend.sh > logs/backend_monitor_console.log 2>&1 &
-  MONITOR_PID=$!
-  echo $MONITOR_PID > pids/backend_monitor.pid
-  show_success "Backend Monitor - Started" "(PID: $MONITOR_PID)"
-else
-  show_warning "Backend Monitor - Not found"
-fi
-
-gum_spin "Vite Cache - Cleaning" bash -c 'rm -rf frontend/dist frontend/.vite 2>/dev/null || true; sleep 1'
-show_success "Vite Cache - Cleaned"
-
-# ✅ Frontend in separatem Terminal-Fenster starten (macOS)
-echo "🚀 Starting Frontend in new terminal window..."
-osascript -e "tell app \"Terminal\" to do script \"cd '$PWD/frontend' && npm run dev\"" >/dev/null 2>&1 || {
-  echo "⚠️  Could not open new terminal - trying background mode"
-  cd frontend && npm run dev > ../logs/frontend.log 2>&1 &
-  FRONTEND_PID=$!
-  echo "$FRONTEND_PID" > ../pids/frontend.pid
-  cd ..
-}
-show_success "Frontend - Started in new terminal"
-
-echo ""
-echo "=================================================="
-echo "SYSTEM STATUS"
-echo "=================================================="
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-echo "🔍 Docker Container Status..."
-echo ""
-
-DOCKER_SERVICES=("backend" "clickhouse" "redis" "trade-router" "unified-aggregator")
-
-for service in "${DOCKER_SERVICES[@]}"; do
-  case "$service" in
-    "backend") display_name="Backend" ;;
-    "clickhouse") display_name="ClickHouse" ;;
-    "redis") display_name="Redis" ;;
-    "trade-router") display_name="Trade-Router" ;;
-    "unified-aggregator") display_name="Unified-Agg" ;;
-    *) display_name="$(ucfirst "$service")" ;;
-  esac
-
-  status=$(gum_spin "$display_name - Container Checking" bash -c "
-    docker compose ps -q $service 2>/dev/null | xargs docker inspect -f '{{.State.Status}}' 2>/dev/null || echo 'not found'
-  ")
-
-  if [[ "$status" == "running" ]]; then
-    show_success "$display_name - Container" "Running"
-  elif [[ "$status" == "not found" ]]; then
-    show_failure "$display_name - Container" "Not Found"
-  else
-    show_warning "$display_name - Container" "$status"
-  fi
-done
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT FUNCTION - FULLY GENERIC & ULTRA FAST
-# =============================================================================
-
-pipeline_table_snapshot() {
-  echo ""
-  echo "=================================================="
-  echo "PIPELINE DATA FLOW SNAPSHOT"
-  echo "=================================================="
-  echo ""
-  
-  # Tabellenkopf - ERWEITERT mit WebSocket & ClickHouse Write Status
-  printf "%-10s | %-7s | %10s | %10s | %7s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %s\n" \
-    "Exchange" "Symbol" "Redis-Spot" "Redis-USDTM" "GW-API" "Latenz" "WS-Status" "CH-Write" "CH-Live" "CH-Hist" "Backfill" "API Trades" "Status"
-  echo "-----------------------------------------------------------------------------------------------------------------------------------------"
-  
-  local h=0 p=0 f=0
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Display-Name
-    local display_name
-    case "$exchange" in
-      "binance")  display_name="Binance" ;;
-      "bitget")   display_name="Bitget" ;;
-      "mexc")     display_name="MEXC" ;;
-      "gateio")   display_name="Gate.io" ;;
-      "bybit")    display_name="Bybit" ;;
-      "okx")      display_name="OKX" ;;
-      "htx")      display_name="HTX" ;;
-      "coinbase") display_name="Coinbase" ;;
-      *)          display_name="$(ucfirst "$exchange")" ;;
-    esac
-    
-    # Test-Symbol pro Exchange
-    local test_symbol
-    if [[ "$exchange" == "coinbase" ]]; then
-      test_symbol="BTC-USD"
-    else
-      test_symbol="BTCUSDT"
-    fi
-    
-    # 1) Redis Stream Messages je Markt - nutzt sum_xlen_pattern für echte Message-Counts
-    local redis_spot redis_usdtm redis_coinm redis_usdcm
-
-    redis_spot=$(sum_xlen_pattern "${exchange}:trades:spot:*" 2>/dev/null || echo 0)
-    redis_usdtm=$(sum_xlen_pattern "${exchange}:trades:usdtm:*" 2>/dev/null || echo 0)
-    redis_coinm=$(sum_xlen_pattern "${exchange}:trades:coinm:*" 2>/dev/null || echo 0)
-    redis_usdcm=$(sum_xlen_pattern "${exchange}:trades:usdcm:*" 2>/dev/null || echo 0)
-
-    [[ "$redis_spot"   =~ ^[0-9]+$ ]] || redis_spot=0
-    [[ "$redis_usdtm"  =~ ^[0-9]+$ ]] || redis_usdtm=0
-    [[ "$redis_coinm"  =~ ^[0-9]+$ ]] || redis_coinm=0
-    [[ "$redis_usdcm"  =~ ^[0-9]+$ ]] || redis_usdcm=0
-    
-    local redis_total=$((redis_spot + redis_usdtm + redis_coinm + redis_usdcm))
-    
-    # 2) Gateway API Trades + Latenz (NEUER ENDPUNKT: /gw/trades)
-    local api_response api_trades api_latency
-    api_response=$(
-      with_timeout 3 curl -s --max-time 3 -w "\n%{time_total}" \
-        "http://localhost:8100/gw/trades?symbol=$test_symbol&exchange=$exchange&market=spot&limit=10" 2>/dev/null \
-      || echo -e "[]\n0"
-    )
-
-    api_trades=$(echo "$api_response" | sed '$d' | jq 'length' 2>/dev/null || echo 0)
-    api_latency=$(echo "$api_response" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)
-
-    [[ "$api_trades"  =~ ^[0-9]+$ ]] || api_trades=0
-    [[ "$api_latency" =~ ^[0-9]+$ ]] || api_latency=0
-    
-    # 3) ECHTER ClickHouse TRADES Count (letzte 5 Minuten) - LIVE DATEN!
-    local ch_trades_5min
-    ch_trades_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_trades_5min" =~ ^[0-9]+$ ]] || ch_trades_5min=0
-    
-    # 4) ECHTER ClickHouse CANDLES Count (letzte 5 Minuten) - AGGREGIERTE DATEN!
-    local ch_candles_5min
-    ch_candles_5min=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_kline WHERE bucket_start > now() - INTERVAL 5 MINUTE" 2>/dev/null || echo 0
-    )
-    [[ "$ch_candles_5min" =~ ^[0-9]+$ ]] || ch_candles_5min=0
-    
-    # 5) ECHTER ClickHouse BACKFILL Count - HISTORICAL DATEN!
-    local ch_backfill
-    ch_backfill=$(
-      docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0
-    )
-    [[ "$ch_backfill" =~ ^[0-9]+$ ]] || ch_backfill=0
-    
-    # 6) GW-API Status
-    local gw_status
-    if (( api_trades > 0 )); then
-      gw_status="✓"
-    else
-      gw_status="✗"
-    fi
-    
-    # 7) WebSocket Status - ✓ wenn Redis Messages vorhanden
-    local ws_status
-    if (( redis_total > 0 )); then
-      ws_status="✓"
-    else
-      ws_status="✗"
-    fi
-    
-    # 8) ClickHouse Write Status - ✓ NUR wenn ECHTE Live-Trades in den letzten 5 Minuten!
-    local ch_write_status
-    if (( ch_trades_5min > 0 )); then
-      ch_write_status="✓"
-    else
-      ch_write_status="✗"
-    fi
-    
-    # 9) Status Logic - BASIERT AUF ECHTEN DATEN!
-    local status="FAILED"
-    if (( redis_total > 0 && api_trades > 0 && ch_trades_5min > 0 )); then
-      status="HEALTHY"  # NUR wenn ECHTE Trades in ClickHouse!
-    elif (( redis_total > 0 || api_trades > 0 || ch_trades_5min > 0 )); then
-      status="PARTIAL"
-    fi
-
-    case "$status" in
-      HEALTHY) ((h++)) ;;
-      PARTIAL) ((p++)) ;;
-      *)       ((f++)) ;;
-    esac
-    
-    # 10) Ausgabe-Zeile - MIT ECHTEN ClickHouse-Counts!
-    printf "%-10s | %-7s | %10d | %10d | %7s | %6dms | %8s | %8s | %8d | %8d | %10d | %10d | %s\n" \
-      "$display_name" "$test_symbol" \
-      "$redis_spot" "$redis_usdtm" "$gw_status" "$api_latency" "$ws_status" "$ch_write_status" \
-      "$ch_trades_5min" "$ch_candles_5min" "$ch_backfill" "$api_trades" "$status"
-  done
-  
-  echo "-------------------------------------------------------------------------------------------------------------------------------"
-  printf "Status Summary: HEALTHY: %d | PARTIAL: %d | FAILED: %d\n" "$h" "$p" "$f"
-  echo ""
-  
-  # 📊 BACKFILL PROGRESS SUMMARY - Kompakte Übersicht pro Exchange
-  echo "📊 BACKFILL PROGRESS (Target: ${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01})"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  
-  for exchange in "${EXCHANGES[@]}"; do
-    # Skip if no backfill data
-    local bf_count
-    bf_count=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-      "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo 0)
-    
-    if [[ "$bf_count" -gt 0 ]]; then
-      local bf_oldest bf_newest
-      bf_oldest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MIN(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      bf_newest=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-        "SELECT MAX(timestamp) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" 2>/dev/null || echo "N/A")
-      
-      printf "  %-10s: %10s trades | Range: %s → %s\n" \
-        "${exchange^}" "$(printf "%'d" $bf_count)" "$bf_oldest" "$bf_newest"
-    fi
-  done
-  
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "=================================================="
-}
-
-# =============================================================================
-# HEALTH LANE SNAPSHOT (STATIC) - /health/* ENDPOINTS
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "ENTERPRISE HEALTH-LANE SNAPSHOT"
-echo "=================================================="
-echo ""
-
-# Health-Block darf das Script nicht killen → Fehler explizit abfangen
-set +e
-
-# /health/ready – Kubernetes Readiness Probe
-HEALTH_READY_RAW="$(curl -s -o /tmp/health_ready.json -w '%{http_code}' --max-time 5 http://localhost:8100/health/ready || echo '000')"
-HEALTH_READY_CODE="$HEALTH_READY_RAW"
-if [[ "$HEALTH_READY_CODE" == "" ]]; then
-  HEALTH_READY_CODE="000"
-fi
-
-# /health/detailed – System-Gesamtstatus
-HEALTH_DETAILED_JSON="$(curl -s --max-time 5 http://localhost:8100/health/detailed 2>/dev/null || echo '')"
-
-# /health/components – alle Health-Lanes
-HEALTH_COMPONENTS_JSON="$(curl -s --max-time 5 http://localhost:8100/health/components 2>/dev/null || echo '')"
-
-# /health/critical – nur kritische Komponenten
-HEALTH_CRITICAL_JSON="$(curl -s --max-time 5 http://localhost:8100/health/critical 2>/dev/null || echo '')"
-
-# Default-Werte
-total_components=0
-healthy_components=0
-degraded_components=0
-unhealthy_components=0
-stale_components=0
-offline_components=0
-
-critical_total=0
-critical_healthy=0
-
-# Komponenten zählen (effective_status basiert)
-if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-  total_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '.components | length' 2>/dev/null || echo 0)
-
-  # Einzeln zählen statt read (macOS Bash 3.2 sicher)
-  healthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="healthy")] | length' 2>/dev/null || echo 0)
-  degraded_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="degraded")] | length' 2>/dev/null || echo 0)
-  unhealthy_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="unhealthy")] | length' 2>/dev/null || echo 0)
-  stale_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="stale")] | length' 2>/dev/null || echo 0)
-  offline_components=$(echo "$HEALTH_COMPONENTS_JSON" | jq -r '[.components[] | select(.effective_status=="offline")] | length' 2>/dev/null || echo 0)
-fi
-
-# Kritische Komponenten
-if [[ -n "$HEALTH_CRITICAL_JSON" ]]; then
-  critical_total=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.total_critical // 0' 2>/dev/null || echo 0)
-  critical_healthy=$(echo "$HEALTH_CRITICAL_JSON" | jq -r '.healthy_critical // 0' 2>/dev/null || echo 0)
-fi
-
-# Detaillierter Systemstatus
-system_status="unknown"
-readiness_message=""
-
-if [[ -n "$HEALTH_DETAILED_JSON" ]]; then
-  system_status=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.system_status // "unknown"' 2>/dev/null || echo "unknown")
-  readiness_message=$(echo "$HEALTH_DETAILED_JSON" | jq -r '.readiness_message // ""' 2>/dev/null || echo "")
-fi
-
-echo "Health Endpoints:"
-echo "  /health/ready      → HTTP $HEALTH_READY_CODE"
-echo "  /health/detailed   → system_status=$system_status"
-echo "  /health/components → components=$total_components"
-echo "  /health/critical   → critical=$critical_healthy/$critical_total"
-echo ""
-
-echo "Component Status Breakdown (effective_status):"
-printf "  healthy:   %3d\n" "$healthy_components"
-printf "  degraded:  %3d\n" "$degraded_components"
-printf "  unhealthy: %3d\n" "$unhealthy_components"
-printf "  stale:     %3d\n" "$stale_components"
-printf "  offline:   %3d\n" "$offline_components"
-echo ""
-
-
-# Zusammenfassung für Exit-Code-Logik (Healthy/Partial/Failed)
-HEALTH_SUMMARY_HEALTHY="$healthy_components"
-HEALTH_SUMMARY_PARTIAL=$((degraded_components + stale_components))
-HEALTH_SUMMARY_FAILED=$((unhealthy_components + offline_components))
-
-export HEALTH_SUMMARY_HEALTHY
-export HEALTH_SUMMARY_PARTIAL
-export HEALTH_SUMMARY_FAILED
-set -e  # ab hier wieder strikt
-
-# =============================================================================
-# SMART HEALTH DISPLAY - Kompakt wenn OK, detailliert bei Problemen
-# =============================================================================
-
-echo ""
-if (( degraded_components > 0 || unhealthy_components > 0 || stale_components > 0 || offline_components > 0 )); then
-  # ⚠️ PROBLEME VORHANDEN - Detaillierte Anzeige
-  echo "⚠️  SYSTEM HEALTH ISSUES DETECTED"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-  echo ""
-  echo "🔍 PROBLEMATIC COMPONENTS:"
-  echo ""
-  
-  # Tabellenkopf für problematische Komponenten
-  printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-    "Component" "Type" "Critical" "Status" "EffStatus" "Success" "Errors" "Stale" "Metrics"
-  echo "------------------------------------------------------------------------------------------------"
-  
-  # Zeige NUR problematische Komponenten (effective_status != healthy)
-  if [[ -n "$HEALTH_COMPONENTS_JSON" ]]; then
-    echo "$HEALTH_COMPONENTS_JSON" | jq -c '.components[] | select(.effective_status != "healthy")' 2>/dev/null | \
-    while read -r comp; do
-      c_name=$(echo "$comp"   | jq -r '.name // "-"')
-      c_type=$(echo "$comp"   | jq -r '.type // "-"')
-      c_crit=$(echo "$comp"   | jq -r '.critical // false')
-      c_stat=$(echo "$comp"   | jq -r '.status // "-"')
-      c_eff=$(echo "$comp"    | jq -r '.effective_status // "-"')
-      c_succ=$(echo "$comp"   | jq -r '.success_count // 0')
-      c_err=$(echo "$comp"    | jq -r '.error_count // 0')
-      c_stale=$(echo "$comp"  | jq -r '.stale // false')
-      
-      m_summary=$(echo "$comp" | jq -r '
-        .metrics as $m |
-        (if ($m | type) == "object" and ($m | length) > 0
-         then ($m | to_entries | map("\(.key)=\(.value)") | join(";"))
-         else "-"
-         end
-        )
-      ' 2>/dev/null || echo "-")
-      m_short=$(printf '%.50s' "$m_summary")
-      
-      printf "%-18s %-14s %-8s %-12s %-12s %8s %6s %-7s %s\n" \
-        "$c_name" "$c_type" "$c_crit" "$c_stat" "$c_eff" "$c_succ" "$c_err" "$c_stale" "$m_short"
-    done
-  fi
-  
-  echo "------------------------------------------------------------------------------------------------"
-else
-  # ✅ ALLES OK - Kompakte Anzeige
-  echo "✅ ALL COMPONENTS HEALTHY"
-  echo ""
-  printf "   /health/ready      → HTTP %s\n" "$HEALTH_READY_CODE"
-  printf "   /health/detailed   → system_status=%s\n" "$system_status"
-  printf "   Components: %d total (%d healthy, %d degraded, %d unhealthy, %d stale)\n" \
-    "$total_components" "$healthy_components" "$degraded_components" "$unhealthy_components" "$stale_components"
-  printf "   Critical: %d/%d healthy\n" "$critical_healthy" "$critical_total"
-fi
-
-echo ""
-
-# =============================================================================
-# PIPELINE TABLE SNAPSHOT - IMMER SICHTBAR
-# =============================================================================
-
-# Error handling for pipeline snapshot
-set +e  # Don't exit on errors in pipeline snapshot
-pipeline_table_snapshot
-set -e  # Re-enable strict error handling
-
-echo ""
-
-# =============================================
-# KICK OFF ENTERPRISE PYTHON DIAGNOSTIC SYSTEM
-# =============================================
-ENTERPRISE_DIAG="enterprise_diag.py"
-if [[ -f "$ENTERPRISE_DIAG" ]]; then
-  mkdir -p logs diag_py
-  chmod +x "$ENTERPRISE_DIAG" 2>/dev/null || true
-  nohup python3 "$ENTERPRISE_DIAG" > logs/enterprise_diag_runner.log 2>&1 &
-  echo "Started enterprise_diag.py (PID $!) → writes diag_py/diagnostic_results.json"
-else
-  echo "Note: $ENTERPRISE_DIAG not found. Skipping enterprise diagnostics."
-fi
-
-# =============================================
-# PROFESSIONAL PIPELINE TEST SYSTEM
-# =============================================
-PIPELINE_TEST="test/pipeline_test.py"
-if [[ -f "$PIPELINE_TEST" ]]; then
-  echo ""
-  echo "🔧 Running Professional Pipeline Tests..."
-  chmod +x "$PIPELINE_TEST" 2>/dev/null || true
-  
-  if python3 "$PIPELINE_TEST" > logs/pipeline_test_runner.log 2>&1; then
-    echo "✅ Pipeline Tests: PASSED → writes diag_py/pipeline_test_results.json"
-  else
-    echo "⚠️  Pipeline Tests: SOME FAILURES → check logs/pipeline_test_runner.log for details"
-  fi
-else
-  echo "Note: $PIPELINE_TEST not found. Skipping pipeline tests."
-fi
-
-# =============================================================================
-# 📦 BACKFILL-LOOP LIVE LOGS - Latest Activity
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "📦 BACKFILL-LOOP ACTIVITY (Latest 10 Entries)"
-echo "=================================================="
-echo ""
-
-# Hole neueste Backfill-Loop Logs aus Docker
-BACKFILL_LOGS=$(docker logs 0_ws_ai-backend-1 2>&1 | \
-  grep -E "(🔄.*BACKFILL GAP-LOOP START|✅.*LOOP started|📦.*BATCH|🧩.*GAP PRIO|✅.*TARGET REACHED|⚠️.*loaded<=0)" | \
-  tail -10 2>/dev/null || echo "")
-
-if [[ -n "$BACKFILL_LOGS" ]]; then
-  echo "📜 Recent Backfill Activity:"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "$BACKFILL_LOGS"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-else
-  echo "⚠️  No backfill activity detected yet"
-  echo "   Set AUTO_BACKFILL_ENABLED=1 in .env to enable automatic historical data loading"
-fi
-
-echo ""
-
-# =============================================================================
-# FINAL SYSTEM STATUS & EXIT
-# =============================================================================
-
-echo ""
-echo "=================================================="
-echo "System Information:"
-echo "Frontend:      http://localhost:8080"
-echo "Backend API:   http://localhost:8100/docs"
-echo "ClickHouse:    http://localhost:8124"
-echo "Redis:         localhost:6380"
-echo ""
-
-failed_count=${HEALTH_SUMMARY_FAILED:-0}
-partial_count=${HEALTH_SUMMARY_PARTIAL:-0}
-ready_http="$HEALTH_READY_CODE"
-
-# Exit-Logik basiert jetzt auf Health-Lanes + /health/ready
-if [[ "$ready_http" == "200" ]] && (( failed_count == 0 )) && (( partial_count == 0 )); then
-  echo "SYSTEM STATUS: FULLY HEALTHY (health/ready=200, keine degraded/unhealthy Komponenten)"
-  exit_code=0
-elif [[ "$ready_http" == "200" ]] && (( failed_count == 0 )); then
-  echo "SYSTEM STATUS: MOSTLY HEALTHY (health/ready=200, nur degraded/stale Komponenten)"
-  exit_code=2
-else
-  echo "SYSTEM STATUS: NEEDS ATTENTION (health/ready != 200 oder unhealthy/offline Komponenten)"
-  echo ""
-  echo "🏥 Starting automatic health diagnostic..."
-  echo ""
-  ./start-health.sh
-  exit_code=1
-fi
-
-echo ""
-echo "=================================================="
-echo "STARTUP COMPLETED"
-echo "=================================================="
-echo ""
-echo "🔄 Starting Continuous System Monitor..."
-echo "   Monitor will refresh every 10 seconds"
-echo "   Check: logs/monitor/system_monitor.log"
-echo ""
-
-# ✅ Write Health Diagnostic Report
-mkdir -p monitoring
-curl -s --max-time 5 "http://localhost:8100/health/detailed" > monitoring/health_diagnostic_latest.json 2>/dev/null || \
-  echo '{"error":"Backend not reachable","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > monitoring/health_diagnostic_latest.json
-
-echo "📊 Health Diagnostic Report:"
-echo "   Latest: monitoring/health_diagnostic_latest.json"
-if [[ -f "monitoring/health_diagnostic_latest.json" ]]; then
-  LATEST_TIMESTAMP=$(jq -r '.timestamp // "unknown"' monitoring/health_diagnostic_latest.json 2>/dev/null || echo "unknown")
-  echo "   Time: $LATEST_TIMESTAMP"
-fi
-echo ""
-
-# ✅ Start monitor in SEPARATE TERMINAL WINDOW (macOS)
-if ! pgrep -f "monitor-system.sh" > /dev/null; then
-  echo "✅ Starting Live Monitor in new terminal window..."
-  echo "   Updates every 10 seconds"
-  echo "   Press Ctrl+C in monitor window to stop"
-  echo ""
-  
-  # Open new Terminal window with monitor script (macOS)
-  osascript -e "tell app \"Terminal\" to do script \"cd '$PWD' && ./monitor-system.sh\"" >/dev/null 2>&1 || {
-    echo "⚠️  Could not open new terminal - starting monitor in background"
-    nohup ./monitor-system.sh > logs/monitor_console.log 2>&1 &
-    echo "   Monitor logs: logs/monitor_console.log"
-  }
-  
-  sleep 1
-else
-  echo "ℹ️  Monitor already running - check other terminal"
-fi
-
-echo ""
-echo "=================================================="
-echo "✅ STARTUP COMPLETE - Monitor running in separate window"
-echo "=================================================="
-echo ""
-
-exit $exit_code
 </file>
 
 <file path="backend/services/adapter/collector_starter.py">
@@ -172771,41 +172771,17 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
   useEffect(() => {
     const pool = WebSocketPool.instance;
 
-    const requestHistorical = () => {
-      // throttle: avoid spamming
+    // ✅ FIX: Einmaliger Historical-Request (kein Polling)
+    const requestHistoricalOnce = () => {
       const now = Date.now();
       if (histInFlightRef.current) return;
-      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
+      if (now - histLastReqAtRef.current < 250) return; // Throttle
 
       histInFlightRef.current = true;
       histLastReqAtRef.current = now;
 
       // Protocol: "historical:<interval>:<limit>"
       pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
-    };
-
-    const stopHistoricalPolling = () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-    };
-
-    const startHistoricalPolling = () => {
-      if (histTimerRef.current !== null) return;
-
-      // initial request immediately
-      requestHistorical();
-
-      // then poll until stable (no growth)
-      histTimerRef.current = window.setInterval(() => {
-        // stop condition: stable data for N cycles
-        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
-          stopHistoricalPolling();
-          return;
-        }
-        requestHistorical();
-      }, histPollMsRef.current);
     };
 
     const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
@@ -172815,12 +172791,8 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
         // ✅ TASK 2: Send subscribe:interval message on OPEN
         pool.send(exchange, symbol, market, `subscribe:${interval}`);
         
-        // start polling historical (works even if backend doesn't push)
-        startHistoricalPolling();
-      }
-
-      if (newStatus === "CLOSED" || newStatus === "ERROR") {
-        stopHistoricalPolling();
+        // ✅ FIX: Einmaliger Historical-Request (kein Polling)
+        requestHistoricalOnce();
       }
     });
 
@@ -172871,6 +172843,11 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
         // build live candle from trades (client-side agg)
         const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
         const bucket = bucketStartFromMs(tsMs, sec);
+        
+        // ✅ DEBUG: Log Live-Aggregation Bucket
+        if (Math.random() < 0.01) { // 1% sampling to avoid spam
+          console.log('[LIVE_AGG] bucket:', bucket, 'sec:', sec, 'price:', t.price);
+        }
 
         const cur = lastCandleRef.current;
         if (!cur || cur.t !== bucket) {
@@ -172963,10 +172940,18 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
       }
 
       if (msg.type === "historical") {
-        // mark request as completed
+        // ✅ FIX: Mark request as completed
         histInFlightRef.current = false;
 
         const candlesRaw = (msg as any).candles || [];
+        
+        // ✅ DEBUG: Log Historical-Empfang
+        console.log('[HIST] Received:', candlesRaw.length, 'candles');
+        if (candlesRaw.length > 0) {
+          console.log('[HIST] First:', candlesRaw[0]);
+          console.log('[HIST] Last:', candlesRaw[candlesRaw.length - 1]);
+        }
+        
         const hist: LiveCandle[] = candlesRaw
           .map((raw: any) => ({
             exchange: msg.exchange || exchange,
@@ -172982,25 +172967,11 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
           }))
           .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
 
-        setHistorical((prev) => mergeCandles(prev, hist));
-
-        // stop heuristic: if total historical size does not grow for N polls, stop polling
-        // (works even if backend always returns same "last N" window)
-        const incomingCount = hist.length;
-        const prevTotal = histLastCountRef.current;
-
-        // we need the full state size, but we only have incoming; use a conservative heuristic:
-        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
-        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
-        if (incomingCount <= 0) {
-          histNoGrowthRef.current += 1;
-        } else if (incomingCount === prevTotal) {
-          histNoGrowthRef.current += 1;
-        } else {
-          histNoGrowthRef.current = 0;
-          histLastCountRef.current = incomingCount;
-        }
-
+        setHistorical((prev) => {
+          const merged = mergeCandles(prev, hist);
+          console.log('[HIST] Merged - prev:', prev.length, 'incoming:', hist.length, 'result:', merged.length);
+          return merged;
+        });
         return;
       }
 
@@ -173021,10 +172992,6 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
     });
 
     return () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
       window.setTimeout(() => {
         try { offStatus(); } catch {}
         try { offMsg(); } catch {}
@@ -173038,7 +173005,19 @@ export function useWsLane(exchange: string, symbol: string, market: string, inte
     const map = new Map<number, LiveCandle>();
     for (const c of historical) map.set(c.t, c);
     for (const c of candles) map.set(c.t, c); // live overwrites
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+    const result = Array.from(map.values()).sort((a, b) => a.t - b.t);
+    
+    // ✅ DEBUG: Log Merge-Ergebnis
+    console.log('[MERGE] historical:', historical.length, 'candles:', candles.length, 'merged:', result.length);
+    if (result.length > 0) {
+      const first = result[0];
+      const last = result[result.length - 1];
+      if (first && last) {
+        console.log('[MERGE] First candle time:', first.t, 'Last:', last.t);
+      }
+    }
+    
+    return result;
   }, [historical, candles]);
 
   return { status, trades, candles: mergedSeries, orderbook, historical, fillBlock };
