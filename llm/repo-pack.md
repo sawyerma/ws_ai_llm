@@ -579,6 +579,8 @@ frontend/
       exchangeSupport.ts
     contexts/
       TradingContext.tsx
+    hooks/
+      useSafeCandleChart.ts
     lib/
       chartLazyLoader.ts
       utils.ts
@@ -126114,6 +126116,157 @@ export async function getDefaultSelectedIntervals(): Promise<Set<string>> {
 }
 </file>
 
+<file path="frontend/src/hooks/useSafeCandleChart.ts">
+// frontend/src/hooks/useSafeCandleChart.ts
+// ✅ TASK 3: Safe Candle Chart Hook mit Generation Token + Disposed Flag
+
+import { useEffect, useRef } from "react";
+import { createLazyChart } from "../lib/chartLazyLoader";
+
+export type SafeCandleChartApi = {
+  setData: (data: any[]) => void;
+  update: (candle: any) => void;
+  resize: (width: number, height: number) => void;
+  dispose: () => void;
+  chart: any;
+  series: any;
+};
+
+export function useSafeCandleChart(
+  containerRef: React.RefObject<HTMLDivElement>,
+  options?: any
+): SafeCandleChartApi | null {
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+  const disposedRef = useRef<boolean>(false);
+  const generationRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    // Neue Generation bei jedem Mount
+    const currentGeneration = ++generationRef.current;
+    disposedRef.current = false;
+
+    let isMounted = true;
+
+    const initChart = async () => {
+      try {
+        // Chart erstellen via Lazy Loader
+        const chart = await createLazyChart(containerRef.current!, {
+          width: containerRef.current!.clientWidth,
+          height: containerRef.current!.clientHeight,
+          ...options,
+        });
+
+        if (!isMounted || currentGeneration !== generationRef.current) {
+          chart.remove();
+          return;
+        }
+
+        const series = chart.addCandlestickSeries({
+          upColor: "#26a69a",
+          downColor: "#ef5350",
+          borderVisible: false,
+          wickUpColor: "#26a69a",
+          wickDownColor: "#ef5350",
+        });
+
+        chartRef.current = chart;
+        seriesRef.current = series;
+      } catch (e) {
+        console.error("[useSafeCandleChart] Chart init failed:", e);
+      }
+    };
+
+    initChart();
+
+    // Cleanup bei Unmount
+    return () => {
+      isMounted = false;
+      
+      // Prüfe ob diese Generation noch aktuell ist
+      if (currentGeneration === generationRef.current) {
+        disposedRef.current = true;
+        
+        try {
+          chartRef.current?.remove();
+        } catch (e) {
+          console.warn("[useSafeCandleChart] Chart remove failed:", e);
+        }
+        
+        chartRef.current = null;
+        seriesRef.current = null;
+      }
+    };
+  }, [containerRef, options]);
+
+  // Safe API mit disposed-Check
+  const api = useRef<SafeCandleChartApi>({
+    setData: (data: any[]) => {
+      if (disposedRef.current || !seriesRef.current) {
+        console.warn("[useSafeCandleChart] setData called on disposed chart");
+        return;
+      }
+      try {
+        seriesRef.current.setData(data);
+      } catch (e) {
+        console.warn("[useSafeCandleChart] setData failed:", e);
+      }
+    },
+
+    update: (candle: any) => {
+      if (disposedRef.current || !seriesRef.current) {
+        console.warn("[useSafeCandleChart] update called on disposed chart");
+        return;
+      }
+      try {
+        seriesRef.current.update(candle);
+      } catch (e) {
+        console.warn("[useSafeCandleChart] update failed:", e);
+      }
+    },
+
+    resize: (width: number, height: number) => {
+      if (disposedRef.current || !chartRef.current) {
+        console.warn("[useSafeCandleChart] resize called on disposed chart");
+        return;
+      }
+      try {
+        chartRef.current.applyOptions({ width, height });
+      } catch (e) {
+        console.warn("[useSafeCandleChart] resize failed:", e);
+      }
+    },
+
+    dispose: () => {
+      if (disposedRef.current) return;
+      
+      disposedRef.current = true;
+      
+      try {
+        chartRef.current?.remove();
+      } catch (e) {
+        console.warn("[useSafeCandleChart] dispose failed:", e);
+      }
+      
+      chartRef.current = null;
+      seriesRef.current = null;
+    },
+
+    get chart() {
+      return chartRef.current;
+    },
+
+    get series() {
+      return seriesRef.current;
+    },
+  });
+
+  return chartRef.current ? api.current : null;
+}
+</file>
+
 <file path="frontend/src/lib/chartLazyLoader.ts">
 /**
  * Lightweight Charts Lazy Loader
@@ -163019,1133 +163172,112 @@ __all__ = [
 ]
 </file>
 
-<file path="backend/database/clickhouse/init.sql">
--- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- Tabelle 1/46
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 2/46
-CREATE TABLE IF NOT EXISTS trading.bitget_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 3/46
-CREATE TABLE IF NOT EXISTS trading.mexc_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 4/46
-CREATE TABLE IF NOT EXISTS trading.gateio_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 5/46
-CREATE TABLE IF NOT EXISTS trading.bybit_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 6/46
-CREATE TABLE IF NOT EXISTS trading.okx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 7/46
-CREATE TABLE IF NOT EXISTS trading.htx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 8/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 9/46
-CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 10/46
-CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 11/46
-CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 12/46
-CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 13/46
-CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 14/46
-CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 15/46
-CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 16/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 17/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 18/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 19/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 20/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 21/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 22/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 23/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 24/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 25/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 26/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 27/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 28/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 29/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 30/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 31/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 32/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 33/46
-CREATE TABLE IF NOT EXISTS trading.base_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            signal_type LowCardinality(String),
-            signal_strength Decimal(5,4),
-            price Decimal(18,8),
-            volume Decimal(18,8),
-            confidence Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 34/46
-CREATE TABLE IF NOT EXISTS trading.tier1_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            tier1_score Decimal(5,4),
-            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
-            entry_price Decimal(18,8),
-            stop_loss Decimal(18,8),
-            take_profit Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 35/46
-CREATE TABLE IF NOT EXISTS trading.alma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            alma_value Decimal(18,8),
-            alma_slope Decimal(5,4),
-            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 36/46
-CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            wave_count UInt8,
-            wave_type LowCardinality(String),
-            wave_confidence Decimal(5,4),
-            price_target Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 37/46
-CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            whale_score Decimal(5,4),
-            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
-            volume_impact Decimal(18,8),
-            price_impact Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 38/46
-CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            sigma_level Decimal(5,4),
-            is_extreme UInt8,
-            reversion_probability Decimal(5,4),
-            expected_price Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 39/46
-CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            dominant_frequency Decimal(5,4),
-            power_spectrum Decimal(5,4),
-            cycle_length UInt16,
-            phase Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 40/46
-CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            volatility Decimal(5,4),
-            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
-            atr Decimal(18,8),
-            bollinger_width Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 41/46
-CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol1 LowCardinality(String),
-            symbol2 LowCardinality(String),
-            exchange LowCardinality(String),
-            correlation Decimal(5,4),
-            rolling_correlation Decimal(5,4),
-            divergence_score Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol1, symbol2, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 42/46
-CREATE TABLE IF NOT EXISTS trading.regime_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
-            regime_confidence Decimal(5,4),
-            regime_duration UInt32,
-            transition_probability Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 43/46
-CREATE TABLE IF NOT EXISTS trading.indicator_performance (
-            timestamp DateTime64(3, 'UTC'),
-            indicator_name LowCardinality(String),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            accuracy Decimal(5,4),
-            profit_factor Decimal(5,4),
-            sharpe_ratio Decimal(5,4),
-            total_signals UInt32,
-            winning_signals UInt32
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (indicator_name, symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 44/46
-CREATE TABLE IF NOT EXISTS trading.binance_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 45/46
-CREATE TABLE IF NOT EXISTS trading.bitget_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 46/46
-CREATE TABLE IF NOT EXISTS trading.mexc_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 47/46
-CREATE TABLE IF NOT EXISTS trading.gateio_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 48/46
-CREATE TABLE IF NOT EXISTS trading.bybit_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 49/46
-CREATE TABLE IF NOT EXISTS trading.okx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 50/46
-CREATE TABLE IF NOT EXISTS trading.htx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 51/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 52/46
-CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    TTL ts + INTERVAL 1 MONTH
-    SETTINGS index_granularity = 8192;
-
--- Tabelle 53/46
-CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    TTL ts + INTERVAL 3 MONTH
-    SETTINGS index_granularity = 8192;
-
--- ========================================
--- MATERIALIZED VIEWS (AUTO-AGGREGATION)
--- ========================================
-
--- MV 1/8: binance_trades → binance_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
-TO trading.binance_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.binance_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 2/8: bitget_trades → bitget_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
-TO trading.bitget_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bitget_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 3/8: mexc_trades → mexc_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
-TO trading.mexc_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.mexc_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 4/8: gateio_trades → gateio_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
-TO trading.gateio_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.gateio_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 5/8: bybit_trades → bybit_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
-TO trading.bybit_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bybit_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 6/8: okx_trades → okx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
-TO trading.okx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.okx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 7/8: htx_trades → htx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
-TO trading.htx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.htx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 8/8: coinbase_trades → coinbase_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
-TO trading.coinbase_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.coinbase_trades
-GROUP BY symbol, market, bucket_start;
-
--- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- ✅ Database: trading
--- ✅ Tabellen: 53 (8 neue kline Tabellen)
--- ✅ Materialized Views: 8 (1s Auto-Aggregation)
--- ✅ Generiert: Automatisch aus Python Migrations
--- ========================================
+<file path="backend/database/clickhouse/cl_config.py">
+import os
+from typing import Dict, Any, Set
+
+# cl_ Database Patterns für alle 8 Exchanges  
+CL_DATABASE_PATTERNS: Dict[str, str] = {
+    "trades": "trading.{exchange}_trades",
+    "candles": "trading.{exchange}_bars", 
+    "orderbook": "trading.{exchange}_orderbook",
+    "user_settings": "trading.user_coin_settings",
+    "indicators": "trading.user_indicator_settings",
+    "health": "monitoring.{component}_health"
+}
+
+# cl_ Connection Settings - zentral für alle Exchanges
+# Only params supported by clickhouse_connect.get_client() HTTP API
+# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
+CL_CONNECTION: Dict[str, Any] = {
+    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
+    "database": os.getenv("CLICKHOUSE_DB", "trading"),
+    "username": os.getenv("CLICKHOUSE_USER", "admin"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
+    "connect_timeout": 5,
+    "send_receive_timeout": 30
+}
+
+# cl_ Performance Settings
+CL_PERFORMANCE: Dict[str, int] = {
+    "batch_size": 1000,
+    "queue_maxsize": 5000,
+    "processing_timeout": 10,
+    "health_check_interval": 60,
+    "connection_pool_size": 10,
+    "max_concurrent_inserts": 5
+}
+
+# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
+def _get_critical_cl_components() -> Set[str]:
+    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
+    
+    components = {
+        "cl.unified-manager",
+        "cl.schema-manager",
+        "cl.connection-pool"
+    }
+    
+    # Nur erste 2 Exchanges als kritisch markieren
+    for ex in exchanges[:2]:
+        components.add(f"cl.{ex}-manager")
+    
+    return components
+
+CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+
+# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
+def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
+    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    configs = {}
+    for i, exchange in enumerate(exchanges):
+        # Erste 2 = high priority, rest = medium
+        priority = "high" if i < 2 else "medium"
+        batch_size = 1000 if i < 2 else 800
+        
+        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
+        configs[exchange] = {
+            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
+            "priority": priority,
+            "batch_size": batch_size,
+            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
+        }
+    
+    return configs
+
+EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+
+# cl_ Health Thresholds
+CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
+    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
+    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
+    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
+    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
+}
+
+# cl_ Schema Definitions
+CL_SCHEMAS: Dict[str, Dict[str, str]] = {
+    "trades": {
+        "table_suffix": "_trades",
+        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "candles": {
+        "table_suffix": "_bars", 
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "orderbook": {
+        "table_suffix": "_orderbook",
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
+        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    }
+}
 </file>
 
 <file path="backend/services/adapter/stream_aggregator.py">
@@ -165602,112 +164734,1105 @@ volumes:
   redis-data:
 </file>
 
-<file path="backend/database/clickhouse/cl_config.py">
-import os
-from typing import Dict, Any, Set
+<file path="backend/database/clickhouse/init.sql">
+-- ========================================
+-- TRADING SYSTEM CLICKHOUSE SCHEMA
+-- AUTO-GENERIERT von 000_generate_init_sql.py
+-- NICHT MANUELL BEARBEITEN!
+-- ========================================
+-- Single Source of Truth: Python Migration Scripts
+-- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
 
-# cl_ Database Patterns für alle 8 Exchanges  
-CL_DATABASE_PATTERNS: Dict[str, str] = {
-    "trades": "trading.{exchange}_trades",
-    "candles": "trading.{exchange}_bars", 
-    "orderbook": "trading.{exchange}_orderbook",
-    "user_settings": "trading.user_coin_settings",
-    "indicators": "trading.user_indicator_settings",
-    "health": "monitoring.{component}_health"
-}
+CREATE DATABASE IF NOT EXISTS trading;
 
-# cl_ Connection Settings - zentral für alle Exchanges
-# Only params supported by clickhouse_connect.get_client() HTTP API
-# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
-CL_CONNECTION: Dict[str, Any] = {
-    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
-    "database": os.getenv("CLICKHOUSE_DB", "trading"),
-    "username": os.getenv("CLICKHOUSE_USER", "admin"),
-    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
-    "connect_timeout": 5,
-    "send_receive_timeout": 30
-}
+-- Tabelle 1/46
+CREATE TABLE IF NOT EXISTS trading.binance_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-# cl_ Performance Settings
-CL_PERFORMANCE: Dict[str, int] = {
-    "batch_size": 1000,
-    "queue_maxsize": 5000,
-    "processing_timeout": 10,
-    "health_check_interval": 60,
-    "connection_pool_size": 10,
-    "max_concurrent_inserts": 5
-}
+-- Tabelle 2/46
+CREATE TABLE IF NOT EXISTS trading.bitget_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
-def _get_critical_cl_components() -> Set[str]:
-    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
-    
-    components = {
-        "cl.unified-manager",
-        "cl.schema-manager",
-        "cl.connection-pool"
-    }
-    
-    # Nur erste 2 Exchanges als kritisch markieren
-    for ex in exchanges[:2]:
-        components.add(f"cl.{ex}-manager")
-    
-    return components
+-- Tabelle 3/46
+CREATE TABLE IF NOT EXISTS trading.mexc_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+-- Tabelle 4/46
+CREATE TABLE IF NOT EXISTS trading.gateio_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
-def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
-    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    configs = {}
-    for i, exchange in enumerate(exchanges):
-        # Erste 2 = high priority, rest = medium
-        priority = "high" if i < 2 else "medium"
-        batch_size = 1000 if i < 2 else 800
-        
-        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
-        configs[exchange] = {
-            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
-            "priority": priority,
-            "batch_size": batch_size,
-            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
-        }
-    
-    return configs
+-- Tabelle 5/46
+CREATE TABLE IF NOT EXISTS trading.bybit_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+-- Tabelle 6/46
+CREATE TABLE IF NOT EXISTS trading.okx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-# cl_ Health Thresholds
-CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
-    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
-    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
-    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
-    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
-}
+-- Tabelle 7/46
+CREATE TABLE IF NOT EXISTS trading.htx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
 
-# cl_ Schema Definitions
-CL_SCHEMAS: Dict[str, Dict[str, str]] = {
-    "trades": {
-        "table_suffix": "_trades",
-        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "candles": {
-        "table_suffix": "_bars", 
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "orderbook": {
-        "table_suffix": "_orderbook",
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
-        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    }
-}
+-- Tabelle 8/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 9/46
+CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 10/46
+CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 11/46
+CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 12/46
+CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 13/46
+CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 14/46
+CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 15/46
+CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 16/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 17/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 18/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 19/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 20/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 21/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 22/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 23/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 24/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 25/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 26/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 27/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 28/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 29/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 30/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 31/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 32/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 33/46
+CREATE TABLE IF NOT EXISTS trading.base_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            signal_type LowCardinality(String),
+            signal_strength Decimal(5,4),
+            price Decimal(18,8),
+            volume Decimal(18,8),
+            confidence Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 34/46
+CREATE TABLE IF NOT EXISTS trading.tier1_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            tier1_score Decimal(5,4),
+            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
+            entry_price Decimal(18,8),
+            stop_loss Decimal(18,8),
+            take_profit Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 35/46
+CREATE TABLE IF NOT EXISTS trading.alma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            alma_value Decimal(18,8),
+            alma_slope Decimal(5,4),
+            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 36/46
+CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            wave_count UInt8,
+            wave_type LowCardinality(String),
+            wave_confidence Decimal(5,4),
+            price_target Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 37/46
+CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            whale_score Decimal(5,4),
+            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
+            volume_impact Decimal(18,8),
+            price_impact Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 38/46
+CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            sigma_level Decimal(5,4),
+            is_extreme UInt8,
+            reversion_probability Decimal(5,4),
+            expected_price Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 39/46
+CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            dominant_frequency Decimal(5,4),
+            power_spectrum Decimal(5,4),
+            cycle_length UInt16,
+            phase Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 40/46
+CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            volatility Decimal(5,4),
+            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
+            atr Decimal(18,8),
+            bollinger_width Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 41/46
+CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol1 LowCardinality(String),
+            symbol2 LowCardinality(String),
+            exchange LowCardinality(String),
+            correlation Decimal(5,4),
+            rolling_correlation Decimal(5,4),
+            divergence_score Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol1, symbol2, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 42/46
+CREATE TABLE IF NOT EXISTS trading.regime_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
+            regime_confidence Decimal(5,4),
+            regime_duration UInt32,
+            transition_probability Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 43/46
+CREATE TABLE IF NOT EXISTS trading.indicator_performance (
+            timestamp DateTime64(3, 'UTC'),
+            indicator_name LowCardinality(String),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            accuracy Decimal(5,4),
+            profit_factor Decimal(5,4),
+            sharpe_ratio Decimal(5,4),
+            total_signals UInt32,
+            winning_signals UInt32
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (indicator_name, symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 44/46
+CREATE TABLE IF NOT EXISTS trading.binance_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 45/46
+CREATE TABLE IF NOT EXISTS trading.bitget_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 46/46
+CREATE TABLE IF NOT EXISTS trading.mexc_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 47/46
+CREATE TABLE IF NOT EXISTS trading.gateio_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 48/46
+CREATE TABLE IF NOT EXISTS trading.bybit_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 49/46
+CREATE TABLE IF NOT EXISTS trading.okx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 50/46
+CREATE TABLE IF NOT EXISTS trading.htx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 51/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 52/46
+CREATE TABLE IF NOT EXISTS trading.all_orderbook (
+        ts DateTime64(3, 'UTC'),
+        symbol LowCardinality(String),
+        exchange LowCardinality(String),
+        best_bid_price Decimal(76,38),
+        best_bid_size Decimal(76,38),
+        best_ask_price Decimal(76,38),
+        best_ask_size Decimal(76,38),
+        spread Decimal(76,38),
+        mid_price Decimal(76,38)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (symbol, exchange, ts)
+    SETTINGS index_granularity = 8192;
+
+-- Tabelle 53/46
+CREATE TABLE IF NOT EXISTS trading.all_whale (
+        event_id String,
+        exchange LowCardinality(String),
+        ts DateTime64(3, 'UTC'),
+        chain String,
+        tx_hash String,
+        from_addr String,
+        to_addr String,
+        token Nullable(String),
+        symbol String,
+        amount Decimal(76,38),
+        is_native UInt8,
+        amount_usd Decimal(76,38),
+        from_exchange String,
+        from_country String,
+        from_city String,
+        to_exchange String,
+        to_country String,
+        to_city String,
+        is_cross_border UInt8,
+        source String,
+        threshold_usd Decimal(76,38),
+        coin_rank UInt32,
+        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (exchange, symbol, ts, amount_usd)
+    SETTINGS index_granularity = 8192;
+
+-- ========================================
+-- MATERIALIZED VIEWS (AUTO-AGGREGATION)
+-- ========================================
+
+-- MV 1/8: binance_trades → binance_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
+TO trading.binance_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.binance_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 2/8: bitget_trades → bitget_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
+TO trading.bitget_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bitget_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 3/8: mexc_trades → mexc_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
+TO trading.mexc_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.mexc_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 4/8: gateio_trades → gateio_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
+TO trading.gateio_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.gateio_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 5/8: bybit_trades → bybit_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
+TO trading.bybit_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bybit_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 6/8: okx_trades → okx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
+TO trading.okx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.okx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 7/8: htx_trades → htx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
+TO trading.htx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.htx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 8/8: coinbase_trades → coinbase_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
+TO trading.coinbase_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.coinbase_trades
+GROUP BY symbol, market, bucket_start;
+
+-- ========================================
+-- ZUSAMMENFASSUNG
+-- ========================================
+-- ✅ Database: trading
+-- ✅ Tabellen: 53 (8 neue kline Tabellen)
+-- ✅ Materialized Views: 8 (1s Auto-Aggregation)
+-- ✅ Generiert: Automatisch aus Python Migrations
+-- ========================================
 </file>
 
 <file path="frontend/src/config/exchangeSupport.ts">
@@ -166635,409 +166760,6 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 };
 
 export default CoinSelector;
-</file>
-
-<file path="frontend/src/services/ws/WebSocketPool.ts">
-// frontend/src/services/ws/WebSocketPool.ts
-import { WS_BASE_URL } from "../../config/env";
-
-export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
-
-export type WsMsg =
-  | { type: "connection"; [k: string]: any }
-  | { type: "trade"; exchange: string; symbol: string; market: string; price?: any; size?: any; side?: any; ts?: any; [k: string]: any }
-  | { type: "candle"; exchange: string; symbol: string; market: string; interval?: string; t?: any; o?: any; h?: any; l?: any; c?: any; v?: any; [k: string]: any }
-  | { type: "orderbook"; exchange: string; symbol: string; market: string; bids?: any[]; asks?: any[]; spread?: any; ts?: any; [k: string]: any }
-  | { type: "historical"; exchange: string; symbol: string; market: string; interval?: string; candles?: any[]; [k: string]: any }
-  | { type: string; [k: string]: any };
-
-type Listener = (msg: WsMsg) => void;
-type StatusListener = (s: WsStatus) => void;
-
-type Key = string; // exchange:symbol:market
-
-type Conn = {
-  key: Key;
-  exchange: string;
-  symbol: string;
-  market: string;
-  url: string;
-
-  ws: WebSocket | null;
-  status: WsStatus;
-
-  listeners: Set<Listener>;
-  statusListeners: Set<StatusListener>;
-
-  refCount: number;
-  reconnectAttempt: number;
-  reconnectTimer: number | null;
-  manuallyClosed: boolean;
-};
-
-function mkKey(exchange: string, symbol: string, market: string): Key {
-  return `${exchange}:${symbol}:${market}`;
-}
-
-function wsUrl(exchange: string, symbol: string, market: string) {
-  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
-
-  // Prefer explicit base if set, else same-origin
-  if (WS_BASE_URL) {
-    const base = WS_BASE_URL.replace(/\/+$/, "");
-    return `${base}${path}`;
-  }
-
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}${path}`;
-}
-
-function safeJson(s: string): any | null {
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-export class WebSocketPool {
-  private static _i: WebSocketPool | null = null;
-  static get instance() {
-    if (!this._i) this._i = new WebSocketPool();
-    return this._i;
-  }
-
-  private conns = new Map<Key, Conn>();
-
-  acquire(exchange: string, symbol: string, market = "spot"): Key {
-    const key = mkKey(exchange, symbol, market);
-    let c = this.conns.get(key);
-
-    if (!c) {
-      c = {
-        key,
-        exchange,
-        symbol,
-        market,
-        url: wsUrl(exchange, symbol, market),
-
-        ws: null,
-        status: "INIT",
-
-        listeners: new Set(),
-        statusListeners: new Set(),
-
-        refCount: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        manuallyClosed: false,
-      };
-      this.conns.set(key, c);
-    }
-
-    c.refCount += 1;
-
-    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
-      this.open(c);
-    }
-
-    return key;
-  }
-
-  release(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    const c = this.conns.get(key);
-    if (!c) return;
-
-    c.refCount = Math.max(0, c.refCount - 1);
-    if (c.refCount === 0) {
-      this.close(c);
-      this.conns.delete(key);
-    }
-  }
-
-  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.listeners.add(cb);
-    return () => {
-      c.listeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.statusListeners.add(cb);
-    cb(c.status);
-    return () => {
-      c.statusListeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
-    const c = this.conns.get(mkKey(exchange, symbol, market));
-    if (!c || !c.ws || c.status !== "OPEN") return false;
-
-    try {
-      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private setStatus(c: Conn, s: WsStatus) {
-    c.status = s;
-    for (const l of c.statusListeners) l(s);
-  }
-
-  private open(c: Conn) {
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    c.manuallyClosed = false;
-    this.setStatus(c, "CONNECTING");
-
-    const ws = new WebSocket(c.url);
-    c.ws = ws;
-
-    ws.onopen = () => {
-      c.reconnectAttempt = 0;
-      this.setStatus(c, "OPEN");
-    };
-
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
-      const parsed = safeJson(ev.data);
-      if (!parsed || typeof parsed !== "object") return;
-      const msg = parsed as WsMsg;
-      for (const l of c.listeners) l(msg);
-    };
-
-    ws.onerror = () => {
-      this.setStatus(c, "ERROR");
-      this.scheduleReconnect(c);
-    };
-
-    ws.onclose = () => {
-      c.ws = null;
-      this.setStatus(c, "CLOSED");
-      if (!c.manuallyClosed) this.scheduleReconnect(c);
-    };
-  }
-
-  private close(c: Conn) {
-    c.manuallyClosed = true;
-
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    try { c.ws?.close(); } catch { /* ignore */ }
-    c.ws = null;
-    this.setStatus(c, "CLOSED");
-  }
-
-  private scheduleReconnect(c: Conn) {
-    if (c.manuallyClosed) return;
-    if (c.refCount <= 0) return;
-
-    c.reconnectAttempt += 1;
-    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
-
-    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
-    c.reconnectTimer = window.setTimeout(() => {
-      if (c.refCount <= 0 || c.manuallyClosed) return;
-      this.open(c);
-    }, delay);
-  }
-}
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-import { useEffect, useRef, useState } from "react";
-import { createLazyChart } from "../../../lib/chartLazyLoader";
-import { useTheme } from "../../ui/theme-provider";
-import { getChartTheme, getSeriesTheme } from "./chartThemes";
-import type { CandleData } from "./types";
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
-}
-
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-  setChartData: (data: CandleData[]) => void;
-  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
-}
-
-const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
-
-function isRealCandle(d: CandleData): d is any {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-  const initialRangeSetRef = useRef(false);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        const isDark = actualTheme === "dark";
-        const chartTheme = getChartTheme(isDark, interval);
-        const seriesTheme = getSeriesTheme(isDark);
-
-        const chart = await createLazyChart(container, {
-          width: container.clientWidth,
-          height: container.clientHeight,
-          ...chartTheme,
-        });
-
-        if (!isMounted) {
-          chart.remove();
-          return;
-        }
-
-        chartInstance.current = chart;
-        seriesInstance.current = chart.addCandlestickSeries(seriesTheme);
-
-        setIsChartReady(true);
-
-        const resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && chartInstance.current) {
-            const { width, height } = entries[0].contentRect;
-            chartInstance.current.applyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-
-        const themeObserver = new MutationObserver(() => {
-          if (chartInstance.current && seriesInstance.current) {
-            const isDarkNow = document.documentElement.classList.contains("dark");
-            const newChartTheme = getChartTheme(isDarkNow, interval);
-            const newSeriesTheme = getSeriesTheme(isDarkNow);
-
-            chartInstance.current.applyOptions(newChartTheme);
-            seriesInstance.current.applyOptions(newSeriesTheme);
-          }
-        });
-        themeObserver.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-
-        return () => {
-          resizeObserver.disconnect();
-          themeObserver.disconnect();
-        };
-      } catch (err) {
-        console.error("[useCandleChart] Failed to initialize chart:", err);
-      }
-    };
-
-    initChart();
-
-    return () => {
-      isMounted = false;
-      if (chartInstance.current) {
-        chartInstance.current.remove();
-        chartInstance.current = null;
-      }
-    };
-  }, [interval, actualTheme, containerRef]);
-
-  const setChartData = (data: CandleData[]) => {
-    if (!isChartReady || !seriesInstance.current) return;
-    if (!data || data.length === 0) return;
-
-    // Lightweight-charts expects seconds.
-    // Whitespace is supported by passing {time} without OHLC.
-    const formatted = data
-      .map((d) => {
-        const tSec = Math.floor(d.time / 1000);
-        if (!Number.isFinite(tSec) || tSec <= 0) return null;
-
-        if (isRealCandle(d)) {
-          return {
-            time: tSec,
-            open: (d as any).open,
-            high: (d as any).high,
-            low: (d as any).low,
-            close: (d as any).close,
-          };
-        }
-        return { time: tSec }; // ✅ Whitespace
-      })
-      .filter(Boolean) as any[];
-
-    if (formatted.length <= 0) return;
-
-    // Safety: ensure ascending order by time
-    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-
-    seriesInstance.current.setData(formatted);
-  };
-
-  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
-    if (!isChartReady || !chartInstance.current) return;
-    if (!data || data.length === 0) return;
-    if (initialRangeSetRef.current) return;
-
-    // Use first/last REAL candles (ignore whitespace)
-    const real = data.filter(isRealCandle);
-    if (real.length === 0) return;
-
-    const lastIndex = real.length - 1;
-    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
-
-    const firstCandle = real[firstIndex];
-    const lastCandle = real[lastIndex];
-    if (!firstCandle || !lastCandle) return;
-
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
-
-    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
-      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
-      initialRangeSetRef.current = true;
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-    setInitialVisibleRangeOnce,
-  };
-}
 </file>
 
 <file path="frontend/src/shared/layout/GlobalNav.tsx">
@@ -169615,718 +169337,6 @@ def get_available_backfill_services():
     }
 </file>
 
-<file path="backend/websocket/ws_manager.py">
-from typing import Dict, Set, Optional, Tuple
-import asyncio
-import websockets
-import json
-import logging
-import time
-from datetime import datetime
-
-from .ws_registry import ws_registry
-from .ws_lanes import ws_lane, ws_status
-from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
-from .ws_message_parsers import get_ws_message_parser
-
-# ✅ CoinMapper Integration
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-from backend.api.models.keys import Market
-
-logger = logging.getLogger(__name__)
-
-
-def _normalize_event(data: dict | tuple | list) -> dict:
-    """
-    ✅ DEFENSIVE: Normalisiert Tuple/List zu Dict für Frontend-Broadcast
-    
-    Manche Parser/Redis-Streams liefern Tuples statt Dicts.
-    Frontend erwartet immer Dict mit .get() Zugriff.
-    """
-    if isinstance(data, dict):
-        return data
-    
-    if isinstance(data, (tuple, list)):
-        # Tuple/List → Dict mit generischen Keys
-        # Annahme: (price, size, timestamp, ...) oder ähnlich
-        if len(data) >= 3:
-            return {
-                "price": data[0],
-                "size": data[1],
-                "timestamp": data[2],
-                "side": data[3] if len(data) > 3 else None,
-            }
-        else:
-            logger.warning(f"Tuple/List zu kurz für Normalisierung: {data}")
-            return {}
-    
-    # Fallback für andere Typen
-    logger.error(f"Unerwarteter Datentyp für Broadcast: {type(data)}")
-    return {}
-
-
-def _resolve_market_enum(market: str) -> Market:
-    """
-    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
-    
-    Market-Enum hat: SPOT, USDTM, COINM, USDCM
-    (KEIN "FUTURES"!)
-    """
-    m = (market or "").lower()
-    if m in ("spot", "spotm", "spot-market"):
-        return Market.SPOT
-    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
-        return Market.USDTM
-    if m in ("coinm", "inverse"):
-        return Market.COINM
-    if m in ("usdcm", "usdc", "usd"):
-        return Market.USDCM
-    # Fallback – sicher auf SPOT
-    return Market.SPOT
-
-
-async def get_native_symbol_from_mapper(
-    exchange: str,
-    symbol: str,
-    market: str,
-) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
-    
-    Returns:
-        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
-    """
-    try:
-        market_enum = _resolve_market_enum(market)
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-        
-        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
-        sym_u = (symbol or "").upper()
-        
-        symbol_meta = next(
-            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
-            None,
-        )
-        
-        if not symbol_meta:
-            logger.warning(
-                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
-            )
-            # Fallback: heuristisch base/quote aus Symbol ableiten
-            base = quote = None
-            if sym_u.endswith("USDT"):
-                base = sym_u[:-4]
-                quote = "USDT"
-            elif sym_u.endswith("USDC"):
-                base = sym_u[:-4]
-                quote = "USDC"
-            elif sym_u.endswith("USD"):
-                base = sym_u[:-3]
-                quote = "USD"
-            
-            if not base or not quote:
-                return symbol, None, None
-        else:
-            base = symbol_meta["base"]
-            quote = symbol_meta["quote"]
-        
-        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
-        # (KEINE symbol-spezifischen Hardcodings!)
-        if exchange == "gateio":
-            native_symbol = f"{base}_{quote}"
-        elif exchange == "okx":
-            native_symbol = f"{base}-{quote}"
-        elif exchange == "htx":
-            native_symbol = f"{base}{quote}".lower()
-        elif exchange == "coinbase":
-            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
-            native_symbol = f"{base}-{quote}"
-        else:
-            # Binance, Bitget, Bybit, MEXC, Default
-            native_symbol = f"{base}{quote}"
-        
-        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
-        return native_symbol, base, quote
-        
-    except Exception as e:
-        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
-        return symbol, None, None
-
-async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
-    """
-    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
-    """
-    # ✅ NEU: Hole natives Symbol vom CoinMapper
-    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
-    
-    # ✅ REST: Generische Subscribe-Message-Erstellung
-    
-    # Binance: URL-basiert
-    if exchange == "binance":
-        return None
-    
-    # Bitget
-    if exchange == "bitget":
-        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
-        return {
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type_map.get(market, "SPOT"),
-                "channel": "trade",
-                "instId": native_symbol  # ✅ Vom CoinMapper!
-            }]
-        }
-    
-    # MEXC
-    if exchange == "mexc":
-        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
-        channel_map = {
-            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
-        }
-        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
-        
-        return {"method": "SUBSCRIPTION", "params": [channel]}
-    
-    # Gate.io
-    if exchange == "gateio":
-        return {
-            "time": int(time.time()),
-            "channel": "spot.trades",
-            "event": "subscribe",
-            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
-        }
-    
-    # Bybit
-    if exchange == "bybit":
-        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
-    
-    # OKX
-    if exchange == "okx":
-        return {
-            "op": "subscribe",
-            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
-        }
-    
-    # HTX: Subscribe-Message basiert
-    if exchange == "htx":
-        # Native symbol ist bereits lowercase durch CoinMapper
-        channel = f"market.{native_symbol}.trade.detail"
-        return {
-            "sub": channel,
-            "id": f"trade_{native_symbol}"
-        }
-    
-    # Coinbase
-    if exchange == "coinbase":
-        return {
-            "type": "subscribe",
-            "product_ids": [native_symbol],  # ✅ BTC-USD!
-            "channel": "market_trades"
-        }
-    
-    return None
-
-class CentralizedWsManager:
-    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
-    
-    def __init__(self):
-        self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.health_lane = None  # Wird von Health Registry gesetzt
-        
-    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
-        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
-        
-        # Message Handler mit KOMPLETTER Datenfluss-Integration
-        async def integrated_message_handler(raw_message: str):
-            try:
-                # 1. Exchange-spezifisches Parsing
-                message_parser = get_ws_message_parser(exchange)
-                
-                # ✅ TRADE PARSING
-                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
-                
-                # ✅ ORDERBOOK PARSING
-                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
-                
-                # Wenn weder Trade noch Orderbook, return
-                if not trade_data and not orderbook_data:
-                    return
-                
-                # ✅ PING-PONG HANDLING (für HTX)
-                if trade_data and trade_data.get("type") == "ping":
-                    pong_msg = {"pong": trade_data.get("pong")}
-                    if lane.websocket:
-                        await lane.websocket.send(json.dumps(pong_msg))
-                        logger.debug(f"Sent pong response for {exchange}")
-                    return  # Ping verarbeitet, keine Trade-Daten
-                
-                # 2. ✅ TRADE DATA PROCESSING
-                if trade_data:
-                    # Redis Stream über rs_ Lane System
-                    from backend.database.redis import unified_rs_service
-                    
-                    success = await unified_rs_service.add_trade(
-                        exchange, symbol, trade_data, market
-                    )
-                    
-                    if not success:
-                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
-                    
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="trade_data",
-                        data=trade_data
-                    )
-                
-                # 3. ✅ ORDERBOOK DATA PROCESSING
-                if orderbook_data:
-                    # Frontend WebSocket Broadcasting
-                    await self.broadcast_to_frontend(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        message_type="orderbook_data",
-                        data=orderbook_data
-                    )
-                
-                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
-                if trade_data:
-                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
-                    from backend.core.config import config
-                    
-                    # Aggregator pro Lane erstellen (einmalig)
-                    if not hasattr(lane, 'candle_agg'):
-                        # ✅ DYNAMISCH: Resolutions aus ENV
-                        lane.candle_agg = MultiResCandleAgg(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            resolutions=config.ws_candle_resolutions
-                        )
-                    
-                    # ✅ FIX: on_trade() benötigt alle Parameter!
-                    # Hole Resolutions aus Registry
-                    resolutions = registry.list(exchange, symbol)
-                    
-                    # ✅ KRITISCHER FIX: Robuste Timestamp-Konvertierung
-                    def _to_ms(ts_any) -> int:
-                        """Robust zu Millisekunden. Akzeptiert sec/ms und None."""
-                        if ts_any is None:
-                            return int(time.time() * 1000)
-                        try:
-                            t = int(ts_any)
-                        except Exception:
-                            return int(time.time() * 1000)
-                        return t if t > 100_000_000_000 else t * 1000  # >1e11 => ms, sonst sec
-                    
-                    # Timestamp aus Trade-Data holen (Priorität: ts > timestamp > trade_ts)
-                    ts_raw = (
-                        trade_data.get("ts")
-                        or trade_data.get("timestamp")
-                        or trade_data.get("trade_ts")
-                    )
-                    
-                    # Trade zu Candles aggregieren
-                    finished_candles = lane.candle_agg.on_trade(
-                        ex=exchange,
-                        sym=symbol,
-                        market=market,
-                        ts_ms=_to_ms(ts_raw),  # ✅ KRITISCHER FIX: Trade-Zeit statt Server-Zeit
-                        price=float(trade_data.get('price', 0)),
-                        size=float(trade_data.get('size', 0)),
-                        resolutions=resolutions
-                    )
-                    
-                    # ✅ ENTERPRISE FIX: Candle Contract Normalization (Tuple→Dict)
-                    def _coerce_candle_event(c):
-                        # finished_candles can be: (interval, dict) OR dict
-                        if isinstance(c, (tuple, list)) and len(c) == 2 and isinstance(c[1], dict):
-                            interval, d = c
-                            out = dict(d)  # defensive copy
-                            out["interval"] = str(interval)
-                            return out
-                        if isinstance(c, dict):
-                            return c
-                        return None  # unknown shape => drop
-                    
-                    # Finished Candles broadcasten
-                    for c in finished_candles or []:
-                        candle_dict = _coerce_candle_event(c)
-                        if not candle_dict:
-                            logger.warning(f"[CANDLE] unexpected candle shape: {type(c)} {c!r}")
-                            continue
-                        
-                        await self.broadcast_to_frontend(
-                            exchange=exchange,
-                            symbol=symbol,
-                            market=market,
-                            message_type="candle_data",
-                            data=candle_dict
-                        )
-                
-                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
-                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
-                
-                # 5. Health + Metrics Tracking
-                if self.health_lane:
-                    self.health_lane.record_success({
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "trades_processed": 1,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                
-            except Exception as e:
-                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
-                logger.error(error_msg)
-                if self.health_lane:
-                    self.health_lane.record_error(error_msg)
-                raise
-        
-        # Registriere WS Lane
-        lane = ws_registry.register_websocket_lane(
-            exchange, symbol, market, integrated_message_handler
-        )
-        
-        # Starte WebSocket-Verbindung
-        await self._connect_websocket_lane(lane)
-        
-        # Starte Message Processing Task
-        task_id = f"{exchange}.{symbol}.{market}"
-        self.running_tasks[task_id] = asyncio.create_task(
-            self._websocket_message_loop(lane)
-        )
-        
-        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
-        return lane
-        
-    async def _connect_websocket_lane(self, lane: ws_lane):
-        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
-        try:
-            # Exchange WebSocket-URL
-            base_url = WS_URLS[lane.exchange]
-            
-            # Stream-spezifische URL aufbauen
-            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
-            
-            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
-            if stream_format:
-                native_symbol, _, _ = await get_native_symbol_from_mapper(
-                    lane.exchange, lane.symbol, lane.market
-                )
-                
-                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
-                if lane.exchange == "binance":
-                    native_symbol = native_symbol.lower()
-                
-                stream_path = stream_format.format(symbol=native_symbol)
-                websocket_url = f"{base_url}/{stream_path}"
-            else:
-                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
-                websocket_url = base_url
-            
-            # ws-Verbindung mit Timeouts
-            lane.websocket = await websockets.connect(
-                websocket_url,
-                ping_interval=WS_TIMEOUTS["ping_interval"],
-                ping_timeout=WS_TIMEOUTS["ping_timeout"],
-                close_timeout=WS_TIMEOUTS["close_timeout"]
-            )
-            
-            lane.record_connection_success()
-            logger.info(f"WebSocket connected: {websocket_url}")
-            
-            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
-            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
-            if subscribe_msg:
-                await lane.websocket.send(json.dumps(subscribe_msg))
-                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
-            else:
-                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
-            
-        except Exception as e:
-            error_msg = f"WebSocket connection failed: {str(e)}"
-            lane.record_connection_error(error_msg)
-            raise
-            
-    async def _websocket_message_loop(self, lane: ws_lane):
-        """WebSocket Message Processing Loop mit Reconnection"""
-        while True:
-            try:
-                if not lane.websocket:
-                    # Reconnection
-                    lane.record_reconnection()
-                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
-                    await self._connect_websocket_lane(lane)
-                    continue
-                
-                # Message empfangen
-                raw_message = await lane.websocket.recv()
-                
-                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
-                await lane.process_message(raw_message)
-                
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
-                lane.websocket = None
-                continue
-                
-            except Exception as e:
-                error_msg = f"WebSocket message processing error: {str(e)}"
-                lane.record_connection_error(error_msg)
-                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
-                
-    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
-        """Stoppe WS Lane"""
-        task_id = f"{exchange}.{symbol}.{market}"
-        
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
-            
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        if lane and lane.websocket:
-            asyncio.create_task(lane.websocket.close())
-            lane.status = ws_status.DISCONNECTED
-            
-        logger.info(f"Stopped WebSocket lane: {task_id}")
-        
-    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
-        """Hole Lane-Status"""
-        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
-        return lane.get_health() if lane else {"error": "Lane not found"}
-        
-    def get_all_status(self) -> Dict:
-        """Status aller WS Lanes"""
-        return ws_registry.get_system_health()
-        
-    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
-        """
-        Broadcast zu Frontend-Clients – generisch/dynamisch.
-        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
-        """
-        try:
-            # ✅ NEU: Normalisiere data zu Dict (Tuple→Dict Fix)
-            normalized_data = _normalize_event(data)
-            
-            # Import hier um zirkuläre Imports zu vermeiden
-            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
-            
-            if not exchange or not symbol:
-                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
-                return
-                
-            if message_type == "trade_data":
-                await broadcast_trade_data(exchange, symbol, normalized_data, market_type=market)
-            elif message_type == "candle_data":
-                await broadcast_candle_data(exchange, symbol, normalized_data, market_type=market)
-            elif message_type == "orderbook_data":
-                await broadcast_orderbook_data(exchange, symbol, normalized_data, market_type=market)
-            else:
-                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
-                
-        except Exception as e:
-            logger.error(f"Failed to broadcast to frontend: {str(e)}")
-
-    def set_health_lane(self, health_lane):
-        """Setze Health Lane für Integration mit Health System"""
-        self.health_lane = health_lane
-
-    def get_metrics(self) -> Dict:
-        """Liefere WebSocket Metriken für das Monitoring System"""
-        try:
-            total_lanes = len(self.running_tasks)
-            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
-            
-            return {
-                "total_websocket_lanes": total_lanes,
-                "active_connections": active_connections,
-                "running_tasks": len(self.running_tasks),
-                "health_status": "healthy" if active_connections > 0 else "inactive",
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error collecting WS metrics: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-# Global instance
-ws_manager = CentralizedWsManager()
-</file>
-
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    import logging
-                    
-                    logger = logging.getLogger("ws_router")
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
-                    market_safe = market if market else "spot"
-                    
-                    logger.info(f"[WS Historical Request] exchange={exchange}, symbol={symbol}, market={market_safe}, interval={normalized}, limit={limit}")
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market_safe,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    logger.info(f"[WS Historical Response] Got {len(candles)} candles for {exchange}/{symbol}/{market_safe}/{normalized}")
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market_safe,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    logger.error(f"[WS Historical Error] {exchange}/{symbol}/{market_safe}: {str(e)}", exc_info=True)
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    mk = (market or "spot").lower()
-
-                    # Robust mapping (keine Annahmen über extra Enum-Members)
-                    if mk == "spot":
-                        market_enum = Market.SPOT
-                    elif mk in ("usdtm", "usdt", "futures"):
-                        market_enum = Market.USDTM
-                    else:
-                        market_enum = Market.SPOT
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
-                    symbols = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": mk,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
 import { useEffect, useMemo, useState } from "react";
 import { useWsLane } from "../../../services/ws/useWsLane";
@@ -170537,6 +169547,418 @@ export function useChartView(
     error,
     meta,
     fillBlock,
+  };
+}
+</file>
+
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+// frontend/src/services/ws/WebSocketPool.ts
+// ✅ TASK 4: RefCount + Generation Token für StrictMode-Safety
+
+import { WS_BASE_URL } from "../../config/env";
+
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+
+export type WsMsg =
+  | { type: "connection"; [k: string]: any }
+  | { type: "trade"; exchange: string; symbol: string; market: string; price?: any; size?: any; side?: any; ts?: any; [k: string]: any }
+  | { type: "candle"; exchange: string; symbol: string; market: string; interval?: string; t?: any; o?: any; h?: any; l?: any; c?: any; v?: any; [k: string]: any }
+  | { type: "orderbook"; exchange: string; symbol: string; market: string; bids?: any[]; asks?: any[]; spread?: any; ts?: any; [k: string]: any }
+  | { type: "historical"; exchange: string; symbol: string; market: string; interval?: string; candles?: any[]; [k: string]: any }
+  | { type: string; [k: string]: any };
+
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (s: WsStatus) => void;
+
+type Key = string; // exchange:symbol:market
+
+type Conn = {
+  key: Key;
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
+
+  ws: WebSocket | null;
+  status: WsStatus;
+
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
+
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
+  manuallyClosed: boolean;
+  
+  // ✅ TASK 4: Generation Token für StrictMode
+  generation: number;
+  pendingCloseTimer: number | null;
+};
+
+function mkKey(exchange: string, symbol: string, market: string): Key {
+  return `${exchange}:${symbol}:${market}`;
+}
+
+function wsUrl(exchange: string, symbol: string, market: string) {
+  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
+
+  // Prefer explicit base if set, else same-origin
+  if (WS_BASE_URL) {
+    const base = WS_BASE_URL.replace(/\/+$/, "");
+    return `${base}${path}`;
+  }
+
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}${path}`;
+}
+
+function safeJson(s: string): any | null {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export class WebSocketPool {
+  private static _i: WebSocketPool | null = null;
+  static get instance() {
+    if (!this._i) this._i = new WebSocketPool();
+    return this._i;
+  }
+
+  private conns = new Map<Key, Conn>();
+
+  acquire(exchange: string, symbol: string, market = "spot"): Key {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
+
+    if (!c) {
+      c = {
+        key,
+        exchange,
+        symbol,
+        market,
+        url: wsUrl(exchange, symbol, market),
+
+        ws: null,
+        status: "INIT",
+
+        listeners: new Set(),
+        statusListeners: new Set(),
+
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
+        
+        // ✅ TASK 4: Generation Token initialisieren
+        generation: 0,
+        pendingCloseTimer: null,
+      };
+      this.conns.set(key, c);
+    }
+
+    // ✅ TASK 4: Cancel pending close (StrictMode unmount+remount)
+    if (c.pendingCloseTimer !== null) {
+      window.clearTimeout(c.pendingCloseTimer);
+      c.pendingCloseTimer = null;
+    }
+
+    c.refCount += 1;
+
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
+
+    return key;
+  }
+
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
+
+    c.refCount = Math.max(0, c.refCount - 1);
+    
+    // ✅ TASK 4: Deferred close für StrictMode (unmount+remount im selben Tick)
+    if (c.refCount === 0) {
+      // Warte 50ms bevor tatsächlich geschlossen wird
+      // Falls remount erfolgt, wird pendingCloseTimer in acquire() gecancelt
+      c.pendingCloseTimer = window.setTimeout(() => {
+        c.pendingCloseTimer = null;
+        if (c.refCount === 0) {
+          this.close(c);
+          this.conns.delete(key);
+        }
+      }, 50);
+    }
+  }
+
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
+
+  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
+    const c = this.conns.get(mkKey(exchange, symbol, market));
+    if (!c || !c.ws || c.status !== "OPEN") return false;
+
+    try {
+      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private setStatus(c: Conn, s: WsStatus) {
+    c.status = s;
+    for (const l of c.statusListeners) l(s);
+  }
+
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = false;
+    this.setStatus(c, "CONNECTING");
+
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") return;
+      const parsed = safeJson(ev.data);
+      if (!parsed || typeof parsed !== "object") return;
+      const msg = parsed as WsMsg;
+      for (const l of c.listeners) l(msg);
+    };
+
+    ws.onerror = () => {
+      this.setStatus(c, "ERROR");
+      this.scheduleReconnect(c);
+    };
+
+    ws.onclose = () => {
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+      if (!c.manuallyClosed) this.scheduleReconnect(c);
+    };
+  }
+
+  private close(c: Conn) {
+    c.manuallyClosed = true;
+
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    try { c.ws?.close(); } catch { /* ignore */ }
+    c.ws = null;
+    this.setStatus(c, "CLOSED");
+  }
+
+  private scheduleReconnect(c: Conn) {
+    if (c.manuallyClosed) return;
+    if (c.refCount <= 0) return;
+
+    c.reconnectAttempt += 1;
+    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
+
+    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
+    c.reconnectTimer = window.setTimeout(() => {
+      if (c.refCount <= 0 || c.manuallyClosed) return;
+      this.open(c);
+    }, delay);
+  }
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+import { useEffect, useRef, useState } from "react";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is any {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  // ✅ TASK 3: Nutze Safe Chart Hook
+  const isDark = actualTheme === "dark";
+  const chartTheme = getChartTheme(isDark, interval);
+  const seriesTheme = getSeriesTheme(isDark);
+
+  const safeChart = useSafeCandleChart(containerRef, chartTheme);
+
+  useEffect(() => {
+    if (safeChart) {
+      chartInstance.current = safeChart.chart;
+      seriesInstance.current = safeChart.series;
+      setIsChartReady(true);
+
+      // Theme Observer
+      const themeObserver = new MutationObserver(() => {
+        if (safeChart.chart && safeChart.series) {
+          const isDarkNow = document.documentElement.classList.contains("dark");
+          const newChartTheme = getChartTheme(isDarkNow, interval);
+          const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+          try {
+            safeChart.chart.applyOptions(newChartTheme);
+            safeChart.series.applyOptions(newSeriesTheme);
+          } catch (e) {
+            console.warn("[useCandleChart] Theme update failed:", e);
+          }
+        }
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+
+      // Resize Observer
+      const container = containerRef.current;
+      let resizeObserver: ResizeObserver | null = null;
+      if (container) {
+        resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && safeChart.chart) {
+            const { width, height } = entries[0].contentRect;
+            safeChart.resize(width, height);
+          }
+        });
+        resizeObserver.observe(container);
+      }
+
+      return () => {
+        themeObserver.disconnect();
+        resizeObserver?.disconnect();
+      };
+    } else {
+      setIsChartReady(false);
+    }
+  }, [safeChart, interval, containerRef]);
+
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !seriesInstance.current) return;
+    if (!data || data.length === 0) return;
+
+    // Lightweight-charts expects seconds.
+    // Whitespace is supported by passing {time} without OHLC.
+    const formatted = data
+      .map((d) => {
+        const tSec = Math.floor(d.time / 1000);
+        if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+        if (isRealCandle(d)) {
+          return {
+            time: tSec,
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).close,
+          };
+        }
+        return { time: tSec }; // ✅ Whitespace
+      })
+      .filter(Boolean) as any[];
+
+    if (formatted.length <= 0) return;
+
+    // Safety: ensure ascending order by time
+    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+
+    seriesInstance.current.setData(formatted);
+  };
+
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    // Use first/last REAL candles (ignore whitespace)
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
   };
 }
 </file>
@@ -171070,6 +170492,755 @@ async def run_unified_aggregator():
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
+<file path="backend/websocket/ws_manager.py">
+from typing import Dict, Set, Optional, Tuple
+import asyncio
+import websockets
+import json
+import logging
+import time
+from datetime import datetime
+
+from .ws_registry import ws_registry
+from .ws_lanes import ws_lane, ws_status
+from .ws_config import WS_URLS, WS_TIMEOUTS, STREAM_FORMATS
+from .ws_message_parsers import get_ws_message_parser
+
+# ✅ CoinMapper Integration
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+from backend.api.models.keys import Market
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_event(data: dict | tuple | list) -> dict:
+    """
+    ✅ DEFENSIVE: Normalisiert Tuple/List zu Dict für Frontend-Broadcast
+    
+    Manche Parser/Redis-Streams liefern Tuples statt Dicts.
+    Frontend erwartet immer Dict mit .get() Zugriff.
+    """
+    if isinstance(data, dict):
+        return data
+    
+    if isinstance(data, (tuple, list)):
+        # Tuple/List → Dict mit generischen Keys
+        # Annahme: (price, size, timestamp, ...) oder ähnlich
+        if len(data) >= 3:
+            return {
+                "price": data[0],
+                "size": data[1],
+                "timestamp": data[2],
+                "side": data[3] if len(data) > 3 else None,
+            }
+        else:
+            logger.warning(f"Tuple/List zu kurz für Normalisierung: {data}")
+            return {}
+    
+    # Fallback für andere Typen
+    logger.error(f"Unerwarteter Datentyp für Broadcast: {type(data)}")
+    return {}
+
+
+def _resolve_market_enum(market: str) -> Market:
+    """
+    ✅ KRITISCH: Mappt WebSocket-Market-String auf das MarketEnum.
+    
+    Market-Enum hat: SPOT, USDTM, COINM, USDCM
+    (KEIN "FUTURES"!)
+    """
+    m = (market or "").lower()
+    if m in ("spot", "spotm", "spot-market"):
+        return Market.SPOT
+    if m in ("usdtm", "usdt", "usdt-futures", "linear"):
+        return Market.USDTM
+    if m in ("coinm", "inverse"):
+        return Market.COINM
+    if m in ("usdcm", "usdc", "usd"):
+        return Market.USDCM
+    # Fallback – sicher auf SPOT
+    return Market.SPOT
+
+
+async def get_native_symbol_from_mapper(
+    exchange: str,
+    symbol: str,
+    market: str,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper/SYMBOL_REGISTRY für native Symbol-Konvertierung
+    
+    Returns:
+        tuple: (native_symbol, base, quote) oder (symbol, None, None) bei Fallback
+    """
+    try:
+        market_enum = _resolve_market_enum(market)
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+        
+        # Annahme: `symbol` ist bereits native_symbol (z.B. BTCUSDT, BTC_USDT, BTC-USD)
+        sym_u = (symbol or "").upper()
+        
+        symbol_meta = next(
+            (s for s in catalog if s.get("native_symbol", "").upper() == sym_u),
+            None,
+        )
+        
+        if not symbol_meta:
+            logger.warning(
+                f"Symbol {symbol} not found in CoinMapper for {exchange}:{market_enum.value} – using fallback"
+            )
+            # Fallback: heuristisch base/quote aus Symbol ableiten
+            base = quote = None
+            if sym_u.endswith("USDT"):
+                base = sym_u[:-4]
+                quote = "USDT"
+            elif sym_u.endswith("USDC"):
+                base = sym_u[:-4]
+                quote = "USDC"
+            elif sym_u.endswith("USD"):
+                base = sym_u[:-3]
+                quote = "USD"
+            
+            if not base or not quote:
+                return symbol, None, None
+        else:
+            base = symbol_meta["base"]
+            quote = symbol_meta["quote"]
+        
+        # ✅ Zentrale Stelle für Exchange-spezifische Formatregeln
+        # (KEINE symbol-spezifischen Hardcodings!)
+        if exchange == "gateio":
+            native_symbol = f"{base}_{quote}"
+        elif exchange == "okx":
+            native_symbol = f"{base}-{quote}"
+        elif exchange == "htx":
+            native_symbol = f"{base}{quote}".lower()
+        elif exchange == "coinbase":
+            # Coinbase nutzt meist FIAT-Quotes (BTC-USD etc.)
+            native_symbol = f"{base}-{quote}"
+        else:
+            # Binance, Bitget, Bybit, MEXC, Default
+            native_symbol = f"{base}{quote}"
+        
+        logger.info(f"Symbol Conversion via CoinMapper: {symbol} → {native_symbol} ({exchange})")
+        return native_symbol, base, quote
+        
+    except Exception as e:
+        logger.error(f"CoinMapper lookup failed for {exchange}:{symbol}:{market}: {e}")
+        return symbol, None, None
+
+async def get_subscribe_message(exchange: str, symbol: str, market: str) -> Optional[dict]:
+    """
+    ✅ GENERISCH: Nutzt CoinMapper für native Symbol-Konvertierung
+    """
+    # ✅ NEU: Hole natives Symbol vom CoinMapper
+    native_symbol, base, quote = await get_native_symbol_from_mapper(exchange, symbol, market)
+    
+    # ✅ REST: Generische Subscribe-Message-Erstellung
+    
+    # Binance: URL-basiert
+    if exchange == "binance":
+        return None
+    
+    # Bitget
+    if exchange == "bitget":
+        inst_type_map = {"spot": "SPOT", "usdtm": "USDT-FUTURES", "coinm": "COIN-FUTURES", "usdcm": "USDC-FUTURES"}
+        return {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type_map.get(market, "SPOT"),
+                "channel": "trade",
+                "instId": native_symbol  # ✅ Vom CoinMapper!
+            }]
+        }
+    
+    # MEXC
+    if exchange == "mexc":
+        # ✅ KORREKT von offizieller MEXC Doku: spot@public.aggre.deals.v3.api.pb@100ms@SYMBOL
+        channel_map = {
+            "spot": f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "usdtm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+            "coinm": f"contract@public.aggre.deals.v3.api.pb@100ms@{native_symbol}",
+        }
+        channel = channel_map.get(market, f"spot@public.aggre.deals.v3.api.pb@100ms@{native_symbol}")
+        
+        return {"method": "SUBSCRIPTION", "params": [channel]}
+    
+    # Gate.io
+    if exchange == "gateio":
+        return {
+            "time": int(time.time()),
+            "channel": "spot.trades",
+            "event": "subscribe",
+            "payload": [native_symbol]  # ✅ BTC_USDT vom CoinMapper!
+        }
+    
+    # Bybit
+    if exchange == "bybit":
+        return {"op": "subscribe", "args": [f"publicTrade.{native_symbol}"]}
+    
+    # OKX
+    if exchange == "okx":
+        return {
+            "op": "subscribe",
+            "args": [{"channel": "trades", "instId": native_symbol}]  # ✅ BTC-USDT!
+        }
+    
+    # HTX: Subscribe-Message basiert
+    if exchange == "htx":
+        # Native symbol ist bereits lowercase durch CoinMapper
+        channel = f"market.{native_symbol}.trade.detail"
+        return {
+            "sub": channel,
+            "id": f"trade_{native_symbol}"
+        }
+    
+    # Coinbase
+    if exchange == "coinbase":
+        return {
+            "type": "subscribe",
+            "product_ids": [native_symbol],  # ✅ BTC-USD!
+            "channel": "market_trades"
+        }
+    
+    return None
+
+class CentralizedWsManager:
+    """Enterprise WS Manager für alle 8 Exchanges + vollständige Datenfluss-Integration"""
+    
+    def __init__(self):
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.health_lane = None  # Wird von Health Registry gesetzt
+        
+    async def start_websocket_lane(self, exchange: str, symbol: str, market: str = "spot") -> ws_lane:
+        """Starte WS Lane mit vollständiger Datenfluss-Integration"""
+        
+        # Message Handler mit KOMPLETTER Datenfluss-Integration
+        async def integrated_message_handler(raw_message: str):
+            try:
+                # 1. Exchange-spezifisches Parsing
+                message_parser = get_ws_message_parser(exchange)
+                
+                # ✅ TRADE PARSING
+                trade_data = await message_parser.parse_trade_message(raw_message, market=market)
+                
+                # ✅ ORDERBOOK PARSING
+                orderbook_data = await message_parser.parse_orderbook_message(raw_message, market=market)
+                
+                # Wenn weder Trade noch Orderbook, return
+                if not trade_data and not orderbook_data:
+                    return
+                
+                # ✅ PING-PONG HANDLING (für HTX)
+                if trade_data and trade_data.get("type") == "ping":
+                    pong_msg = {"pong": trade_data.get("pong")}
+                    if lane.websocket:
+                        await lane.websocket.send(json.dumps(pong_msg))
+                        logger.debug(f"Sent pong response for {exchange}")
+                    return  # Ping verarbeitet, keine Trade-Daten
+                
+                # 2. ✅ TRADE DATA PROCESSING
+                if trade_data:
+                    # Redis Stream über rs_ Lane System
+                    from backend.database.redis import unified_rs_service
+                    
+                    success = await unified_rs_service.add_trade(
+                        exchange, symbol, trade_data, market
+                    )
+                    
+                    if not success:
+                        logger.warning(f"Failed to add trade to rs_ system: {exchange}.{symbol}")
+                    
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="trade_data",
+                        data=trade_data
+                    )
+                
+                # 3. ✅ ORDERBOOK DATA PROCESSING
+                if orderbook_data:
+                    # Frontend WebSocket Broadcasting
+                    await self.broadcast_to_frontend(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        message_type="orderbook_data",
+                        data=orderbook_data
+                    )
+                
+                # 4. ✅ CANDLE AGGREGATION (nur wenn Trade-Daten vorhanden)
+                if trade_data:
+                    from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+                    from backend.core.config import config
+                    
+                    # Aggregator pro Lane erstellen (einmalig)
+                    if not hasattr(lane, 'candle_agg'):
+                        # ✅ DYNAMISCH: Resolutions aus ENV
+                        lane.candle_agg = MultiResCandleAgg(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            resolutions=config.ws_candle_resolutions
+                        )
+                    
+                    # ✅ FIX: on_trade() benötigt alle Parameter!
+                    # Hole Resolutions aus Registry
+                    resolutions = registry.list(exchange, symbol)
+                    
+                    # ✅ KRITISCHER FIX: Robuste Timestamp-Konvertierung
+                    def _to_ms(ts_any) -> int:
+                        """Robust zu Millisekunden. Akzeptiert sec/ms und None."""
+                        if ts_any is None:
+                            return int(time.time() * 1000)
+                        try:
+                            t = int(ts_any)
+                        except Exception:
+                            return int(time.time() * 1000)
+                        return t if t > 100_000_000_000 else t * 1000  # >1e11 => ms, sonst sec
+                    
+                    # Timestamp aus Trade-Data holen (Priorität: ts > timestamp > trade_ts)
+                    ts_raw = (
+                        trade_data.get("ts")
+                        or trade_data.get("timestamp")
+                        or trade_data.get("trade_ts")
+                    )
+                    
+                    # Trade zu Candles aggregieren
+                    finished_candles = lane.candle_agg.on_trade(
+                        ex=exchange,
+                        sym=symbol,
+                        market=market,
+                        ts_ms=_to_ms(ts_raw),  # ✅ KRITISCHER FIX: Trade-Zeit statt Server-Zeit
+                        price=float(trade_data.get('price', 0)),
+                        size=float(trade_data.get('size', 0)),
+                        resolutions=resolutions
+                    )
+                    
+                    # ✅ ENTERPRISE FIX: Candle Contract Normalization (Tuple→Dict)
+                    def _coerce_candle_event(c):
+                        # finished_candles can be: (interval, dict) OR dict
+                        if isinstance(c, (tuple, list)) and len(c) == 2 and isinstance(c[1], dict):
+                            interval, d = c
+                            out = dict(d)  # defensive copy
+                            out["interval"] = str(interval)
+                            return out
+                        if isinstance(c, dict):
+                            return c
+                        return None  # unknown shape => drop
+                    
+                    # Finished Candles broadcasten
+                    for c in finished_candles or []:
+                        candle_dict = _coerce_candle_event(c)
+                        if not candle_dict:
+                            logger.warning(f"[CANDLE] unexpected candle shape: {type(c)} {c!r}")
+                            continue
+                        
+                        await self.broadcast_to_frontend(
+                            exchange=exchange,
+                            symbol=symbol,
+                            market=market,
+                            message_type="candle_data",
+                            data=candle_dict
+                        )
+                
+                # 5. ✅ BESTEHENDER DATENFLUSS: ClickHouse Persistierung (automatisch via Stream Aggregator)
+                # Stream Aggregator liest Redis Stream und schreibt zu ClickHouse - bleibt unverändert!
+                
+                # 5. Health + Metrics Tracking
+                if self.health_lane:
+                    self.health_lane.record_success({
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "trades_processed": 1,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+            except Exception as e:
+                error_msg = f"Message handling failed for {exchange}.{symbol}: {str(e)}"
+                logger.error(error_msg)
+                if self.health_lane:
+                    self.health_lane.record_error(error_msg)
+                raise
+        
+        # Registriere WS Lane
+        lane = ws_registry.register_websocket_lane(
+            exchange, symbol, market, integrated_message_handler
+        )
+        
+        # Starte WebSocket-Verbindung
+        await self._connect_websocket_lane(lane)
+        
+        # Starte Message Processing Task
+        task_id = f"{exchange}.{symbol}.{market}"
+        self.running_tasks[task_id] = asyncio.create_task(
+            self._websocket_message_loop(lane)
+        )
+        
+        logger.info(f"Started WebSocket lane: {task_id} with full dataflow integration")
+        return lane
+        
+    async def _connect_websocket_lane(self, lane: ws_lane):
+        """Verbinde WebSocket für Lane und sende Subscribe-Message"""
+        try:
+            # Exchange WebSocket-URL
+            base_url = WS_URLS[lane.exchange]
+            
+            # Stream-spezifische URL aufbauen
+            stream_format = STREAM_FORMATS.get(lane.exchange, "{symbol}@trade")
+            
+            # ✅ PROFESSIONAL: Hole natives Symbol für URL-Building
+            if stream_format:
+                native_symbol, _, _ = await get_native_symbol_from_mapper(
+                    lane.exchange, lane.symbol, lane.market
+                )
+                
+                # ✅ CRITICAL: Binance WebSocket braucht lowercase Symbole!
+                if lane.exchange == "binance":
+                    native_symbol = native_symbol.lower()
+                
+                stream_path = stream_format.format(symbol=native_symbol)
+                websocket_url = f"{base_url}/{stream_path}"
+            else:
+                # Für Exchanges mit Subscribe-Messages (Bitget, MEXC, etc.)
+                websocket_url = base_url
+            
+            # ws-Verbindung mit Timeouts
+            lane.websocket = await websockets.connect(
+                websocket_url,
+                ping_interval=WS_TIMEOUTS["ping_interval"],
+                ping_timeout=WS_TIMEOUTS["ping_timeout"],
+                close_timeout=WS_TIMEOUTS["close_timeout"]
+            )
+            
+            lane.record_connection_success()
+            logger.info(f"WebSocket connected: {websocket_url}")
+            
+            # ✅ KRITISCH: Subscribe-Message senden (für Bitget, MEXC, Gate.io, Bybit, OKX, Coinbase)
+            subscribe_msg = await get_subscribe_message(lane.exchange, lane.symbol, lane.market)  # ✅ AWAIT hinzugefügt!
+            if subscribe_msg:
+                await lane.websocket.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ Sent subscribe message for {lane.exchange}.{lane.symbol}.{lane.market}")
+            else:
+                logger.debug(f"No subscribe message needed for {lane.exchange} (URL-based)")
+            
+        except Exception as e:
+            error_msg = f"WebSocket connection failed: {str(e)}"
+            lane.record_connection_error(error_msg)
+            raise
+            
+    async def _websocket_message_loop(self, lane: ws_lane):
+        """WebSocket Message Processing Loop mit Reconnection"""
+        while True:
+            try:
+                if not lane.websocket:
+                    # Reconnection
+                    lane.record_reconnection()
+                    await asyncio.sleep(WS_TIMEOUTS["reconnect_delay"])
+                    await self._connect_websocket_lane(lane)
+                    continue
+                
+                # Message empfangen
+                raw_message = await lane.websocket.recv()
+                
+                # Message verarbeiten (mit vollständiger Datenfluss-Integration)
+                await lane.process_message(raw_message)
+                
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"WebSocket disconnected: {lane.exchange}.{lane.symbol} - reconnecting...")
+                lane.websocket = None
+                continue
+                
+            except Exception as e:
+                error_msg = f"WebSocket message processing error: {str(e)}"
+                lane.record_connection_error(error_msg)
+                await asyncio.sleep(5)  # Kurze Pause bei Fehlern
+                
+    def stop_websocket_lane(self, exchange: str, symbol: str, market: str = "spot"):
+        """Stoppe WS Lane"""
+        task_id = f"{exchange}.{symbol}.{market}"
+        
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+            
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        if lane and lane.websocket:
+            asyncio.create_task(lane.websocket.close())
+            lane.status = ws_status.DISCONNECTED
+            
+        logger.info(f"Stopped WebSocket lane: {task_id}")
+        
+    def get_lane_status(self, exchange: str, symbol: str, market: str = "spot") -> Dict:
+        """Hole Lane-Status"""
+        lane = ws_registry.get_websocket_lane(exchange, symbol, market)
+        return lane.get_health() if lane else {"error": "Lane not found"}
+        
+    def get_all_status(self) -> Dict:
+        """Status aller WS Lanes"""
+        return ws_registry.get_system_health()
+        
+    async def safe_send_json(self, websocket, data: dict) -> bool:
+        """
+        ✅ TASK 2: Sichere JSON-Send-Methode mit Dead-Connection-Handling
+        
+        Returns:
+            bool: True bei Erfolg, False bei Fehler (tote Verbindung)
+        """
+        try:
+            await websocket.send_json(data)
+            return True
+        except Exception as e:
+            logger.warning(f"Dead WebSocket detected, removing from all channels: {e}")
+            # Entferne tote WebSocket aus allen Channels
+            from .ws_frontend_handler import ws_manager as frontend_ws_manager
+            for channel, conns in list(frontend_ws_manager.connections.items()):
+                if websocket in conns:
+                    conns.discard(websocket)
+                    logger.debug(f"Removed dead WebSocket from channel: {channel}")
+            return False
+    
+    async def broadcast_to_frontend(self, exchange: str, symbol: str, market: str, message_type: str, data: dict):
+        """
+        Broadcast zu Frontend-Clients – generisch/dynamisch.
+        market kommt aus der Lane/URL und wird 1:1 weitergereicht.
+        """
+        try:
+            # ✅ NEU: Normalisiere data zu Dict (Tuple→Dict Fix)
+            normalized_data = _normalize_event(data)
+            
+            # Import hier um zirkuläre Imports zu vermeiden
+            from .ws_frontend_handler import broadcast_trade_data, broadcast_candle_data, broadcast_orderbook_data
+            
+            if not exchange or not symbol:
+                logger.warning(f"Missing exchange or symbol in broadcast: {exchange}, {symbol}")
+                return
+                
+            if message_type == "trade_data":
+                await broadcast_trade_data(exchange, symbol, normalized_data, market_type=market)
+            elif message_type == "candle_data":
+                await broadcast_candle_data(exchange, symbol, normalized_data, market_type=market)
+            elif message_type == "orderbook_data":
+                await broadcast_orderbook_data(exchange, symbol, normalized_data, market_type=market)
+            else:
+                logger.warning(f"Unknown message type for frontend broadcast: {message_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast to frontend: {str(e)}")
+
+    def set_health_lane(self, health_lane):
+        """Setze Health Lane für Integration mit Health System"""
+        self.health_lane = health_lane
+
+    def get_metrics(self) -> Dict:
+        """Liefere WebSocket Metriken für das Monitoring System"""
+        try:
+            total_lanes = len(self.running_tasks)
+            active_connections = sum(1 for task in self.running_tasks.values() if not task.done())
+            
+            return {
+                "total_websocket_lanes": total_lanes,
+                "active_connections": active_connections,
+                "running_tasks": len(self.running_tasks),
+                "health_status": "healthy" if active_connections > 0 else "inactive",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error collecting WS metrics: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Global instance
+ws_manager = CentralizedWsManager()
+</file>
+
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    import logging
+                    
+                    logger = logging.getLogger("ws_router")
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
+                    market_safe = market if market else "spot"
+                    
+                    logger.info(f"[WS Historical Request] exchange={exchange}, symbol={symbol}, market={market_safe}, interval={normalized}, limit={limit}")
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market_safe,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    logger.info(f"[WS Historical Response] Got {len(candles)} candles for {exchange}/{symbol}/{market_safe}/{normalized}")
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market_safe,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    logger.error(f"[WS Historical Error] {exchange}/{symbol}/{market_safe}: {str(e)}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ TASK 2: subscribe:interval Handler
+            if msg.startswith("subscribe:"):
+                parts = msg.split(":", 1)
+                interval_str = (parts[1] if len(parts) > 1 else "").strip() or "1m"
+                
+                # per-connection state
+                setattr(websocket, "_subscribed_interval", interval_str)
+                
+                await websocket.send_json({
+                    "type": "subscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "interval": interval_str,
+                })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    mk = (market or "spot").lower()
+
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
 <file path="backend/websocket/ws_frontend_handler.py">
 """
 Frontend WebSocket broadcasting (client fan-out) – FINAL.
@@ -171474,7 +171645,23 @@ async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, ma
         "server_ms": int(time.time() * 1000),
         "server_iso": datetime.utcnow().isoformat(),
     }
-    await ws_manager.broadcast_to_channel(channel, msg)
+    
+    # ✅ TASK 2: Filter Candles per Client basierend auf subscribed interval
+    conns = ws_manager.connections.get(channel)
+    if not conns:
+        return
+    
+    candle_interval = msg["interval"]
+    
+    # Sende nur an Clients mit passendem subscribed_interval
+    for ws in list(conns):
+        subscribed_interval = getattr(ws, "_subscribed_interval", "1m")
+        if subscribed_interval == candle_interval:
+            # Enqueue für diesen spezifischen Client
+            q = ws_manager.message_queues.setdefault(channel, [])
+            if len(q) < ws_manager.max_queue_per_channel:
+                q.append(msg)
+                ws_manager.metrics["messages_queued"] += 1
 
 
 async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
@@ -172124,439 +172311,6 @@ if __name__ == "__main__":
     start()
 </file>
 
-<file path="frontend/src/services/ws/useWsLane.ts">
-// frontend/src/services/ws/useWsLane.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
-
-const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
-const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
-const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
-
-function clampInt(n: number, def: number, min: number, max: number): number {
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-export type LiveTrade = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  price: number;
-  size: number;
-  side?: string;
-  ts?: number;
-};
-
-export type LiveCandle = {
-  exchange: string;
-  symbol: string;
-  market: string;
-  interval: string;
-  t: number; // seconds
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-};
-
-export type Orderbook = {
-  bids: [number, number][];
-  asks: [number, number][];
-  spread: number;
-  ts?: number;
-};
-
-export type FillBlock = {
-  start_sec: number;
-  end_sec: number;
-  stage: string;
-  progress: number;
-  batch: number;
-  total: number;
-};
-
-function toNum(x: any): number {
-  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
-  return Number.isFinite(n) ? n : 0;
-}
-
-function toSec(ts: unknown): number {
-  const n = Number(ts);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
-  return Math.floor(n); // already sec
-}
-
-function intervalToSec(interval: string): number {
-  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
-  if (!m || !m[1]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  return 60;
-}
-
-function bucketStartFromMs(tsMs: number, sec: number): number {
-  const t = Math.floor(tsMs / 1000);
-  return Math.floor(t / sec) * sec;
-}
-
-function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
-  if (!incoming.length) return prev;
-
-  const map = new Map<number, LiveCandle>();
-  for (const c of prev) map.set(c.t, c);
-
-  let changed = false;
-  for (const c of incoming) {
-    const old = map.get(c.t);
-    if (
-      !old ||
-      old.o !== c.o ||
-      old.h !== c.h ||
-      old.l !== c.l ||
-      old.c !== c.c ||
-      old.v !== c.v
-    ) {
-      map.set(c.t, c);
-      changed = true;
-    }
-  }
-
-  if (!changed) return prev;
-  return Array.from(map.values()).sort((a, b) => a.t - b.t);
-}
-
-export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
-  const [status, setStatus] = useState<WsStatus>("INIT");
-  const [trades, setTrades] = useState<LiveTrade[]>([]);
-  const [candles, setCandles] = useState<LiveCandle[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
-  const [historical, setHistorical] = useState<LiveCandle[]>([]);
-  const [fillBlock, setFillBlock] = useState<FillBlock | null>(null);
-
-  // Backend limits (from "connection" message)
-  const maxTradesRef = useRef<number>(500);
-  const maxCandlesRef = useRef<number>(2000);
-
-  // Historical request policy (client-side, ENV-driven)
-  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
-  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
-  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
-  const histLastCountRef = useRef<number>(0);
-  const histNoGrowthRef = useRef<number>(0);
-  const histTimerRef = useRef<number | null>(null);
-  const histInFlightRef = useRef<boolean>(false);
-  const histLastReqAtRef = useRef<number>(0);
-
-  const sec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const pendingTrades = useRef<LiveTrade[]>([]);
-  const rafTrades = useRef<number | null>(null);
-  const lastCandleRef = useRef<LiveCandle | null>(null);
-
-  // Reset state on lane key change
-  useEffect(() => {
-    setTrades([]);
-    setCandles([]);
-    setOrderbook(null);
-    setHistorical([]);
-    lastCandleRef.current = null;
-    pendingTrades.current = [];
-
-    histLastCountRef.current = 0;
-    histNoGrowthRef.current = 0;
-    histInFlightRef.current = false;
-    histLastReqAtRef.current = 0;
-
-    if (histTimerRef.current !== null) {
-      window.clearInterval(histTimerRef.current);
-      histTimerRef.current = null;
-    }
-  }, [exchange, symbol, market, interval]);
-
-  useEffect(() => {
-    const pool = WebSocketPool.instance;
-
-    const requestHistorical = () => {
-      // throttle: avoid spamming
-      const now = Date.now();
-      if (histInFlightRef.current) return;
-      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
-
-      histInFlightRef.current = true;
-      histLastReqAtRef.current = now;
-
-      // Protocol: "historical:<interval>:<limit>"
-      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
-    };
-
-    const stopHistoricalPolling = () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-    };
-
-    const startHistoricalPolling = () => {
-      if (histTimerRef.current !== null) return;
-
-      // initial request immediately
-      requestHistorical();
-
-      // then poll until stable (no growth)
-      histTimerRef.current = window.setInterval(() => {
-        // stop condition: stable data for N cycles
-        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
-          stopHistoricalPolling();
-          return;
-        }
-        requestHistorical();
-      }, histPollMsRef.current);
-    };
-
-    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
-      setStatus(newStatus);
-
-      if (newStatus === "OPEN") {
-        // start polling historical (works even if backend doesn't push)
-        startHistoricalPolling();
-      }
-
-      if (newStatus === "CLOSED" || newStatus === "ERROR") {
-        stopHistoricalPolling();
-      }
-    });
-
-    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
-      // Connection message with limits
-      if (msg.type === "connection") {
-        const limits = (msg as any).limits || {};
-        maxTradesRef.current = limits.maxTrades || 500;
-        maxCandlesRef.current = limits.maxCandles || 2000;
-
-        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
-        const hl = Number((limits as any).historicalLimit);
-        const hp = Number((limits as any).historicalPollMs);
-        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
-        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
-
-        return;
-      }
-
-      if (msg.type === "trade") {
-        const t: LiveTrade = {
-          exchange: msg.exchange,
-          symbol: msg.symbol,
-          market: msg.market,
-          price: toNum((msg as any).price),
-          size: toNum((msg as any).size),
-          side: (msg as any).side,
-          ts: toNum((msg as any).ts) || undefined,
-        };
-
-        // trades buffer (RAF)
-        pendingTrades.current.push(t);
-        if (rafTrades.current === null) {
-          rafTrades.current = window.requestAnimationFrame(() => {
-            rafTrades.current = null;
-            const batch = pendingTrades.current;
-            pendingTrades.current = [];
-            if (!batch.length) return;
-
-            setTrades((prev) => {
-              const next = prev.concat(batch);
-              const max = maxTradesRef.current;
-              return next.length <= max ? next : next.slice(next.length - max);
-            });
-          });
-        }
-
-        // build live candle from trades (client-side agg)
-        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
-        const bucket = bucketStartFromMs(tsMs, sec);
-
-        const cur = lastCandleRef.current;
-        if (!cur || cur.t !== bucket) {
-          const fresh: LiveCandle = {
-            exchange, symbol, market, interval,
-            t: bucket,
-            o: t.price,
-            h: t.price,
-            l: t.price,
-            c: t.price,
-            v: t.size || 0,
-          };
-          lastCandleRef.current = fresh;
-          setCandles((prev) => {
-            const next = prev.concat(fresh);
-            const max = maxCandlesRef.current;
-            return next.length <= max ? next : next.slice(next.length - max);
-          });
-          return;
-        }
-
-        const upd: LiveCandle = {
-          ...cur,
-          h: Math.max(cur.h, t.price),
-          l: Math.min(cur.l, t.price),
-          c: t.price,
-          v: cur.v + (t.size || 0),
-        };
-        lastCandleRef.current = upd;
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [upd];
-          if (last.t !== upd.t) return prev.concat(upd);
-          return prev.slice(0, -1).concat(upd);
-        });
-        return;
-      }
-
-      if (msg.type === "candle") {
-        // optional backend candle stream; keep compatible
-        const m: any = msg;
-        
-        // ✅ INTERVAL FILTER: Nur Candles mit passendem Interval akzeptieren
-        const msgInterval = String(m.interval ?? "").trim();
-        if (msgInterval && msgInterval !== interval) {
-          return; // Ignoriere andere Resolutions (z.B. 1s wenn UI 1m zeigt)
-        }
-        
-        const tSec = toSec(m.t);
-        if (!tSec) return;
-
-        const c: LiveCandle = {
-          exchange: m.exchange || exchange,
-          symbol: m.symbol || symbol,
-          market: m.market || market,
-          interval: m.interval || interval,
-          t: tSec,
-          o: toNum(m.o),
-          h: toNum(m.h),
-          l: toNum(m.l),
-          c: toNum(m.c),
-          v: toNum(m.v),
-        };
-
-        lastCandleRef.current = c;
-
-        setCandles((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last) return [c];
-          if (last.t !== c.t) {
-            const next = prev.concat(c);
-            const max = maxCandlesRef.current;
-            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
-          }
-          return prev.slice(0, -1).concat(c);
-        });
-        return;
-      }
-
-      if (msg.type === "orderbook") {
-        const bidsRaw = (msg as any).bids || [];
-        const asksRaw = (msg as any).asks || [];
-        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
-        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
-        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
-        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
-        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
-        return;
-      }
-
-      if (msg.type === "historical") {
-        // mark request as completed
-        histInFlightRef.current = false;
-
-        const candlesRaw = (msg as any).candles || [];
-        const hist: LiveCandle[] = candlesRaw
-          .map((raw: any) => ({
-            exchange: msg.exchange || exchange,
-            symbol: msg.symbol || symbol,
-            market: (msg as any).market || market,
-            interval: (msg as any).interval || interval,
-            t: toSec(raw.time ?? raw.t),
-            o: toNum(raw.open ?? raw.o),
-            h: toNum(raw.high ?? raw.h),
-            l: toNum(raw.low ?? raw.l),
-            c: toNum(raw.close ?? raw.c),
-            v: toNum(raw.volume ?? raw.v),
-          }))
-          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
-
-        setHistorical((prev) => mergeCandles(prev, hist));
-
-        // stop heuristic: if total historical size does not grow for N polls, stop polling
-        // (works even if backend always returns same "last N" window)
-        const incomingCount = hist.length;
-        const prevTotal = histLastCountRef.current;
-
-        // we need the full state size, but we only have incoming; use a conservative heuristic:
-        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
-        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
-        if (incomingCount <= 0) {
-          histNoGrowthRef.current += 1;
-        } else if (incomingCount === prevTotal) {
-          histNoGrowthRef.current += 1;
-        } else {
-          histNoGrowthRef.current = 0;
-          histLastCountRef.current = incomingCount;
-        }
-
-        return;
-      }
-
-      if (msg.type === "fill_block") {
-        const m = msg as any;
-        const block = {
-          start_sec: m.start_sec || 0,
-          end_sec: m.end_sec || 0,
-          stage: m.stage || "gap",
-          progress: m.progress || 0,
-          batch: m.batch || 0,
-          total: m.total || 0,
-        };
-        console.log('[useWsLane] Received fill_block message:', block);
-        setFillBlock(block);
-        return;
-      }
-    });
-
-    return () => {
-      if (histTimerRef.current !== null) {
-        window.clearInterval(histTimerRef.current);
-        histTimerRef.current = null;
-      }
-      window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
-      }, 100);
-    };
-  }, [exchange, symbol, market, interval, sec]);
-
-  // ✅ Chart series must include historical + live
-  // Live should overwrite historical at same t (more recent values)
-  const mergedSeries = useMemo(() => {
-    const map = new Map<number, LiveCandle>();
-    for (const c of historical) map.set(c.t, c);
-    for (const c of candles) map.set(c.t, c); // live overwrites
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
-  }, [historical, candles]);
-
-  return { status, trades, candles: mergedSeries, orderbook, historical, fillBlock };
-}
-</file>
-
 <file path="backend/services/usecases/backfill_loop_service.py">
 from __future__ import annotations
 
@@ -172838,6 +172592,442 @@ class BackfillLoopService:
         finally:
             self._running = False
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
+<file path="frontend/src/services/ws/useWsLane.ts">
+// frontend/src/services/ws/useWsLane.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WebSocketPool, WsMsg, WsStatus } from "./WebSocketPool";
+
+const ENV_HIST_LIMIT = Number(import.meta.env.VITE_WS_HIST_LIMIT ?? 500);
+const ENV_HIST_POLL_MS = Number(import.meta.env.VITE_WS_HIST_POLL_MS ?? 1500);
+const ENV_HIST_NO_GROWTH_STOP = Number(import.meta.env.VITE_WS_HIST_NO_GROWTH_STOP ?? 6);
+
+function clampInt(n: number, def: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+export type LiveTrade = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  price: number;
+  size: number;
+  side?: string;
+  ts?: number;
+};
+
+export type LiveCandle = {
+  exchange: string;
+  symbol: string;
+  market: string;
+  interval: string;
+  t: number; // seconds
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+};
+
+export type Orderbook = {
+  bids: [number, number][];
+  asks: [number, number][];
+  spread: number;
+  ts?: number;
+};
+
+export type FillBlock = {
+  start_sec: number;
+  end_sec: number;
+  stage: string;
+  progress: number;
+  batch: number;
+  total: number;
+};
+
+function toNum(x: any): number {
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toSec(ts: unknown): number {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
+
+function intervalToSec(interval: string): number {
+  const m = /^(\d+)(s|m|h|d)$/.exec(interval.trim());
+  if (!m || !m[1]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  return 60;
+}
+
+function bucketStartFromMs(tsMs: number, sec: number): number {
+  const t = Math.floor(tsMs / 1000);
+  return Math.floor(t / sec) * sec;
+}
+
+function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] {
+  if (!incoming.length) return prev;
+
+  const map = new Map<number, LiveCandle>();
+  for (const c of prev) map.set(c.t, c);
+
+  let changed = false;
+  for (const c of incoming) {
+    const old = map.get(c.t);
+    if (
+      !old ||
+      old.o !== c.o ||
+      old.h !== c.h ||
+      old.l !== c.l ||
+      old.c !== c.c ||
+      old.v !== c.v
+    ) {
+      map.set(c.t, c);
+      changed = true;
+    }
+  }
+
+  if (!changed) return prev;
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
+}
+
+export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
+  const [status, setStatus] = useState<WsStatus>("INIT");
+  const [trades, setTrades] = useState<LiveTrade[]>([]);
+  const [candles, setCandles] = useState<LiveCandle[]>([]);
+  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [historical, setHistorical] = useState<LiveCandle[]>([]);
+  const [fillBlock, setFillBlock] = useState<FillBlock | null>(null);
+
+  // Backend limits (from "connection" message)
+  const maxTradesRef = useRef<number>(500);
+  const maxCandlesRef = useRef<number>(2000);
+
+  // Historical request policy (client-side, ENV-driven)
+  const histLimitRef = useRef<number>(clampInt(ENV_HIST_LIMIT, 500, 100, 20000));
+  const histPollMsRef = useRef<number>(clampInt(ENV_HIST_POLL_MS, 1500, 200, 30000));
+  const histNoGrowthStopRef = useRef<number>(clampInt(ENV_HIST_NO_GROWTH_STOP, 6, 1, 100));
+  const histLastCountRef = useRef<number>(0);
+  const histNoGrowthRef = useRef<number>(0);
+  const histTimerRef = useRef<number | null>(null);
+  const histInFlightRef = useRef<boolean>(false);
+  const histLastReqAtRef = useRef<number>(0);
+
+  const sec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const pendingTrades = useRef<LiveTrade[]>([]);
+  const rafTrades = useRef<number | null>(null);
+  const lastCandleRef = useRef<LiveCandle | null>(null);
+
+  // Reset state on lane key change
+  useEffect(() => {
+    setTrades([]);
+    setCandles([]);
+    setOrderbook(null);
+    setHistorical([]);
+    lastCandleRef.current = null;
+    pendingTrades.current = [];
+
+    histLastCountRef.current = 0;
+    histNoGrowthRef.current = 0;
+    histInFlightRef.current = false;
+    histLastReqAtRef.current = 0;
+
+    if (histTimerRef.current !== null) {
+      window.clearInterval(histTimerRef.current);
+      histTimerRef.current = null;
+    }
+  }, [exchange, symbol, market, interval]);
+
+  useEffect(() => {
+    const pool = WebSocketPool.instance;
+
+    const requestHistorical = () => {
+      // throttle: avoid spamming
+      const now = Date.now();
+      if (histInFlightRef.current) return;
+      if (now - histLastReqAtRef.current < Math.max(250, histPollMsRef.current - 200)) return;
+
+      histInFlightRef.current = true;
+      histLastReqAtRef.current = now;
+
+      // Protocol: "historical:<interval>:<limit>"
+      pool.send(exchange, symbol, market, `historical:${interval}:${histLimitRef.current}`);
+    };
+
+    const stopHistoricalPolling = () => {
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+    };
+
+    const startHistoricalPolling = () => {
+      if (histTimerRef.current !== null) return;
+
+      // initial request immediately
+      requestHistorical();
+
+      // then poll until stable (no growth)
+      histTimerRef.current = window.setInterval(() => {
+        // stop condition: stable data for N cycles
+        if (histNoGrowthRef.current >= histNoGrowthStopRef.current) {
+          stopHistoricalPolling();
+          return;
+        }
+        requestHistorical();
+      }, histPollMsRef.current);
+    };
+
+    const offStatus = pool.onStatus(exchange, symbol, market, (newStatus) => {
+      setStatus(newStatus);
+
+      if (newStatus === "OPEN") {
+        // ✅ TASK 2: Send subscribe:interval message on OPEN
+        pool.send(exchange, symbol, market, `subscribe:${interval}`);
+        
+        // start polling historical (works even if backend doesn't push)
+        startHistoricalPolling();
+      }
+
+      if (newStatus === "CLOSED" || newStatus === "ERROR") {
+        stopHistoricalPolling();
+      }
+    });
+
+    const offMsg = pool.subscribe(exchange, symbol, market, (msg: WsMsg) => {
+      // Connection message with limits
+      if (msg.type === "connection") {
+        const limits = (msg as any).limits || {};
+        maxTradesRef.current = limits.maxTrades || 500;
+        maxCandlesRef.current = limits.maxCandles || 2000;
+
+        // Optional: backend may provide preferred historical limit/poll in future; tolerate if missing
+        const hl = Number((limits as any).historicalLimit);
+        const hp = Number((limits as any).historicalPollMs);
+        if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
+        if (Number.isFinite(hp) && hp > 200) histPollMsRef.current = Math.floor(hp);
+
+        return;
+      }
+
+      if (msg.type === "trade") {
+        const t: LiveTrade = {
+          exchange: msg.exchange,
+          symbol: msg.symbol,
+          market: msg.market,
+          price: toNum((msg as any).price),
+          size: toNum((msg as any).size),
+          side: (msg as any).side,
+          ts: toNum((msg as any).ts) || undefined,
+        };
+
+        // trades buffer (RAF)
+        pendingTrades.current.push(t);
+        if (rafTrades.current === null) {
+          rafTrades.current = window.requestAnimationFrame(() => {
+            rafTrades.current = null;
+            const batch = pendingTrades.current;
+            pendingTrades.current = [];
+            if (!batch.length) return;
+
+            setTrades((prev) => {
+              const next = prev.concat(batch);
+              const max = maxTradesRef.current;
+              return next.length <= max ? next : next.slice(next.length - max);
+            });
+          });
+        }
+
+        // build live candle from trades (client-side agg)
+        const tsMs = t.ts ? (t.ts > 10_000_000_000 ? t.ts : t.ts * 1000) : Date.now();
+        const bucket = bucketStartFromMs(tsMs, sec);
+
+        const cur = lastCandleRef.current;
+        if (!cur || cur.t !== bucket) {
+          const fresh: LiveCandle = {
+            exchange, symbol, market, interval,
+            t: bucket,
+            o: t.price,
+            h: t.price,
+            l: t.price,
+            c: t.price,
+            v: t.size || 0,
+          };
+          lastCandleRef.current = fresh;
+          setCandles((prev) => {
+            const next = prev.concat(fresh);
+            const max = maxCandlesRef.current;
+            return next.length <= max ? next : next.slice(next.length - max);
+          });
+          return;
+        }
+
+        const upd: LiveCandle = {
+          ...cur,
+          h: Math.max(cur.h, t.price),
+          l: Math.min(cur.l, t.price),
+          c: t.price,
+          v: cur.v + (t.size || 0),
+        };
+        lastCandleRef.current = upd;
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [upd];
+          if (last.t !== upd.t) return prev.concat(upd);
+          return prev.slice(0, -1).concat(upd);
+        });
+        return;
+      }
+
+      if (msg.type === "candle") {
+        // optional backend candle stream; keep compatible
+        const m: any = msg;
+        
+        // ✅ INTERVAL FILTER: Nur Candles mit passendem Interval akzeptieren
+        const msgInterval = String(m.interval ?? "").trim();
+        if (msgInterval && msgInterval !== interval) {
+          return; // Ignoriere andere Resolutions (z.B. 1s wenn UI 1m zeigt)
+        }
+        
+        const tSec = toSec(m.t);
+        if (!tSec) return;
+
+        const c: LiveCandle = {
+          exchange: m.exchange || exchange,
+          symbol: m.symbol || symbol,
+          market: m.market || market,
+          interval: m.interval || interval,
+          t: tSec,
+          o: toNum(m.o),
+          h: toNum(m.h),
+          l: toNum(m.l),
+          c: toNum(m.c),
+          v: toNum(m.v),
+        };
+
+        lastCandleRef.current = c;
+
+        setCandles((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last) return [c];
+          if (last.t !== c.t) {
+            const next = prev.concat(c);
+            const max = maxCandlesRef.current;
+            return max > 0 && next.length > max ? next.slice(next.length - max) : next;
+          }
+          return prev.slice(0, -1).concat(c);
+        });
+        return;
+      }
+
+      if (msg.type === "orderbook") {
+        const bidsRaw = (msg as any).bids || [];
+        const asksRaw = (msg as any).asks || [];
+        const bids: [number, number][] = bidsRaw.map((b: any) => [toNum(b[0]), toNum(b[1])]);
+        const asks: [number, number][] = asksRaw.map((a: any) => [toNum(a[0]), toNum(a[1])]);
+        const bestBid = bids.length > 0 && bids[0] ? bids[0][0] : 0;
+        const bestAsk = asks.length > 0 && asks[0] ? asks[0][0] : 0;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+        setOrderbook({ bids, asks, spread, ts: (msg as any).timestamp });
+        return;
+      }
+
+      if (msg.type === "historical") {
+        // mark request as completed
+        histInFlightRef.current = false;
+
+        const candlesRaw = (msg as any).candles || [];
+        const hist: LiveCandle[] = candlesRaw
+          .map((raw: any) => ({
+            exchange: msg.exchange || exchange,
+            symbol: msg.symbol || symbol,
+            market: (msg as any).market || market,
+            interval: (msg as any).interval || interval,
+            t: toSec(raw.time ?? raw.t),
+            o: toNum(raw.open ?? raw.o),
+            h: toNum(raw.high ?? raw.h),
+            l: toNum(raw.low ?? raw.l),
+            c: toNum(raw.close ?? raw.c),
+            v: toNum(raw.volume ?? raw.v),
+          }))
+          .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
+
+        setHistorical((prev) => mergeCandles(prev, hist));
+
+        // stop heuristic: if total historical size does not grow for N polls, stop polling
+        // (works even if backend always returns same "last N" window)
+        const incomingCount = hist.length;
+        const prevTotal = histLastCountRef.current;
+
+        // we need the full state size, but we only have incoming; use a conservative heuristic:
+        // If backend keeps returning same size AND we've already merged without growth, count no-growth.
+        // We'll approximate by tracking whether incoming is empty or identical size repeatedly.
+        if (incomingCount <= 0) {
+          histNoGrowthRef.current += 1;
+        } else if (incomingCount === prevTotal) {
+          histNoGrowthRef.current += 1;
+        } else {
+          histNoGrowthRef.current = 0;
+          histLastCountRef.current = incomingCount;
+        }
+
+        return;
+      }
+
+      if (msg.type === "fill_block") {
+        const m = msg as any;
+        const block = {
+          start_sec: m.start_sec || 0,
+          end_sec: m.end_sec || 0,
+          stage: m.stage || "gap",
+          progress: m.progress || 0,
+          batch: m.batch || 0,
+          total: m.total || 0,
+        };
+        console.log('[useWsLane] Received fill_block message:', block);
+        setFillBlock(block);
+        return;
+      }
+    });
+
+    return () => {
+      if (histTimerRef.current !== null) {
+        window.clearInterval(histTimerRef.current);
+        histTimerRef.current = null;
+      }
+      window.setTimeout(() => {
+        try { offStatus(); } catch {}
+        try { offMsg(); } catch {}
+      }, 100);
+    };
+  }, [exchange, symbol, market, interval, sec]);
+
+  // ✅ Chart series must include historical + live
+  // Live should overwrite historical at same t (more recent values)
+  const mergedSeries = useMemo(() => {
+    const map = new Map<number, LiveCandle>();
+    for (const c of historical) map.set(c.t, c);
+    for (const c of candles) map.set(c.t, c); // live overwrites
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  }, [historical, candles]);
+
+  return { status, trades, candles: mergedSeries, orderbook, historical, fillBlock };
+}
 </file>
 
 <file path="backend/services/usecases/unified_ohlc.py">
