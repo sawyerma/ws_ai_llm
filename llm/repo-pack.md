@@ -36111,6 +36111,81 @@ async def symbol_refresh_loop() -> None:
             # Loop läuft weiter, damit ein Fehler den Service nicht killt
 </file>
 
+<file path="backend/services/usecases/backfill_service.py">
+# backend/services/usecases/backfill_service.py
+
+import logging
+from datetime import datetime
+from typing import Optional
+
+from backend.services.usecases.unified_historical import UnifiedHistoricalService
+
+logger = logging.getLogger(__name__)
+
+
+class BackfillService:
+    """
+    BackfillService – Enterprise Service Layer für Historical-Backfill
+
+    - Kein HTTP
+    - Kein FastAPI
+    - Reine Business-Logik
+    - Wiederverwendbar für:
+        * Auto-Backfill beim Startup
+        * HTTP-Router (/api/historical/backfill/start)
+        * CLI / Scheduler / Admin-Tools
+    """
+
+    def __init__(self, exchange: str):
+        # Immer in lowercase, intern konsistent
+        self.exchange = exchange.lower()
+        # Unified Historical Manager (spricht mit Exchange + ClickHouse)
+        self._manager = UnifiedHistoricalService(self.exchange)
+
+    async def start_backfill(
+        self,
+        symbol: str,
+        market: str,
+        until_date: datetime,
+        interval: str,
+        limit: int = 5000,
+    ) -> int:
+        """
+        Startet einen Backfill über UnifiedHistoricalService.
+
+        Returns:
+            int: Anzahl der verarbeiteten Candles (oder 0, falls der Manager
+                 keinen int zurückgibt – konsistent zu alter Logik).
+        """
+        sym = symbol.upper()
+        logger.info(
+            f"🚀 BackfillService: Start {self.exchange.upper()} "
+            f"{sym} {market} {interval} → until {until_date.isoformat()}"
+        )
+
+        # UnifiedHistoricalService.history(symbol, market_type, end_date, interval, limit)
+        result = await self._manager.history(
+            sym,
+            market,
+            until_date,
+            interval,
+            limit,
+        )
+
+        # Konsistente Semantik: alles auf int abbilden
+        if isinstance(result, int):
+            trades = result
+        else:
+            # Fallback: keine Information über Anzahl → 0
+            trades = 0
+
+        logger.info(
+            f"✅ BackfillService: Completed {self.exchange.upper()} "
+            f"{sym} {market} {interval} → {trades} trades"
+        )
+        return trades
+</file>
+
 <file path="backend/services/__init__.py">
 
 </file>
@@ -122810,81 +122885,6 @@ async def discover_trade_streams(
     return streams_final, active_symbols, existing_streams
 </file>
 
-<file path="backend/services/usecases/backfill_service.py">
-# backend/services/usecases/backfill_service.py
-
-import logging
-from datetime import datetime
-from typing import Optional
-
-from backend.services.usecases.unified_historical import UnifiedHistoricalService
-
-logger = logging.getLogger(__name__)
-
-
-class BackfillService:
-    """
-    BackfillService – Enterprise Service Layer für Historical-Backfill
-
-    - Kein HTTP
-    - Kein FastAPI
-    - Reine Business-Logik
-    - Wiederverwendbar für:
-        * Auto-Backfill beim Startup
-        * HTTP-Router (/api/historical/backfill/start)
-        * CLI / Scheduler / Admin-Tools
-    """
-
-    def __init__(self, exchange: str):
-        # Immer in lowercase, intern konsistent
-        self.exchange = exchange.lower()
-        # Unified Historical Manager (spricht mit Exchange + ClickHouse)
-        self._manager = UnifiedHistoricalService(self.exchange)
-
-    async def start_backfill(
-        self,
-        symbol: str,
-        market: str,
-        until_date: datetime,
-        interval: str,
-        limit: int = 5000,
-    ) -> int:
-        """
-        Startet einen Backfill über UnifiedHistoricalService.
-
-        Returns:
-            int: Anzahl der verarbeiteten Candles (oder 0, falls der Manager
-                 keinen int zurückgibt – konsistent zu alter Logik).
-        """
-        sym = symbol.upper()
-        logger.info(
-            f"🚀 BackfillService: Start {self.exchange.upper()} "
-            f"{sym} {market} {interval} → until {until_date.isoformat()}"
-        )
-
-        # UnifiedHistoricalService.history(symbol, market_type, end_date, interval, limit)
-        result = await self._manager.history(
-            sym,
-            market,
-            until_date,
-            interval,
-            limit,
-        )
-
-        # Konsistente Semantik: alles auf int abbilden
-        if isinstance(result, int):
-            trades = result
-        else:
-            # Fallback: keine Information über Anzahl → 0
-            trades = 0
-
-        logger.info(
-            f"✅ BackfillService: Completed {self.exchange.upper()} "
-            f"{sym} {market} {interval} → {trades} trades"
-        )
-        return trades
-</file>
-
 <file path="backend/services/usecases/gap_scan_service.py">
 from __future__ import annotations
 
@@ -161812,1152 +161812,6 @@ class cl_manager:
 cl_manager_instance = cl_manager()
 </file>
 
-<file path="backend/database/clickhouse/init.sql">
--- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- Tabelle 1/46
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 2/46
-CREATE TABLE IF NOT EXISTS trading.bitget_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 3/46
-CREATE TABLE IF NOT EXISTS trading.mexc_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 4/46
-CREATE TABLE IF NOT EXISTS trading.gateio_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 5/46
-CREATE TABLE IF NOT EXISTS trading.bybit_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 6/46
-CREATE TABLE IF NOT EXISTS trading.okx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 7/46
-CREATE TABLE IF NOT EXISTS trading.htx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 8/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 9/46
-CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 10/46
-CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 11/46
-CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 12/46
-CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 13/46
-CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 14/46
-CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 15/46
-CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 16/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        TTL timestamp + INTERVAL 1 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 17/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 18/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 19/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 20/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 21/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 22/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 23/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 24/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        TTL ts + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 25/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 26/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 27/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 28/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 29/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 30/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 31/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 32/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 33/46
-CREATE TABLE IF NOT EXISTS trading.base_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            signal_type LowCardinality(String),
-            signal_strength Decimal(5,4),
-            price Decimal(18,8),
-            volume Decimal(18,8),
-            confidence Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 34/46
-CREATE TABLE IF NOT EXISTS trading.tier1_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            tier1_score Decimal(5,4),
-            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
-            entry_price Decimal(18,8),
-            stop_loss Decimal(18,8),
-            take_profit Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 35/46
-CREATE TABLE IF NOT EXISTS trading.alma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            alma_value Decimal(18,8),
-            alma_slope Decimal(5,4),
-            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 36/46
-CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            wave_count UInt8,
-            wave_type LowCardinality(String),
-            wave_confidence Decimal(5,4),
-            price_target Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 37/46
-CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            whale_score Decimal(5,4),
-            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
-            volume_impact Decimal(18,8),
-            price_impact Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 38/46
-CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            sigma_level Decimal(5,4),
-            is_extreme UInt8,
-            reversion_probability Decimal(5,4),
-            expected_price Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 39/46
-CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            dominant_frequency Decimal(5,4),
-            power_spectrum Decimal(5,4),
-            cycle_length UInt16,
-            phase Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 40/46
-CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            volatility Decimal(5,4),
-            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
-            atr Decimal(18,8),
-            bollinger_width Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 41/46
-CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol1 LowCardinality(String),
-            symbol2 LowCardinality(String),
-            exchange LowCardinality(String),
-            correlation Decimal(5,4),
-            rolling_correlation Decimal(5,4),
-            divergence_score Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol1, symbol2, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 42/46
-CREATE TABLE IF NOT EXISTS trading.regime_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
-            regime_confidence Decimal(5,4),
-            regime_duration UInt32,
-            transition_probability Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 3 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 43/46
-CREATE TABLE IF NOT EXISTS trading.indicator_performance (
-            timestamp DateTime64(3, 'UTC'),
-            indicator_name LowCardinality(String),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            accuracy Decimal(5,4),
-            profit_factor Decimal(5,4),
-            sharpe_ratio Decimal(5,4),
-            total_signals UInt32,
-            winning_signals UInt32
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (indicator_name, symbol, exchange, timestamp)
-        TTL timestamp + INTERVAL 6 MONTH
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 44/46
-CREATE TABLE IF NOT EXISTS trading.binance_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 45/46
-CREATE TABLE IF NOT EXISTS trading.bitget_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 46/46
-CREATE TABLE IF NOT EXISTS trading.mexc_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 47/46
-CREATE TABLE IF NOT EXISTS trading.gateio_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 48/46
-CREATE TABLE IF NOT EXISTS trading.bybit_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 49/46
-CREATE TABLE IF NOT EXISTS trading.okx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 50/46
-CREATE TABLE IF NOT EXISTS trading.htx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 51/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-TTL bucket_start + toIntervalMonth(12)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 52/46
-CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    TTL ts + INTERVAL 1 MONTH
-    SETTINGS index_granularity = 8192;
-
--- Tabelle 53/46
-CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    TTL ts + INTERVAL 3 MONTH
-    SETTINGS index_granularity = 8192;
-
--- ========================================
--- MATERIALIZED VIEWS (AUTO-AGGREGATION)
--- ========================================
-
--- MV 1/8: binance_trades → binance_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
-TO trading.binance_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.binance_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 2/8: bitget_trades → bitget_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
-TO trading.bitget_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bitget_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 3/8: mexc_trades → mexc_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
-TO trading.mexc_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.mexc_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 4/8: gateio_trades → gateio_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
-TO trading.gateio_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.gateio_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 5/8: bybit_trades → bybit_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
-TO trading.bybit_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bybit_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 6/8: okx_trades → okx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
-TO trading.okx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.okx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 7/8: htx_trades → htx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
-TO trading.htx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.htx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 8/8: coinbase_trades → coinbase_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
-TO trading.coinbase_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.coinbase_trades
-GROUP BY symbol, market, bucket_start;
-
--- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- ✅ Database: trading
--- ✅ Tabellen: 53 (8 neue kline Tabellen)
--- ✅ Materialized Views: 8 (1s Auto-Aggregation)
--- ✅ Generiert: Automatisch aus Python Migrations
--- ========================================
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -164163,6 +163017,1135 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
+</file>
+
+<file path="backend/database/clickhouse/init.sql">
+-- ========================================
+-- TRADING SYSTEM CLICKHOUSE SCHEMA
+-- AUTO-GENERIERT von 000_generate_init_sql.py
+-- NICHT MANUELL BEARBEITEN!
+-- ========================================
+-- Single Source of Truth: Python Migration Scripts
+-- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
+
+CREATE DATABASE IF NOT EXISTS trading;
+
+-- Tabelle 1/46
+CREATE TABLE IF NOT EXISTS trading.binance_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 2/46
+CREATE TABLE IF NOT EXISTS trading.bitget_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 3/46
+CREATE TABLE IF NOT EXISTS trading.mexc_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 4/46
+CREATE TABLE IF NOT EXISTS trading.gateio_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 5/46
+CREATE TABLE IF NOT EXISTS trading.bybit_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 6/46
+CREATE TABLE IF NOT EXISTS trading.okx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 7/46
+CREATE TABLE IF NOT EXISTS trading.htx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 8/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 9/46
+CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 10/46
+CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 11/46
+CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 12/46
+CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 13/46
+CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 14/46
+CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 15/46
+CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 16/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        TTL timestamp + INTERVAL 1 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 17/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 18/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 19/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 20/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 21/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 22/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 23/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 24/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        TTL ts + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 25/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 26/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 27/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 28/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 29/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 30/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 31/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 32/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 33/46
+CREATE TABLE IF NOT EXISTS trading.base_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            signal_type LowCardinality(String),
+            signal_strength Decimal(5,4),
+            price Decimal(18,8),
+            volume Decimal(18,8),
+            confidence Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 34/46
+CREATE TABLE IF NOT EXISTS trading.tier1_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            tier1_score Decimal(5,4),
+            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
+            entry_price Decimal(18,8),
+            stop_loss Decimal(18,8),
+            take_profit Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 35/46
+CREATE TABLE IF NOT EXISTS trading.alma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            alma_value Decimal(18,8),
+            alma_slope Decimal(5,4),
+            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 36/46
+CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            wave_count UInt8,
+            wave_type LowCardinality(String),
+            wave_confidence Decimal(5,4),
+            price_target Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 37/46
+CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            whale_score Decimal(5,4),
+            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
+            volume_impact Decimal(18,8),
+            price_impact Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 38/46
+CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            sigma_level Decimal(5,4),
+            is_extreme UInt8,
+            reversion_probability Decimal(5,4),
+            expected_price Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 39/46
+CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            dominant_frequency Decimal(5,4),
+            power_spectrum Decimal(5,4),
+            cycle_length UInt16,
+            phase Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 40/46
+CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            volatility Decimal(5,4),
+            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
+            atr Decimal(18,8),
+            bollinger_width Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 41/46
+CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol1 LowCardinality(String),
+            symbol2 LowCardinality(String),
+            exchange LowCardinality(String),
+            correlation Decimal(5,4),
+            rolling_correlation Decimal(5,4),
+            divergence_score Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol1, symbol2, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 42/46
+CREATE TABLE IF NOT EXISTS trading.regime_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
+            regime_confidence Decimal(5,4),
+            regime_duration UInt32,
+            transition_probability Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        TTL timestamp + INTERVAL 3 MONTH
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 43/46
+CREATE TABLE IF NOT EXISTS trading.indicator_performance (
+            timestamp DateTime64(3, 'UTC'),
+            indicator_name LowCardinality(String),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            accuracy Decimal(5,4),
+            profit_factor Decimal(5,4),
+            sharpe_ratio Decimal(5,4),
+            total_signals UInt32,
+            winning_signals UInt32
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (indicator_name, symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 44/46
+CREATE TABLE IF NOT EXISTS trading.binance_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 45/46
+CREATE TABLE IF NOT EXISTS trading.bitget_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 46/46
+CREATE TABLE IF NOT EXISTS trading.mexc_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 47/46
+CREATE TABLE IF NOT EXISTS trading.gateio_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 48/46
+CREATE TABLE IF NOT EXISTS trading.bybit_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 49/46
+CREATE TABLE IF NOT EXISTS trading.okx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 50/46
+CREATE TABLE IF NOT EXISTS trading.htx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 51/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 52/46
+CREATE TABLE IF NOT EXISTS trading.all_orderbook (
+        ts DateTime64(3, 'UTC'),
+        symbol LowCardinality(String),
+        exchange LowCardinality(String),
+        best_bid_price Decimal(76,38),
+        best_bid_size Decimal(76,38),
+        best_ask_price Decimal(76,38),
+        best_ask_size Decimal(76,38),
+        spread Decimal(76,38),
+        mid_price Decimal(76,38)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (symbol, exchange, ts)
+    TTL ts + INTERVAL 1 MONTH
+    SETTINGS index_granularity = 8192;
+
+-- Tabelle 53/46
+CREATE TABLE IF NOT EXISTS trading.all_whale (
+        event_id String,
+        exchange LowCardinality(String),
+        ts DateTime64(3, 'UTC'),
+        chain String,
+        tx_hash String,
+        from_addr String,
+        to_addr String,
+        token Nullable(String),
+        symbol String,
+        amount Decimal(76,38),
+        is_native UInt8,
+        amount_usd Decimal(76,38),
+        from_exchange String,
+        from_country String,
+        from_city String,
+        to_exchange String,
+        to_country String,
+        to_city String,
+        is_cross_border UInt8,
+        source String,
+        threshold_usd Decimal(76,38),
+        coin_rank UInt32,
+        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (exchange, symbol, ts, amount_usd)
+    TTL ts + INTERVAL 3 MONTH
+    SETTINGS index_granularity = 8192;
+
+-- ========================================
+-- MATERIALIZED VIEWS (AUTO-AGGREGATION)
+-- ========================================
+
+-- MV 1/8: binance_trades → binance_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
+TO trading.binance_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.binance_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 2/8: bitget_trades → bitget_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
+TO trading.bitget_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bitget_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 3/8: mexc_trades → mexc_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
+TO trading.mexc_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.mexc_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 4/8: gateio_trades → gateio_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
+TO trading.gateio_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.gateio_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 5/8: bybit_trades → bybit_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
+TO trading.bybit_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bybit_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 6/8: okx_trades → okx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
+TO trading.okx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.okx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 7/8: htx_trades → htx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
+TO trading.htx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.htx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 8/8: coinbase_trades → coinbase_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
+TO trading.coinbase_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.coinbase_trades
+GROUP BY symbol, market, bucket_start;
+
+-- ========================================
+-- ZUSAMMENFASSUNG
+-- ========================================
+-- ✅ Database: trading
+-- ✅ Tabellen: 53 (8 neue kline Tabellen)
+-- ✅ Materialized Views: 8 (1s Auto-Aggregation)
+-- ✅ Generiert: Automatisch aus Python Migrations
+-- ========================================
 </file>
 
 <file path="backend/services/adapter/stream_aggregator.py">
@@ -168922,6 +168905,262 @@ echo ""
 exit $exit_code
 </file>
 
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'COLLECTOR_SYMBOLS', 
+    'BTCUSDT,ETHUSDT,ADAUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
 <file path="backend/websocket/ws_manager.py">
 from typing import Dict, Set, Optional, Tuple
 import asyncio
@@ -169865,262 +170104,6 @@ createRoot(document.getElementById('root')!).render(
     </ThemeProvider>
   </StrictMode>,
 );
-</file>
-
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'COLLECTOR_SYMBOLS', 
-    'BTCUSDT,ETHUSDT,ADAUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 <file path="backend/services/adapter/unified_aggregator.py">
@@ -172940,53 +172923,63 @@ async def _table_exists(db: str, name: str) -> bool:
     return exists
 
 
-async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
+async def _query_kline_1s(exchange_table: str, symbol: str, market: str,
+                          start_sec: int, end_sec: int, limit: int):
     ch = await _ch()
-    
-    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
-    use_unified = await _table_exists("trading", "all_kline_1s_state")
-    
-    if use_unified:
-        # Unified table (all_kline_1s_state)
-        rows = await ch.execute(
-            """
+    rows = await ch.execute(
+        f"""
+        SELECT
+            bucket_start AS ts,
+            argMinMerge(open_state)  AS open,
+            maxMerge(high_state)     AS high,
+            minMerge(low_state)      AS low,
+            argMaxMerge(close_state) AS close,
+            sumMerge(volume_state)   AS volume
+        FROM trading.{exchange_table}
+        WHERE symbol   = %(symbol)s
+          AND market   = %(market)s
+          AND interval = '1s'
+          AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
+          AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
+        GROUP BY bucket_start
+        ORDER BY ts ASC
+        LIMIT %(limit)s
+        """,
+        {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
+    )
+    out = []
+    for r in rows or []:
+        ts_dt = r[0]
+        if not ts_dt:
+            continue
+        out.append({
+            "time": int(ts_dt.timestamp()),
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": float(r[5]),
+        })
+    return out
+
+
+async def _query_kline_multi(exchange_table: str, symbol: str, market: str,
+                             step: int, start_sec: int, end_sec: int, limit: int):
+    ch = await _ch()
+    rows = await ch.execute(
+        f"""
+        WITH toUInt32(%(step)s) AS step
+        SELECT
+            toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
+            argMin(open, bucket_start)  AS open,
+            max(high)                   AS high,
+            min(low)                    AS low,
+            argMax(close, bucket_start) AS close,
+            sum(volume)                 AS volume
+        FROM
+        (
             SELECT
-                bucket_start AS ts,
-                argMinMerge(open_state)  AS open,
-                maxMerge(high_state)     AS high,
-                minMerge(low_state)      AS low,
-                argMaxMerge(close_state) AS close,
-                sumMerge(volume_state)   AS volume
-            FROM trading.all_kline_1s_state
-            WHERE exchange = %(exchange)s
-              AND symbol   = %(symbol)s
-              AND market   = %(market)s
-              AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-              AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-            GROUP BY bucket_start
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
-        )
-    else:
-        # Fallback: Exchange-specific table ({exchange}_kline)
-        exchange_table = f"{exchange}_kline"
-        table_exists = await _table_exists("trading", exchange_table)
-        
-        if not table_exists:
-            logger.error(
-                f"[_query_preagg_1s] CRITICAL: Neither all_kline_1s_state nor {exchange_table} exists. "
-                f"Available tables in 'trading' database should be checked manually."
-            )
-            return []
-        
-        logger.info(f"[_query_preagg_1s] Using fallback table: trading.{exchange_table}")
-        
-        rows = await ch.execute(
-            f"""
-            SELECT
-                bucket_start AS ts,
+                bucket_start,
                 argMinMerge(open_state)  AS open,
                 maxMerge(high_state)     AS high,
                 minMerge(low_state)      AS low,
@@ -172999,116 +172992,26 @@ async def _query_preagg_1s(exchange: str, symbol: str, market: str, start_sec: i
               AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
               AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
             GROUP BY bucket_start
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "limit": limit},
         )
-
-    out: List[Dict[str, Any]] = []
+        GROUP BY ts
+        ORDER BY ts ASC
+        LIMIT %(limit)s
+        """,
+        {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
+    )
+    out = []
     for r in rows or []:
         ts_dt = r[0]
         if not ts_dt:
             continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
-    return out
-
-
-async def _query_preagg_multi(exchange: str, symbol: str, market: str, step: int, start_sec: int, end_sec: int, limit: int) -> List[Dict[str, Any]]:
-    ch = await _ch()
-    
-    # ✅ FIX: Prüfe ob all_kline_1s_state existiert, sonst fallback auf {exchange}_kline
-    use_unified = await _table_exists("trading", "all_kline_1s_state")
-    
-    if use_unified:
-        # Unified table (all_kline_1s_state)
-        rows = await ch.execute(
-            """
-            WITH toUInt32(%(step)s) AS step
-            SELECT
-                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-                argMin(open, bucket_start)  AS open,
-                max(high)                   AS high,
-                min(low)                    AS low,
-                argMax(close, bucket_start) AS close,
-                sum(volume)                 AS volume
-            FROM
-            (
-                SELECT
-                    bucket_start,
-                    argMinMerge(open_state)  AS open,
-                    maxMerge(high_state)     AS high,
-                    minMerge(low_state)      AS low,
-                    argMaxMerge(close_state) AS close,
-                    sumMerge(volume_state)   AS volume
-                FROM trading.all_kline_1s_state
-                WHERE exchange = %(exchange)s
-                  AND symbol   = %(symbol)s
-                  AND market   = %(market)s
-                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-                GROUP BY bucket_start
-            )
-            GROUP BY ts
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"exchange": exchange, "symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-        )
-    else:
-        # Fallback: Exchange-specific table ({exchange}_kline)
-        exchange_table = f"{exchange}_kline"
-        table_exists = await _table_exists("trading", exchange_table)
-        
-        if not table_exists:
-            logger.error(
-                f"[_query_preagg_multi] CRITICAL: Neither all_kline_1s_state nor {exchange_table} exists. "
-                f"Available tables in 'trading' database should be checked manually."
-            )
-            return []
-        
-        logger.info(f"[_query_preagg_multi] Using fallback table: trading.{exchange_table}")
-        
-        rows = await ch.execute(
-            f"""
-            WITH toUInt32(%(step)s) AS step
-            SELECT
-                toStartOfInterval(bucket_start, toIntervalSecond(step)) AS ts,
-                argMin(open, bucket_start)  AS open,
-                max(high)                   AS high,
-                min(low)                    AS low,
-                argMax(close, bucket_start) AS close,
-                sum(volume)                 AS volume
-            FROM
-            (
-                SELECT
-                    bucket_start,
-                    argMinMerge(open_state)  AS open,
-                    maxMerge(high_state)     AS high,
-                    minMerge(low_state)      AS low,
-                    argMaxMerge(close_state) AS close,
-                    sumMerge(volume_state)   AS volume
-                FROM trading.{exchange_table}
-                WHERE symbol   = %(symbol)s
-                  AND market   = %(market)s
-                  AND interval = '1s'
-                  AND bucket_start >= toDateTime64(%(start)s, 3, 'UTC')
-                  AND bucket_start <= toDateTime64(%(end)s, 3, 'UTC')
-                GROUP BY bucket_start
-            )
-            GROUP BY ts
-            ORDER BY ts ASC
-            LIMIT %(limit)s
-            """,
-            {"symbol": symbol, "market": market, "start": start_sec, "end": end_sec, "step": step, "limit": limit},
-        )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows or []:
-        ts_dt = r[0]
-        if not ts_dt:
-            continue
-        out.append({"time": int(ts_dt.timestamp()), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])})
+        out.append({
+            "time": int(ts_dt.timestamp()),
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": float(r[5]),
+        })
     return out
 
 
@@ -173141,34 +173044,22 @@ async def get_ohlc_from_ch(exchange: str, symbol: str, market: str, interval_sec
     needed = int(max(0, end_sec - start_sec) / interval_seconds) + 1
     effective_limit = min(max(limit, needed), _env_int("OHLC_MAX_LIMIT", 200000, 100, 1000000))
 
-    # ✅ Pre-Agg first
-    preagg_enabled = os.getenv("KLINE_PREAGG_ENABLED", "1").strip() not in ("0", "false", "False", "no", "NO")
-    if preagg_enabled:
-        try:
-            from backend.database.clickhouse.kline_preagg import ensure_kline_preagg
-            await ensure_kline_preagg()
+    # ===========================
+    # DETERMINISTIC KLINE READ
+    # ===========================
+    # Historical darf ausschließlich aus trading.{exchange}_kline lesen.
+    # Keine table_exists Checks.
+    # Kein unified state.
+    # Keine Trades-Aggregation.
+    # Wenn Tabelle fehlt → ClickHouse wirft echten Fehler (gewollt).
 
-            if await _table_exists("trading", "all_kline_1s_state"):
-                if interval_seconds == 1:
-                    return await _query_preagg_1s(exchange, symbol, market, start_sec, end_sec, effective_limit)
-                return await _query_preagg_multi(exchange, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
-        except Exception as e:
-            logger.warning(f"[get_ohlc_from_ch] pre-agg failed → fallback: {e}")
+    exchange_table = f"{exchange}_kline"
+    logger.info(f"[get_ohlc_from_ch] READ ONLY trading.{exchange_table}")
 
-    # ❌ FALLBACK DISABLED: On-the-fly aggregation from trades is too dangerous (performance risk)
-    # If kline tables don't exist, system should fail fast rather than scan millions of trades
-    
-    logger.error(
-        f"[get_ohlc_from_ch] CRITICAL: No kline table found for {exchange}/{symbol}/{market}. "
-        f"On-the-fly aggregation from trades is DISABLED for safety. "
-        f"Ensure Materialized Views are running: mv_{exchange}_trades_to_{exchange}_kline_1s"
-    )
-    
-    raise ValueError(
-        f"No pre-aggregated kline data available for {exchange}/{symbol}/{market}. "
-        f"Kline table (trading.{exchange}_kline or trading.all_kline_1s_state) not found. "
-        f"On-the-fly aggregation from trades is disabled for performance/safety reasons."
-    )
+    if interval_seconds == 1:
+        return await _query_kline_1s(exchange_table, symbol, market, start_sec, end_sec, effective_limit)
+
+    return await _query_kline_multi(exchange_table, symbol, market, interval_seconds, start_sec, end_sec, effective_limit)
 </file>
 
 </files>
