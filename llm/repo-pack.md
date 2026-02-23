@@ -126116,157 +126116,6 @@ export async function getDefaultSelectedIntervals(): Promise<Set<string>> {
 }
 </file>
 
-<file path="frontend/src/hooks/useSafeCandleChart.ts">
-// frontend/src/hooks/useSafeCandleChart.ts
-// ✅ TASK 3: Safe Candle Chart Hook mit Generation Token + Disposed Flag
-
-import { useEffect, useRef } from "react";
-import { createLazyChart } from "../lib/chartLazyLoader";
-
-export type SafeCandleChartApi = {
-  setData: (data: any[]) => void;
-  update: (candle: any) => void;
-  resize: (width: number, height: number) => void;
-  dispose: () => void;
-  chart: any;
-  series: any;
-};
-
-export function useSafeCandleChart(
-  containerRef: React.RefObject<HTMLDivElement>,
-  options?: any
-): SafeCandleChartApi | null {
-  const chartRef = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
-  const disposedRef = useRef<boolean>(false);
-  const generationRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Neue Generation bei jedem Mount
-    const currentGeneration = ++generationRef.current;
-    disposedRef.current = false;
-
-    let isMounted = true;
-
-    const initChart = async () => {
-      try {
-        // Chart erstellen via Lazy Loader
-        const chart = await createLazyChart(containerRef.current!, {
-          width: containerRef.current!.clientWidth,
-          height: containerRef.current!.clientHeight,
-          ...options,
-        });
-
-        if (!isMounted || currentGeneration !== generationRef.current) {
-          chart.remove();
-          return;
-        }
-
-        const series = chart.addCandlestickSeries({
-          upColor: "#26a69a",
-          downColor: "#ef5350",
-          borderVisible: false,
-          wickUpColor: "#26a69a",
-          wickDownColor: "#ef5350",
-        });
-
-        chartRef.current = chart;
-        seriesRef.current = series;
-      } catch (e) {
-        console.error("[useSafeCandleChart] Chart init failed:", e);
-      }
-    };
-
-    initChart();
-
-    // Cleanup bei Unmount
-    return () => {
-      isMounted = false;
-      
-      // Prüfe ob diese Generation noch aktuell ist
-      if (currentGeneration === generationRef.current) {
-        disposedRef.current = true;
-        
-        try {
-          chartRef.current?.remove();
-        } catch (e) {
-          console.warn("[useSafeCandleChart] Chart remove failed:", e);
-        }
-        
-        chartRef.current = null;
-        seriesRef.current = null;
-      }
-    };
-  }, [containerRef, options]);
-
-  // Safe API mit disposed-Check
-  const api = useRef<SafeCandleChartApi>({
-    setData: (data: any[]) => {
-      if (disposedRef.current || !seriesRef.current) {
-        console.warn("[useSafeCandleChart] setData called on disposed chart");
-        return;
-      }
-      try {
-        seriesRef.current.setData(data);
-      } catch (e) {
-        console.warn("[useSafeCandleChart] setData failed:", e);
-      }
-    },
-
-    update: (candle: any) => {
-      if (disposedRef.current || !seriesRef.current) {
-        console.warn("[useSafeCandleChart] update called on disposed chart");
-        return;
-      }
-      try {
-        seriesRef.current.update(candle);
-      } catch (e) {
-        console.warn("[useSafeCandleChart] update failed:", e);
-      }
-    },
-
-    resize: (width: number, height: number) => {
-      if (disposedRef.current || !chartRef.current) {
-        console.warn("[useSafeCandleChart] resize called on disposed chart");
-        return;
-      }
-      try {
-        chartRef.current.applyOptions({ width, height });
-      } catch (e) {
-        console.warn("[useSafeCandleChart] resize failed:", e);
-      }
-    },
-
-    dispose: () => {
-      if (disposedRef.current) return;
-      
-      disposedRef.current = true;
-      
-      try {
-        chartRef.current?.remove();
-      } catch (e) {
-        console.warn("[useSafeCandleChart] dispose failed:", e);
-      }
-      
-      chartRef.current = null;
-      seriesRef.current = null;
-    },
-
-    get chart() {
-      return chartRef.current;
-    },
-
-    get series() {
-      return seriesRef.current;
-    },
-  });
-
-  return chartRef.current ? api.current : null;
-}
-</file>
-
 <file path="frontend/src/lib/chartLazyLoader.ts">
 /**
  * Lightweight Charts Lazy Loader
@@ -161120,6 +160969,135 @@ def apply_exchange_limits(streams: Iterable[str], limit: int = 200) -> List[str]
 export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
 </file>
 
+<file path="frontend/src/hooks/useSafeCandleChart.ts">
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createLazyChart } from "../lib/chartLazyLoader";
+
+export type SafeCandleChartApi = {
+  chart: any;
+  series: any;
+  generation: number;
+
+  safeSetData: (data: any[]) => void;
+  safeUpdate: (bar: any) => void;
+  safeApplyOptions: (opts: any) => void;
+  safeFitContent: () => void;
+};
+
+export function useSafeCandleChart(
+  chartTheme: any,
+  seriesTheme: any,
+  containerRef: React.RefObject<HTMLDivElement>
+): SafeCandleChartApi | null {
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+
+  const disposedRef = useRef(false);
+  const genRef = useRef(0);
+
+  // ✅ wichtig: triggert Re-render wenn Chart bereit ist
+  const [ready, setReady] = useState(false);
+
+  const api = useMemo<SafeCandleChartApi>(() => {
+    return {
+      chart: null,
+      series: null,
+      generation: 0,
+
+      safeSetData: (data: any[]) => {
+        if (disposedRef.current) return;
+        const s = seriesRef.current;
+        if (!s) return;
+        try { s.setData(data); } catch {}
+      },
+
+      safeUpdate: (bar: any) => {
+        if (disposedRef.current) return;
+        const s = seriesRef.current;
+        if (!s) return;
+        try { s.update(bar); } catch {}
+      },
+
+      safeApplyOptions: (opts: any) => {
+        if (disposedRef.current) return;
+        const c = chartRef.current;
+        if (!c) return;
+        try { c.applyOptions(opts); } catch {}
+      },
+
+      safeFitContent: () => {
+        if (disposedRef.current) return;
+        const c = chartRef.current;
+        if (!c) return;
+        try { c.timeScale().fitContent(); } catch {}
+      },
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    disposedRef.current = false;
+    genRef.current += 1;
+    const myGen = genRef.current;
+
+    const initChart = async () => {
+      const chart = await createLazyChart(el, chartTheme);
+      
+      if (disposedRef.current || genRef.current !== myGen) {
+        try { chart.remove?.(); } catch {}
+        return;
+      }
+
+      const series = chart.addCandlestickSeries(seriesTheme);
+
+      chartRef.current = chart;
+      seriesRef.current = series;
+
+      // ✅ expose handles
+      api.chart = chart;
+      api.series = series;
+      api.generation = myGen;
+
+      setReady(true);
+
+      const ro = new ResizeObserver(() => {
+        if (disposedRef.current) return;
+        if (genRef.current !== myGen) return;
+        try {
+          chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+        } catch {}
+      });
+      ro.observe(el);
+
+      return ro;
+    };
+
+    let resizeObserver: ResizeObserver | undefined;
+    initChart().then(ro => { resizeObserver = ro; });
+
+    return () => {
+      disposedRef.current = true;
+      genRef.current += 1;
+
+      setReady(false);
+
+      try { resizeObserver?.disconnect(); } catch {}
+      try { chartRef.current?.remove?.(); } catch {}
+      try { chartRef.current?.dispose?.(); } catch {}
+      try { chartRef.current = null; } catch {}
+      try { seriesRef.current = null; } catch {}
+      try { api.chart = null; api.series = null; } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerRef, chartTheme, seriesTheme]);
+
+  // ✅ erst dann nicht-null, wenn ready wirklich getriggert wurde
+  return ready ? api : null;
+}
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
 // frontend/src/pages/TradingPage/components/TradesPanel.tsx
 import type { LiveTrade } from "../hooks/useWsLane";
@@ -161669,6 +161647,114 @@ cl_manager = cl_manager_instance
 cl_checker = cl_checker_instance
 cl_handlers = cl_handlers_instance
 unified_clickhouse = unified_cl_service
+</file>
+
+<file path="backend/database/clickhouse/cl_config.py">
+import os
+from typing import Dict, Any, Set
+
+# cl_ Database Patterns für alle 8 Exchanges  
+CL_DATABASE_PATTERNS: Dict[str, str] = {
+    "trades": "trading.{exchange}_trades",
+    "candles": "trading.{exchange}_bars", 
+    "orderbook": "trading.{exchange}_orderbook",
+    "user_settings": "trading.user_coin_settings",
+    "indicators": "trading.user_indicator_settings",
+    "health": "monitoring.{component}_health"
+}
+
+# cl_ Connection Settings - zentral für alle Exchanges
+# Only params supported by clickhouse_connect.get_client() HTTP API
+# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
+CL_CONNECTION: Dict[str, Any] = {
+    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
+    "database": os.getenv("CLICKHOUSE_DB", "trading"),
+    "username": os.getenv("CLICKHOUSE_USER", "admin"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
+    "connect_timeout": 5,
+    "send_receive_timeout": 30
+}
+
+# cl_ Performance Settings
+CL_PERFORMANCE: Dict[str, int] = {
+    "batch_size": 1000,
+    "queue_maxsize": 5000,
+    "processing_timeout": 10,
+    "health_check_interval": 60,
+    "connection_pool_size": 10,
+    "max_concurrent_inserts": 5
+}
+
+# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
+def _get_critical_cl_components() -> Set[str]:
+    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
+    
+    components = {
+        "cl.unified-manager",
+        "cl.schema-manager",
+        "cl.connection-pool"
+    }
+    
+    # Nur erste 2 Exchanges als kritisch markieren
+    for ex in exchanges[:2]:
+        components.add(f"cl.{ex}-manager")
+    
+    return components
+
+CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+
+# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
+def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
+    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    configs = {}
+    for i, exchange in enumerate(exchanges):
+        # Erste 2 = high priority, rest = medium
+        priority = "high" if i < 2 else "medium"
+        batch_size = 1000 if i < 2 else 800
+        
+        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
+        configs[exchange] = {
+            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
+            "priority": priority,
+            "batch_size": batch_size,
+            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
+        }
+    
+    return configs
+
+EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+
+# cl_ Health Thresholds
+CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
+    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
+    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
+    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
+    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
+}
+
+# cl_ Schema Definitions
+CL_SCHEMAS: Dict[str, Dict[str, str]] = {
+    "trades": {
+        "table_suffix": "_trades",
+        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "candles": {
+        "table_suffix": "_bars", 
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "orderbook": {
+        "table_suffix": "_orderbook",
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
+        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    }
+}
 </file>
 
 <file path="backend/database/clickhouse/cl_manager.py">
@@ -163170,114 +163256,6 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
-</file>
-
-<file path="backend/database/clickhouse/cl_config.py">
-import os
-from typing import Dict, Any, Set
-
-# cl_ Database Patterns für alle 8 Exchanges  
-CL_DATABASE_PATTERNS: Dict[str, str] = {
-    "trades": "trading.{exchange}_trades",
-    "candles": "trading.{exchange}_bars", 
-    "orderbook": "trading.{exchange}_orderbook",
-    "user_settings": "trading.user_coin_settings",
-    "indicators": "trading.user_indicator_settings",
-    "health": "monitoring.{component}_health"
-}
-
-# cl_ Connection Settings - zentral für alle Exchanges
-# Only params supported by clickhouse_connect.get_client() HTTP API
-# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
-CL_CONNECTION: Dict[str, Any] = {
-    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
-    "database": os.getenv("CLICKHOUSE_DB", "trading"),
-    "username": os.getenv("CLICKHOUSE_USER", "admin"),
-    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
-    "connect_timeout": 5,
-    "send_receive_timeout": 30
-}
-
-# cl_ Performance Settings
-CL_PERFORMANCE: Dict[str, int] = {
-    "batch_size": 1000,
-    "queue_maxsize": 5000,
-    "processing_timeout": 10,
-    "health_check_interval": 60,
-    "connection_pool_size": 10,
-    "max_concurrent_inserts": 5
-}
-
-# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
-def _get_critical_cl_components() -> Set[str]:
-    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
-    
-    components = {
-        "cl.unified-manager",
-        "cl.schema-manager",
-        "cl.connection-pool"
-    }
-    
-    # Nur erste 2 Exchanges als kritisch markieren
-    for ex in exchanges[:2]:
-        components.add(f"cl.{ex}-manager")
-    
-    return components
-
-CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
-
-# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
-def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
-    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    configs = {}
-    for i, exchange in enumerate(exchanges):
-        # Erste 2 = high priority, rest = medium
-        priority = "high" if i < 2 else "medium"
-        batch_size = 1000 if i < 2 else 800
-        
-        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
-        configs[exchange] = {
-            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
-            "priority": priority,
-            "batch_size": batch_size,
-            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
-        }
-    
-    return configs
-
-EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
-
-# cl_ Health Thresholds
-CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
-    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
-    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
-    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
-    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
-}
-
-# cl_ Schema Definitions
-CL_SCHEMAS: Dict[str, Dict[str, str]] = {
-    "trades": {
-        "table_suffix": "_trades",
-        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "candles": {
-        "table_suffix": "_bars", 
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "orderbook": {
-        "table_suffix": "_orderbook",
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
-        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    }
-}
 </file>
 
 <file path="backend/services/adapter/stream_aggregator.py">
@@ -169551,418 +169529,6 @@ export function useChartView(
 }
 </file>
 
-<file path="frontend/src/services/ws/WebSocketPool.ts">
-// frontend/src/services/ws/WebSocketPool.ts
-// ✅ TASK 4: RefCount + Generation Token für StrictMode-Safety
-
-import { WS_BASE_URL } from "../../config/env";
-
-export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
-
-export type WsMsg =
-  | { type: "connection"; [k: string]: any }
-  | { type: "trade"; exchange: string; symbol: string; market: string; price?: any; size?: any; side?: any; ts?: any; [k: string]: any }
-  | { type: "candle"; exchange: string; symbol: string; market: string; interval?: string; t?: any; o?: any; h?: any; l?: any; c?: any; v?: any; [k: string]: any }
-  | { type: "orderbook"; exchange: string; symbol: string; market: string; bids?: any[]; asks?: any[]; spread?: any; ts?: any; [k: string]: any }
-  | { type: "historical"; exchange: string; symbol: string; market: string; interval?: string; candles?: any[]; [k: string]: any }
-  | { type: string; [k: string]: any };
-
-type Listener = (msg: WsMsg) => void;
-type StatusListener = (s: WsStatus) => void;
-
-type Key = string; // exchange:symbol:market
-
-type Conn = {
-  key: Key;
-  exchange: string;
-  symbol: string;
-  market: string;
-  url: string;
-
-  ws: WebSocket | null;
-  status: WsStatus;
-
-  listeners: Set<Listener>;
-  statusListeners: Set<StatusListener>;
-
-  refCount: number;
-  reconnectAttempt: number;
-  reconnectTimer: number | null;
-  manuallyClosed: boolean;
-  
-  // ✅ TASK 4: Generation Token für StrictMode
-  generation: number;
-  pendingCloseTimer: number | null;
-};
-
-function mkKey(exchange: string, symbol: string, market: string): Key {
-  return `${exchange}:${symbol}:${market}`;
-}
-
-function wsUrl(exchange: string, symbol: string, market: string) {
-  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
-
-  // Prefer explicit base if set, else same-origin
-  if (WS_BASE_URL) {
-    const base = WS_BASE_URL.replace(/\/+$/, "");
-    return `${base}${path}`;
-  }
-
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}${path}`;
-}
-
-function safeJson(s: string): any | null {
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-export class WebSocketPool {
-  private static _i: WebSocketPool | null = null;
-  static get instance() {
-    if (!this._i) this._i = new WebSocketPool();
-    return this._i;
-  }
-
-  private conns = new Map<Key, Conn>();
-
-  acquire(exchange: string, symbol: string, market = "spot"): Key {
-    const key = mkKey(exchange, symbol, market);
-    let c = this.conns.get(key);
-
-    if (!c) {
-      c = {
-        key,
-        exchange,
-        symbol,
-        market,
-        url: wsUrl(exchange, symbol, market),
-
-        ws: null,
-        status: "INIT",
-
-        listeners: new Set(),
-        statusListeners: new Set(),
-
-        refCount: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        manuallyClosed: false,
-        
-        // ✅ TASK 4: Generation Token initialisieren
-        generation: 0,
-        pendingCloseTimer: null,
-      };
-      this.conns.set(key, c);
-    }
-
-    // ✅ TASK 4: Cancel pending close (StrictMode unmount+remount)
-    if (c.pendingCloseTimer !== null) {
-      window.clearTimeout(c.pendingCloseTimer);
-      c.pendingCloseTimer = null;
-    }
-
-    c.refCount += 1;
-
-    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
-      this.open(c);
-    }
-
-    return key;
-  }
-
-  release(exchange: string, symbol: string, market = "spot") {
-    const key = mkKey(exchange, symbol, market);
-    const c = this.conns.get(key);
-    if (!c) return;
-
-    c.refCount = Math.max(0, c.refCount - 1);
-    
-    // ✅ TASK 4: Deferred close für StrictMode (unmount+remount im selben Tick)
-    if (c.refCount === 0) {
-      // Warte 50ms bevor tatsächlich geschlossen wird
-      // Falls remount erfolgt, wird pendingCloseTimer in acquire() gecancelt
-      c.pendingCloseTimer = window.setTimeout(() => {
-        c.pendingCloseTimer = null;
-        if (c.refCount === 0) {
-          this.close(c);
-          this.conns.delete(key);
-        }
-      }, 50);
-    }
-  }
-
-  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.listeners.add(cb);
-    return () => {
-      c.listeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
-    this.acquire(exchange, symbol, market);
-    const c = this.conns.get(mkKey(exchange, symbol, market))!;
-    c.statusListeners.add(cb);
-    cb(c.status);
-    return () => {
-      c.statusListeners.delete(cb);
-      this.release(exchange, symbol, market);
-    };
-  }
-
-  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
-    const c = this.conns.get(mkKey(exchange, symbol, market));
-    if (!c || !c.ws || c.status !== "OPEN") return false;
-
-    try {
-      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private setStatus(c: Conn, s: WsStatus) {
-    c.status = s;
-    for (const l of c.statusListeners) l(s);
-  }
-
-  private open(c: Conn) {
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    c.manuallyClosed = false;
-    this.setStatus(c, "CONNECTING");
-
-    const ws = new WebSocket(c.url);
-    c.ws = ws;
-
-    ws.onopen = () => {
-      c.reconnectAttempt = 0;
-      this.setStatus(c, "OPEN");
-    };
-
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
-      const parsed = safeJson(ev.data);
-      if (!parsed || typeof parsed !== "object") return;
-      const msg = parsed as WsMsg;
-      for (const l of c.listeners) l(msg);
-    };
-
-    ws.onerror = () => {
-      this.setStatus(c, "ERROR");
-      this.scheduleReconnect(c);
-    };
-
-    ws.onclose = () => {
-      c.ws = null;
-      this.setStatus(c, "CLOSED");
-      if (!c.manuallyClosed) this.scheduleReconnect(c);
-    };
-  }
-
-  private close(c: Conn) {
-    c.manuallyClosed = true;
-
-    if (c.reconnectTimer !== null) {
-      window.clearTimeout(c.reconnectTimer);
-      c.reconnectTimer = null;
-    }
-
-    try { c.ws?.close(); } catch { /* ignore */ }
-    c.ws = null;
-    this.setStatus(c, "CLOSED");
-  }
-
-  private scheduleReconnect(c: Conn) {
-    if (c.manuallyClosed) return;
-    if (c.refCount <= 0) return;
-
-    c.reconnectAttempt += 1;
-    const delay = clamp(250 * Math.pow(2, c.reconnectAttempt - 1), 250, 8000);
-
-    if (c.reconnectTimer !== null) window.clearTimeout(c.reconnectTimer);
-    c.reconnectTimer = window.setTimeout(() => {
-      if (c.refCount <= 0 || c.manuallyClosed) return;
-      this.open(c);
-    }, delay);
-  }
-}
-</file>
-
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-import { useEffect, useRef, useState } from "react";
-import { useTheme } from "../../ui/theme-provider";
-import { getChartTheme, getSeriesTheme } from "./chartThemes";
-import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
-import type { CandleData } from "./types";
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
-}
-
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-  setChartData: (data: CandleData[]) => void;
-  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
-}
-
-const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
-
-function isRealCandle(d: CandleData): d is any {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-  const initialRangeSetRef = useRef(false);
-
-  // ✅ TASK 3: Nutze Safe Chart Hook
-  const isDark = actualTheme === "dark";
-  const chartTheme = getChartTheme(isDark, interval);
-  const seriesTheme = getSeriesTheme(isDark);
-
-  const safeChart = useSafeCandleChart(containerRef, chartTheme);
-
-  useEffect(() => {
-    if (safeChart) {
-      chartInstance.current = safeChart.chart;
-      seriesInstance.current = safeChart.series;
-      setIsChartReady(true);
-
-      // Theme Observer
-      const themeObserver = new MutationObserver(() => {
-        if (safeChart.chart && safeChart.series) {
-          const isDarkNow = document.documentElement.classList.contains("dark");
-          const newChartTheme = getChartTheme(isDarkNow, interval);
-          const newSeriesTheme = getSeriesTheme(isDarkNow);
-
-          try {
-            safeChart.chart.applyOptions(newChartTheme);
-            safeChart.series.applyOptions(newSeriesTheme);
-          } catch (e) {
-            console.warn("[useCandleChart] Theme update failed:", e);
-          }
-        }
-      });
-      themeObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-
-      // Resize Observer
-      const container = containerRef.current;
-      let resizeObserver: ResizeObserver | null = null;
-      if (container) {
-        resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && safeChart.chart) {
-            const { width, height } = entries[0].contentRect;
-            safeChart.resize(width, height);
-          }
-        });
-        resizeObserver.observe(container);
-      }
-
-      return () => {
-        themeObserver.disconnect();
-        resizeObserver?.disconnect();
-      };
-    } else {
-      setIsChartReady(false);
-    }
-  }, [safeChart, interval, containerRef]);
-
-  const setChartData = (data: CandleData[]) => {
-    if (!isChartReady || !seriesInstance.current) return;
-    if (!data || data.length === 0) return;
-
-    // Lightweight-charts expects seconds.
-    // Whitespace is supported by passing {time} without OHLC.
-    const formatted = data
-      .map((d) => {
-        const tSec = Math.floor(d.time / 1000);
-        if (!Number.isFinite(tSec) || tSec <= 0) return null;
-
-        if (isRealCandle(d)) {
-          return {
-            time: tSec,
-            open: (d as any).open,
-            high: (d as any).high,
-            low: (d as any).low,
-            close: (d as any).close,
-          };
-        }
-        return { time: tSec }; // ✅ Whitespace
-      })
-      .filter(Boolean) as any[];
-
-    if (formatted.length <= 0) return;
-
-    // Safety: ensure ascending order by time
-    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-
-    seriesInstance.current.setData(formatted);
-  };
-
-  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
-    if (!isChartReady || !chartInstance.current) return;
-    if (!data || data.length === 0) return;
-    if (initialRangeSetRef.current) return;
-
-    // Use first/last REAL candles (ignore whitespace)
-    const real = data.filter(isRealCandle);
-    if (real.length === 0) return;
-
-    const lastIndex = real.length - 1;
-    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
-
-    const firstCandle = real[firstIndex];
-    const lastCandle = real[lastIndex];
-    if (!firstCandle || !lastCandle) return;
-
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
-
-    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
-      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
-      initialRangeSetRef.current = true;
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-    setInitialVisibleRangeOnce,
-  };
-}
-</file>
-
 <file path="frontend/src/main.tsx">
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -171241,450 +170807,430 @@ async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, mar
             pass
 </file>
 
-<file path="backend/websocket/ws_frontend_handler.py">
-"""
-Frontend WebSocket broadcasting (client fan-out) – FINAL.
+<file path="frontend/src/services/ws/WebSocketPool.ts">
+const WS_BASE_URL = (import.meta as any).env?.VITE_WS_BASE_URL as string | undefined;
 
-Ziele:
-- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
-- Keine silent drops (außer Queue-Overflow-Schutz)
-- Backpressure: Send-Timeout -> Client droppen
-- Caller blockiert nie (nur enqueue)
-- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
-"""
+export type WsStatus = "INIT" | "CONNECTING" | "OPEN" | "CLOSED" | "ERROR";
+export type WsMsg = { type: string; [k: string]: any };
 
-from __future__ import annotations
+type Listener = (msg: WsMsg) => void;
+type StatusListener = (s: WsStatus) => void;
 
-import asyncio
-import json
-import logging
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Any
-from collections.abc import Mapping
+type Key = string; // exchange:symbol:market
 
-from fastapi import WebSocket
+type Conn = {
+  key: Key;
+  exchange: string;
+  symbol: string;
+  market: string;
+  url: string;
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-)
-logger = logging.getLogger("ws_frontend_handler")
+  ws: WebSocket | null;
+  status: WsStatus;
 
+  listeners: Set<Listener>;
+  statusListeners: Set<StatusListener>;
 
-def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+  refCount: number;
+  reconnectAttempt: number;
+  reconnectTimer: number | null;
 
+  manuallyClosed: boolean;
 
-def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
-    """
-    Trade erwartet dict wegen .get().
-    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
+  // ✅ StrictMode safety
+  generation: number;
+  pendingCloseTimer: number | null;
+};
 
-    if isinstance(x, (tuple, list)):
-        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
-        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
-            return {
-                "price": x[0],
-                "size": x[1],
-                "timestamp": x[2],
-                "side": x[3] if len(x) > 3 else None,
-            }
-        return {}
+function mkKey(exchange: string, symbol: string, market: string): Key {
+  return `${exchange}:${symbol}:${market}`;
+}
 
-    return {}
+function wsUrl(exchange: string, symbol: string, market: string) {
+  const path = `/ws/${encodeURIComponent(exchange)}/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`;
 
+  if (WS_BASE_URL && WS_BASE_URL.trim()) {
+    const base = WS_BASE_URL.replace(/\/+$/, "");
+    return `${base}${path}`;
+  }
 
-def _ms_to_sec(ts: Any) -> Optional[int]:
-    """Konvertiert Millisekunden zu Sekunden (Lightweight-Charts Format)"""
-    if ts is None:
-        return None
-    try:
-        t = int(ts)
-    except Exception:
-        return None
-    # Heuristik: > 1e11 -> ms, sonst sec
-    return t // 1000 if t > 100_000_000_000 else t
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}${path}`;
+}
 
+function safeJson(s: string): any | null {
+  try { return JSON.parse(s); } catch { return null; }
+}
 
-def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
-    """
-    Unterstützt:
-    A) Mapping (bereits dict)
-       - entweder schon {time,open,high,low,close,volume}
-       - oder {timestamp,o,h,l,c,v} (Aggregator-State)
-    B) Tuple/List:
-       - (interval_str, candle_dict)  ✅ finished-Format
-       - (time, open, high, low, close[, volume])
-    """
-    # A) dict-like
-    if isinstance(x, Mapping):
-        d = dict(x)
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
 
-        # Aggregator-Keys -> Frontend-Keys
-        if "open" not in d and "o" in d:
-            d["open"] = d.get("o")
-        if "high" not in d and "h" in d:
-            d["high"] = d.get("h")
-        if "low" not in d and "l" in d:
-            d["low"] = d.get("l")
-        if "close" not in d and "c" in d:
-            d["close"] = d.get("c")
-        if "volume" not in d and "v" in d:
-            d["volume"] = d.get("v")
+export class WebSocketPool {
+  private static _i: WebSocketPool | null = null;
+  static get instance() {
+    if (!this._i) this._i = new WebSocketPool();
+    return this._i;
+  }
 
-        # time setzen (Lightweight-Charts: Sekunden)
-        if "time" not in d:
-            ts = d.get("timestamp") or d.get("ts") or d.get("time")
-            tsec = _ms_to_sec(ts)
-            if tsec is not None:
-                d["time"] = tsec
+  private conns = new Map<Key, Conn>();
 
-        return d
+  acquire(exchange: string, symbol: string, market = "spot"): Key {
+    const key = mkKey(exchange, symbol, market);
+    let c = this.conns.get(key);
 
-    # B) tuple/list
-    if isinstance(x, (tuple, list)):
-        # B1) (interval, dict) ✅ KRITISCH für verschachtelte Tuples!
-        if len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], Mapping):
-            d = _ensure_candle_dict(x[1])  # Rekursiv normalisieren
-            d.setdefault("interval", x[0])
-            return d
+    if (!c) {
+      c = {
+        key,
+        exchange,
+        symbol,
+        market,
+        url: wsUrl(exchange, symbol, market),
 
-        # B2) (time, o, h, l, c[, v])
-        if len(x) >= 5:
-            tsec = _ms_to_sec(x[0])
-            d = {
-                "time": tsec if tsec is not None else x[0],
-                "open": x[1],
-                "high": x[2],
-                "low": x[3],
-                "close": x[4],
-            }
-            if len(x) > 5:
-                d["volume"] = x[5]
-            return d
+        ws: null,
+        status: "INIT",
 
-    return {}
+        listeners: new Set(),
+        statusListeners: new Set(),
 
+        refCount: 0,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        manuallyClosed: false,
 
-def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
-    """
-    Orderbook erwartet dict (bids/asks etc.).
-    Unterstützt Tuple/List: (bids, asks[, timestamp])
-    """
-    if isinstance(x, Mapping):
-        return dict(x)
+        generation: 0,
+        pendingCloseTimer: null,
+      };
+      this.conns.set(key, c);
+    }
 
-    if isinstance(x, (tuple, list)):
-        if len(x) >= 2:
-            d = {"bids": x[0], "asks": x[1]}
-            if len(x) > 2:
-                d["timestamp"] = x[2]
-            return d
-        return {}
+    // ✅ StrictMode: cancel pending close if remount happens immediately
+    if (c.pendingCloseTimer !== null) {
+      window.clearTimeout(c.pendingCloseTimer);
+      c.pendingCloseTimer = null;
+    }
 
-    return {}
+    c.refCount += 1;
 
+    if (!c.ws || c.status === "CLOSED" || c.status === "ERROR") {
+      this.open(c);
+    }
 
-def _norm_exchange(exchange: str) -> str:
-    return (exchange or "").strip().lower()
+    return key;
+  }
 
+  release(exchange: string, symbol: string, market = "spot") {
+    const key = mkKey(exchange, symbol, market);
+    const c = this.conns.get(key);
+    if (!c) return;
 
-def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
+    c.refCount = Math.max(0, c.refCount - 1);
+    if (c.refCount !== 0) return;
 
+    // ✅ StrictMode: defer close so unmount+remount in same tick doesn't thrash
+    if (c.pendingCloseTimer !== null) return;
 
-def _norm_market(market: str) -> str:
-    m = (market or "spot").strip().lower()
-    return m if m else "spot"
+    c.pendingCloseTimer = window.setTimeout(() => {
+      c.pendingCloseTimer = null;
+      if (c.refCount !== 0) return;
 
+      this.close(c);
+      this.conns.delete(key);
+    }, 50);
+  }
 
-def _make_channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+  subscribe(exchange: string, symbol: string, market: string, cb: Listener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.listeners.add(cb);
+    return () => {
+      c.listeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
 
+  onStatus(exchange: string, symbol: string, market: string, cb: StatusListener) {
+    this.acquire(exchange, symbol, market);
+    const c = this.conns.get(mkKey(exchange, symbol, market))!;
+    c.statusListeners.add(cb);
+    cb(c.status);
+    return () => {
+      c.statusListeners.delete(cb);
+      this.release(exchange, symbol, market);
+    };
+  }
 
-@dataclass(frozen=True)
-class _SendJob:
-    ws: WebSocket
-    payload: str
+  send(exchange: string, symbol: string, market: string, data: string | object): boolean {
+    const c = this.conns.get(mkKey(exchange, symbol, market));
+    if (!c || !c.ws || c.status !== "OPEN") return false;
+    try {
+      c.ws.send(typeof data === "string" ? data : JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
+  private setStatus(c: Conn, s: WsStatus) {
+    c.status = s;
+    for (const l of c.statusListeners) {
+      try { l(s); } catch {}
+    }
+  }
 
-class PerformantWebSocketManager:
-    def __init__(
-        self,
-        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
-        send_timeout_ms: int = 60,
-        max_queue_per_channel: int = 10000,
-    ):
-        self.connections: Dict[str, Set[WebSocket]] = {}
-        self.message_queues: Dict[str, List[dict]] = {}
+  private open(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
 
-        self.batch_interval_ms = int(batch_interval_ms)
-        self.send_timeout_ms = int(send_timeout_ms)
-        self.max_queue_per_channel = int(max_queue_per_channel)
+    c.manuallyClosed = false;
+    c.generation += 1;
+    const myGen = c.generation;
 
-        self._batch_task: Optional[asyncio.Task] = None
-        self._running = False
+    this.setStatus(c, "CONNECTING");
 
-        self.metrics: Dict[str, int] = {
-            "messages_queued": 0,
-            "messages_sent": 0,
-            "payloads_sent": 0,
-            "errors_count": 0,
-            "dropped_slow_clients": 0,
-            "connections_total": 0,
-            "channels_active": 0,
-            "queue_drops": 0,
+    const ws = new WebSocket(c.url);
+    c.ws = ws;
+
+    ws.onopen = () => {
+      // ✅ ignore stale sockets
+      if (c.generation !== myGen || c.ws !== ws) {
+        try { ws.close(); } catch {}
+        return;
+      }
+      c.reconnectAttempt = 0;
+      this.setStatus(c, "OPEN");
+    };
+
+    ws.onmessage = (ev) => {
+      if (c.generation !== myGen || c.ws !== ws) return;
+      if (typeof ev.data !== "string") return;
+      const parsed = safeJson(ev.data);
+      if (!parsed || typeof parsed !== "object") return;
+      const msg = parsed as WsMsg;
+      for (const l of c.listeners) {
+        try { l(msg); } catch {}
+      }
+    };
+
+    ws.onerror = () => {
+      if (c.generation !== myGen || c.ws !== ws) return;
+      this.setStatus(c, "ERROR");
+      this.scheduleReconnect(c, myGen);
+    };
+
+    ws.onclose = () => {
+      if (c.generation !== myGen || c.ws !== ws) return;
+      c.ws = null;
+      this.setStatus(c, "CLOSED");
+
+      if (!c.manuallyClosed && c.refCount > 0) {
+        this.scheduleReconnect(c, myGen);
+      }
+    };
+  }
+
+  private close(c: Conn) {
+    if (c.reconnectTimer !== null) {
+      window.clearTimeout(c.reconnectTimer);
+      c.reconnectTimer = null;
+    }
+
+    c.manuallyClosed = true;
+
+    // ✅ invalidate all callbacks
+    c.generation += 1;
+
+    const ws = c.ws;
+    c.ws = null;
+
+    try { ws?.close(); } catch {}
+    this.setStatus(c, "CLOSED");
+  }
+
+  private scheduleReconnect(c: Conn, genAtSchedule: number) {
+    if (c.reconnectTimer !== null) return;
+    if (c.manuallyClosed) return;
+    if (c.refCount <= 0) return;
+
+    c.reconnectAttempt += 1;
+    const delay = clamp(200 * Math.pow(2, c.reconnectAttempt - 1), 200, 5000);
+
+    c.reconnectTimer = window.setTimeout(() => {
+      c.reconnectTimer = null;
+      // ✅ only if still same connection generation context
+      if (c.generation !== genAtSchedule) return;
+      if (c.manuallyClosed) return;
+      if (c.refCount <= 0) return;
+      this.open(c);
+    }, delay);
+  }
+}
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+import { useEffect, useRef, useState } from "react";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is any {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  // ✅ TASK 3: Nutze Safe Chart Hook
+  const isDark = actualTheme === "dark";
+  const chartTheme = getChartTheme(isDark, interval);
+  const seriesTheme = getSeriesTheme(isDark);
+
+  const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
+
+  useEffect(() => {
+    if (safeChart) {
+      chartInstance.current = safeChart.chart;
+      seriesInstance.current = safeChart.series;
+      setIsChartReady(true);
+
+      // Theme Observer
+      const themeObserver = new MutationObserver(() => {
+        if (safeChart.chart && safeChart.series) {
+          const isDarkNow = document.documentElement.classList.contains("dark");
+          const newChartTheme = getChartTheme(isDarkNow, interval);
+          const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+          try {
+            safeChart.chart.applyOptions(newChartTheme);
+            safeChart.series.applyOptions(newSeriesTheme);
+          } catch (e) {
+            console.warn("[useCandleChart] Theme update failed:", e);
+          }
         }
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
 
-    async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
-        logger.info(
-            "Frontend WS manager started "
-            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
-        )
+      // Resize Observer
+      const container = containerRef.current;
+      let resizeObserver: ResizeObserver | null = null;
+      if (container) {
+        resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && safeChart.chart) {
+            const { width, height } = entries[0].contentRect;
+            safeChart.safeApplyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+      }
 
-    async def stop(self) -> None:
-        self._running = False
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Frontend WS manager stopped")
+      return () => {
+        themeObserver.disconnect();
+        resizeObserver?.disconnect();
+      };
+    } else {
+      setIsChartReady(false);
+    }
+  }, [safeChart, interval, containerRef]);
 
-    async def connect(
-        self,
-        websocket: WebSocket,
-        exchange: str,
-        symbol: str,
-        market: str = "spot",
-        *,
-        accept: bool = True,
-    ) -> str:
-        channel = _make_channel(exchange, symbol, market)
-        if accept:
-            await websocket.accept()
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !seriesInstance.current) return;
+    if (!data || data.length === 0) return;
 
-        if channel not in self.connections:
-            self.connections[channel] = set()
-            self.message_queues[channel] = []
+    // Lightweight-charts expects seconds.
+    // Whitespace is supported by passing {time} without OHLC.
+    const formatted = data
+      .map((d) => {
+        const tSec = Math.floor(d.time / 1000);
+        if (!Number.isFinite(tSec) || tSec <= 0) return null;
 
-        self.connections[channel].add(websocket)
-        self.metrics["connections_total"] += 1
-        self.metrics["channels_active"] = len(self.connections)
-
-        logger.info(
-            f"Client connected -> {channel} | "
-            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
-        )
-        return channel
-
-    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
-        channel = _make_channel(exchange, symbol, market)
-        conns = self.connections.get(channel)
-        if conns:
-            conns.discard(websocket)
-            if not conns:
-                self.connections.pop(channel, None)
-                self.message_queues.pop(channel, None)
-
-        self.metrics["channels_active"] = len(self.connections)
-        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
-
-    def get_connection_count(self) -> int:
-        return sum(len(conns) for conns in self.connections.values())
-
-    def get_channel_connection_count(self, channel: str) -> int:
-        return len(self.connections.get(channel, set()))
-
-    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
-        # enqueue-only, niemals blockieren
-        conns = self.connections.get(channel)
-        if not conns:
-            return
-
-        q = self.message_queues.setdefault(channel, [])
-        if len(q) >= self.max_queue_per_channel:
-            # drop oldest, hartes Memory-Schutzventil
-            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
-            del q[:drop_n]
-            self.metrics["queue_drops"] += drop_n
-
-        q.append(message)
-        self.metrics["messages_queued"] += 1
-
-    async def _process_message_batches(self) -> None:
-        sleep_s = max(1, self.batch_interval_ms) / 1000.0
-        logger.info("Started message batch processing loop")
-
-        while self._running:
-            try:
-                for channel in list(self.message_queues.keys()):
-                    conns = self.connections.get(channel)
-                    if not conns:
-                        self.message_queues.pop(channel, None)
-                        continue
-
-                    messages = self.message_queues.get(channel)
-                    if not messages:
-                        continue
-
-                    # drain
-                    self.message_queues[channel] = []
-
-                    payloads = [json.dumps(m, separators=(",", ":")) for m in messages]
-
-                    dead: Set[WebSocket] = set()
-                    jobs: List[_SendJob] = []
-                    for ws in list(conns):
-                        for payload in payloads:
-                            jobs.append(_SendJob(ws=ws, payload=payload))
-
-                    if jobs:
-                        await self._fanout(channel, jobs, dead)
-
-                    if dead:
-                        for ws in dead:
-                            conns.discard(ws)
-                        self.metrics["dropped_slow_clients"] += len(dead)
-
-                    if not conns:
-                        self.connections.pop(channel, None)
-                        self.message_queues.pop(channel, None)
-
-                    self.metrics["payloads_sent"] += len(payloads)
-                    self.metrics["messages_sent"] += len(messages)
-                    self.metrics["channels_active"] = len(self.connections)
-
-                await asyncio.sleep(sleep_s)
-
-            except Exception as e:
-                logger.error(f"Error in batch processing: {e}")
-                traceback.print_exc()
-                self.metrics["errors_count"] += 1
-                await asyncio.sleep(0.05)
-
-    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
-        timeout_s = max(1, self.send_timeout_ms) / 1000.0
-
-        async def _safe_send(job: _SendJob) -> None:
-            try:
-                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
-            except Exception:
-                dead.add(job.ws)
-                self.metrics["errors_count"] += 1
-                logger.warning(f"Send failed on {channel} (dropping client)")
-
-        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
-
-    def get_metrics(self) -> dict:
-        return {
-            **self.metrics,
-            "active_channels": len(self.connections),
-            "total_connections": self.get_connection_count(),
-            "batch_interval_ms": self.batch_interval_ms,
-            "send_timeout_ms": self.send_timeout_ms,
-            "max_queue_per_channel": self.max_queue_per_channel,
+        if (isRealCandle(d)) {
+          return {
+            time: tSec,
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).close,
+          };
         }
+        return { time: tSec }; // ✅ Whitespace
+      })
+      .filter(Boolean) as any[];
 
+    if (formatted.length <= 0) return;
 
-ws_manager = PerformantWebSocketManager()
+    // Safety: ensure ascending order by time
+    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
 
+    seriesInstance.current.setData(formatted);
+  };
 
-async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
-    """
-    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
-    """
-    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
 
-    msg = {
-        "type": "trade",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
-        "market": market,
-        "price": trade_data.get("price"),
-        "size": trade_data.get("size") or trade_data.get("amount"),
-        "notional": float(trade_data.get("price", 0) or 0) * float(trade_data.get("size", 0) or 0),  # ✅ NEU: Notional Value
-        "side": trade_data.get("side"),
-        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
+    // Use first/last REAL candles (ignore whitespace)
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
     }
-    await ws_manager.broadcast_to_channel(channel, msg)
+  };
 
-
-async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
-    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "candle",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
-        "market": market,
-        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
-        "t": candle_data.get("t") or candle_data.get("time"),
-        "o": candle_data.get("o") or candle_data.get("open"),
-        "h": candle_data.get("h") or candle_data.get("high"),
-        "l": candle_data.get("l") or candle_data.get("low"),
-        "c": candle_data.get("c") or candle_data.get("close"),
-        "v": candle_data.get("v") or candle_data.get("volume"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    
-    # ✅ TASK 2: Filter Candles per Client basierend auf subscribed interval
-    conns = ws_manager.connections.get(channel)
-    if not conns:
-        return
-    
-    candle_interval = msg["interval"]
-    
-    # Sende nur an Clients mit passendem subscribed_interval
-    for ws in list(conns):
-        subscribed_interval = getattr(ws, "_subscribed_interval", "1m")
-        if subscribed_interval == candle_interval:
-            # Enqueue für diesen spezifischen Client
-            q = ws_manager.message_queues.setdefault(channel, [])
-            if len(q) < ws_manager.max_queue_per_channel:
-                q.append(msg)
-                ws_manager.metrics["messages_queued"] += 1
-
-
-async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
-    """
-    ✅ Broadcast Orderbook Updates to Frontend
-    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
-    """
-    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
-    market = _norm_market(market_type)
-    channel = _make_channel(exchange, symbol, market)
-
-    msg = {
-        "type": "orderbook",
-        "exchange": _norm_exchange(exchange),
-        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
-        "market": market,
-        "bids": orderbook_data.get("bids", []),
-        "asks": orderbook_data.get("asks", []),
-        "timestamp": orderbook_data.get("timestamp"),
-        "server_ms": int(time.time() * 1000),
-        "server_iso": datetime.utcnow().isoformat(),
-    }
-    await ws_manager.broadcast_to_channel(channel, msg)
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
+  };
+}
 </file>
 
 <file path="frontend/src/App.tsx">
@@ -172309,6 +171855,446 @@ def start():
 
 if __name__ == "__main__":
     start()
+</file>
+
+<file path="backend/websocket/ws_frontend_handler.py">
+"""
+Frontend WebSocket broadcasting (client fan-out) – FINAL.
+
+Ziele:
+- Channel: exchange:market:symbol (matcht /ws/{exchange}/{symbol}/{market})
+- Keine silent drops (außer Queue-Overflow-Schutz)
+- Backpressure: Send-Timeout -> Client droppen
+- Caller blockiert nie (nur enqueue)
+- Flat protocol: pro WS-frame genau 1 JSON Message (trade/candle/whatever)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Any
+from collections.abc import Mapping
+
+from fastapi import WebSocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
+)
+logger = logging.getLogger("ws_frontend_handler")
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _ensure_trade_dict(x: Any) -> Dict[str, Any]:
+    """
+    Trade erwartet dict wegen .get().
+    Unterstützt häufige Tuple/List-Layouts: (price, size, ts[, side])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        # Heuristik: wenn es wie (price, size, ts[, side]) aussieht
+        if len(x) >= 3 and _is_number(x[0]) and _is_number(x[1]):
+            return {
+                "price": x[0],
+                "size": x[1],
+                "timestamp": x[2],
+                "side": x[3] if len(x) > 3 else None,
+            }
+        return {}
+
+    return {}
+
+
+def _ms_to_sec(ts: Any) -> Optional[int]:
+    """Konvertiert Millisekunden zu Sekunden (Lightweight-Charts Format)"""
+    if ts is None:
+        return None
+    try:
+        t = int(ts)
+    except Exception:
+        return None
+    # Heuristik: > 1e11 -> ms, sonst sec
+    return t // 1000 if t > 100_000_000_000 else t
+
+
+def _ensure_candle_dict(x: Any) -> Dict[str, Any]:
+    """
+    Unterstützt:
+    A) Mapping (bereits dict)
+       - entweder schon {time,open,high,low,close,volume}
+       - oder {timestamp,o,h,l,c,v} (Aggregator-State)
+    B) Tuple/List:
+       - (interval_str, candle_dict)  ✅ finished-Format
+       - (time, open, high, low, close[, volume])
+    """
+    # A) dict-like
+    if isinstance(x, Mapping):
+        d = dict(x)
+
+        # Aggregator-Keys -> Frontend-Keys
+        if "open" not in d and "o" in d:
+            d["open"] = d.get("o")
+        if "high" not in d and "h" in d:
+            d["high"] = d.get("h")
+        if "low" not in d and "l" in d:
+            d["low"] = d.get("l")
+        if "close" not in d and "c" in d:
+            d["close"] = d.get("c")
+        if "volume" not in d and "v" in d:
+            d["volume"] = d.get("v")
+
+        # time setzen (Lightweight-Charts: Sekunden)
+        if "time" not in d:
+            ts = d.get("timestamp") or d.get("ts") or d.get("time")
+            tsec = _ms_to_sec(ts)
+            if tsec is not None:
+                d["time"] = tsec
+
+        return d
+
+    # B) tuple/list
+    if isinstance(x, (tuple, list)):
+        # B1) (interval, dict) ✅ KRITISCH für verschachtelte Tuples!
+        if len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], Mapping):
+            d = _ensure_candle_dict(x[1])  # Rekursiv normalisieren
+            d.setdefault("interval", x[0])
+            return d
+
+        # B2) (time, o, h, l, c[, v])
+        if len(x) >= 5:
+            tsec = _ms_to_sec(x[0])
+            d = {
+                "time": tsec if tsec is not None else x[0],
+                "open": x[1],
+                "high": x[2],
+                "low": x[3],
+                "close": x[4],
+            }
+            if len(x) > 5:
+                d["volume"] = x[5]
+            return d
+
+    return {}
+
+
+def _ensure_orderbook_dict(x: Any) -> Dict[str, Any]:
+    """
+    Orderbook erwartet dict (bids/asks etc.).
+    Unterstützt Tuple/List: (bids, asks[, timestamp])
+    """
+    if isinstance(x, Mapping):
+        return dict(x)
+
+    if isinstance(x, (tuple, list)):
+        if len(x) >= 2:
+            d = {"bids": x[0], "asks": x[1]}
+            if len(x) > 2:
+                d["timestamp"] = x[2]
+            return d
+        return {}
+
+    return {}
+
+
+def _norm_exchange(exchange: str) -> str:
+    return (exchange or "").strip().lower()
+
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _norm_market(market: str) -> str:
+    m = (market or "spot").strip().lower()
+    return m if m else "spot"
+
+
+def _make_channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+@dataclass(frozen=True)
+class _SendJob:
+    ws: WebSocket
+    payload: str
+
+
+class PerformantWebSocketManager:
+    def __init__(
+        self,
+        batch_interval_ms: int = 5,      # kleiner = geringere Latenz, mehr CPU
+        send_timeout_ms: int = 60,
+        max_queue_per_channel: int = 10000,
+    ):
+        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.message_queues: Dict[str, List[dict]] = {}
+
+        self.batch_interval_ms = int(batch_interval_ms)
+        self.send_timeout_ms = int(send_timeout_ms)
+        self.max_queue_per_channel = int(max_queue_per_channel)
+
+        self._batch_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        self.metrics: Dict[str, int] = {
+            "messages_queued": 0,
+            "messages_sent": 0,
+            "payloads_sent": 0,
+            "errors_count": 0,
+            "dropped_slow_clients": 0,
+            "connections_total": 0,
+            "channels_active": 0,
+            "queue_drops": 0,
+        }
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._batch_task = asyncio.create_task(self._process_message_batches(), name="ws_frontend_batcher")
+        logger.info(
+            "Frontend WS manager started "
+            f"(batch_interval={self.batch_interval_ms}ms, send_timeout={self.send_timeout_ms}ms, max_queue={self.max_queue_per_channel})"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Frontend WS manager stopped")
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        exchange: str,
+        symbol: str,
+        market: str = "spot",
+        *,
+        accept: bool = True,
+    ) -> str:
+        channel = _make_channel(exchange, symbol, market)
+        if accept:
+            await websocket.accept()
+
+        if channel not in self.connections:
+            self.connections[channel] = set()
+            self.message_queues[channel] = []
+
+        self.connections[channel].add(websocket)
+        self.metrics["connections_total"] += 1
+        self.metrics["channels_active"] = len(self.connections)
+
+        logger.info(
+            f"Client connected -> {channel} | "
+            f"channel_conns={len(self.connections[channel])} total_conns={self.get_connection_count()}"
+        )
+        return channel
+
+    async def disconnect(self, websocket: WebSocket, exchange: str, symbol: str, market: str = "spot") -> None:
+        channel = _make_channel(exchange, symbol, market)
+        conns = self.connections.get(channel)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(channel, None)
+                self.message_queues.pop(channel, None)
+
+        self.metrics["channels_active"] = len(self.connections)
+        logger.info(f"Client disconnected -> {channel} | total_conns={self.get_connection_count()}")
+
+    def get_connection_count(self) -> int:
+        return sum(len(conns) for conns in self.connections.values())
+
+    def get_channel_connection_count(self, channel: str) -> int:
+        return len(self.connections.get(channel, set()))
+
+    async def broadcast_to_channel(self, channel: str, message: dict) -> None:
+        # enqueue-only, niemals blockieren
+        conns = self.connections.get(channel)
+        if not conns:
+            return
+
+        q = self.message_queues.setdefault(channel, [])
+        if len(q) >= self.max_queue_per_channel:
+            # drop oldest, hartes Memory-Schutzventil
+            drop_n = max(1, len(q) - self.max_queue_per_channel + 1)
+            del q[:drop_n]
+            self.metrics["queue_drops"] += drop_n
+
+        q.append(message)
+        self.metrics["messages_queued"] += 1
+
+    async def _process_message_batches(self) -> None:
+        sleep_s = max(1, self.batch_interval_ms) / 1000.0
+        logger.info("Started message batch processing loop")
+
+        while self._running:
+            try:
+                for channel in list(self.message_queues.keys()):
+                    conns = self.connections.get(channel)
+                    if not conns:
+                        self.message_queues.pop(channel, None)
+                        continue
+
+                    messages = self.message_queues.get(channel)
+                    if not messages:
+                        continue
+
+                    # drain
+                    self.message_queues[channel] = []
+
+                    dead: Set[WebSocket] = set()
+                    jobs: List[_SendJob] = []
+
+                    for ws in list(conns):
+                        subscribed = getattr(ws, "_subscribed_interval", None)  # None => legacy: alles
+
+                        for m in messages:
+                            # ✅ Interval-Filter NUR für candle-Messages
+                            if subscribed is not None and m.get("type") == "candle":
+                                mi = (m.get("interval") or m.get("i") or "").strip() or "1m"
+                                if mi != subscribed:
+                                    continue
+
+                            payload = json.dumps(m, separators=(",", ":"))
+                            jobs.append(_SendJob(ws=ws, payload=payload))
+
+                    if jobs:
+                        await self._fanout(channel, jobs, dead)
+
+                    if dead:
+                        for ws in dead:
+                            conns.discard(ws)
+                        self.metrics["dropped_slow_clients"] += len(dead)
+
+                    if not conns:
+                        self.connections.pop(channel, None)
+                        self.message_queues.pop(channel, None)
+
+                    self.metrics["payloads_sent"] += len(jobs)
+                    self.metrics["messages_sent"] += len(messages)
+                    self.metrics["channels_active"] = len(self.connections)
+
+                await asyncio.sleep(sleep_s)
+
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}")
+                traceback.print_exc()
+                self.metrics["errors_count"] += 1
+                await asyncio.sleep(0.05)
+
+    async def _fanout(self, channel: str, jobs: List[_SendJob], dead: Set[WebSocket]) -> None:
+        timeout_s = max(1, self.send_timeout_ms) / 1000.0
+
+        async def _safe_send(job: _SendJob) -> None:
+            try:
+                await asyncio.wait_for(job.ws.send_text(job.payload), timeout=timeout_s)
+            except Exception:
+                dead.add(job.ws)
+                self.metrics["errors_count"] += 1
+                logger.warning(f"Send failed on {channel} (dropping client)")
+
+        await asyncio.gather(*(_safe_send(j) for j in jobs), return_exceptions=True)
+
+    def get_metrics(self) -> dict:
+        return {
+            **self.metrics,
+            "active_channels": len(self.connections),
+            "total_connections": self.get_connection_count(),
+            "batch_interval_ms": self.batch_interval_ms,
+            "send_timeout_ms": self.send_timeout_ms,
+            "max_queue_per_channel": self.max_queue_per_channel,
+        }
+
+
+ws_manager = PerformantWebSocketManager()
+
+
+async def broadcast_trade_data(exchange: str, symbol: str, trade_data: Any, market_type: str) -> None:
+    """
+    market_type MUSS vom Lane/URL kommen (nicht aus trade_data), sonst Channel-Mismatch.
+    """
+    trade_data = _ensure_trade_dict(trade_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "trade",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(trade_data.get("symbol") or symbol),
+        "market": market,
+        "price": trade_data.get("price"),
+        "size": trade_data.get("size") or trade_data.get("amount"),
+        "notional": float(trade_data.get("price", 0) or 0) * float(trade_data.get("size", 0) or 0),  # ✅ NEU: Notional Value
+        "side": trade_data.get("side"),
+        "ts": trade_data.get("ts") or trade_data.get("timestamp") or trade_data.get("trade_ts"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_candle_data(exchange: str, symbol: str, candle_data: Any, market_type: str) -> None:
+    candle_data = _ensure_candle_dict(candle_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "candle",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(candle_data.get("symbol") or symbol),
+        "market": market,
+        "interval": candle_data.get("interval") or candle_data.get("i") or "1m",
+        "t": candle_data.get("t") or candle_data.get("time"),
+        "o": candle_data.get("o") or candle_data.get("open"),
+        "h": candle_data.get("h") or candle_data.get("high"),
+        "l": candle_data.get("l") or candle_data.get("low"),
+        "c": candle_data.get("c") or candle_data.get("close"),
+        "v": candle_data.get("v") or candle_data.get("volume"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    
+    # ✅ TASK 2: Enqueue normal - Filter passiert im Batch-Loop
+    await ws_manager.broadcast_to_channel(channel, msg)
+
+
+async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: Any, market_type: str) -> None:
+    """
+    ✅ Broadcast Orderbook Updates to Frontend
+    market_type MUSS vom Lane/URL kommen (nicht aus orderbook_data), sonst Channel-Mismatch.
+    """
+    orderbook_data = _ensure_orderbook_dict(orderbook_data)  # ✅ WASSERDICHT: Tuple→Dict
+    market = _norm_market(market_type)
+    channel = _make_channel(exchange, symbol, market)
+
+    msg = {
+        "type": "orderbook",
+        "exchange": _norm_exchange(exchange),
+        "symbol": _norm_symbol(orderbook_data.get("symbol") or symbol),
+        "market": market,
+        "bids": orderbook_data.get("bids", []),
+        "asks": orderbook_data.get("asks", []),
+        "timestamp": orderbook_data.get("timestamp"),
+        "server_ms": int(time.time() * 1000),
+        "server_iso": datetime.utcnow().isoformat(),
+    }
+    await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
