@@ -13278,6 +13278,404 @@ class cl_lane:
         }
 </file>
 
+<file path="backend/database/clickhouse/cl_message_handlers.py">
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Callable
+from datetime import datetime
+from .cl_manager import cl_manager_instance
+from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+
+logger = logging.getLogger(__name__)
+
+class cl_message_handlers:
+    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.manager = cl_manager_instance
+        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
+        self.processing_tasks: List[asyncio.Task] = []
+        self.is_processing = False
+        self.processed_messages = 0
+        self.failed_messages = 0
+        self.message_types: Dict[str, Callable] = {
+            "trades": self._handle_trades_message,
+            "candles": self._handle_candles_message,
+            "orderbook": self._handle_orderbook_message,
+            "user_settings": self._handle_user_settings_message,
+            "indicators": self._handle_indicators_message
+        }
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "message_handlers")
+        except ImportError:
+            logger.warning("Health system not available for cl_message_handlers")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_message_handlers initialized")
+    
+    async def start_processing(self, num_workers: int = 3):
+        """Start message processing workers"""
+        if self.is_processing:
+            logger.warning("Message processing is already running")
+            return
+        
+        self.is_processing = True
+        
+        # Start worker tasks
+        for i in range(num_workers):
+            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
+            self.processing_tasks.append(task)
+        
+        if self.health_component:
+            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
+            
+        logger.info(f"Started {num_workers} ClickHouse message processing workers")
+    
+    async def stop_processing(self):
+        """Stop message processing workers"""
+        if not self.is_processing:
+            return
+        
+        self.is_processing = False
+        
+        # Cancel all worker tasks
+        for task in self.processing_tasks:
+            task.cancel()
+        
+        # Wait for tasks to finish
+        if self.processing_tasks:
+            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        
+        self.processing_tasks.clear()
+        
+        logger.info("Stopped ClickHouse message processing workers")
+    
+    async def _message_worker(self, worker_id: str):
+        """Message processing worker"""
+        logger.info(f"ClickHouse message worker {worker_id} started")
+        
+        while self.is_processing:
+            try:
+                # Get message from queue with timeout
+                message = await asyncio.wait_for(
+                    self.message_queue.get(),
+                    timeout=CL_PERFORMANCE["processing_timeout"]
+                )
+                
+                # Process message
+                await self._process_message(message, worker_id)
+                
+                # Mark task as done
+                self.message_queue.task_done()
+                
+            except asyncio.TimeoutError:
+                # No messages to process, continue loop
+                continue
+            except asyncio.CancelledError:
+                logger.info(f"ClickHouse message worker {worker_id} cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in message worker {worker_id}: {str(e)}")
+                if self.health_component:
+                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
+                await asyncio.sleep(1)  # Brief pause before continuing
+        
+        logger.info(f"ClickHouse message worker {worker_id} stopped")
+    
+    async def _process_message(self, message: Dict[str, Any], worker_id: str):
+        """Process a single message"""
+        start_time = datetime.now()
+        
+        try:
+            # Extract message info
+            exchange = message.get("exchange")
+            message_type = message.get("type")
+            data = message.get("data")
+            
+            if not all([exchange, message_type, data]):
+                raise ValueError("Invalid message format: missing exchange, type, or data")
+            
+            # Get appropriate handler
+            handler = self.message_types.get(message_type)
+            if not handler:
+                raise ValueError(f"Unknown message type: {message_type}")
+            
+            # Process with handler
+            result = await handler(exchange, data, worker_id)
+            
+            # Track success
+            self.processed_messages += 1
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            if self.health_component:
+                self.health_component.record_success({
+                    "action": "message_processed",
+                    "type": message_type,
+                    "exchange": exchange,
+                    "worker": worker_id,
+                    "processing_time_ms": processing_time
+                })
+            
+            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
+            
+        except Exception as e:
+            self.failed_messages += 1
+            error_msg = f"Failed to process message: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+    
+    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle trades data message"""
+        try:
+            # Validate trades data
+            if not self._validate_trades_data(data):
+                raise ValueError("Invalid trades data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_trades_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "trades", ch_data)
+            
+            if success:
+                logger.debug(f"Trades data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert trades data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle candles/bars data message"""
+        try:
+            # Validate candles data
+            if not self._validate_candles_data(data):
+                raise ValueError("Invalid candles data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_candles_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "candles", ch_data)
+            
+            if success:
+                logger.debug(f"Candles data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert candles data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle orderbook data message"""
+        try:
+            # Validate orderbook data
+            if not self._validate_orderbook_data(data):
+                raise ValueError("Invalid orderbook data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_orderbook_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
+            
+            if success:
+                logger.debug(f"Orderbook data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert orderbook data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle user settings message"""
+        try:
+            # User settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "user_settings", data)
+            
+            if success:
+                logger.debug("User settings data inserted")
+            else:
+                logger.warning("Failed to insert user settings data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling user settings message: {str(e)}")
+            raise
+    
+    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle indicators message"""
+        try:
+            # Indicators settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "indicators", data)
+            
+            if success:
+                logger.debug("Indicators data inserted")
+            else:
+                logger.warning("Failed to insert indicators data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling indicators message: {str(e)}")
+            raise
+    
+    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate trades data format
+        
+        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
+        - Keine hardcoded Exchange-Listen
+        - Keine Exchange-spezifischen If-Bedingungen  
+        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
+        
+        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
+        
+        Felder die NICHT geprüft werden:
+        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
+        - source: Optional mit DEFAULT 'live_ws'
+        """
+        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
+        """Validate candles data format"""
+        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
+        """Validate orderbook data format"""
+        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Transform trades data to ClickHouse format
+        
+        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
+        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
+        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
+        - trade_id: NICHT senden (wird von ClickHouse generiert)
+        - source: Optional (DEFAULT 'live_ws')
+        """
+        transformed = {
+            "symbol": data["symbol"],
+            "market": data["market"],  # ✅ Spot oder Futures
+            "price": data["price"],  # ✅ String für Decimal(76,38)
+            "size": data["size"],    # ✅ String für Decimal(76,38)
+            "side": data["side"],
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+        
+        # source-Field optional hinzufügen (wenn vorhanden)
+        if "source" in data:
+            transformed["source"] = data["source"]
+        
+        return transformed
+    
+    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform candles data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "resolution": data["resolution"],
+            "open": data["open"],    # ✅ String für Decimal(76,38)
+            "high": data["high"],    # ✅ String für Decimal(76,38)
+            "low": data["low"],      # ✅ String für Decimal(76,38)
+            "close": data["close"],  # ✅ String für Decimal(76,38)
+            "volume": data["volume"], # ✅ String für Decimal(76,38)
+            "trades": data.get("trades", 0),
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform orderbook data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "bids": data["bids"],  # Array of [price, size] tuples
+            "asks": data["asks"],  # Array of [price, size] tuples
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
+        """Queue a message for processing"""
+        try:
+            message = {
+                "exchange": exchange,
+                "type": message_type,
+                "data": data,
+                "queued_at": datetime.now().isoformat()
+            }
+            
+            # Add to queue (will wait if queue is full)
+            await self.message_queue.put(message)
+            
+            logger.debug(f"Queued {message_type} message for {exchange}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to queue message: {str(e)}")
+            return False
+    
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get message processing statistics"""
+        return {
+            "is_processing": self.is_processing,
+            "queue_size": self.message_queue.qsize(),
+            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
+            "active_workers": len(self.processing_tasks),
+            "processed_messages": self.processed_messages,
+            "failed_messages": self.failed_messages,
+            "success_rate": round(
+                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
+            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
+            "supported_message_types": list(self.message_types.keys())
+        }
+    
+    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Process a batch of messages"""
+        results = {"queued": 0, "failed": 0}
+        
+        for message in messages:
+            try:
+                success = await self.queue_message(
+                    message.get("exchange"),
+                    message.get("type"),
+                    message.get("data")
+                )
+                
+                if success:
+                    results["queued"] += 1
+                else:
+                    results["failed"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Error queuing batch message: {str(e)}")
+                results["failed"] += 1
+        
+        return results
+
+
+# Global cl_message_handlers instance
+cl_handlers_instance = cl_message_handlers()
+</file>
+
 <file path="backend/database/clickhouse/cl_registry.py">
 from typing import Dict, Optional, List, Any
 from datetime import datetime
@@ -120888,404 +121286,6 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
-<file path="backend/database/clickhouse/cl_message_handlers.py">
-import asyncio
-import logging
-from typing import Dict, Any, List, Optional, Callable
-from datetime import datetime
-from .cl_manager import cl_manager_instance
-from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
-
-logger = logging.getLogger(__name__)
-
-class cl_message_handlers:
-    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.manager = cl_manager_instance
-        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
-        self.processing_tasks: List[asyncio.Task] = []
-        self.is_processing = False
-        self.processed_messages = 0
-        self.failed_messages = 0
-        self.message_types: Dict[str, Callable] = {
-            "trades": self._handle_trades_message,
-            "candles": self._handle_candles_message,
-            "orderbook": self._handle_orderbook_message,
-            "user_settings": self._handle_user_settings_message,
-            "indicators": self._handle_indicators_message
-        }
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "message_handlers")
-        except ImportError:
-            logger.warning("Health system not available for cl_message_handlers")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_message_handlers initialized")
-    
-    async def start_processing(self, num_workers: int = 3):
-        """Start message processing workers"""
-        if self.is_processing:
-            logger.warning("Message processing is already running")
-            return
-        
-        self.is_processing = True
-        
-        # Start worker tasks
-        for i in range(num_workers):
-            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
-            self.processing_tasks.append(task)
-        
-        if self.health_component:
-            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
-            
-        logger.info(f"Started {num_workers} ClickHouse message processing workers")
-    
-    async def stop_processing(self):
-        """Stop message processing workers"""
-        if not self.is_processing:
-            return
-        
-        self.is_processing = False
-        
-        # Cancel all worker tasks
-        for task in self.processing_tasks:
-            task.cancel()
-        
-        # Wait for tasks to finish
-        if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
-        
-        self.processing_tasks.clear()
-        
-        logger.info("Stopped ClickHouse message processing workers")
-    
-    async def _message_worker(self, worker_id: str):
-        """Message processing worker"""
-        logger.info(f"ClickHouse message worker {worker_id} started")
-        
-        while self.is_processing:
-            try:
-                # Get message from queue with timeout
-                message = await asyncio.wait_for(
-                    self.message_queue.get(),
-                    timeout=CL_PERFORMANCE["processing_timeout"]
-                )
-                
-                # Process message
-                await self._process_message(message, worker_id)
-                
-                # Mark task as done
-                self.message_queue.task_done()
-                
-            except asyncio.TimeoutError:
-                # No messages to process, continue loop
-                continue
-            except asyncio.CancelledError:
-                logger.info(f"ClickHouse message worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in message worker {worker_id}: {str(e)}")
-                if self.health_component:
-                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
-                await asyncio.sleep(1)  # Brief pause before continuing
-        
-        logger.info(f"ClickHouse message worker {worker_id} stopped")
-    
-    async def _process_message(self, message: Dict[str, Any], worker_id: str):
-        """Process a single message"""
-        start_time = datetime.now()
-        
-        try:
-            # Extract message info
-            exchange = message.get("exchange")
-            message_type = message.get("type")
-            data = message.get("data")
-            
-            if not all([exchange, message_type, data]):
-                raise ValueError("Invalid message format: missing exchange, type, or data")
-            
-            # Get appropriate handler
-            handler = self.message_types.get(message_type)
-            if not handler:
-                raise ValueError(f"Unknown message type: {message_type}")
-            
-            # Process with handler
-            result = await handler(exchange, data, worker_id)
-            
-            # Track success
-            self.processed_messages += 1
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            if self.health_component:
-                self.health_component.record_success({
-                    "action": "message_processed",
-                    "type": message_type,
-                    "exchange": exchange,
-                    "worker": worker_id,
-                    "processing_time_ms": processing_time
-                })
-            
-            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
-            
-        except Exception as e:
-            self.failed_messages += 1
-            error_msg = f"Failed to process message: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-    
-    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle trades data message"""
-        try:
-            # Validate trades data
-            if not self._validate_trades_data(data):
-                raise ValueError("Invalid trades data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_trades_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "trades", ch_data)
-            
-            if success:
-                logger.debug(f"Trades data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert trades data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle candles/bars data message"""
-        try:
-            # Validate candles data
-            if not self._validate_candles_data(data):
-                raise ValueError("Invalid candles data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_candles_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "candles", ch_data)
-            
-            if success:
-                logger.debug(f"Candles data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert candles data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle orderbook data message"""
-        try:
-            # Validate orderbook data
-            if not self._validate_orderbook_data(data):
-                raise ValueError("Invalid orderbook data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_orderbook_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
-            
-            if success:
-                logger.debug(f"Orderbook data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert orderbook data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle user settings message"""
-        try:
-            # User settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "user_settings", data)
-            
-            if success:
-                logger.debug("User settings data inserted")
-            else:
-                logger.warning("Failed to insert user settings data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling user settings message: {str(e)}")
-            raise
-    
-    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle indicators message"""
-        try:
-            # Indicators settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "indicators", data)
-            
-            if success:
-                logger.debug("Indicators data inserted")
-            else:
-                logger.warning("Failed to insert indicators data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling indicators message: {str(e)}")
-            raise
-    
-    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
-        """
-        Validate trades data format
-        
-        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
-        - Keine hardcoded Exchange-Listen
-        - Keine Exchange-spezifischen If-Bedingungen  
-        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
-        
-        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
-        
-        Felder die NICHT geprüft werden:
-        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
-        - source: Optional mit DEFAULT 'live_ws'
-        """
-        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
-        """Validate candles data format"""
-        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
-        """Validate orderbook data format"""
-        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Transform trades data to ClickHouse format
-        
-        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
-        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
-        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
-        - trade_id: NICHT senden (wird von ClickHouse generiert)
-        - source: Optional (DEFAULT 'live_ws')
-        """
-        transformed = {
-            "symbol": data["symbol"],
-            "market": data["market"],  # ✅ Spot oder Futures
-            "price": data["price"],  # ✅ String für Decimal(76,38)
-            "size": data["size"],    # ✅ String für Decimal(76,38)
-            "side": data["side"],
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-        
-        # source-Field optional hinzufügen (wenn vorhanden)
-        if "source" in data:
-            transformed["source"] = data["source"]
-        
-        return transformed
-    
-    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform candles data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "resolution": data["resolution"],
-            "open": data["open"],    # ✅ String für Decimal(76,38)
-            "high": data["high"],    # ✅ String für Decimal(76,38)
-            "low": data["low"],      # ✅ String für Decimal(76,38)
-            "close": data["close"],  # ✅ String für Decimal(76,38)
-            "volume": data["volume"], # ✅ String für Decimal(76,38)
-            "trades": data.get("trades", 0),
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform orderbook data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "bids": data["bids"],  # Array of [price, size] tuples
-            "asks": data["asks"],  # Array of [price, size] tuples
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
-        """Queue a message for processing"""
-        try:
-            message = {
-                "exchange": exchange,
-                "type": message_type,
-                "data": data,
-                "queued_at": datetime.now().isoformat()
-            }
-            
-            # Add to queue (will wait if queue is full)
-            await self.message_queue.put(message)
-            
-            logger.debug(f"Queued {message_type} message for {exchange}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to queue message: {str(e)}")
-            return False
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
-        """Get message processing statistics"""
-        return {
-            "is_processing": self.is_processing,
-            "queue_size": self.message_queue.qsize(),
-            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
-            "active_workers": len(self.processing_tasks),
-            "processed_messages": self.processed_messages,
-            "failed_messages": self.failed_messages,
-            "success_rate": round(
-                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
-            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
-            "supported_message_types": list(self.message_types.keys())
-        }
-    
-    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Process a batch of messages"""
-        results = {"queued": 0, "failed": 0}
-        
-        for message in messages:
-            try:
-                success = await self.queue_message(
-                    message.get("exchange"),
-                    message.get("type"),
-                    message.get("data")
-                )
-                
-                if success:
-                    results["queued"] += 1
-                else:
-                    results["failed"] += 1
-                    
-            except Exception as e:
-                logger.error(f"Error queuing batch message: {str(e)}")
-                results["failed"] += 1
-        
-        return results
-
-
-# Global cl_message_handlers instance
-cl_handlers_instance = cl_message_handlers()
-</file>
-
 <file path="backend/database/clickhouse/cl_schema_migration.py">
 import asyncio
 import logging
@@ -171094,153 +171094,6 @@ async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, mar
             pass
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import type React from "react";
-import { createLazyChart } from "../lib/chartLazyLoader";
-
-export type SafeCandleChartApi = {
-  chart: any;
-  series: any;
-  generation: number;
-
-  safeSetData: (data: any[]) => void;
-  safeUpdate: (bar: any) => void;
-  safeApplyOptions: (opts: any) => void;
-  safeFitContent: () => void;
-};
-
-export function useSafeCandleChart(
-  chartTheme: any,
-  seriesTheme: any,
-  containerRef: React.RefObject<HTMLDivElement>
-): SafeCandleChartApi | null {
-  const chartRef = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
-
-  const disposedRef = useRef(false);
-  const genRef = useRef(0);
-
-  const [ready, setReady] = useState(false);
-  const [generation, setGeneration] = useState(0);
-
-  const safeSetData = useCallback((data: any[]) => {
-    if (disposedRef.current) return;
-    const myGen = genRef.current;
-    const s = seriesRef.current;
-    if (!s) return;
-    try {
-      if (disposedRef.current) return;
-      if (genRef.current !== myGen) return;
-      s.setData(data);
-    } catch {}
-  }, []);
-
-  const safeUpdate = useCallback((bar: any) => {
-    if (disposedRef.current) return;
-    const myGen = genRef.current;
-    const s = seriesRef.current;
-    if (!s) return;
-    try {
-      if (disposedRef.current) return;
-      if (genRef.current !== myGen) return;
-      s.update(bar);
-    } catch {}
-  }, []);
-
-  const safeApplyOptions = useCallback((opts: any) => {
-    if (disposedRef.current) return;
-    const myGen = genRef.current;
-    const c = chartRef.current;
-    if (!c) return;
-    try {
-      if (disposedRef.current) return;
-      if (genRef.current !== myGen) return;
-      c.applyOptions(opts);
-    } catch {}
-  }, []);
-
-  const safeFitContent = useCallback(() => {
-    if (disposedRef.current) return;
-    const myGen = genRef.current;
-    const c = chartRef.current;
-    if (!c) return;
-    try {
-      if (disposedRef.current) return;
-      if (genRef.current !== myGen) return;
-      c.timeScale().fitContent();
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    disposedRef.current = false;
-    genRef.current += 1;
-    const myGen = genRef.current;
-
-    let ro: ResizeObserver | null = null;
-
-    (async () => {
-      const chart = await createLazyChart(el, chartTheme);
-
-      if (disposedRef.current || genRef.current !== myGen) {
-        try { chart.remove?.(); } catch {}
-        try { chart.dispose?.(); } catch {}
-        return;
-      }
-
-      const series = chart.addCandlestickSeries(seriesTheme);
-
-      chartRef.current = chart;
-      seriesRef.current = series;
-
-      setGeneration(myGen);
-      setReady(true);
-
-      ro = new ResizeObserver(() => {
-        if (disposedRef.current) return;
-        if (genRef.current !== myGen) return;
-        try { chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); } catch {}
-      });
-      ro.observe(el);
-    })();
-
-    return () => {
-      disposedRef.current = true;
-      genRef.current += 1;
-
-      setReady(false);
-      setGeneration(0);
-
-      try { ro?.disconnect(); } catch {}
-      ro = null;
-
-      try { chartRef.current?.remove?.(); } catch {}
-      try { chartRef.current?.dispose?.(); } catch {}
-
-      chartRef.current = null;
-      seriesRef.current = null;
-    };
-  }, [containerRef, chartTheme, seriesTheme]);
-
-  const api = useMemo<SafeCandleChartApi>(() => {
-    return {
-      chart: chartRef.current,
-      series: seriesRef.current,
-      generation,
-      safeSetData,
-      safeUpdate,
-      safeApplyOptions,
-      safeFitContent,
-    };
-  }, [generation, safeSetData, safeUpdate, safeApplyOptions, safeFitContent]);
-
-  return ready ? api : null;
-}
-</file>
-
 <file path="frontend/src/App.tsx">
 // frontend/src/App.tsx
 
@@ -172303,6 +172156,174 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
         "server_iso": datetime.utcnow().isoformat(),
     }
     await ws_manager.broadcast_to_channel(channel, msg)
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+import { useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+  setChartData: (data: CandleData[]) => void;
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is any {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  // ✅ TASK 3: Nutze Safe Chart Hook
+  const isDark = actualTheme === "dark";
+  
+  // ✅ Performance: Memoize themes to prevent unnecessary chart re-initialization
+  const chartTheme = useMemo(() => getChartTheme(isDark, interval), [isDark, interval]);
+  const seriesTheme = useMemo(() => getSeriesTheme(isDark), [isDark]);
+
+  const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
+
+  useEffect(() => {
+    if (safeChart) {
+      chartInstance.current = safeChart.chart;
+      seriesInstance.current = safeChart.series;
+      setIsChartReady(true);
+
+      // Theme Observer
+      const themeObserver = new MutationObserver(() => {
+        if (safeChart.chart && safeChart.series) {
+          const isDarkNow = document.documentElement.classList.contains("dark");
+          const newChartTheme = getChartTheme(isDarkNow, interval);
+          const newSeriesTheme = getSeriesTheme(isDarkNow);
+
+          try {
+            safeChart.chart.applyOptions(newChartTheme);
+            safeChart.series.applyOptions(newSeriesTheme);
+          } catch (e) {
+            console.warn("[useCandleChart] Theme update failed:", e);
+          }
+        }
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+
+      // Resize Observer
+      const container = containerRef.current;
+      let resizeObserver: ResizeObserver | null = null;
+      if (container) {
+        resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && safeChart.chart) {
+            const { width, height } = entries[0].contentRect;
+            safeChart.safeApplyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+      }
+
+      return () => {
+        themeObserver.disconnect();
+        resizeObserver?.disconnect();
+      };
+    } else {
+      setIsChartReady(false);
+    }
+  }, [safeChart, interval, containerRef]);
+
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !safeChart) return;
+    if (!data || data.length === 0) return;
+
+    // Lightweight-charts expects seconds.
+    // Whitespace is supported by passing {time} without OHLC.
+    const formatted = data
+      .map((d) => {
+        const tSec = Math.floor(d.time / 1000);
+        if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+        if (isRealCandle(d)) {
+          return {
+            time: tSec,
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).close,
+          };
+        }
+        return { time: tSec }; // ✅ Whitespace
+      })
+      .filter(Boolean) as any[];
+
+    if (formatted.length <= 0) return;
+
+    // Safety: ensure ascending order by time
+    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+
+    // ✅ disposed-safe
+    safeChart.safeSetData(formatted);
+  };
+
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    // Use first/last REAL candles (ignore whitespace)
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
+  };
+}
 </file>
 
 <file path="backend/services/usecases/backfill_loop_service.py">
