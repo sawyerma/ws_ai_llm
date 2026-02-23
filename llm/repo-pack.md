@@ -120165,6 +120165,404 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
+<file path="backend/database/clickhouse/cl_message_handlers.py">
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Callable
+from datetime import datetime
+from .cl_manager import cl_manager_instance
+from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+
+logger = logging.getLogger(__name__)
+
+class cl_message_handlers:
+    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
+    
+    def __init__(self):
+        self.manager = cl_manager_instance
+        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
+        self.processing_tasks: List[asyncio.Task] = []
+        self.is_processing = False
+        self.processed_messages = 0
+        self.failed_messages = 0
+        self.message_types: Dict[str, Callable] = {
+            "trades": self._handle_trades_message,
+            "candles": self._handle_candles_message,
+            "orderbook": self._handle_orderbook_message,
+            "user_settings": self._handle_user_settings_message,
+            "indicators": self._handle_indicators_message
+        }
+        
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "message_handlers")
+        except ImportError:
+            logger.warning("Health system not available for cl_message_handlers")
+            self.health_component = None
+            
+        logger.info("ClickHouse cl_message_handlers initialized")
+    
+    async def start_processing(self, num_workers: int = 3):
+        """Start message processing workers"""
+        if self.is_processing:
+            logger.warning("Message processing is already running")
+            return
+        
+        self.is_processing = True
+        
+        # Start worker tasks
+        for i in range(num_workers):
+            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
+            self.processing_tasks.append(task)
+        
+        if self.health_component:
+            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
+            
+        logger.info(f"Started {num_workers} ClickHouse message processing workers")
+    
+    async def stop_processing(self):
+        """Stop message processing workers"""
+        if not self.is_processing:
+            return
+        
+        self.is_processing = False
+        
+        # Cancel all worker tasks
+        for task in self.processing_tasks:
+            task.cancel()
+        
+        # Wait for tasks to finish
+        if self.processing_tasks:
+            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        
+        self.processing_tasks.clear()
+        
+        logger.info("Stopped ClickHouse message processing workers")
+    
+    async def _message_worker(self, worker_id: str):
+        """Message processing worker"""
+        logger.info(f"ClickHouse message worker {worker_id} started")
+        
+        while self.is_processing:
+            try:
+                # Get message from queue with timeout
+                message = await asyncio.wait_for(
+                    self.message_queue.get(),
+                    timeout=CL_PERFORMANCE["processing_timeout"]
+                )
+                
+                # Process message
+                await self._process_message(message, worker_id)
+                
+                # Mark task as done
+                self.message_queue.task_done()
+                
+            except asyncio.TimeoutError:
+                # No messages to process, continue loop
+                continue
+            except asyncio.CancelledError:
+                logger.info(f"ClickHouse message worker {worker_id} cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in message worker {worker_id}: {str(e)}")
+                if self.health_component:
+                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
+                await asyncio.sleep(1)  # Brief pause before continuing
+        
+        logger.info(f"ClickHouse message worker {worker_id} stopped")
+    
+    async def _process_message(self, message: Dict[str, Any], worker_id: str):
+        """Process a single message"""
+        start_time = datetime.now()
+        
+        try:
+            # Extract message info
+            exchange = message.get("exchange")
+            message_type = message.get("type")
+            data = message.get("data")
+            
+            if not all([exchange, message_type, data]):
+                raise ValueError("Invalid message format: missing exchange, type, or data")
+            
+            # Get appropriate handler
+            handler = self.message_types.get(message_type)
+            if not handler:
+                raise ValueError(f"Unknown message type: {message_type}")
+            
+            # Process with handler
+            result = await handler(exchange, data, worker_id)
+            
+            # Track success
+            self.processed_messages += 1
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            if self.health_component:
+                self.health_component.record_success({
+                    "action": "message_processed",
+                    "type": message_type,
+                    "exchange": exchange,
+                    "worker": worker_id,
+                    "processing_time_ms": processing_time
+                })
+            
+            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
+            
+        except Exception as e:
+            self.failed_messages += 1
+            error_msg = f"Failed to process message: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+    
+    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle trades data message"""
+        try:
+            # Validate trades data
+            if not self._validate_trades_data(data):
+                raise ValueError("Invalid trades data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_trades_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "trades", ch_data)
+            
+            if success:
+                logger.debug(f"Trades data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert trades data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle candles/bars data message"""
+        try:
+            # Validate candles data
+            if not self._validate_candles_data(data):
+                raise ValueError("Invalid candles data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_candles_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "candles", ch_data)
+            
+            if success:
+                logger.debug(f"Candles data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert candles data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle orderbook data message"""
+        try:
+            # Validate orderbook data
+            if not self._validate_orderbook_data(data):
+                raise ValueError("Invalid orderbook data format")
+            
+            # Transform data to ClickHouse format
+            ch_data = self._transform_orderbook_data(exchange, data)
+            
+            # Insert via ClickHouse lane
+            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
+            
+            if success:
+                logger.debug(f"Orderbook data inserted for {exchange}")
+            else:
+                logger.warning(f"Failed to insert orderbook data for {exchange}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
+            raise
+    
+    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle user settings message"""
+        try:
+            # User settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "user_settings", data)
+            
+            if success:
+                logger.debug("User settings data inserted")
+            else:
+                logger.warning("Failed to insert user settings data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling user settings message: {str(e)}")
+            raise
+    
+    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
+        """Handle indicators message"""
+        try:
+            # Indicators settings are exchange-agnostic
+            success = await self.manager.insert_data("system", "indicators", data)
+            
+            if success:
+                logger.debug("Indicators data inserted")
+            else:
+                logger.warning("Failed to insert indicators data")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error handling indicators message: {str(e)}")
+            raise
+    
+    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate trades data format
+        
+        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
+        - Keine hardcoded Exchange-Listen
+        - Keine Exchange-spezifischen If-Bedingungen  
+        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
+        
+        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
+        
+        Felder die NICHT geprüft werden:
+        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
+        - source: Optional mit DEFAULT 'live_ws'
+        """
+        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
+        """Validate candles data format"""
+        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
+        """Validate orderbook data format"""
+        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
+        return all(field in data for field in required_fields)
+    
+    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Transform trades data to ClickHouse format
+        
+        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
+        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
+        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
+        - trade_id: NICHT senden (wird von ClickHouse generiert)
+        - source: Optional (DEFAULT 'live_ws')
+        """
+        transformed = {
+            "symbol": data["symbol"],
+            "market": data["market"],  # ✅ Spot oder Futures
+            "price": data["price"],  # ✅ String für Decimal(76,38)
+            "size": data["size"],    # ✅ String für Decimal(76,38)
+            "side": data["side"],
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+        
+        # source-Field optional hinzufügen (wenn vorhanden)
+        if "source" in data:
+            transformed["source"] = data["source"]
+        
+        return transformed
+    
+    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform candles data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "resolution": data["resolution"],
+            "open": data["open"],    # ✅ String für Decimal(76,38)
+            "high": data["high"],    # ✅ String für Decimal(76,38)
+            "low": data["low"],      # ✅ String für Decimal(76,38)
+            "close": data["close"],  # ✅ String für Decimal(76,38)
+            "volume": data["volume"], # ✅ String für Decimal(76,38)
+            "trades": data.get("trades", 0),
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform orderbook data to ClickHouse format"""
+        return {
+            "symbol": data["symbol"],
+            "market": data["market"],
+            "bids": data["bids"],  # Array of [price, size] tuples
+            "asks": data["asks"],  # Array of [price, size] tuples
+            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
+        }
+    
+    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
+        """Queue a message for processing"""
+        try:
+            message = {
+                "exchange": exchange,
+                "type": message_type,
+                "data": data,
+                "queued_at": datetime.now().isoformat()
+            }
+            
+            # Add to queue (will wait if queue is full)
+            await self.message_queue.put(message)
+            
+            logger.debug(f"Queued {message_type} message for {exchange}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to queue message: {str(e)}")
+            return False
+    
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get message processing statistics"""
+        return {
+            "is_processing": self.is_processing,
+            "queue_size": self.message_queue.qsize(),
+            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
+            "active_workers": len(self.processing_tasks),
+            "processed_messages": self.processed_messages,
+            "failed_messages": self.failed_messages,
+            "success_rate": round(
+                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
+            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
+            "supported_message_types": list(self.message_types.keys())
+        }
+    
+    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Process a batch of messages"""
+        results = {"queued": 0, "failed": 0}
+        
+        for message in messages:
+            try:
+                success = await self.queue_message(
+                    message.get("exchange"),
+                    message.get("type"),
+                    message.get("data")
+                )
+                
+                if success:
+                    results["queued"] += 1
+                else:
+                    results["failed"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Error queuing batch message: {str(e)}")
+                results["failed"] += 1
+        
+        return results
+
+
+# Global cl_message_handlers instance
+cl_handlers_instance = cl_message_handlers()
+</file>
+
 <file path="backend/database/clickhouse/cl_schema_migration.py">
 import asyncio
 import logging
@@ -159624,402 +160022,112 @@ async def get_supported_historical_exchanges():
     )
 </file>
 
-<file path="backend/database/clickhouse/cl_message_handlers.py">
-import asyncio
-import logging
-from typing import Dict, Any, List, Optional, Callable
-from datetime import datetime
-from .cl_manager import cl_manager_instance
-from .cl_config import CL_DATABASE_PATTERNS, CL_SCHEMAS, CL_PERFORMANCE
+<file path="backend/database/clickhouse/cl_config.py">
+import os
+from typing import Dict, Any, Set
 
-logger = logging.getLogger(__name__)
+# cl_ Database Patterns für alle 8 Exchanges  
+CL_DATABASE_PATTERNS: Dict[str, str] = {
+    "trades": "trading.{exchange}_trades",
+    "candles": "trading.{exchange}_bars", 
+    "orderbook": "trading.{exchange}_orderbook",
+    "user_settings": "trading.user_coin_settings",
+    "indicators": "trading.user_indicator_settings",
+    "health": "monitoring.{component}_health"
+}
 
-class cl_message_handlers:
-    """ClickHouse Message Handlers - Verarbeitung von Trading-Daten für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.manager = cl_manager_instance
-        self.message_queue = asyncio.Queue(maxsize=CL_PERFORMANCE["queue_maxsize"])
-        self.processing_tasks: List[asyncio.Task] = []
-        self.is_processing = False
-        self.processed_messages = 0
-        self.failed_messages = 0
-        self.message_types: Dict[str, Callable] = {
-            "trades": self._handle_trades_message,
-            "candles": self._handle_candles_message,
-            "orderbook": self._handle_orderbook_message,
-            "user_settings": self._handle_user_settings_message,
-            "indicators": self._handle_indicators_message
-        }
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "message_handlers")
-        except ImportError:
-            logger.warning("Health system not available for cl_message_handlers")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_message_handlers initialized")
-    
-    async def start_processing(self, num_workers: int = 3):
-        """Start message processing workers"""
-        if self.is_processing:
-            logger.warning("Message processing is already running")
-            return
-        
-        self.is_processing = True
-        
-        # Start worker tasks
-        for i in range(num_workers):
-            task = asyncio.create_task(self._message_worker(f"worker-{i}"))
-            self.processing_tasks.append(task)
-        
-        if self.health_component:
-            self.health_component.record_success({"action": "processing_started", "workers": num_workers})
-            
-        logger.info(f"Started {num_workers} ClickHouse message processing workers")
-    
-    async def stop_processing(self):
-        """Stop message processing workers"""
-        if not self.is_processing:
-            return
-        
-        self.is_processing = False
-        
-        # Cancel all worker tasks
-        for task in self.processing_tasks:
-            task.cancel()
-        
-        # Wait for tasks to finish
-        if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
-        
-        self.processing_tasks.clear()
-        
-        logger.info("Stopped ClickHouse message processing workers")
-    
-    async def _message_worker(self, worker_id: str):
-        """Message processing worker"""
-        logger.info(f"ClickHouse message worker {worker_id} started")
-        
-        while self.is_processing:
-            try:
-                # Get message from queue with timeout
-                message = await asyncio.wait_for(
-                    self.message_queue.get(),
-                    timeout=CL_PERFORMANCE["processing_timeout"]
-                )
-                
-                # Process message
-                await self._process_message(message, worker_id)
-                
-                # Mark task as done
-                self.message_queue.task_done()
-                
-            except asyncio.TimeoutError:
-                # No messages to process, continue loop
-                continue
-            except asyncio.CancelledError:
-                logger.info(f"ClickHouse message worker {worker_id} cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in message worker {worker_id}: {str(e)}")
-                if self.health_component:
-                    self.health_component.record_error(f"Worker {worker_id} error: {str(e)}")
-                await asyncio.sleep(1)  # Brief pause before continuing
-        
-        logger.info(f"ClickHouse message worker {worker_id} stopped")
-    
-    async def _process_message(self, message: Dict[str, Any], worker_id: str):
-        """Process a single message"""
-        start_time = datetime.now()
-        
-        try:
-            # Extract message info
-            exchange = message.get("exchange")
-            message_type = message.get("type")
-            data = message.get("data")
-            
-            if not all([exchange, message_type, data]):
-                raise ValueError("Invalid message format: missing exchange, type, or data")
-            
-            # Get appropriate handler
-            handler = self.message_types.get(message_type)
-            if not handler:
-                raise ValueError(f"Unknown message type: {message_type}")
-            
-            # Process with handler
-            result = await handler(exchange, data, worker_id)
-            
-            # Track success
-            self.processed_messages += 1
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            if self.health_component:
-                self.health_component.record_success({
-                    "action": "message_processed",
-                    "type": message_type,
-                    "exchange": exchange,
-                    "worker": worker_id,
-                    "processing_time_ms": processing_time
-                })
-            
-            logger.debug(f"Processed {message_type} message for {exchange} in {processing_time:.2f}ms")
-            
-        except Exception as e:
-            self.failed_messages += 1
-            error_msg = f"Failed to process message: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-    
-    async def _handle_trades_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle trades data message"""
-        try:
-            # Validate trades data
-            if not self._validate_trades_data(data):
-                raise ValueError("Invalid trades data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_trades_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "trades", ch_data)
-            
-            if success:
-                logger.debug(f"Trades data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert trades data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling trades message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_candles_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle candles/bars data message"""
-        try:
-            # Validate candles data
-            if not self._validate_candles_data(data):
-                raise ValueError("Invalid candles data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_candles_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "candles", ch_data)
-            
-            if success:
-                logger.debug(f"Candles data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert candles data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling candles message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_orderbook_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle orderbook data message"""
-        try:
-            # Validate orderbook data
-            if not self._validate_orderbook_data(data):
-                raise ValueError("Invalid orderbook data format")
-            
-            # Transform data to ClickHouse format
-            ch_data = self._transform_orderbook_data(exchange, data)
-            
-            # Insert via ClickHouse lane
-            success = await self.manager.insert_data(exchange, "orderbook", ch_data)
-            
-            if success:
-                logger.debug(f"Orderbook data inserted for {exchange}")
-            else:
-                logger.warning(f"Failed to insert orderbook data for {exchange}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling orderbook message for {exchange}: {str(e)}")
-            raise
-    
-    async def _handle_user_settings_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle user settings message"""
-        try:
-            # User settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "user_settings", data)
-            
-            if success:
-                logger.debug("User settings data inserted")
-            else:
-                logger.warning("Failed to insert user settings data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling user settings message: {str(e)}")
-            raise
-    
-    async def _handle_indicators_message(self, exchange: str, data: Dict[str, Any], worker_id: str) -> bool:
-        """Handle indicators message"""
-        try:
-            # Indicators settings are exchange-agnostic
-            success = await self.manager.insert_data("system", "indicators", data)
-            
-            if success:
-                logger.debug("Indicators data inserted")
-            else:
-                logger.warning("Failed to insert indicators data")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error handling indicators message: {str(e)}")
-            raise
-    
-    def _validate_trades_data(self, data: Dict[str, Any]) -> bool:
-        """
-        Validate trades data format
-        
-        ✅ GENERISCH: Prüft nur Pflichtfelder die in ALLEN Exchange-Tabellen existieren
-        - Keine hardcoded Exchange-Listen
-        - Keine Exchange-spezifischen If-Bedingungen  
-        - Schema-kompatibel mit binance_trades, gateio_trades, etc.
-        
-        Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source (DEFAULT)
-        
-        Felder die NICHT geprüft werden:
-        - trade_id: MATERIALIZED in ClickHouse (wird auto-generiert)
-        - source: Optional mit DEFAULT 'live_ws'
-        """
-        required_fields = ["symbol", "market", "price", "size", "side", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_candles_data(self, data: Dict[str, Any]) -> bool:
-        """Validate candles data format"""
-        required_fields = ["symbol", "market", "resolution", "open", "high", "low", "close", "volume", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _validate_orderbook_data(self, data: Dict[str, Any]) -> bool:
-        """Validate orderbook data format"""
-        required_fields = ["symbol", "market", "bids", "asks", "timestamp"]
-        return all(field in data for field in required_fields)
-    
-    def _transform_trades_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Transform trades data to ClickHouse format
-        
-        ✅ GENERISCH: Funktioniert für alle 8 Exchanges
-        - Schema: symbol, market, price, size, side, timestamp, trade_id (MATERIALIZED), source
-        - market: "spot" oder "futures" (für beide Market-Types in EINER Tabelle)
-        - trade_id: NICHT senden (wird von ClickHouse generiert)
-        - source: Optional (DEFAULT 'live_ws')
-        """
-        transformed = {
-            "symbol": data["symbol"],
-            "market": data["market"],  # ✅ Spot oder Futures
-            "price": data["price"],  # ✅ String für Decimal(76,38)
-            "size": data["size"],    # ✅ String für Decimal(76,38)
-            "side": data["side"],
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-        
-        # source-Field optional hinzufügen (wenn vorhanden)
-        if "source" in data:
-            transformed["source"] = data["source"]
-        
-        return transformed
-    
-    def _transform_candles_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform candles data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "resolution": data["resolution"],
-            "open": data["open"],    # ✅ String für Decimal(76,38)
-            "high": data["high"],    # ✅ String für Decimal(76,38)
-            "low": data["low"],      # ✅ String für Decimal(76,38)
-            "close": data["close"],  # ✅ String für Decimal(76,38)
-            "volume": data["volume"], # ✅ String für Decimal(76,38)
-            "trades": data.get("trades", 0),
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    def _transform_orderbook_data(self, exchange: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform orderbook data to ClickHouse format"""
-        return {
-            "symbol": data["symbol"],
-            "market": data["market"],
-            "bids": data["bids"],  # Array of [price, size] tuples
-            "asks": data["asks"],  # Array of [price, size] tuples
-            "timestamp": data["timestamp"]  # ✅ FIXED! Feld heißt "timestamp" nicht "ts"
-        }
-    
-    async def queue_message(self, exchange: str, message_type: str, data: Dict[str, Any]) -> bool:
-        """Queue a message for processing"""
-        try:
-            message = {
-                "exchange": exchange,
-                "type": message_type,
-                "data": data,
-                "queued_at": datetime.now().isoformat()
-            }
-            
-            # Add to queue (will wait if queue is full)
-            await self.message_queue.put(message)
-            
-            logger.debug(f"Queued {message_type} message for {exchange}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to queue message: {str(e)}")
-            return False
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
-        """Get message processing statistics"""
-        return {
-            "is_processing": self.is_processing,
-            "queue_size": self.message_queue.qsize(),
-            "max_queue_size": CL_PERFORMANCE["queue_maxsize"],
-            "active_workers": len(self.processing_tasks),
-            "processed_messages": self.processed_messages,
-            "failed_messages": self.failed_messages,
-            "success_rate": round(
-                (self.processed_messages / (self.processed_messages + self.failed_messages)) * 100, 2
-            ) if (self.processed_messages + self.failed_messages) > 0 else 100.0,
-            "supported_message_types": list(self.message_types.keys())
-        }
-    
-    async def process_batch_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Process a batch of messages"""
-        results = {"queued": 0, "failed": 0}
-        
-        for message in messages:
-            try:
-                success = await self.queue_message(
-                    message.get("exchange"),
-                    message.get("type"),
-                    message.get("data")
-                )
-                
-                if success:
-                    results["queued"] += 1
-                else:
-                    results["failed"] += 1
-                    
-            except Exception as e:
-                logger.error(f"Error queuing batch message: {str(e)}")
-                results["failed"] += 1
-        
-        return results
+# cl_ Connection Settings - zentral für alle Exchanges
+# Only params supported by clickhouse_connect.get_client() HTTP API
+# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
+CL_CONNECTION: Dict[str, Any] = {
+    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
+    "database": os.getenv("CLICKHOUSE_DB", "trading"),
+    "username": os.getenv("CLICKHOUSE_USER", "admin"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
+    "connect_timeout": 5,
+    "send_receive_timeout": 30
+}
 
+# cl_ Performance Settings
+CL_PERFORMANCE: Dict[str, int] = {
+    "batch_size": 1000,
+    "queue_maxsize": 5000,
+    "processing_timeout": 10,
+    "health_check_interval": 60,
+    "connection_pool_size": 10,
+    "max_concurrent_inserts": 5
+}
 
-# Global cl_message_handlers instance
-cl_handlers_instance = cl_message_handlers()
+# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
+def _get_critical_cl_components() -> Set[str]:
+    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
+    
+    components = {
+        "cl.unified-manager",
+        "cl.schema-manager",
+        "cl.connection-pool"
+    }
+    
+    # Nur erste 2 Exchanges als kritisch markieren
+    for ex in exchanges[:2]:
+        components.add(f"cl.{ex}-manager")
+    
+    return components
+
+CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
+
+# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
+def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
+    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
+    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
+    
+    configs = {}
+    for i, exchange in enumerate(exchanges):
+        # Erste 2 = high priority, rest = medium
+        priority = "high" if i < 2 else "medium"
+        batch_size = 1000 if i < 2 else 800
+        
+        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
+        configs[exchange] = {
+            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
+            "priority": priority,
+            "batch_size": batch_size,
+            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
+        }
+    
+    return configs
+
+EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
+
+# cl_ Health Thresholds
+CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
+    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
+    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
+    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
+    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
+    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
+}
+
+# cl_ Schema Definitions
+CL_SCHEMAS: Dict[str, Dict[str, str]] = {
+    "trades": {
+        "table_suffix": "_trades",
+        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "candles": {
+        "table_suffix": "_bars", 
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
+        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
+    },
+    "orderbook": {
+        "table_suffix": "_orderbook",
+        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
+        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
+    }
+}
 </file>
 
 <file path="backend/database/schema_reconcile.py">
@@ -160969,135 +161077,6 @@ def apply_exchange_limits(streams: Iterable[str], limit: int = 200) -> List[str]
 export const WS_BASE_URL: string = import.meta.env.VITE_WS_BASE_URL || "";
 </file>
 
-<file path="frontend/src/hooks/useSafeCandleChart.ts">
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createLazyChart } from "../lib/chartLazyLoader";
-
-export type SafeCandleChartApi = {
-  chart: any;
-  series: any;
-  generation: number;
-
-  safeSetData: (data: any[]) => void;
-  safeUpdate: (bar: any) => void;
-  safeApplyOptions: (opts: any) => void;
-  safeFitContent: () => void;
-};
-
-export function useSafeCandleChart(
-  chartTheme: any,
-  seriesTheme: any,
-  containerRef: React.RefObject<HTMLDivElement>
-): SafeCandleChartApi | null {
-  const chartRef = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
-
-  const disposedRef = useRef(false);
-  const genRef = useRef(0);
-
-  // ✅ wichtig: triggert Re-render wenn Chart bereit ist
-  const [ready, setReady] = useState(false);
-
-  const api = useMemo<SafeCandleChartApi>(() => {
-    return {
-      chart: null,
-      series: null,
-      generation: 0,
-
-      safeSetData: (data: any[]) => {
-        if (disposedRef.current) return;
-        const s = seriesRef.current;
-        if (!s) return;
-        try { s.setData(data); } catch {}
-      },
-
-      safeUpdate: (bar: any) => {
-        if (disposedRef.current) return;
-        const s = seriesRef.current;
-        if (!s) return;
-        try { s.update(bar); } catch {}
-      },
-
-      safeApplyOptions: (opts: any) => {
-        if (disposedRef.current) return;
-        const c = chartRef.current;
-        if (!c) return;
-        try { c.applyOptions(opts); } catch {}
-      },
-
-      safeFitContent: () => {
-        if (disposedRef.current) return;
-        const c = chartRef.current;
-        if (!c) return;
-        try { c.timeScale().fitContent(); } catch {}
-      },
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    disposedRef.current = false;
-    genRef.current += 1;
-    const myGen = genRef.current;
-
-    const initChart = async () => {
-      const chart = await createLazyChart(el, chartTheme);
-      
-      if (disposedRef.current || genRef.current !== myGen) {
-        try { chart.remove?.(); } catch {}
-        return;
-      }
-
-      const series = chart.addCandlestickSeries(seriesTheme);
-
-      chartRef.current = chart;
-      seriesRef.current = series;
-
-      // ✅ expose handles
-      api.chart = chart;
-      api.series = series;
-      api.generation = myGen;
-
-      setReady(true);
-
-      const ro = new ResizeObserver(() => {
-        if (disposedRef.current) return;
-        if (genRef.current !== myGen) return;
-        try {
-          chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
-        } catch {}
-      });
-      ro.observe(el);
-
-      return ro;
-    };
-
-    let resizeObserver: ResizeObserver | undefined;
-    initChart().then(ro => { resizeObserver = ro; });
-
-    return () => {
-      disposedRef.current = true;
-      genRef.current += 1;
-
-      setReady(false);
-
-      try { resizeObserver?.disconnect(); } catch {}
-      try { chartRef.current?.remove?.(); } catch {}
-      try { chartRef.current?.dispose?.(); } catch {}
-      try { chartRef.current = null; } catch {}
-      try { seriesRef.current = null; } catch {}
-      try { api.chart = null; api.series = null; } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containerRef, chartTheme, seriesTheme]);
-
-  // ✅ erst dann nicht-null, wenn ready wirklich getriggert wurde
-  return ready ? api : null;
-}
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/TradesPanel.tsx">
 // frontend/src/pages/TradingPage/components/TradesPanel.tsx
 import type { LiveTrade } from "../hooks/useWsLane";
@@ -161649,114 +161628,6 @@ cl_handlers = cl_handlers_instance
 unified_clickhouse = unified_cl_service
 </file>
 
-<file path="backend/database/clickhouse/cl_config.py">
-import os
-from typing import Dict, Any, Set
-
-# cl_ Database Patterns für alle 8 Exchanges  
-CL_DATABASE_PATTERNS: Dict[str, str] = {
-    "trades": "trading.{exchange}_trades",
-    "candles": "trading.{exchange}_bars", 
-    "orderbook": "trading.{exchange}_orderbook",
-    "user_settings": "trading.user_coin_settings",
-    "indicators": "trading.user_indicator_settings",
-    "health": "monitoring.{component}_health"
-}
-
-# cl_ Connection Settings - zentral für alle Exchanges
-# Only params supported by clickhouse_connect.get_client() HTTP API
-# ✅ GENERISCH: Nutzt Environment Variables (wie überall im Projekt!)
-CL_CONNECTION: Dict[str, Any] = {
-    "host": os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-    "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),  # HTTP port for clickhouse_connect
-    "database": os.getenv("CLICKHOUSE_DB", "trading"),
-    "username": os.getenv("CLICKHOUSE_USER", "admin"),
-    "password": os.getenv("CLICKHOUSE_PASSWORD", "admin"),
-    "connect_timeout": 5,
-    "send_receive_timeout": 30
-}
-
-# cl_ Performance Settings
-CL_PERFORMANCE: Dict[str, int] = {
-    "batch_size": 1000,
-    "queue_maxsize": 5000,
-    "processing_timeout": 10,
-    "health_check_interval": 60,
-    "connection_pool_size": 10,
-    "max_concurrent_inserts": 5
-}
-
-# Kritische cl_ Komponenten (dynamisch aus ENABLED_EXCHANGES)
-def _get_critical_cl_components() -> Set[str]:
-    """Dynamisch aus ENABLED_EXCHANGES - nur erste 2 als kritisch"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "binance").split(",") if e.strip()]
-    
-    components = {
-        "cl.unified-manager",
-        "cl.schema-manager",
-        "cl.connection-pool"
-    }
-    
-    # Nur erste 2 Exchanges als kritisch markieren
-    for ex in exchanges[:2]:
-        components.add(f"cl.{ex}-manager")
-    
-    return components
-
-CRITICAL_CL_COMPONENTS: Set[str] = _get_critical_cl_components()
-
-# Exchange-spezifische cl_ Konfigurationen (dynamisch generiert)
-def _get_exchange_cl_configs() -> Dict[str, Dict[str, Any]]:
-    """Generiert Configs für alle aktivierten Exchanges aus ENABLED_EXCHANGES"""
-    exchanges = [e.strip() for e in os.getenv("ENABLED_EXCHANGES", "").split(",") if e.strip()]
-    
-    configs = {}
-    for i, exchange in enumerate(exchanges):
-        # Erste 2 = high priority, rest = medium
-        priority = "high" if i < 2 else "medium"
-        batch_size = 1000 if i < 2 else 800
-        
-        # ✅ FIX: Alle Tabellen sind in "trading" DB, NICHT in separaten Exchange-DBs!
-        configs[exchange] = {
-            "database": "trading",  # ← FIX: War "exchange", jetzt "trading"
-            "priority": priority,
-            "batch_size": batch_size,
-            "tables": [f"{exchange}_trades", f"{exchange}_bars", f"{exchange}_orderbook"]
-        }
-    
-    return configs
-
-EXCHANGE_CL_CONFIGS: Dict[str, Dict[str, Any]] = _get_exchange_cl_configs()
-
-# cl_ Health Thresholds
-CL_HEALTH_THRESHOLDS: Dict[str, Any] = {
-    "min_critical_health": 0.8,         # 80% der kritischen Komponenten müssen healthy sein
-    "min_overall_health": 0.6,          # 60% aller cl_ Komponenten müssen healthy sein
-    "connection_error_threshold": 3,    # >3 Connection Errors → degraded
-    "insert_error_threshold": 10,       # >10 Insert Errors → unhealthy
-    "insert_latency_threshold_ms": 100  # >100ms cl_ Insert Latenz → degraded
-}
-
-# cl_ Schema Definitions
-CL_SCHEMAS: Dict[str, Dict[str, str]] = {
-    "trades": {
-        "table_suffix": "_trades",
-        "columns": "trade_id String, symbol LowCardinality(String), market LowCardinality(String), price Float64, size Float64, side LowCardinality(String), ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "candles": {
-        "table_suffix": "_bars", 
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), resolution LowCardinality(String), open Float64, high Float64, low Float64, close Float64, volume Float64, trades UInt32, ts DateTime64(3)",
-        "engine": "MergeTree() ORDER BY (symbol, market, resolution, ts) PARTITION BY toYYYYMM(ts)"
-    },
-    "orderbook": {
-        "table_suffix": "_orderbook",
-        "columns": "symbol LowCardinality(String), market LowCardinality(String), bids Array(Tuple(Float64, Float64)), asks Array(Tuple(Float64, Float64)), ts DateTime64(3)",
-        "engine": "ReplacingMergeTree(ts) ORDER BY (symbol, market, ts) PARTITION BY toYYYYMM(ts)"
-    }
-}
-</file>
-
 <file path="backend/database/clickhouse/cl_manager.py">
 import asyncio
 import logging
@@ -162049,6 +161920,136 @@ class cl_manager:
 
 # Global cl_manager instance
 cl_manager_instance = cl_manager()
+</file>
+
+<file path="frontend/src/hooks/useSafeCandleChart.ts">
+import { useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { createLazyChart } from "../lib/chartLazyLoader";
+
+export type SafeCandleChartApi = {
+  chart: any;
+  series: any;
+  generation: number;
+
+  safeSetData: (data: any[]) => void;
+  safeUpdate: (bar: any) => void;
+  safeApplyOptions: (opts: any) => void;
+  safeFitContent: () => void;
+};
+
+export function useSafeCandleChart(
+  chartTheme: any,
+  seriesTheme: any,
+  containerRef: React.RefObject<HTMLDivElement>
+): SafeCandleChartApi | null {
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+
+  const disposedRef = useRef(false);
+  const genRef = useRef(0);
+
+  // ✅ wichtig: triggert Re-render wenn Chart bereit ist
+  const [ready, setReady] = useState(false);
+
+  const api = useMemo<SafeCandleChartApi>(() => {
+    return {
+      chart: null,
+      series: null,
+      generation: 0,
+
+      safeSetData: (data: any[]) => {
+        if (disposedRef.current) return;
+        const s = seriesRef.current;
+        if (!s) return;
+        try { s.setData(data); } catch {}
+      },
+
+      safeUpdate: (bar: any) => {
+        if (disposedRef.current) return;
+        const s = seriesRef.current;
+        if (!s) return;
+        try { s.update(bar); } catch {}
+      },
+
+      safeApplyOptions: (opts: any) => {
+        if (disposedRef.current) return;
+        const c = chartRef.current;
+        if (!c) return;
+        try { c.applyOptions(opts); } catch {}
+      },
+
+      safeFitContent: () => {
+        if (disposedRef.current) return;
+        const c = chartRef.current;
+        if (!c) return;
+        try { c.timeScale().fitContent(); } catch {}
+      },
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    disposedRef.current = false;
+    genRef.current += 1;
+    const myGen = genRef.current;
+
+    const initChart = async () => {
+      const chart = await createLazyChart(el, chartTheme);
+      
+      if (disposedRef.current || genRef.current !== myGen) {
+        try { chart.remove?.(); } catch {}
+        return;
+      }
+
+      const series = chart.addCandlestickSeries(seriesTheme);
+
+      chartRef.current = chart;
+      seriesRef.current = series;
+
+      // ✅ expose handles
+      api.chart = chart;
+      api.series = series;
+      api.generation = myGen;
+
+      setReady(true);
+
+      const ro = new ResizeObserver(() => {
+        if (disposedRef.current) return;
+        if (genRef.current !== myGen) return;
+        try {
+          chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+        } catch {}
+      });
+      ro.observe(el);
+
+      return ro;
+    };
+
+    let resizeObserver: ResizeObserver | undefined;
+    initChart().then(ro => { resizeObserver = ro; });
+
+    return () => {
+      disposedRef.current = true;
+      genRef.current += 1;
+
+      setReady(false);
+
+      try { resizeObserver?.disconnect(); } catch {}
+      try { chartRef.current?.remove?.(); } catch {}
+      try { chartRef.current?.dispose?.(); } catch {}
+      try { chartRef.current = null; } catch {}
+      try { seriesRef.current = null; } catch {}
+      try { api.chart = null; api.series = null; } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerRef, chartTheme, seriesTheme]);
+
+  // ✅ erst dann nicht-null, wenn ready wirklich getriggert wurde
+  return ready ? api : null;
+}
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -165813,6 +165814,460 @@ GROUP BY symbol, market, bucket_start;
 -- ========================================
 </file>
 
+<file path="backend/services/usecases/unified_historical.py">
+# /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Dict, List, Any, Optional, Callable
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
+from backend.database.clickhouse import unified_cl_service
+
+logger = logging.getLogger("unified-historical")
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class UnifiedHistoricalService:
+    """
+    ENTERPRISE UNIFIED HISTORICAL SERVICE (Trades-only, fully policy-driven)
+
+    Ziele:
+    - KEINE Candles im Backfill: nur Trades in trading.<exchange>_trades (SoT)
+    - deterministischer Cursor via to_date (EXKLUSIV)
+    - keine Datenverluste bei liquiden Märkten: Cursor bewegt sich anhand ältestem Trade (nicht stumpfer 1h-hop)
+    - keine Hardcodes: Fenster, Limits, Methoden-Namen komplett über ENV konfigurierbar
+    - Exchange-Adapter kapselt Param-Mapping (startTime/endTime bleiben Unified Contract)
+
+    ENV Policies (Defaults sind safe):
+    - HIST_WINDOW_SECONDS=3600
+    - HIST_PER_CALL_LIMIT=1000
+    - HIST_FLUSH_BATCH_SIZE=500
+    - HIST_FETCH_METHOD_SPOT=fetch_trades
+    - HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
+    - HIST_MAX_STAGNANT=3
+    - HIST_CURSOR_BACKOFF_MS=1
+    """
+
+    def __init__(self, exchange_name: str):
+        self.exchange_name = exchange_name.lower()
+        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
+
+        # Exchange-spezifische Komponenten (generisch geladen)
+        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
+        self.rate_limiter = WebSocketRateLimiter(
+            RateLimitConfig.from_env(self.exchange_name.upper())
+        )
+        self.exchange_config = self._load_exchange_config()
+
+        # Health-System Integration (optional)
+        self.health_lane = None
+        try:
+            from backend.health import health_registry
+            self.health_lane = health_registry.register_component(
+                "historical",
+                f"{self.exchange_name}_backfill"
+            )
+            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
+        except Exception as e:
+            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
+
+        # Policies (ENV)
+        self.window_ms = max(1, int(os.getenv("HIST_WINDOW_SECONDS", "3600"))) * 1000
+        self.per_call_limit = max(1, int(os.getenv("HIST_PER_CALL_LIMIT", "1000")))
+        self.batch_size = max(1, int(os.getenv("HIST_FLUSH_BATCH_SIZE", "500")))
+
+        self.fetch_method_spot = os.getenv("HIST_FETCH_METHOD_SPOT", "fetch_trades").strip()
+        self.fetch_method_futures = os.getenv("HIST_FETCH_METHOD_FUTURES", "fetch_futures_trades").strip()
+
+        self.max_stagnant = max(1, int(os.getenv("HIST_MAX_STAGNANT", "3")))
+        self.cursor_backoff_ms = max(1, int(os.getenv("HIST_CURSOR_BACKOFF_MS", "1")))
+
+    def _load_exchange_config(self):
+        try:
+            import importlib
+            config_module = f"backend.exchanges.{self.exchange_name}.config"
+            config_attr = f"{self.exchange_name}_config"
+            module = importlib.import_module(config_module)
+            return getattr(module, config_attr)
+        except Exception as e:
+            self.logger.warning(f"Could not load config for {self.exchange_name}: {e}")
+            return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.rest_api:
+            await self.rest_api.close()
+
+    def _resolve_fetch(self, market_type: str) -> Callable[..., Any]:
+        """
+        Enterprise dynamic method resolution.
+        - Prefer ENV-defined method name
+        - Fallbacks: fetch_trades / fetch_futures_trades
+        """
+        if market_type == "spot":
+            preferred = self.fetch_method_spot
+            fallbacks = [preferred, "fetch_trades", "fetch_spot_trades"]
+        else:
+            preferred = self.fetch_method_futures
+            fallbacks = [preferred, "fetch_futures_trades", "fetch_trades", "fetch_futures"]
+
+        for name in fallbacks:
+            fn = getattr(self.rest_api, name, None)
+            if callable(fn):
+                return fn
+
+        # If none found:
+        self._report_not_implemented(
+            f"{preferred} (fallbacks tried: {', '.join(fallbacks)})",
+            market_type,
+            "<symbol>"
+        )
+        raise AttributeError(f"No suitable trade fetch method for {self.exchange_name} market={market_type}")
+
+    async def history(
+        self,
+        symbol: str,
+        market_type: str,
+        end_date: datetime,
+        interval: str = "1m",
+        limit: int = 1000,
+        to_date: Optional[datetime] = None,
+    ) -> int:
+        """
+        Trades-only Backfill.
+
+        Zeitfenster:
+        - end_date: INKLUSIV lower bound
+        - to_date : EXKLUSIV upper bound (endTime = to_date_ms - 1)
+
+        Cursor-Update:
+        - t_end wird auf ältesten erhaltenen Trade gesetzt (minus 0..1ms via endTime-1)
+        - dadurch kein Datenverlust bei >per_call_limit Trades pro Fenster
+        """
+        # Normalize tz
+        end_date = _utc(end_date)
+        to_date = _utc(to_date) if to_date else datetime.now(timezone.utc)
+
+        until_ms = int(end_date.timestamp() * 1000)
+        t_end = int(to_date.timestamp() * 1000)  # cursor end (ms)
+
+        # Hard safety: if caller passes nonsense
+        if t_end <= until_ms:
+            return 0
+
+        # Effective limits (caller limit can be larger; API cap applies per call)
+        target_limit = max(1, int(limit))
+        call_limit = min(target_limit, self.per_call_limit)
+
+        # Init first window
+        t_start = max(t_end - self.window_ms, until_ms)
+
+        params = {
+            "symbol": symbol,
+            "limit": call_limit,
+            "startTime": t_start,   # inklusiv
+            "endTime": t_end - 1,   # exklusiv
+        }
+
+        self.logger.info(
+            f"📥 {self.exchange_name.upper()} TRADES BACKFILL | sym={symbol} mkt={market_type} "
+            f"range=[{datetime.fromtimestamp(until_ms/1000, tz=timezone.utc).isoformat()} .. "
+            f"{datetime.fromtimestamp(t_end/1000, tz=timezone.utc).isoformat()}) "
+            f"window_s={self.window_ms//1000} call_limit={call_limit} target_limit={target_limit}"
+        )
+
+        fetch_fn = self._resolve_fetch(market_type)
+
+        all_trades: List[Dict[str, Any]] = []
+        total_trades = 0
+        batch_count = 0
+
+        last_end: Optional[int] = None
+        stagnant = 0
+
+        while t_end > until_ms and total_trades < target_limit:
+            await self.rate_limiter.acquire()
+
+            # --- fetch ---
+            try:
+                response = await fetch_fn(**params)
+
+                if self.health_lane is not None:
+                    self.health_lane.record_success({
+                        "trades_fetched": len(response) if response else 0,
+                        "market": market_type,
+                        "symbol": symbol
+                    })
+
+            except Exception as e:
+                if self.health_lane is not None:
+                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
+                self.logger.error(f"API fetch failed for {self.exchange_name}: {e}", exc_info=True)
+
+                # Conservative fallback: step one window back
+                t_end = t_start
+                t_start = max(t_end - self.window_ms, until_ms)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1
+                continue
+
+            if not response:
+                # empty window: step one window back
+                t_end = t_start
+                t_start = max(t_end - self.window_ms, until_ms)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1
+                continue
+
+            trades = response
+            all_trades.extend(trades)
+            total_trades += len(trades)
+
+            # flush
+            if len(all_trades) >= self.batch_size:
+                await self._store_batch(symbol, market_type, all_trades)
+                batch_count += 1
+                all_trades = []
+
+            # --- cursor update based on oldest trade returned ---
+            oldest_ms: Optional[int] = None
+            try:
+                oldest_ms = min(int(t["timestamp"]) for t in trades if "timestamp" in t)
+            except Exception:
+                oldest_ms = None
+
+            prev_end = t_end
+
+            if oldest_ms is None or oldest_ms <= 0:
+                # fallback: step one window back
+                t_end = t_start
+            else:
+                # move to oldest trade (we enforce exclusivity with endTime=t_end-1)
+                t_end = min(int(oldest_ms), prev_end)
+
+            # stagnation detect: if cursor doesn't move, force backoff
+            if last_end is not None and t_end >= last_end:
+                stagnant += 1
+            else:
+                stagnant = 0
+
+            last_end = t_end
+
+            if stagnant >= self.max_stagnant:
+                t_end = max(until_ms, t_end - self.cursor_backoff_ms)
+                stagnant = 0
+
+            # recompute window
+            t_start = max(t_end - self.window_ms, until_ms)
+
+            params["startTime"] = t_start
+            params["endTime"] = t_end - 1
+
+            # absolute safety: if no progress possible
+            if t_end == prev_end and t_end <= until_ms:
+                break
+
+        # store remaining
+        if all_trades:
+            await self._store_batch(symbol, market_type, all_trades)
+            batch_count += 1
+
+        self.logger.info(
+            f"✅ {self.exchange_name.upper()} TRADES BACKFILL DONE | sym={symbol} mkt={market_type} "
+            f"trades={total_trades} batches={batch_count}"
+        )
+        return total_trades
+
+    async def _store_batch(
+        self,
+        symbol: str,
+        market_type: str,
+        trades: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Store unified trades into ClickHouse.
+        - trade_id ist MATERIALIZED in ClickHouse => NICHT senden.
+        - source wird als rest_backfill gesetzt.
+        """
+        try:
+            tasks = []
+            for trade in trades:
+                try:
+                    trade_data = {
+                        "symbol": trade.get("symbol", symbol),
+                        "market": trade.get("market", market_type),
+                        "price": str(trade["price"]),
+                        "size": str(trade["size"]),
+                        "side": trade["side"],
+                        "timestamp": int(trade["timestamp"]),
+                        "source": "rest_backfill",
+                    }
+                    tasks.append(unified_cl_service.insert_trades(self.exchange_name, trade_data))
+                except Exception as trade_error:
+                    self.logger.warning(f"Trade transform failed for {self.exchange_name}: {trade_error}")
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                errors = sum(1 for r in results if isinstance(r, Exception))
+                if errors:
+                    self.logger.warning(f"💾 {self.exchange_name} batch stored with errors: {errors}/{len(tasks)}")
+
+        except Exception as e:
+            self.logger.error(f"❌ {self.exchange_name} batch storage failed: {str(e)}", exc_info=True)
+
+    async def get_available_intervals(self, symbol: str, market_type: str) -> Dict[str, Any]:
+        """
+        Trades-only System:
+        Intervalle sind Chart/Aggregation-Policy. Keine Candle-Endpoint Tests.
+        """
+        try:
+            if self.exchange_config and hasattr(self.exchange_config, "supported_intervals"):
+                standard_intervals = getattr(
+                    self.exchange_config,
+                    "supported_intervals",
+                    ["1m", "5m", "15m", "1h", "4h", "1d"],
+                )
+            else:
+                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+            standard_intervals = [
+                i["value"] if isinstance(i, dict) and "value" in i else i
+                for i in standard_intervals
+            ]
+
+            available_intervals = []
+            for iv in standard_intervals:
+                sec = self._interval_to_seconds(iv)
+                available_intervals.append({
+                    "interval": iv,
+                    "resolution_seconds": sec,
+                    "human_readable": self._seconds_to_human(sec),
+                    "supported": True,
+                })
+
+            return {
+                "exchange": self.exchange_name,
+                "symbol": symbol,
+                "market_type": market_type,
+                "available_intervals": available_intervals,
+                "total_count": len(available_intervals),
+                "account_type": "premium"
+                if self.exchange_config and getattr(self.exchange_config, "is_premium", False)
+                else "free",
+            }
+        except Exception as e:
+            self.logger.error(
+                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
+                exc_info=True,
+            )
+            return {"error": str(e)}
+
+    def _interval_to_seconds(self, interval: str) -> int:
+        interval_seconds = {
+            "1s": 1,
+            "1m": 60,
+            "3m": 180,
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "2h": 7200,
+            "4h": 14400,
+            "6h": 21600,
+            "8h": 28800,
+            "12h": 43200,
+            "1d": 86400,
+            "3d": 259200,
+            "1w": 604800,
+            "1M": 2592000,
+        }
+        return interval_seconds.get(interval, 60)
+
+    def _seconds_to_human(self, seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}min"
+        if seconds < 86400:
+            return f"{seconds // 3600}h"
+        if seconds < 604800:
+            return f"{seconds // 86400}d"
+        return f"{seconds // 604800}w"
+
+    def _report_not_implemented(self, method: str, market_type: str, symbol: str) -> None:
+        error_msg = (
+            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
+            f"Historical backfill not available for {symbol}. "
+            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
+        )
+
+        if self.health_lane:
+            self.health_lane.record_error(error_msg)
+
+        self.logger.warning(
+            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
+            f"{method} not implemented for {market_type}."
+        )
+
+
+# Factory functions (legacy compatibility)
+
+def get_binance_backfill():
+    return UnifiedHistoricalService("binance")
+
+
+def get_gateio_backfill():
+    return UnifiedHistoricalService("gateio")
+
+
+def get_bybit_backfill():
+    return UnifiedHistoricalService("bybit")
+
+
+def get_mexc_backfill():
+    return UnifiedHistoricalService("mexc")
+
+
+def get_bitget_backfill():
+    return UnifiedHistoricalService("bitget")
+
+
+def get_okx_backfill():
+    return UnifiedHistoricalService("okx")
+
+
+def get_htx_backfill():
+    return UnifiedHistoricalService("htx")
+
+
+def get_coinbase_backfill():
+    return UnifiedHistoricalService("coinbase")
+
+
+def get_available_backfill_services():
+    return {
+        "binance": get_binance_backfill,
+        "gateio": get_gateio_backfill,
+        "bybit": get_bybit_backfill,
+        "mexc": get_mexc_backfill,
+        "bitget": get_bitget_backfill,
+        "okx": get_okx_backfill,
+        "htx": get_htx_backfill,
+        "coinbase": get_coinbase_backfill,
+    }
+</file>
+
 <file path="frontend/src/config/exchangeSupport.ts">
 // frontend/src/config/exchangeSupport.ts
 
@@ -168861,460 +169316,6 @@ async def start_auto_backfill_gap_loop():
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
-<file path="backend/services/usecases/unified_historical.py">
-# /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
-
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, Callable
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
-from backend.database.clickhouse import unified_cl_service
-
-logger = logging.getLogger("unified-historical")
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class UnifiedHistoricalService:
-    """
-    ENTERPRISE UNIFIED HISTORICAL SERVICE (Trades-only, fully policy-driven)
-
-    Ziele:
-    - KEINE Candles im Backfill: nur Trades in trading.<exchange>_trades (SoT)
-    - deterministischer Cursor via to_date (EXKLUSIV)
-    - keine Datenverluste bei liquiden Märkten: Cursor bewegt sich anhand ältestem Trade (nicht stumpfer 1h-hop)
-    - keine Hardcodes: Fenster, Limits, Methoden-Namen komplett über ENV konfigurierbar
-    - Exchange-Adapter kapselt Param-Mapping (startTime/endTime bleiben Unified Contract)
-
-    ENV Policies (Defaults sind safe):
-    - HIST_WINDOW_SECONDS=3600
-    - HIST_PER_CALL_LIMIT=1000
-    - HIST_FLUSH_BATCH_SIZE=500
-    - HIST_FETCH_METHOD_SPOT=fetch_trades
-    - HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
-    - HIST_MAX_STAGNANT=3
-    - HIST_CURSOR_BACKOFF_MS=1
-    """
-
-    def __init__(self, exchange_name: str):
-        self.exchange_name = exchange_name.lower()
-        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
-
-        # Exchange-spezifische Komponenten (generisch geladen)
-        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
-        self.rate_limiter = WebSocketRateLimiter(
-            RateLimitConfig.from_env(self.exchange_name.upper())
-        )
-        self.exchange_config = self._load_exchange_config()
-
-        # Health-System Integration (optional)
-        self.health_lane = None
-        try:
-            from backend.health import health_registry
-            self.health_lane = health_registry.register_component(
-                "historical",
-                f"{self.exchange_name}_backfill"
-            )
-            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
-        except Exception as e:
-            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
-
-        # Policies (ENV)
-        self.window_ms = max(1, int(os.getenv("HIST_WINDOW_SECONDS", "3600"))) * 1000
-        self.per_call_limit = max(1, int(os.getenv("HIST_PER_CALL_LIMIT", "1000")))
-        self.batch_size = max(1, int(os.getenv("HIST_FLUSH_BATCH_SIZE", "500")))
-
-        self.fetch_method_spot = os.getenv("HIST_FETCH_METHOD_SPOT", "fetch_trades").strip()
-        self.fetch_method_futures = os.getenv("HIST_FETCH_METHOD_FUTURES", "fetch_futures_trades").strip()
-
-        self.max_stagnant = max(1, int(os.getenv("HIST_MAX_STAGNANT", "3")))
-        self.cursor_backoff_ms = max(1, int(os.getenv("HIST_CURSOR_BACKOFF_MS", "1")))
-
-    def _load_exchange_config(self):
-        try:
-            import importlib
-            config_module = f"backend.exchanges.{self.exchange_name}.config"
-            config_attr = f"{self.exchange_name}_config"
-            module = importlib.import_module(config_module)
-            return getattr(module, config_attr)
-        except Exception as e:
-            self.logger.warning(f"Could not load config for {self.exchange_name}: {e}")
-            return None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self.rest_api:
-            await self.rest_api.close()
-
-    def _resolve_fetch(self, market_type: str) -> Callable[..., Any]:
-        """
-        Enterprise dynamic method resolution.
-        - Prefer ENV-defined method name
-        - Fallbacks: fetch_trades / fetch_futures_trades
-        """
-        if market_type == "spot":
-            preferred = self.fetch_method_spot
-            fallbacks = [preferred, "fetch_trades", "fetch_spot_trades"]
-        else:
-            preferred = self.fetch_method_futures
-            fallbacks = [preferred, "fetch_futures_trades", "fetch_trades", "fetch_futures"]
-
-        for name in fallbacks:
-            fn = getattr(self.rest_api, name, None)
-            if callable(fn):
-                return fn
-
-        # If none found:
-        self._report_not_implemented(
-            f"{preferred} (fallbacks tried: {', '.join(fallbacks)})",
-            market_type,
-            "<symbol>"
-        )
-        raise AttributeError(f"No suitable trade fetch method for {self.exchange_name} market={market_type}")
-
-    async def history(
-        self,
-        symbol: str,
-        market_type: str,
-        end_date: datetime,
-        interval: str = "1m",
-        limit: int = 1000,
-        to_date: Optional[datetime] = None,
-    ) -> int:
-        """
-        Trades-only Backfill.
-
-        Zeitfenster:
-        - end_date: INKLUSIV lower bound
-        - to_date : EXKLUSIV upper bound (endTime = to_date_ms - 1)
-
-        Cursor-Update:
-        - t_end wird auf ältesten erhaltenen Trade gesetzt (minus 0..1ms via endTime-1)
-        - dadurch kein Datenverlust bei >per_call_limit Trades pro Fenster
-        """
-        # Normalize tz
-        end_date = _utc(end_date)
-        to_date = _utc(to_date) if to_date else datetime.now(timezone.utc)
-
-        until_ms = int(end_date.timestamp() * 1000)
-        t_end = int(to_date.timestamp() * 1000)  # cursor end (ms)
-
-        # Hard safety: if caller passes nonsense
-        if t_end <= until_ms:
-            return 0
-
-        # Effective limits (caller limit can be larger; API cap applies per call)
-        target_limit = max(1, int(limit))
-        call_limit = min(target_limit, self.per_call_limit)
-
-        # Init first window
-        t_start = max(t_end - self.window_ms, until_ms)
-
-        params = {
-            "symbol": symbol,
-            "limit": call_limit,
-            "startTime": t_start,   # inklusiv
-            "endTime": t_end - 1,   # exklusiv
-        }
-
-        self.logger.info(
-            f"📥 {self.exchange_name.upper()} TRADES BACKFILL | sym={symbol} mkt={market_type} "
-            f"range=[{datetime.fromtimestamp(until_ms/1000, tz=timezone.utc).isoformat()} .. "
-            f"{datetime.fromtimestamp(t_end/1000, tz=timezone.utc).isoformat()}) "
-            f"window_s={self.window_ms//1000} call_limit={call_limit} target_limit={target_limit}"
-        )
-
-        fetch_fn = self._resolve_fetch(market_type)
-
-        all_trades: List[Dict[str, Any]] = []
-        total_trades = 0
-        batch_count = 0
-
-        last_end: Optional[int] = None
-        stagnant = 0
-
-        while t_end > until_ms and total_trades < target_limit:
-            await self.rate_limiter.acquire()
-
-            # --- fetch ---
-            try:
-                response = await fetch_fn(**params)
-
-                if self.health_lane is not None:
-                    self.health_lane.record_success({
-                        "trades_fetched": len(response) if response else 0,
-                        "market": market_type,
-                        "symbol": symbol
-                    })
-
-            except Exception as e:
-                if self.health_lane is not None:
-                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
-                self.logger.error(f"API fetch failed for {self.exchange_name}: {e}", exc_info=True)
-
-                # Conservative fallback: step one window back
-                t_end = t_start
-                t_start = max(t_end - self.window_ms, until_ms)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1
-                continue
-
-            if not response:
-                # empty window: step one window back
-                t_end = t_start
-                t_start = max(t_end - self.window_ms, until_ms)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1
-                continue
-
-            trades = response
-            all_trades.extend(trades)
-            total_trades += len(trades)
-
-            # flush
-            if len(all_trades) >= self.batch_size:
-                await self._store_batch(symbol, market_type, all_trades)
-                batch_count += 1
-                all_trades = []
-
-            # --- cursor update based on oldest trade returned ---
-            oldest_ms: Optional[int] = None
-            try:
-                oldest_ms = min(int(t["timestamp"]) for t in trades if "timestamp" in t)
-            except Exception:
-                oldest_ms = None
-
-            prev_end = t_end
-
-            if oldest_ms is None or oldest_ms <= 0:
-                # fallback: step one window back
-                t_end = t_start
-            else:
-                # move to oldest trade (we enforce exclusivity with endTime=t_end-1)
-                t_end = min(int(oldest_ms), prev_end)
-
-            # stagnation detect: if cursor doesn't move, force backoff
-            if last_end is not None and t_end >= last_end:
-                stagnant += 1
-            else:
-                stagnant = 0
-
-            last_end = t_end
-
-            if stagnant >= self.max_stagnant:
-                t_end = max(until_ms, t_end - self.cursor_backoff_ms)
-                stagnant = 0
-
-            # recompute window
-            t_start = max(t_end - self.window_ms, until_ms)
-
-            params["startTime"] = t_start
-            params["endTime"] = t_end - 1
-
-            # absolute safety: if no progress possible
-            if t_end == prev_end and t_end <= until_ms:
-                break
-
-        # store remaining
-        if all_trades:
-            await self._store_batch(symbol, market_type, all_trades)
-            batch_count += 1
-
-        self.logger.info(
-            f"✅ {self.exchange_name.upper()} TRADES BACKFILL DONE | sym={symbol} mkt={market_type} "
-            f"trades={total_trades} batches={batch_count}"
-        )
-        return total_trades
-
-    async def _store_batch(
-        self,
-        symbol: str,
-        market_type: str,
-        trades: List[Dict[str, Any]],
-    ) -> None:
-        """
-        Store unified trades into ClickHouse.
-        - trade_id ist MATERIALIZED in ClickHouse => NICHT senden.
-        - source wird als rest_backfill gesetzt.
-        """
-        try:
-            tasks = []
-            for trade in trades:
-                try:
-                    trade_data = {
-                        "symbol": trade.get("symbol", symbol),
-                        "market": trade.get("market", market_type),
-                        "price": str(trade["price"]),
-                        "size": str(trade["size"]),
-                        "side": trade["side"],
-                        "timestamp": int(trade["timestamp"]),
-                        "source": "rest_backfill",
-                    }
-                    tasks.append(unified_cl_service.insert_trades(self.exchange_name, trade_data))
-                except Exception as trade_error:
-                    self.logger.warning(f"Trade transform failed for {self.exchange_name}: {trade_error}")
-
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                errors = sum(1 for r in results if isinstance(r, Exception))
-                if errors:
-                    self.logger.warning(f"💾 {self.exchange_name} batch stored with errors: {errors}/{len(tasks)}")
-
-        except Exception as e:
-            self.logger.error(f"❌ {self.exchange_name} batch storage failed: {str(e)}", exc_info=True)
-
-    async def get_available_intervals(self, symbol: str, market_type: str) -> Dict[str, Any]:
-        """
-        Trades-only System:
-        Intervalle sind Chart/Aggregation-Policy. Keine Candle-Endpoint Tests.
-        """
-        try:
-            if self.exchange_config and hasattr(self.exchange_config, "supported_intervals"):
-                standard_intervals = getattr(
-                    self.exchange_config,
-                    "supported_intervals",
-                    ["1m", "5m", "15m", "1h", "4h", "1d"],
-                )
-            else:
-                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
-
-            standard_intervals = [
-                i["value"] if isinstance(i, dict) and "value" in i else i
-                for i in standard_intervals
-            ]
-
-            available_intervals = []
-            for iv in standard_intervals:
-                sec = self._interval_to_seconds(iv)
-                available_intervals.append({
-                    "interval": iv,
-                    "resolution_seconds": sec,
-                    "human_readable": self._seconds_to_human(sec),
-                    "supported": True,
-                })
-
-            return {
-                "exchange": self.exchange_name,
-                "symbol": symbol,
-                "market_type": market_type,
-                "available_intervals": available_intervals,
-                "total_count": len(available_intervals),
-                "account_type": "premium"
-                if self.exchange_config and getattr(self.exchange_config, "is_premium", False)
-                else "free",
-            }
-        except Exception as e:
-            self.logger.error(
-                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
-                exc_info=True,
-            )
-            return {"error": str(e)}
-
-    def _interval_to_seconds(self, interval: str) -> int:
-        interval_seconds = {
-            "1s": 1,
-            "1m": 60,
-            "3m": 180,
-            "5m": 300,
-            "15m": 900,
-            "30m": 1800,
-            "1h": 3600,
-            "2h": 7200,
-            "4h": 14400,
-            "6h": 21600,
-            "8h": 28800,
-            "12h": 43200,
-            "1d": 86400,
-            "3d": 259200,
-            "1w": 604800,
-            "1M": 2592000,
-        }
-        return interval_seconds.get(interval, 60)
-
-    def _seconds_to_human(self, seconds: int) -> str:
-        if seconds < 60:
-            return f"{seconds}s"
-        if seconds < 3600:
-            return f"{seconds // 60}min"
-        if seconds < 86400:
-            return f"{seconds // 3600}h"
-        if seconds < 604800:
-            return f"{seconds // 86400}d"
-        return f"{seconds // 604800}w"
-
-    def _report_not_implemented(self, method: str, market_type: str, symbol: str) -> None:
-        error_msg = (
-            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
-            f"Historical backfill not available for {symbol}. "
-            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
-        )
-
-        if self.health_lane:
-            self.health_lane.record_error(error_msg)
-
-        self.logger.warning(
-            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
-            f"{method} not implemented for {market_type}."
-        )
-
-
-# Factory functions (legacy compatibility)
-
-def get_binance_backfill():
-    return UnifiedHistoricalService("binance")
-
-
-def get_gateio_backfill():
-    return UnifiedHistoricalService("gateio")
-
-
-def get_bybit_backfill():
-    return UnifiedHistoricalService("bybit")
-
-
-def get_mexc_backfill():
-    return UnifiedHistoricalService("mexc")
-
-
-def get_bitget_backfill():
-    return UnifiedHistoricalService("bitget")
-
-
-def get_okx_backfill():
-    return UnifiedHistoricalService("okx")
-
-
-def get_htx_backfill():
-    return UnifiedHistoricalService("htx")
-
-
-def get_coinbase_backfill():
-    return UnifiedHistoricalService("coinbase")
-
-
-def get_available_backfill_services():
-    return {
-        "binance": get_binance_backfill,
-        "gateio": get_gateio_backfill,
-        "bybit": get_bybit_backfill,
-        "mexc": get_mexc_backfill,
-        "bitget": get_bitget_backfill,
-        "okx": get_okx_backfill,
-        "htx": get_htx_backfill,
-        "coinbase": get_coinbase_backfill,
-    }
-</file>
-
 <file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
 import { useEffect, useMemo, useState } from "react";
 import { useWsLane } from "../../../services/ws/useWsLane";
@@ -170624,189 +170625,6 @@ class CentralizedWsManager:
 ws_manager = CentralizedWsManager()
 </file>
 
-<file path="backend/websocket/ws_router.py">
-from fastapi import APIRouter, WebSocket
-from datetime import datetime
-
-from .ws_manager import ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-from backend.core.config import settings
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    await websocket.accept()
-    ch = _channel(exchange, symbol, market)
-
-    try:
-        await frontend_ws_manager.start()
-        await ws_manager.start_websocket_lane(exchange, symbol, market)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.utcnow().isoformat(),
-            "limits": {
-                "maxTrades": settings.ws_max_trades,
-                "maxCandles": settings.ws_max_candles
-            }
-        })
-
-        # keep-alive + request handlers
-        while True:
-            msg = await websocket.receive_text()
-            
-            # Ping/Pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-            
-            # ✅ Historical Candles Request: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = parts[1] if len(parts) > 1 else "1m"
-                limit = int(parts[2]) if len(parts) > 2 else 500
-                
-                try:
-                    from backend.core.utils.parse_resolution import parse_resolution
-                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-                    import logging
-                    
-                    logger = logging.getLogger("ws_router")
-                    
-                    interval_seconds, normalized = parse_resolution(interval_str)
-                    
-                    # ✅ FIX: market parameter hinzugefügt + Guard für None/empty
-                    market_safe = market if market else "spot"
-                    
-                    logger.info(f"[WS Historical Request] exchange={exchange}, symbol={symbol}, market={market_safe}, interval={normalized}, limit={limit}")
-                    
-                    candles = await get_ohlc_from_ch(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market_safe,
-                        interval_seconds=interval_seconds,
-                        limit=limit
-                    )
-                    
-                    logger.info(f"[WS Historical Response] Got {len(candles)} candles for {exchange}/{symbol}/{market_safe}/{normalized}")
-                    
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market_safe,
-                        "interval": normalized,
-                        "candles": candles,
-                        "count": len(candles)
-                    })
-                except Exception as e:
-                    logger.error(f"[WS Historical Error] {exchange}/{symbol}/{market_safe}: {str(e)}", exc_info=True)
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Historical request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ TASK 2: subscribe:interval Handler
-            if msg.startswith("subscribe:"):
-                parts = msg.split(":", 1)
-                interval_str = (parts[1] if len(parts) > 1 else "").strip() or "1m"
-                
-                # per-connection state
-                setattr(websocket, "_subscribed_interval", interval_str)
-                
-                await websocket.send_json({
-                    "type": "subscribe_confirmed",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "interval": interval_str,
-                })
-                continue
-            
-            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    mk = (market or "spot").lower()
-
-                    # Robust mapping (keine Annahmen über extra Enum-Members)
-                    if mk == "spot":
-                        market_enum = Market.SPOT
-                    elif mk in ("usdtm", "usdt", "futures"):
-                        market_enum = Market.USDTM
-                    else:
-                        market_enum = Market.SPOT
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
-                    symbols = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-                    
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": mk,
-                        "symbols": symbols,
-                        "count": len(symbols)
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Symbols request failed: {str(e)}"
-                    })
-                continue
-            
-            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
-            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
-            if msg == "orderbook":
-                await websocket.send_json({
-                    "type": "orderbook_active",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "message": "Orderbook streaming active"
-                })
-                continue
-
-    except Exception:
-        # Client trennt oft einfach – nichts eskalieren
-        pass
-
-    finally:
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-</file>
-
 <file path="frontend/src/services/ws/WebSocketPool.ts">
 const WS_BASE_URL = (import.meta as any).env?.VITE_WS_BASE_URL as string | undefined;
 
@@ -171069,8 +170887,191 @@ export class WebSocketPool {
 }
 </file>
 
+<file path="backend/websocket/ws_router.py">
+from fastapi import APIRouter, WebSocket
+from datetime import datetime
+import logging
+
+from .ws_manager import ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+from backend.core.config import settings
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    return f"{(exchange or '').lower()}:{(market or 'spot').lower()}:{(symbol or '').upper()}"
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    await websocket.accept()
+    ch = _channel(exchange, symbol, market)
+
+    try:
+        await frontend_ws_manager.start()
+        await ws_manager.start_websocket_lane(exchange, symbol, market)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.utcnow().isoformat(),
+            "limits": {
+                "maxTrades": settings.ws_max_trades,
+                "maxCandles": settings.ws_max_candles
+            }
+        })
+
+        # keep-alive + request handlers
+        while True:
+            msg = await websocket.receive_text()
+            
+            # Ping/Pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+            
+            # ✅ Historical Candles Request: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = parts[1] if len(parts) > 1 else "1m"
+                limit = int(parts[2]) if len(parts) > 2 else 500
+                
+                # ✅ FIX: market_safe + logger IMMER definieren (vor try-Block)
+                market_safe = (market or "spot").lower().strip()
+                logger = logging.getLogger("ws_router")
+                
+                try:
+                    from backend.core.utils.parse_resolution import parse_resolution
+                    from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
+                    
+                    interval_seconds, normalized = parse_resolution(interval_str)
+                    
+                    logger.info(f"[WS Historical Request] exchange={exchange}, symbol={symbol}, market={market_safe}, interval={normalized}, limit={limit}")
+                    
+                    candles = await get_ohlc_from_ch(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market_safe,
+                        interval_seconds=interval_seconds,
+                        limit=limit
+                    )
+                    
+                    logger.info(f"[WS Historical Response] Got {len(candles)} candles for {exchange}/{symbol}/{market_safe}/{normalized}")
+                    
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market_safe,
+                        "interval": normalized,
+                        "candles": candles,
+                        "count": len(candles)
+                    })
+                except Exception as e:
+                    logger.error(f"[WS Historical Error] {exchange}/{symbol}/{market_safe}: {str(e)}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Historical request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ TASK 2: subscribe:interval Handler
+            if msg.startswith("subscribe:"):
+                parts = msg.split(":", 1)
+                interval_str = (parts[1] if len(parts) > 1 else "").strip() or "1m"
+                
+                # per-connection state
+                setattr(websocket, "_subscribed_interval", interval_str)
+                
+                await websocket.send_json({
+                    "type": "subscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "interval": interval_str,
+                })
+                continue
+            
+            # ✅ Symbols Request: "symbols" - WS-only via CoinMapper
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    mk = (market or "spot").lower()
+
+                    # Robust mapping (keine Annahmen über extra Enum-Members)
+                    if mk == "spot":
+                        market_enum = Market.SPOT
+                    elif mk in ("usdtm", "usdt", "futures"):
+                        market_enum = Market.USDTM
+                    else:
+                        market_enum = Market.SPOT
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    # Tolerantes Field-Mapping (native_symbol ODER symbol)
+                    symbols = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+                    
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": mk,
+                        "symbols": symbols,
+                        "count": len(symbols)
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Symbols request failed: {str(e)}"
+                    })
+                continue
+            
+            # ✅ Orderbook Request: "orderbook" - Streaming bereits aktiv
+            # Orderbook-Daten kommen automatisch über Trade-Lane (ws_manager parsed sie bereits)
+            if msg == "orderbook":
+                await websocket.send_json({
+                    "type": "orderbook_active",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "message": "Orderbook streaming active"
+                })
+                continue
+
+    except Exception:
+        # Client trennt oft einfach – nichts eskalieren
+        pass
+
+    finally:
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # Lane nur stoppen, wenn wirklich niemand mehr subscribed ist
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
 import { useTheme } from "../../ui/theme-provider";
 import { getChartTheme, getSeriesTheme } from "./chartThemes";
 import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
@@ -171113,8 +171114,10 @@ export function useCandleChart({
 
   // ✅ TASK 3: Nutze Safe Chart Hook
   const isDark = actualTheme === "dark";
-  const chartTheme = getChartTheme(isDark, interval);
-  const seriesTheme = getSeriesTheme(isDark);
+  
+  // ✅ Performance: Memoize themes to prevent unnecessary chart re-initialization
+  const chartTheme = useMemo(() => getChartTheme(isDark, interval), [isDark, interval]);
+  const seriesTheme = useMemo(() => getSeriesTheme(isDark), [isDark]);
 
   const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
 
@@ -171167,7 +171170,7 @@ export function useCandleChart({
   }, [safeChart, interval, containerRef]);
 
   const setChartData = (data: CandleData[]) => {
-    if (!isChartReady || !seriesInstance.current) return;
+    if (!isChartReady || !safeChart) return;
     if (!data || data.length === 0) return;
 
     // Lightweight-charts expects seconds.
@@ -171195,7 +171198,8 @@ export function useCandleChart({
     // Safety: ensure ascending order by time
     formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
 
-    seriesInstance.current.setData(formatted);
+    // ✅ disposed-safe
+    safeChart.safeSetData(formatted);
   };
 
   const setInitialVisibleRangeOnce = (data: CandleData[]) => {
