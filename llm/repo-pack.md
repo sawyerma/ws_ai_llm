@@ -14238,6 +14238,560 @@ async def get_clickhouse_stats():
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 </file>
 
+<file path="backend/database/clickhouse/cl_schema_migration.py">
+import asyncio
+import logging
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+
+# ✅ TASK 29: Schema Migration - SQL Schemas → cl_ Lane System
+from backend.database.clickhouse.cl_unified import unified_cl_service
+from backend.database.clickhouse.cl_config import CL_SCHEMAS, EXCHANGE_CL_CONFIGS
+
+logger = logging.getLogger("cl-schema-migration")
+
+class ClickHouseSchemaManager:
+    """
+    📊 CLICKHOUSE SCHEMA MIGRATION
+    
+    Migriert SQL Schemas von fragmentierten clickhouse/init.sql → cl_ Lane System
+    Vereinheitlicht Schema Management für alle 8 Exchanges über cl_ Lane System
+    """
+    
+    def __init__(self):
+        self.cl_service = unified_cl_service
+        self.initialized = False
+        self.migrated_schemas = {}
+        
+    async def initialize(self) -> bool:
+        """Initialisiere ClickHouse Schema Migration"""
+        try:
+            logger.info("📊 Initializing ClickHouse Schema Migration...")
+            
+            # 1. Validiere bestehende Schemas
+            await self._validate_existing_schemas()
+            
+            # 2. Erstelle unified cl_ Schemas
+            await self._create_unified_schemas()
+            
+            # 3. Migriere Legacy Schemas zu cl_ Lane System
+            await self._migrate_legacy_schemas()
+            
+            self.initialized = True
+            logger.info("✅ ClickHouse Schema Migration initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ ClickHouse Schema Migration initialization failed: {e}")
+            return False
+    
+    async def _validate_existing_schemas(self):
+        """Validiere bestehende ClickHouse Schemas"""
+        try:
+            logger.info("🔍 Validating existing ClickHouse schemas...")
+            
+            # Standard Exchanges und deren erwartete Tabellen
+            exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
+            expected_tables = ["trades", "bars", "orderbook"]
+            
+            validation_results = {}
+            
+            for exchange in exchanges:
+                exchange_validation = {
+                    "exchange": exchange,
+                    "tables_found": [],
+                    "tables_missing": [],
+                    "schema_valid": True
+                }
+                
+                for table_type in expected_tables:
+                    table_name = f"{exchange}_{table_type}"
+                    
+                    # Simuliere Schema-Check (kann später mit echten ClickHouse-Queries erweitert werden)
+                    table_exists = await self._check_table_exists(table_name)
+                    
+                    if table_exists:
+                        exchange_validation["tables_found"].append(table_name)
+                    else:
+                        exchange_validation["tables_missing"].append(table_name)
+                        exchange_validation["schema_valid"] = False
+                
+                validation_results[exchange] = exchange_validation
+                logger.info(f"✅ Schema validation for {exchange}: {len(exchange_validation['tables_found'])}/3 tables found")
+            
+            self.validation_results = validation_results
+            
+        except Exception as e:
+            logger.error(f"❌ Schema validation failed: {e}")
+            raise
+    
+    async def _check_table_exists(self, table_name: str) -> bool:
+        """Prüfe ob Tabelle existiert - ECHTER ClickHouse Check!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            client = pool.get_client()
+            
+            if not client:
+                logger.warning(f"ClickHouse client not available for table check: {table_name}")
+                return False
+            
+            # ECHTER Table Check
+            result = client.command(f"EXISTS TABLE {table_name}")
+            return bool(result)
+            
+        except Exception as e:
+            logger.warning(f"Table check failed for {table_name}: {e}")
+            return False
+    
+    async def _create_unified_schemas(self):
+        """Erstelle vereinheitlichte cl_ Schemas für alle Exchanges"""
+        try:
+            logger.info("🛠️ Creating unified cl_ schemas...")
+            
+            unified_schemas = {}
+            exchanges = list(EXCHANGE_CL_CONFIGS.keys())
+            
+            # 1. Trade Schemas für alle Exchanges
+            for exchange in exchanges:
+                trade_schema = self._generate_trade_schema(exchange)
+                candle_schema = self._generate_candle_schema(exchange) 
+                orderbook_schema = self._generate_orderbook_schema(exchange)
+                
+                unified_schemas[f"{exchange}_trades"] = trade_schema
+                unified_schemas[f"{exchange}_bars"] = candle_schema
+                unified_schemas[f"{exchange}_orderbook"] = orderbook_schema
+            
+            # 2. Unified Schemas (Exchange-übergreifend)
+            unified_schemas["all_trades"] = self._generate_unified_trade_schema()
+            unified_schemas["all_kline"] = self._generate_unified_kline_schema()
+            unified_schemas["user_coin_settings"] = self._generate_user_settings_schema()
+            unified_schemas["user_indicator_settings"] = self._generate_indicator_settings_schema()
+            
+            self.unified_schemas = unified_schemas
+            logger.info(f"✅ Created {len(unified_schemas)} unified cl_ schemas")
+            
+        except Exception as e:
+            logger.error(f"❌ Unified schema creation failed: {e}")
+            raise
+    
+    def _generate_trade_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Trade Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_trades",
+            "columns": [
+                "trade_id String",
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)", 
+                "price Float64",
+                "size Float64",
+                "side LowCardinality(String)",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "MergeTree()",
+            "order_by": "(symbol, market, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 365 DAY"  # 1 Jahr Retention
+            }
+        }
+    
+    def _generate_candle_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Candle/Bar Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_bars",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "resolution LowCardinality(String)",
+                "open Float64",
+                "high Float64", 
+                "low Float64",
+                "close Float64",
+                "volume Float64",
+                "trades UInt32",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(symbol, market, resolution, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 730 DAY"  # 2 Jahre Retention für OHLC
+            }
+        }
+    
+    def _generate_orderbook_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Orderbook Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_orderbook",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "bids Array(Tuple(Float64, Float64))",
+                "asks Array(Tuple(Float64, Float64))",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(symbol, market, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 30 DAY"  # 30 Tage Retention für Orderbook
+            }
+        }
+    
+    def _generate_unified_trade_schema(self) -> Dict[str, Any]:
+        """Generiere Unified Trade Schema (alle Exchanges)"""
+        return {
+            "table_name": "trading.all_trades",
+            "columns": [
+                "trade_id String",
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "exchange LowCardinality(String)",
+                "price Float64",
+                "size Float64",
+                "side LowCardinality(String)",
+                "ts DateTime64(3)"
+            ],
+            "engine": "MergeTree()",
+            "order_by": "(exchange, symbol, market, ts)",
+            "partition_by": "(toYYYYMM(ts), exchange)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 365 DAY"
+            }
+        }
+    
+    def _generate_unified_kline_schema(self) -> Dict[str, Any]:
+        """Generiere Unified KLINE Schema (alle Exchanges)"""
+        return {
+            "table_name": "trading.all_kline",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "exchange LowCardinality(String)",
+                "resolution LowCardinality(String)",
+                "open Float64",
+                "high Float64",
+                "low Float64", 
+                "close Float64",
+                "volume Float64",
+                "trades UInt32",
+                "ts DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(exchange, symbol, market, resolution, ts)",
+            "partition_by": "(toYYYYMM(ts), exchange)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 730 DAY"
+            }
+        }
+    
+    def _generate_user_settings_schema(self) -> Dict[str, Any]:
+        """Generiere User Settings Schema"""
+        return {
+            "table_name": "trading.user_coin_settings",
+            "columns": [
+                "user_id String",
+                "exchange LowCardinality(String)",
+                "symbol LowCardinality(String)",
+                "active Bool DEFAULT true",
+                "notifications_enabled Bool DEFAULT false",
+                "price_alerts Array(String)",
+                "volume_alerts Array(String)",
+                "settings String",  # JSON String
+                "created_at DateTime64(3)",
+                "updated_at DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(updated_at)",
+            "order_by": "(user_id, exchange, symbol)",
+            "partition_by": "toYYYYMM(created_at)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
+            }
+        }
+    
+    def _generate_indicator_settings_schema(self) -> Dict[str, Any]:
+        """Generiere Indicator Settings Schema"""
+        return {
+            "table_name": "trading.user_indicator_settings",
+            "columns": [
+                "user_id String",
+                "exchange LowCardinality(String)",
+                "symbol LowCardinality(String)",
+                "indicator_type LowCardinality(String)",
+                "indicator_name String",
+                "parameters String",  # JSON String
+                "timeframes Array(String)",
+                "enabled Bool DEFAULT true",
+                "alert_conditions Array(String)",
+                "created_at DateTime64(3)",
+                "updated_at DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(updated_at)",
+            "order_by": "(user_id, exchange, symbol, indicator_type)",
+            "partition_by": "toYYYYMM(created_at)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
+            }
+        }
+    
+    async def _migrate_legacy_schemas(self):
+        """Migriere Legacy Schemas zu cl_ Lane System"""
+        try:
+            logger.info("🔄 Migrating legacy schemas to cl_ Lane System...")
+            
+            migration_results = {}
+            
+            # Migriere alle Unified Schemas
+            for schema_name, schema_definition in self.unified_schemas.items():
+                try:
+                    migration_result = await self._apply_schema_migration(schema_name, schema_definition)
+                    migration_results[schema_name] = migration_result
+                    
+                    if migration_result["success"]:
+                        logger.info(f"✅ Schema migration successful: {schema_name}")
+                    else:
+                        logger.warning(f"⚠️ Schema migration partial: {schema_name} - {migration_result.get('message', 'Unknown issue')}")
+                        
+                except Exception as schema_error:
+                    migration_results[schema_name] = {
+                        "success": False,
+                        "error": str(schema_error)
+                    }
+                    logger.error(f"❌ Schema migration failed: {schema_name} - {schema_error}")
+            
+            self.migration_results = migration_results
+            
+            # Summary
+            successful_migrations = sum(1 for r in migration_results.values() if r.get("success", False))
+            total_migrations = len(migration_results)
+            
+            logger.info(f"🎯 Schema migration completed: {successful_migrations}/{total_migrations} schemas migrated successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Legacy schema migration failed: {e}")
+            raise
+    
+    async def _apply_schema_migration(self, schema_name: str, schema_definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Wende einzelne Schema Migration an"""
+        try:
+            # TODO: Implementiere echte ClickHouse Schema-Anwendung
+            # Für jetzt simuliere erfolgreiche Migration
+            
+            migration_sql = self._generate_create_table_sql(schema_definition)
+            
+            # Simuliere ClickHouse-Operation
+            if hasattr(self.cl_service, 'execute_schema_migration'):
+                result = await self.cl_service.execute_schema_migration(migration_sql)
+                return {
+                    "success": True,
+                    "table_name": schema_definition["table_name"],
+                    "sql": migration_sql,
+                    "result": result
+                }
+            else:
+                # Fallback: Assume migration successful
+                return {
+                    "success": True,
+                    "table_name": schema_definition["table_name"],
+                    "sql": migration_sql,
+                    "message": "Migration simulated (cl_service not available)"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "table_name": schema_definition.get("table_name", "unknown")
+            }
+    
+    def _generate_create_table_sql(self, schema_definition: Dict[str, Any]) -> str:
+        """Generiere CREATE TABLE SQL aus Schema Definition"""
+        try:
+            table_name = schema_definition["table_name"]
+            columns = schema_definition["columns"]
+            engine = schema_definition["engine"]
+            order_by = schema_definition["order_by"]
+            partition_by = schema_definition.get("partition_by", "")
+            settings = schema_definition.get("settings", {})
+            
+            # CREATE TABLE SQL
+            sql_parts = [f"CREATE TABLE IF NOT EXISTS {table_name} ("]
+            sql_parts.append("    " + ",\n    ".join(columns))
+            sql_parts.append(f") ENGINE = {engine}")
+            
+            if order_by:
+                sql_parts.append(f"ORDER BY {order_by}")
+            
+            if partition_by:
+                sql_parts.append(f"PARTITION BY {partition_by}")
+            
+            if settings:
+                settings_str = ", ".join([f"{k} = {v}" if isinstance(v, (int, float)) else f"{k} = '{v}'" for k, v in settings.items()])
+                sql_parts.append(f"SETTINGS {settings_str}")
+            
+            return "\n".join(sql_parts) + ";"
+            
+        except Exception as e:
+            logger.error(f"SQL generation failed for schema: {e}")
+            return f"-- SQL generation failed: {str(e)}"
+    
+    # ✅ PUBLIC API METHODS
+    def get_schema_migration_summary(self) -> Dict[str, Any]:
+        """Hole Schema Migration Summary"""
+        try:
+            if not self.initialized:
+                return {"error": "Schema Migration not initialized"}
+            
+            # Sammle Migration Results
+            migration_summary = {
+                "initialized": self.initialized,
+                "total_schemas": len(self.unified_schemas) if hasattr(self, 'unified_schemas') else 0,
+                "successful_migrations": 0,
+                "failed_migrations": 0,
+                "schemas_by_category": {
+                    "exchange_specific": {},
+                    "unified": {},
+                    "user_settings": {}
+                },
+                "migration_results": getattr(self, 'migration_results', {}),
+                "validation_results": getattr(self, 'validation_results', {}),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Zähle erfolgreiche/fehlgeschlagene Migrationen
+            if hasattr(self, 'migration_results'):
+                for result in self.migration_results.values():
+                    if result.get("success", False):
+                        migration_summary["successful_migrations"] += 1
+                    else:
+                        migration_summary["failed_migrations"] += 1
+            
+            # Kategorisiere Schemas
+            if hasattr(self, 'unified_schemas'):
+                exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
+                
+                for schema_name in self.unified_schemas.keys():
+                    if any(ex in schema_name for ex in exchanges):
+                        if "_trades" in schema_name:
+                            category = "trades"
+                        elif "_bars" in schema_name:
+                            category = "candles"
+                        elif "_orderbook" in schema_name:
+                            category = "orderbook"
+                        else:
+                            category = "other"
+                        
+                        if category not in migration_summary["schemas_by_category"]["exchange_specific"]:
+                            migration_summary["schemas_by_category"]["exchange_specific"][category] = []
+                        migration_summary["schemas_by_category"]["exchange_specific"][category].append(schema_name)
+                        
+                    elif "all_" in schema_name or "user_" in schema_name:
+                        if "all_" in schema_name:
+                            category_type = "unified"
+                        else:
+                            category_type = "user_settings"
+                        
+                        if schema_name not in migration_summary["schemas_by_category"][category_type]:
+                            migration_summary["schemas_by_category"][category_type][schema_name] = True
+            
+            return migration_summary
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get schema migration summary: {e}")
+            return {"error": str(e)}
+    
+    async def validate_migrated_schemas(self) -> Dict[str, Any]:
+        """Validiere migrierte Schemas"""
+        try:
+            logger.info("✅ Validating migrated schemas...")
+            
+            validation_results = {
+                "validation_passed": True,
+                "validated_schemas": 0,
+                "validation_errors": [],
+                "schema_validations": {}
+            }
+            
+            if hasattr(self, 'unified_schemas'):
+                for schema_name, schema_def in self.unified_schemas.items():
+                    try:
+                        # Validate Schema Definition
+                        schema_validation = await self._validate_schema_definition(schema_name, schema_def)
+                        validation_results["schema_validations"][schema_name] = schema_validation
+                        
+                        if schema_validation["valid"]:
+                            validation_results["validated_schemas"] += 1
+                        else:
+                            validation_results["validation_passed"] = False
+                            validation_results["validation_errors"].extend(schema_validation.get("errors", []))
+                            
+                    except Exception as validation_error:
+                        validation_results["validation_passed"] = False
+                        validation_results["validation_errors"].append(f"Schema {schema_name}: {str(validation_error)}")
+            
+            logger.info(f"🎯 Schema validation completed: {validation_results['validated_schemas']} schemas validated")
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"❌ Schema validation failed: {e}")
+            return {"validation_passed": False, "error": str(e)}
+    
+    async def _validate_schema_definition(self, schema_name: str, schema_def: Dict[str, Any]) -> Dict[str, Any]:
+        """Validiere einzelne Schema Definition"""
+        try:
+            validation_result = {
+                "valid": True,
+                "errors": [],
+                "warnings": []
+            }
+            
+            # Required Fields Check
+            required_fields = ["table_name", "columns", "engine", "order_by"]
+            for field in required_fields:
+                if field not in schema_def:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append(f"Missing required field: {field}")
+            
+            # Columns Check
+            if "columns" in schema_def and isinstance(schema_def["columns"], list):
+                if len(schema_def["columns"]) == 0:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append("No columns defined")
+            else:
+                validation_result["valid"] = False
+                validation_result["errors"].append("Columns must be a non-empty list")
+            
+            # Engine Check
+            if "engine" in schema_def:
+                engine = schema_def["engine"]
+                valid_engines = ["MergeTree()", "ReplacingMergeTree"]
+                if not any(valid_engine in engine for valid_engine in valid_engines):
+                    validation_result["warnings"].append(f"Unusual engine: {engine}")
+            
+            return validation_result
+            
+        except Exception as e:
+            return {
+                "valid": False,
+                "errors": [f"Validation error: {str(e)}"]
+            }
+
+# Global ClickHouse Schema Manager instance
+cl_schema_manager = ClickHouseSchemaManager()
+</file>
+
 <file path="backend/database/clickhouse/cl_unified.py">
 import asyncio
 import logging
@@ -121286,560 +121840,6 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
-<file path="backend/database/clickhouse/cl_schema_migration.py">
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-
-# ✅ TASK 29: Schema Migration - SQL Schemas → cl_ Lane System
-from backend.database.clickhouse.cl_unified import unified_cl_service
-from backend.database.clickhouse.cl_config import CL_SCHEMAS, EXCHANGE_CL_CONFIGS
-
-logger = logging.getLogger("cl-schema-migration")
-
-class ClickHouseSchemaManager:
-    """
-    📊 CLICKHOUSE SCHEMA MIGRATION
-    
-    Migriert SQL Schemas von fragmentierten clickhouse/init.sql → cl_ Lane System
-    Vereinheitlicht Schema Management für alle 8 Exchanges über cl_ Lane System
-    """
-    
-    def __init__(self):
-        self.cl_service = unified_cl_service
-        self.initialized = False
-        self.migrated_schemas = {}
-        
-    async def initialize(self) -> bool:
-        """Initialisiere ClickHouse Schema Migration"""
-        try:
-            logger.info("📊 Initializing ClickHouse Schema Migration...")
-            
-            # 1. Validiere bestehende Schemas
-            await self._validate_existing_schemas()
-            
-            # 2. Erstelle unified cl_ Schemas
-            await self._create_unified_schemas()
-            
-            # 3. Migriere Legacy Schemas zu cl_ Lane System
-            await self._migrate_legacy_schemas()
-            
-            self.initialized = True
-            logger.info("✅ ClickHouse Schema Migration initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ ClickHouse Schema Migration initialization failed: {e}")
-            return False
-    
-    async def _validate_existing_schemas(self):
-        """Validiere bestehende ClickHouse Schemas"""
-        try:
-            logger.info("🔍 Validating existing ClickHouse schemas...")
-            
-            # Standard Exchanges und deren erwartete Tabellen
-            exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
-            expected_tables = ["trades", "bars", "orderbook"]
-            
-            validation_results = {}
-            
-            for exchange in exchanges:
-                exchange_validation = {
-                    "exchange": exchange,
-                    "tables_found": [],
-                    "tables_missing": [],
-                    "schema_valid": True
-                }
-                
-                for table_type in expected_tables:
-                    table_name = f"{exchange}_{table_type}"
-                    
-                    # Simuliere Schema-Check (kann später mit echten ClickHouse-Queries erweitert werden)
-                    table_exists = await self._check_table_exists(table_name)
-                    
-                    if table_exists:
-                        exchange_validation["tables_found"].append(table_name)
-                    else:
-                        exchange_validation["tables_missing"].append(table_name)
-                        exchange_validation["schema_valid"] = False
-                
-                validation_results[exchange] = exchange_validation
-                logger.info(f"✅ Schema validation for {exchange}: {len(exchange_validation['tables_found'])}/3 tables found")
-            
-            self.validation_results = validation_results
-            
-        except Exception as e:
-            logger.error(f"❌ Schema validation failed: {e}")
-            raise
-    
-    async def _check_table_exists(self, table_name: str) -> bool:
-        """Prüfe ob Tabelle existiert - ECHTER ClickHouse Check!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                logger.warning(f"ClickHouse client not available for table check: {table_name}")
-                return False
-            
-            # ECHTER Table Check
-            result = client.command(f"EXISTS TABLE {table_name}")
-            return bool(result)
-            
-        except Exception as e:
-            logger.warning(f"Table check failed for {table_name}: {e}")
-            return False
-    
-    async def _create_unified_schemas(self):
-        """Erstelle vereinheitlichte cl_ Schemas für alle Exchanges"""
-        try:
-            logger.info("🛠️ Creating unified cl_ schemas...")
-            
-            unified_schemas = {}
-            exchanges = list(EXCHANGE_CL_CONFIGS.keys())
-            
-            # 1. Trade Schemas für alle Exchanges
-            for exchange in exchanges:
-                trade_schema = self._generate_trade_schema(exchange)
-                candle_schema = self._generate_candle_schema(exchange) 
-                orderbook_schema = self._generate_orderbook_schema(exchange)
-                
-                unified_schemas[f"{exchange}_trades"] = trade_schema
-                unified_schemas[f"{exchange}_bars"] = candle_schema
-                unified_schemas[f"{exchange}_orderbook"] = orderbook_schema
-            
-            # 2. Unified Schemas (Exchange-übergreifend)
-            unified_schemas["all_trades"] = self._generate_unified_trade_schema()
-            unified_schemas["all_kline"] = self._generate_unified_kline_schema()
-            unified_schemas["user_coin_settings"] = self._generate_user_settings_schema()
-            unified_schemas["user_indicator_settings"] = self._generate_indicator_settings_schema()
-            
-            self.unified_schemas = unified_schemas
-            logger.info(f"✅ Created {len(unified_schemas)} unified cl_ schemas")
-            
-        except Exception as e:
-            logger.error(f"❌ Unified schema creation failed: {e}")
-            raise
-    
-    def _generate_trade_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Trade Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_trades",
-            "columns": [
-                "trade_id String",
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)", 
-                "price Float64",
-                "size Float64",
-                "side LowCardinality(String)",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "MergeTree()",
-            "order_by": "(symbol, market, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 365 DAY"  # 1 Jahr Retention
-            }
-        }
-    
-    def _generate_candle_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Candle/Bar Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_bars",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "resolution LowCardinality(String)",
-                "open Float64",
-                "high Float64", 
-                "low Float64",
-                "close Float64",
-                "volume Float64",
-                "trades UInt32",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(symbol, market, resolution, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 730 DAY"  # 2 Jahre Retention für OHLC
-            }
-        }
-    
-    def _generate_orderbook_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Orderbook Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_orderbook",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "bids Array(Tuple(Float64, Float64))",
-                "asks Array(Tuple(Float64, Float64))",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(symbol, market, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 30 DAY"  # 30 Tage Retention für Orderbook
-            }
-        }
-    
-    def _generate_unified_trade_schema(self) -> Dict[str, Any]:
-        """Generiere Unified Trade Schema (alle Exchanges)"""
-        return {
-            "table_name": "trading.all_trades",
-            "columns": [
-                "trade_id String",
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "exchange LowCardinality(String)",
-                "price Float64",
-                "size Float64",
-                "side LowCardinality(String)",
-                "ts DateTime64(3)"
-            ],
-            "engine": "MergeTree()",
-            "order_by": "(exchange, symbol, market, ts)",
-            "partition_by": "(toYYYYMM(ts), exchange)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 365 DAY"
-            }
-        }
-    
-    def _generate_unified_kline_schema(self) -> Dict[str, Any]:
-        """Generiere Unified KLINE Schema (alle Exchanges)"""
-        return {
-            "table_name": "trading.all_kline",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "exchange LowCardinality(String)",
-                "resolution LowCardinality(String)",
-                "open Float64",
-                "high Float64",
-                "low Float64", 
-                "close Float64",
-                "volume Float64",
-                "trades UInt32",
-                "ts DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(exchange, symbol, market, resolution, ts)",
-            "partition_by": "(toYYYYMM(ts), exchange)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 730 DAY"
-            }
-        }
-    
-    def _generate_user_settings_schema(self) -> Dict[str, Any]:
-        """Generiere User Settings Schema"""
-        return {
-            "table_name": "trading.user_coin_settings",
-            "columns": [
-                "user_id String",
-                "exchange LowCardinality(String)",
-                "symbol LowCardinality(String)",
-                "active Bool DEFAULT true",
-                "notifications_enabled Bool DEFAULT false",
-                "price_alerts Array(String)",
-                "volume_alerts Array(String)",
-                "settings String",  # JSON String
-                "created_at DateTime64(3)",
-                "updated_at DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(updated_at)",
-            "order_by": "(user_id, exchange, symbol)",
-            "partition_by": "toYYYYMM(created_at)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
-            }
-        }
-    
-    def _generate_indicator_settings_schema(self) -> Dict[str, Any]:
-        """Generiere Indicator Settings Schema"""
-        return {
-            "table_name": "trading.user_indicator_settings",
-            "columns": [
-                "user_id String",
-                "exchange LowCardinality(String)",
-                "symbol LowCardinality(String)",
-                "indicator_type LowCardinality(String)",
-                "indicator_name String",
-                "parameters String",  # JSON String
-                "timeframes Array(String)",
-                "enabled Bool DEFAULT true",
-                "alert_conditions Array(String)",
-                "created_at DateTime64(3)",
-                "updated_at DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(updated_at)",
-            "order_by": "(user_id, exchange, symbol, indicator_type)",
-            "partition_by": "toYYYYMM(created_at)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
-            }
-        }
-    
-    async def _migrate_legacy_schemas(self):
-        """Migriere Legacy Schemas zu cl_ Lane System"""
-        try:
-            logger.info("🔄 Migrating legacy schemas to cl_ Lane System...")
-            
-            migration_results = {}
-            
-            # Migriere alle Unified Schemas
-            for schema_name, schema_definition in self.unified_schemas.items():
-                try:
-                    migration_result = await self._apply_schema_migration(schema_name, schema_definition)
-                    migration_results[schema_name] = migration_result
-                    
-                    if migration_result["success"]:
-                        logger.info(f"✅ Schema migration successful: {schema_name}")
-                    else:
-                        logger.warning(f"⚠️ Schema migration partial: {schema_name} - {migration_result.get('message', 'Unknown issue')}")
-                        
-                except Exception as schema_error:
-                    migration_results[schema_name] = {
-                        "success": False,
-                        "error": str(schema_error)
-                    }
-                    logger.error(f"❌ Schema migration failed: {schema_name} - {schema_error}")
-            
-            self.migration_results = migration_results
-            
-            # Summary
-            successful_migrations = sum(1 for r in migration_results.values() if r.get("success", False))
-            total_migrations = len(migration_results)
-            
-            logger.info(f"🎯 Schema migration completed: {successful_migrations}/{total_migrations} schemas migrated successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Legacy schema migration failed: {e}")
-            raise
-    
-    async def _apply_schema_migration(self, schema_name: str, schema_definition: Dict[str, Any]) -> Dict[str, Any]:
-        """Wende einzelne Schema Migration an"""
-        try:
-            # TODO: Implementiere echte ClickHouse Schema-Anwendung
-            # Für jetzt simuliere erfolgreiche Migration
-            
-            migration_sql = self._generate_create_table_sql(schema_definition)
-            
-            # Simuliere ClickHouse-Operation
-            if hasattr(self.cl_service, 'execute_schema_migration'):
-                result = await self.cl_service.execute_schema_migration(migration_sql)
-                return {
-                    "success": True,
-                    "table_name": schema_definition["table_name"],
-                    "sql": migration_sql,
-                    "result": result
-                }
-            else:
-                # Fallback: Assume migration successful
-                return {
-                    "success": True,
-                    "table_name": schema_definition["table_name"],
-                    "sql": migration_sql,
-                    "message": "Migration simulated (cl_service not available)"
-                }
-                
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "table_name": schema_definition.get("table_name", "unknown")
-            }
-    
-    def _generate_create_table_sql(self, schema_definition: Dict[str, Any]) -> str:
-        """Generiere CREATE TABLE SQL aus Schema Definition"""
-        try:
-            table_name = schema_definition["table_name"]
-            columns = schema_definition["columns"]
-            engine = schema_definition["engine"]
-            order_by = schema_definition["order_by"]
-            partition_by = schema_definition.get("partition_by", "")
-            settings = schema_definition.get("settings", {})
-            
-            # CREATE TABLE SQL
-            sql_parts = [f"CREATE TABLE IF NOT EXISTS {table_name} ("]
-            sql_parts.append("    " + ",\n    ".join(columns))
-            sql_parts.append(f") ENGINE = {engine}")
-            
-            if order_by:
-                sql_parts.append(f"ORDER BY {order_by}")
-            
-            if partition_by:
-                sql_parts.append(f"PARTITION BY {partition_by}")
-            
-            if settings:
-                settings_str = ", ".join([f"{k} = {v}" if isinstance(v, (int, float)) else f"{k} = '{v}'" for k, v in settings.items()])
-                sql_parts.append(f"SETTINGS {settings_str}")
-            
-            return "\n".join(sql_parts) + ";"
-            
-        except Exception as e:
-            logger.error(f"SQL generation failed for schema: {e}")
-            return f"-- SQL generation failed: {str(e)}"
-    
-    # ✅ PUBLIC API METHODS
-    def get_schema_migration_summary(self) -> Dict[str, Any]:
-        """Hole Schema Migration Summary"""
-        try:
-            if not self.initialized:
-                return {"error": "Schema Migration not initialized"}
-            
-            # Sammle Migration Results
-            migration_summary = {
-                "initialized": self.initialized,
-                "total_schemas": len(self.unified_schemas) if hasattr(self, 'unified_schemas') else 0,
-                "successful_migrations": 0,
-                "failed_migrations": 0,
-                "schemas_by_category": {
-                    "exchange_specific": {},
-                    "unified": {},
-                    "user_settings": {}
-                },
-                "migration_results": getattr(self, 'migration_results', {}),
-                "validation_results": getattr(self, 'validation_results', {}),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Zähle erfolgreiche/fehlgeschlagene Migrationen
-            if hasattr(self, 'migration_results'):
-                for result in self.migration_results.values():
-                    if result.get("success", False):
-                        migration_summary["successful_migrations"] += 1
-                    else:
-                        migration_summary["failed_migrations"] += 1
-            
-            # Kategorisiere Schemas
-            if hasattr(self, 'unified_schemas'):
-                exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
-                
-                for schema_name in self.unified_schemas.keys():
-                    if any(ex in schema_name for ex in exchanges):
-                        if "_trades" in schema_name:
-                            category = "trades"
-                        elif "_bars" in schema_name:
-                            category = "candles"
-                        elif "_orderbook" in schema_name:
-                            category = "orderbook"
-                        else:
-                            category = "other"
-                        
-                        if category not in migration_summary["schemas_by_category"]["exchange_specific"]:
-                            migration_summary["schemas_by_category"]["exchange_specific"][category] = []
-                        migration_summary["schemas_by_category"]["exchange_specific"][category].append(schema_name)
-                        
-                    elif "all_" in schema_name or "user_" in schema_name:
-                        if "all_" in schema_name:
-                            category_type = "unified"
-                        else:
-                            category_type = "user_settings"
-                        
-                        if schema_name not in migration_summary["schemas_by_category"][category_type]:
-                            migration_summary["schemas_by_category"][category_type][schema_name] = True
-            
-            return migration_summary
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to get schema migration summary: {e}")
-            return {"error": str(e)}
-    
-    async def validate_migrated_schemas(self) -> Dict[str, Any]:
-        """Validiere migrierte Schemas"""
-        try:
-            logger.info("✅ Validating migrated schemas...")
-            
-            validation_results = {
-                "validation_passed": True,
-                "validated_schemas": 0,
-                "validation_errors": [],
-                "schema_validations": {}
-            }
-            
-            if hasattr(self, 'unified_schemas'):
-                for schema_name, schema_def in self.unified_schemas.items():
-                    try:
-                        # Validate Schema Definition
-                        schema_validation = await self._validate_schema_definition(schema_name, schema_def)
-                        validation_results["schema_validations"][schema_name] = schema_validation
-                        
-                        if schema_validation["valid"]:
-                            validation_results["validated_schemas"] += 1
-                        else:
-                            validation_results["validation_passed"] = False
-                            validation_results["validation_errors"].extend(schema_validation.get("errors", []))
-                            
-                    except Exception as validation_error:
-                        validation_results["validation_passed"] = False
-                        validation_results["validation_errors"].append(f"Schema {schema_name}: {str(validation_error)}")
-            
-            logger.info(f"🎯 Schema validation completed: {validation_results['validated_schemas']} schemas validated")
-            return validation_results
-            
-        except Exception as e:
-            logger.error(f"❌ Schema validation failed: {e}")
-            return {"validation_passed": False, "error": str(e)}
-    
-    async def _validate_schema_definition(self, schema_name: str, schema_def: Dict[str, Any]) -> Dict[str, Any]:
-        """Validiere einzelne Schema Definition"""
-        try:
-            validation_result = {
-                "valid": True,
-                "errors": [],
-                "warnings": []
-            }
-            
-            # Required Fields Check
-            required_fields = ["table_name", "columns", "engine", "order_by"]
-            for field in required_fields:
-                if field not in schema_def:
-                    validation_result["valid"] = False
-                    validation_result["errors"].append(f"Missing required field: {field}")
-            
-            # Columns Check
-            if "columns" in schema_def and isinstance(schema_def["columns"], list):
-                if len(schema_def["columns"]) == 0:
-                    validation_result["valid"] = False
-                    validation_result["errors"].append("No columns defined")
-            else:
-                validation_result["valid"] = False
-                validation_result["errors"].append("Columns must be a non-empty list")
-            
-            # Engine Check
-            if "engine" in schema_def:
-                engine = schema_def["engine"]
-                valid_engines = ["MergeTree()", "ReplacingMergeTree"]
-                if not any(valid_engine in engine for valid_engine in valid_engines):
-                    validation_result["warnings"].append(f"Unusual engine: {engine}")
-            
-            return validation_result
-            
-        except Exception as e:
-            return {
-                "valid": False,
-                "errors": [f"Validation error: {str(e)}"]
-            }
-
-# Global ClickHouse Schema Manager instance
-cl_schema_manager = ClickHouseSchemaManager()
-</file>
-
 <file path="backend/database/clickhouse/cl_unified_manager.py">
 """
 Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
@@ -160022,6 +160022,201 @@ async def get_supported_historical_exchanges():
     )
 </file>
 
+<file path="backend/database/clickhouse/__init__.py">
+# ClickHouse Lane System - Unified Export Module
+# Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
+
+from typing import Any, Dict, Optional
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+from .cl_config import (
+    CL_DATABASE_PATTERNS,
+    CL_CONNECTION,
+    CL_PERFORMANCE,
+    CRITICAL_CL_COMPONENTS,
+    EXCHANGE_CL_CONFIGS,
+    CL_HEALTH_THRESHOLDS,
+    CL_SCHEMAS
+)
+
+from .cl_lanes import (
+    cl_status,
+    cl_lane
+)
+
+from .cl_registry import (
+    cl_registry,
+    cl_registry_instance
+)
+
+from .cl_manager import (
+    cl_manager,
+    cl_manager_instance
+)
+
+from .cl_checker import (
+    cl_checker,
+    cl_checker_instance
+)
+
+from .cl_router import (
+    cl_router
+)
+
+from .cl_message_handlers import (
+    cl_message_handlers,
+    cl_handlers_instance
+)
+
+from .cl_unified import (
+    UnifiedClService,
+    unified_cl_service
+)
+
+from .cl_user_settings import (
+    cl_user_settings,
+    get_user_settings_store,
+    get_user_settings_cache
+)
+
+# Import the real ClickHouse implementation
+from .cl_unified_manager import get_clickhouse_connection_pool, ClickHouseConnectionPool
+
+# ClickHouse Client Compatibility Functions
+def get_clickhouse_client():
+    """
+    Get ClickHouse client instance - verwendet echten clickhouse_connect Client
+    """
+    try:
+        pool = get_clickhouse_connection_pool()
+        if not pool.is_initialized:
+            # Initialize pool synchronously if needed
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If in async context, create task
+                    return ClickHouseClientWrapper(pool)
+                else:
+                    # Initialize synchronously
+                    loop.run_until_complete(pool.initialize())
+            except RuntimeError:
+                # No event loop, initialize later
+                pass
+        
+        return ClickHouseClientWrapper(pool)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to get ClickHouse client: {e}")
+        return ClickHouseClientWrapper(None)
+
+class ClickHouseClientWrapper:
+    """
+    Wrapper für echten clickhouse_connect Client mit execute() Kompatibilität
+
+    Enterprise FIX:
+    - Jede Operation läuft in asyncio.to_thread()
+    - Im Thread wird thread-local Client aus dem Pool verwendet
+    - Dadurch KEINE concurrent queries in derselben Session
+    """
+
+    def __init__(self, connection_pool):
+        self.pool = connection_pool
+
+    def _get_client_in_thread(self):
+        if self.pool and self.pool.is_initialized:
+            return self.pool.get_client()
+        return None
+
+    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None):
+        q = (query or "").strip()
+        if not q:
+            raise ValueError("Empty ClickHouse query")
+
+        if self.pool and not self.pool.is_initialized:
+            await self.pool.initialize()
+
+        def _run():
+            client = self._get_client_in_thread()
+            if not client:
+                raise RuntimeError("ClickHouse client not available (pool not initialized)")
+
+            q_upper = q.lstrip().upper()
+
+            # Writes
+            if q_upper.startswith(("INSERT", "CREATE", "DROP", "ALTER", "TRUNCATE", "OPTIMIZE", "SYSTEM")):
+                try:
+                    client.command(q, parameters=(params or None))
+                except TypeError:
+                    client.query(q, parameters=(params or None))
+                return []
+
+            # Reads
+            res = client.query(q, parameters=(params or None))
+            return res.result_rows if res else []
+
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception as e:
+            logger.error("ClickHouse execute failed: %s", e, exc_info=True)
+            raise
+
+# Legacy compatibility
+ClickHouseClient = ClickHouseClientWrapper
+
+# Main exports for external use
+__all__ = [
+    # Config
+    "CL_DATABASE_PATTERNS",
+    "CL_CONNECTION", 
+    "CL_PERFORMANCE",
+    "CRITICAL_CL_COMPONENTS",
+    "EXCHANGE_CL_CONFIGS",
+    "CL_HEALTH_THRESHOLDS",
+    "CL_SCHEMAS",
+    
+    # Core Classes
+    "cl_status",
+    "cl_lane",
+    "cl_registry",
+    "cl_manager", 
+    "cl_checker",
+    "cl_message_handlers",
+    "UnifiedClService",
+    
+    # Singleton Instances
+    "cl_registry_instance",
+    "cl_manager_instance",
+    "cl_checker_instance", 
+    "cl_handlers_instance",
+    "unified_cl_service",
+    
+    # FastAPI Router
+    "cl_router",
+    
+    # User Settings
+    "cl_user_settings",
+    "get_user_settings_store",
+    "get_user_settings_cache",
+    
+    # Compatibility Functions
+    "get_clickhouse_client",
+    "ClickHouseClient",
+    "ClickHouseClientWrapper"
+]
+
+# Convenience aliases for commonly used instances
+cl_registry = cl_registry_instance
+cl_manager = cl_manager_instance  
+cl_checker = cl_checker_instance
+cl_handlers = cl_handlers_instance
+unified_clickhouse = unified_cl_service
+</file>
+
 <file path="backend/database/clickhouse/cl_config.py">
 import os
 from typing import Dict, Any, Set
@@ -161727,201 +161922,6 @@ interface ImportMeta {
 }
 </file>
 
-<file path="backend/database/clickhouse/__init__.py">
-# ClickHouse Lane System - Unified Export Module
-# Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
-
-from typing import Any, Dict, Optional
-import asyncio
-import logging
-
-logger = logging.getLogger(__name__)
-
-from .cl_config import (
-    CL_DATABASE_PATTERNS,
-    CL_CONNECTION,
-    CL_PERFORMANCE,
-    CRITICAL_CL_COMPONENTS,
-    EXCHANGE_CL_CONFIGS,
-    CL_HEALTH_THRESHOLDS,
-    CL_SCHEMAS
-)
-
-from .cl_lanes import (
-    cl_status,
-    cl_lane
-)
-
-from .cl_registry import (
-    cl_registry,
-    cl_registry_instance
-)
-
-from .cl_manager import (
-    cl_manager,
-    cl_manager_instance
-)
-
-from .cl_checker import (
-    cl_checker,
-    cl_checker_instance
-)
-
-from .cl_router import (
-    cl_router
-)
-
-from .cl_message_handlers import (
-    cl_message_handlers,
-    cl_handlers_instance
-)
-
-from .cl_unified import (
-    UnifiedClService,
-    unified_cl_service
-)
-
-from .cl_user_settings import (
-    cl_user_settings,
-    get_user_settings_store,
-    get_user_settings_cache
-)
-
-# Import the real ClickHouse implementation
-from .cl_unified_manager import get_clickhouse_connection_pool, ClickHouseConnectionPool
-
-# ClickHouse Client Compatibility Functions
-def get_clickhouse_client():
-    """
-    Get ClickHouse client instance - verwendet echten clickhouse_connect Client
-    """
-    try:
-        pool = get_clickhouse_connection_pool()
-        if not pool.is_initialized:
-            # Initialize pool synchronously if needed
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If in async context, create task
-                    return ClickHouseClientWrapper(pool)
-                else:
-                    # Initialize synchronously
-                    loop.run_until_complete(pool.initialize())
-            except RuntimeError:
-                # No event loop, initialize later
-                pass
-        
-        return ClickHouseClientWrapper(pool)
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to get ClickHouse client: {e}")
-        return ClickHouseClientWrapper(None)
-
-class ClickHouseClientWrapper:
-    """
-    Wrapper für echten clickhouse_connect Client mit execute() Kompatibilität
-
-    Enterprise FIX:
-    - Jede Operation läuft in asyncio.to_thread()
-    - Im Thread wird thread-local Client aus dem Pool verwendet
-    - Dadurch KEINE concurrent queries in derselben Session
-    """
-
-    def __init__(self, connection_pool):
-        self.pool = connection_pool
-
-    def _get_client_in_thread(self):
-        if self.pool and self.pool.is_initialized:
-            return self.pool.get_client()
-        return None
-
-    async def execute(self, query: str, params: Optional[Dict[str, Any]] = None):
-        q = (query or "").strip()
-        if not q:
-            raise ValueError("Empty ClickHouse query")
-
-        if self.pool and not self.pool.is_initialized:
-            await self.pool.initialize()
-
-        def _run():
-            client = self._get_client_in_thread()
-            if not client:
-                raise RuntimeError("ClickHouse client not available (pool not initialized)")
-
-            q_upper = q.lstrip().upper()
-
-            # Writes
-            if q_upper.startswith(("INSERT", "CREATE", "DROP", "ALTER", "TRUNCATE", "OPTIMIZE", "SYSTEM")):
-                try:
-                    client.command(q, parameters=(params or None))
-                except TypeError:
-                    client.query(q, parameters=(params or None))
-                return []
-
-            # Reads
-            res = client.query(q, parameters=(params or None))
-            return res.result_rows if res else []
-
-        try:
-            return await asyncio.to_thread(_run)
-        except Exception as e:
-            logger.error("ClickHouse execute failed: %s", e, exc_info=True)
-            raise
-
-# Legacy compatibility
-ClickHouseClient = ClickHouseClientWrapper
-
-# Main exports for external use
-__all__ = [
-    # Config
-    "CL_DATABASE_PATTERNS",
-    "CL_CONNECTION", 
-    "CL_PERFORMANCE",
-    "CRITICAL_CL_COMPONENTS",
-    "EXCHANGE_CL_CONFIGS",
-    "CL_HEALTH_THRESHOLDS",
-    "CL_SCHEMAS",
-    
-    # Core Classes
-    "cl_status",
-    "cl_lane",
-    "cl_registry",
-    "cl_manager", 
-    "cl_checker",
-    "cl_message_handlers",
-    "UnifiedClService",
-    
-    # Singleton Instances
-    "cl_registry_instance",
-    "cl_manager_instance",
-    "cl_checker_instance", 
-    "cl_handlers_instance",
-    "unified_cl_service",
-    
-    # FastAPI Router
-    "cl_router",
-    
-    # User Settings
-    "cl_user_settings",
-    "get_user_settings_store",
-    "get_user_settings_cache",
-    
-    # Compatibility Functions
-    "get_clickhouse_client",
-    "ClickHouseClient",
-    "ClickHouseClientWrapper"
-]
-
-# Convenience aliases for commonly used instances
-cl_registry = cl_registry_instance
-cl_manager = cl_manager_instance  
-cl_checker = cl_checker_instance
-cl_handlers = cl_handlers_instance
-unified_clickhouse = unified_cl_service
-</file>
-
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -163127,6 +163127,1107 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
+</file>
+
+<file path="backend/database/clickhouse/init.sql">
+-- ========================================
+-- TRADING SYSTEM CLICKHOUSE SCHEMA
+-- AUTO-GENERIERT von 000_generate_init_sql.py
+-- NICHT MANUELL BEARBEITEN!
+-- ========================================
+-- Single Source of Truth: Python Migration Scripts
+-- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
+
+CREATE DATABASE IF NOT EXISTS trading;
+
+-- Tabelle 1/46
+CREATE TABLE IF NOT EXISTS trading.binance_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 2/46
+CREATE TABLE IF NOT EXISTS trading.bitget_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 3/46
+CREATE TABLE IF NOT EXISTS trading.mexc_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 4/46
+CREATE TABLE IF NOT EXISTS trading.gateio_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 5/46
+CREATE TABLE IF NOT EXISTS trading.bybit_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 6/46
+CREATE TABLE IF NOT EXISTS trading.okx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 7/46
+CREATE TABLE IF NOT EXISTS trading.htx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 8/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 9/46
+CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 10/46
+CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 11/46
+CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 12/46
+CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 13/46
+CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 14/46
+CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 15/46
+CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 16/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 17/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 18/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 19/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 20/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 21/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 22/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 23/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 24/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 25/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 26/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 27/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 28/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 29/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 30/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 31/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 32/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 33/46
+CREATE TABLE IF NOT EXISTS trading.base_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            signal_type LowCardinality(String),
+            signal_strength Decimal(5,4),
+            price Decimal(18,8),
+            volume Decimal(18,8),
+            confidence Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 34/46
+CREATE TABLE IF NOT EXISTS trading.tier1_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            tier1_score Decimal(5,4),
+            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
+            entry_price Decimal(18,8),
+            stop_loss Decimal(18,8),
+            take_profit Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 35/46
+CREATE TABLE IF NOT EXISTS trading.alma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            alma_value Decimal(18,8),
+            alma_slope Decimal(5,4),
+            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 36/46
+CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            wave_count UInt8,
+            wave_type LowCardinality(String),
+            wave_confidence Decimal(5,4),
+            price_target Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 37/46
+CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            whale_score Decimal(5,4),
+            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
+            volume_impact Decimal(18,8),
+            price_impact Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 38/46
+CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            sigma_level Decimal(5,4),
+            is_extreme UInt8,
+            reversion_probability Decimal(5,4),
+            expected_price Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 39/46
+CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            dominant_frequency Decimal(5,4),
+            power_spectrum Decimal(5,4),
+            cycle_length UInt16,
+            phase Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 40/46
+CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            volatility Decimal(5,4),
+            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
+            atr Decimal(18,8),
+            bollinger_width Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 41/46
+CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol1 LowCardinality(String),
+            symbol2 LowCardinality(String),
+            exchange LowCardinality(String),
+            correlation Decimal(5,4),
+            rolling_correlation Decimal(5,4),
+            divergence_score Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol1, symbol2, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 42/46
+CREATE TABLE IF NOT EXISTS trading.regime_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
+            regime_confidence Decimal(5,4),
+            regime_duration UInt32,
+            transition_probability Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 43/46
+CREATE TABLE IF NOT EXISTS trading.indicator_performance (
+            timestamp DateTime64(3, 'UTC'),
+            indicator_name LowCardinality(String),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            accuracy Decimal(5,4),
+            profit_factor Decimal(5,4),
+            sharpe_ratio Decimal(5,4),
+            total_signals UInt32,
+            winning_signals UInt32
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (indicator_name, symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 44/46
+CREATE TABLE IF NOT EXISTS trading.binance_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 45/46
+CREATE TABLE IF NOT EXISTS trading.bitget_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 46/46
+CREATE TABLE IF NOT EXISTS trading.mexc_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 47/46
+CREATE TABLE IF NOT EXISTS trading.gateio_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 48/46
+CREATE TABLE IF NOT EXISTS trading.bybit_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 49/46
+CREATE TABLE IF NOT EXISTS trading.okx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 50/46
+CREATE TABLE IF NOT EXISTS trading.htx_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 51/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
+    symbol LowCardinality(String),
+    market LowCardinality(String),
+    interval LowCardinality(String),
+    bucket_start DateTime64(3, 'UTC'),
+    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    high_state  AggregateFunction(max,   Decimal(76, 38)),
+    low_state   AggregateFunction(min,   Decimal(76, 38)),
+    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
+    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
+    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
+    trades_count_state AggregateFunction(count)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMMDD(bucket_start)
+ORDER BY (symbol, market, interval, bucket_start)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 52/46
+CREATE TABLE IF NOT EXISTS trading.all_orderbook (
+        ts DateTime64(3, 'UTC'),
+        symbol LowCardinality(String),
+        exchange LowCardinality(String),
+        best_bid_price Decimal(76,38),
+        best_bid_size Decimal(76,38),
+        best_ask_price Decimal(76,38),
+        best_ask_size Decimal(76,38),
+        spread Decimal(76,38),
+        mid_price Decimal(76,38)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (symbol, exchange, ts)
+    SETTINGS index_granularity = 8192;
+
+-- Tabelle 53/46
+CREATE TABLE IF NOT EXISTS trading.all_whale (
+        event_id String,
+        exchange LowCardinality(String),
+        ts DateTime64(3, 'UTC'),
+        chain String,
+        tx_hash String,
+        from_addr String,
+        to_addr String,
+        token Nullable(String),
+        symbol String,
+        amount Decimal(76,38),
+        is_native UInt8,
+        amount_usd Decimal(76,38),
+        from_exchange String,
+        from_country String,
+        from_city String,
+        to_exchange String,
+        to_country String,
+        to_city String,
+        is_cross_border UInt8,
+        source String,
+        threshold_usd Decimal(76,38),
+        coin_rank UInt32,
+        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (exchange, symbol, ts, amount_usd)
+    SETTINGS index_granularity = 8192;
+
+-- ========================================
+-- MATERIALIZED VIEWS (AUTO-AGGREGATION)
+-- ========================================
+
+-- MV 1/8: binance_trades → binance_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
+TO trading.binance_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.binance_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 2/8: bitget_trades → bitget_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
+TO trading.bitget_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bitget_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 3/8: mexc_trades → mexc_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
+TO trading.mexc_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.mexc_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 4/8: gateio_trades → gateio_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
+TO trading.gateio_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.gateio_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 5/8: bybit_trades → bybit_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
+TO trading.bybit_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.bybit_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 6/8: okx_trades → okx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
+TO trading.okx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.okx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 7/8: htx_trades → htx_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
+TO trading.htx_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.htx_trades
+GROUP BY symbol, market, bucket_start;
+
+-- MV 8/8: coinbase_trades → coinbase_kline (1s)
+CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
+TO trading.coinbase_kline
+AS
+SELECT
+    symbol,
+    market,
+    '1s' AS interval,
+    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
+    argMinState(price, (timestamp, trade_id)) AS open_state,
+    maxState(price) AS high_state,
+    minState(price) AS low_state,
+    argMaxState(price, (timestamp, trade_id)) AS close_state,
+    sumState(size) AS volume_state,
+    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
+    countState() AS trades_count_state
+FROM trading.coinbase_trades
+GROUP BY symbol, market, bucket_start;
+
+-- ========================================
+-- ZUSAMMENFASSUNG
+-- ========================================
+-- ✅ Database: trading
+-- ✅ Tabellen: 53 (8 neue kline Tabellen)
+-- ✅ Materialized Views: 8 (1s Auto-Aggregation)
+-- ✅ Generiert: Automatisch aus Python Migrations
+-- ========================================
 </file>
 
 <file path="backend/services/adapter/stream_aggregator.py">
@@ -166870,1107 +167971,6 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
-</file>
-
-<file path="backend/database/clickhouse/init.sql">
--- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- Tabelle 1/46
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 2/46
-CREATE TABLE IF NOT EXISTS trading.bitget_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 3/46
-CREATE TABLE IF NOT EXISTS trading.mexc_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 4/46
-CREATE TABLE IF NOT EXISTS trading.gateio_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 5/46
-CREATE TABLE IF NOT EXISTS trading.bybit_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 6/46
-CREATE TABLE IF NOT EXISTS trading.okx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 7/46
-CREATE TABLE IF NOT EXISTS trading.htx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 8/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 9/46
-CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 10/46
-CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 11/46
-CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 12/46
-CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 13/46
-CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 14/46
-CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 15/46
-CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 16/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 17/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 18/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 19/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 20/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 21/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 22/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 23/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 24/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 25/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 26/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 27/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 28/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 29/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 30/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 31/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 32/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 33/46
-CREATE TABLE IF NOT EXISTS trading.base_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            signal_type LowCardinality(String),
-            signal_strength Decimal(5,4),
-            price Decimal(18,8),
-            volume Decimal(18,8),
-            confidence Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 34/46
-CREATE TABLE IF NOT EXISTS trading.tier1_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            tier1_score Decimal(5,4),
-            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
-            entry_price Decimal(18,8),
-            stop_loss Decimal(18,8),
-            take_profit Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 35/46
-CREATE TABLE IF NOT EXISTS trading.alma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            alma_value Decimal(18,8),
-            alma_slope Decimal(5,4),
-            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 36/46
-CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            wave_count UInt8,
-            wave_type LowCardinality(String),
-            wave_confidence Decimal(5,4),
-            price_target Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 37/46
-CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            whale_score Decimal(5,4),
-            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
-            volume_impact Decimal(18,8),
-            price_impact Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 38/46
-CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            sigma_level Decimal(5,4),
-            is_extreme UInt8,
-            reversion_probability Decimal(5,4),
-            expected_price Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 39/46
-CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            dominant_frequency Decimal(5,4),
-            power_spectrum Decimal(5,4),
-            cycle_length UInt16,
-            phase Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 40/46
-CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            volatility Decimal(5,4),
-            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
-            atr Decimal(18,8),
-            bollinger_width Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 41/46
-CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol1 LowCardinality(String),
-            symbol2 LowCardinality(String),
-            exchange LowCardinality(String),
-            correlation Decimal(5,4),
-            rolling_correlation Decimal(5,4),
-            divergence_score Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol1, symbol2, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 42/46
-CREATE TABLE IF NOT EXISTS trading.regime_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
-            regime_confidence Decimal(5,4),
-            regime_duration UInt32,
-            transition_probability Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 43/46
-CREATE TABLE IF NOT EXISTS trading.indicator_performance (
-            timestamp DateTime64(3, 'UTC'),
-            indicator_name LowCardinality(String),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            accuracy Decimal(5,4),
-            profit_factor Decimal(5,4),
-            sharpe_ratio Decimal(5,4),
-            total_signals UInt32,
-            winning_signals UInt32
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (indicator_name, symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 44/46
-CREATE TABLE IF NOT EXISTS trading.binance_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 45/46
-CREATE TABLE IF NOT EXISTS trading.bitget_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 46/46
-CREATE TABLE IF NOT EXISTS trading.mexc_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 47/46
-CREATE TABLE IF NOT EXISTS trading.gateio_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 48/46
-CREATE TABLE IF NOT EXISTS trading.bybit_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 49/46
-CREATE TABLE IF NOT EXISTS trading.okx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 50/46
-CREATE TABLE IF NOT EXISTS trading.htx_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 51/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_kline (
-    symbol LowCardinality(String),
-    market LowCardinality(String),
-    interval LowCardinality(String),
-    bucket_start DateTime64(3, 'UTC'),
-    open_state  AggregateFunction(argMin, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    high_state  AggregateFunction(max,   Decimal(76, 38)),
-    low_state   AggregateFunction(min,   Decimal(76, 38)),
-    close_state AggregateFunction(argMax, Decimal(76, 38), Tuple(DateTime64(3, 'UTC'), UInt64)),
-    volume_state       AggregateFunction(sum,  Decimal(76, 38)),
-    quote_volume_state AggregateFunction(sum,  Decimal(76, 38)),
-    trades_count_state AggregateFunction(count)
-) ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(bucket_start)
-ORDER BY (symbol, market, interval, bucket_start)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 52/46
-CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    SETTINGS index_granularity = 8192;
-
--- Tabelle 53/46
-CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    SETTINGS index_granularity = 8192;
-
--- ========================================
--- MATERIALIZED VIEWS (AUTO-AGGREGATION)
--- ========================================
-
--- MV 1/8: binance_trades → binance_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_binance_trades_to_binance_kline_1s
-TO trading.binance_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.binance_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 2/8: bitget_trades → bitget_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bitget_trades_to_bitget_kline_1s
-TO trading.bitget_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bitget_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 3/8: mexc_trades → mexc_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_mexc_trades_to_mexc_kline_1s
-TO trading.mexc_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.mexc_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 4/8: gateio_trades → gateio_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_gateio_trades_to_gateio_kline_1s
-TO trading.gateio_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.gateio_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 5/8: bybit_trades → bybit_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_bybit_trades_to_bybit_kline_1s
-TO trading.bybit_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.bybit_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 6/8: okx_trades → okx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_okx_trades_to_okx_kline_1s
-TO trading.okx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.okx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 7/8: htx_trades → htx_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_htx_trades_to_htx_kline_1s
-TO trading.htx_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.htx_trades
-GROUP BY symbol, market, bucket_start;
-
--- MV 8/8: coinbase_trades → coinbase_kline (1s)
-CREATE MATERIALIZED VIEW IF NOT EXISTS trading.mv_coinbase_trades_to_coinbase_kline_1s
-TO trading.coinbase_kline
-AS
-SELECT
-    symbol,
-    market,
-    '1s' AS interval,
-    toStartOfInterval(timestamp, toIntervalSecond(1)) AS bucket_start,
-    argMinState(price, (timestamp, trade_id)) AS open_state,
-    maxState(price) AS high_state,
-    minState(price) AS low_state,
-    argMaxState(price, (timestamp, trade_id)) AS close_state,
-    sumState(size) AS volume_state,
-    sumState(CAST(price * size, 'Decimal(76,38)')) AS quote_volume_state,
-    countState() AS trades_count_state
-FROM trading.coinbase_trades
-GROUP BY symbol, market, bucket_start;
-
--- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- ✅ Database: trading
--- ✅ Tabellen: 53 (8 neue kline Tabellen)
--- ✅ Materialized Views: 8 (1s Auto-Aggregation)
--- ✅ Generiert: Automatisch aus Python Migrations
--- ========================================
 </file>
 
 <file path="frontend/src/config/exchangeSupport.ts">
