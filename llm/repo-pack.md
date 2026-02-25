@@ -162238,6 +162238,182 @@ def cl_config_summary() -> Dict[str, Any]:
     }
 </file>
 
+<file path="backend/services/adapter/stream_aggregator.py">
+import time
+import threading
+import logging
+from typing import Dict, Tuple
+
+from backend.core.utils.parse_resolution import parse_resolution
+
+logger = logging.getLogger("stream_aggregator")
+
+
+class ResolutionRegistry:
+    """
+    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+
+    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
+    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
+    """
+
+    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
+        self.defaults = set(defaults)
+        self.ttl = ttl_sec
+        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+        self.lock = threading.Lock()
+
+    def touch(self, ex: str, sym: str, res: str) -> None:
+        """
+        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
+        """
+        sec, norm = parse_resolution(res)
+        key = (ex, sym)
+        with self.lock:
+            self.active.setdefault(key, {})[norm] = {
+                "sec": sec,
+                "last": time.monotonic(),
+            }
+
+    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
+        """
+        Liefert alle relevanten Resolutions für (ex, sym):
+
+        - Basis-Resolutions aus defaults
+        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
+        """
+        key = (ex, sym)
+        now = time.monotonic()
+        with self.lock:
+            store = self.active.setdefault(key, {})
+
+            # Abgelaufene dynamische Resolutions entfernen
+            for r in list(store.keys()):
+                if now - store[r]["last"] > self.ttl:
+                    del store[r]
+
+            # Basis-Resolutions immer drin
+            out: Dict[str, Dict[str, float]] = {
+                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
+            }
+            # Dynamische Resolutions überschreiben ggf. defaults
+            out.update({r: {"sec": store[r]["sec"]} for r in store})
+
+        return out
+
+
+# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
+registry = ResolutionRegistry()
+
+
+class MultiResCandleAgg:
+    """
+    Multi-Resolution Candle-Aggregator.
+
+    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
+    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
+    """
+
+    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
+        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
+        self.exchange = exchange
+        self.symbol = symbol
+        self.market = market
+        self.resolutions = resolutions or []
+        
+        # key: (ex, sym, res_str) → candle-state
+        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+        self.last_cleanup = time.time()
+
+    def _cleanup_old_buckets(self) -> None:
+        """
+        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
+        Nur alle 5 Minuten aktiv.
+        """
+        current_time = time.time()
+        # Nur alle 5 Minuten bereinigen
+        if current_time - self.last_cleanup < 300:
+            return
+
+        current_time_ms = int(current_time * 1000)
+        # Lösche Candles älter als 1 Stunde
+        for key in list(self.state.keys()):
+            if current_time_ms - self.state[key]["timestamp"] > 3600000:
+                del self.state[key]
+
+        self.last_cleanup = current_time
+
+    @staticmethod
+    def _bucket(ts_ms: int, sec: int) -> int:
+        """
+        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
+        """
+        return (ts_ms // (sec * 1000)) * (sec * 1000)
+
+    def on_trade(
+        self,
+        ex: str,
+        sym: str,
+        market: str,
+        ts_ms: int,
+        price,
+        size,
+        resolutions: Dict[str, Dict[str, float]],
+    ):
+        """
+        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
+
+        Parameter:
+        - ex: Exchange-Name (z.B. 'binance')
+        - sym: Symbol (z.B. 'BTCUSDT')
+        - market: Markt-Typ (z.B. 'spot', 'usdtm')
+        - ts_ms: Timestamp in Millisekunden
+        - price: Preis (Decimal/float/str)
+        - size: Größe (Decimal/float/str)
+        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
+                       (kommt aus registry.list(ex, sym))
+
+        Rückgabe:
+        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
+          abgeschlossen wurden (Bucket-Wechsel).
+        """
+        self._cleanup_old_buckets()
+        finished = []
+
+        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
+        for res_str, meta in resolutions.items():
+            sec = meta["sec"]
+            key = (ex, sym, res_str)
+            b = self._bucket(ts_ms, sec)
+            c = self.state.get(key)
+
+            if c is None or c["timestamp"] != b:
+                # alter Bucket wird fertig, wenn vorhanden
+                if c:
+                    finished.append((res_str, c))
+                # neuen Candle-Bucket anlegen
+                self.state[key] = {
+                    "timestamp": b,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": size,
+                    "sec": sec,
+                    "market": market,
+                }
+            else:
+                # existierenden Candle-Bucket aktualisieren
+                c["c"] = price
+                c["v"] += size
+                if price > c["h"]:
+                    c["h"] = price
+                if price < c["l"]:
+                    c["l"] = price
+
+        return finished
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -163443,182 +163619,6 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
-</file>
-
-<file path="backend/services/adapter/stream_aggregator.py">
-import time
-import threading
-import logging
-from typing import Dict, Tuple
-
-from backend.core.utils.parse_resolution import parse_resolution
-
-logger = logging.getLogger("stream_aggregator")
-
-
-class ResolutionRegistry:
-    """
-    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
-
-    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
-    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
-    """
-
-    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
-        self.defaults = set(defaults)
-        self.ttl = ttl_sec
-        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
-        self.lock = threading.Lock()
-
-    def touch(self, ex: str, sym: str, res: str) -> None:
-        """
-        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
-        """
-        sec, norm = parse_resolution(res)
-        key = (ex, sym)
-        with self.lock:
-            self.active.setdefault(key, {})[norm] = {
-                "sec": sec,
-                "last": time.monotonic(),
-            }
-
-    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
-        """
-        Liefert alle relevanten Resolutions für (ex, sym):
-
-        - Basis-Resolutions aus defaults
-        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
-        """
-        key = (ex, sym)
-        now = time.monotonic()
-        with self.lock:
-            store = self.active.setdefault(key, {})
-
-            # Abgelaufene dynamische Resolutions entfernen
-            for r in list(store.keys()):
-                if now - store[r]["last"] > self.ttl:
-                    del store[r]
-
-            # Basis-Resolutions immer drin
-            out: Dict[str, Dict[str, float]] = {
-                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
-            }
-            # Dynamische Resolutions überschreiben ggf. defaults
-            out.update({r: {"sec": store[r]["sec"]} for r in store})
-
-        return out
-
-
-# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
-registry = ResolutionRegistry()
-
-
-class MultiResCandleAgg:
-    """
-    Multi-Resolution Candle-Aggregator.
-
-    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
-    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
-    """
-
-    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
-        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
-        self.exchange = exchange
-        self.symbol = symbol
-        self.market = market
-        self.resolutions = resolutions or []
-        
-        # key: (ex, sym, res_str) → candle-state
-        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        self.last_cleanup = time.time()
-
-    def _cleanup_old_buckets(self) -> None:
-        """
-        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
-        Nur alle 5 Minuten aktiv.
-        """
-        current_time = time.time()
-        # Nur alle 5 Minuten bereinigen
-        if current_time - self.last_cleanup < 300:
-            return
-
-        current_time_ms = int(current_time * 1000)
-        # Lösche Candles älter als 1 Stunde
-        for key in list(self.state.keys()):
-            if current_time_ms - self.state[key]["timestamp"] > 3600000:
-                del self.state[key]
-
-        self.last_cleanup = current_time
-
-    @staticmethod
-    def _bucket(ts_ms: int, sec: int) -> int:
-        """
-        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
-        """
-        return (ts_ms // (sec * 1000)) * (sec * 1000)
-
-    def on_trade(
-        self,
-        ex: str,
-        sym: str,
-        market: str,
-        ts_ms: int,
-        price,
-        size,
-        resolutions: Dict[str, Dict[str, float]],
-    ):
-        """
-        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
-
-        Parameter:
-        - ex: Exchange-Name (z.B. 'binance')
-        - sym: Symbol (z.B. 'BTCUSDT')
-        - market: Markt-Typ (z.B. 'spot', 'usdtm')
-        - ts_ms: Timestamp in Millisekunden
-        - price: Preis (Decimal/float/str)
-        - size: Größe (Decimal/float/str)
-        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
-                       (kommt aus registry.list(ex, sym))
-
-        Rückgabe:
-        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
-          abgeschlossen wurden (Bucket-Wechsel).
-        """
-        self._cleanup_old_buckets()
-        finished = []
-
-        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
-        for res_str, meta in resolutions.items():
-            sec = meta["sec"]
-            key = (ex, sym, res_str)
-            b = self._bucket(ts_ms, sec)
-            c = self.state.get(key)
-
-            if c is None or c["timestamp"] != b:
-                # alter Bucket wird fertig, wenn vorhanden
-                if c:
-                    finished.append((res_str, c))
-                # neuen Candle-Bucket anlegen
-                self.state[key] = {
-                    "timestamp": b,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": size,
-                    "sec": sec,
-                    "market": market,
-                }
-            else:
-                # existierenden Candle-Bucket aktualisieren
-                c["c"] = price
-                c["v"] += size
-                if price > c["h"]:
-                    c["h"] = price
-                if price < c["l"]:
-                    c["l"] = price
-
-        return finished
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
