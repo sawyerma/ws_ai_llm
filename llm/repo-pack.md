@@ -36850,6 +36850,155 @@ def get_available_user_exchanges():
     return list(unified_user_apis.keys())
 </file>
 
+<file path="backend/services/delete/trade_router_entrypoint.py">
+"""
+✅ MODERNIZED TRADE ROUTER ENTRYPOINT - Ohne Legacy Dependencies
+Enterprise Auto-Discovery statt hardcoded exchanges
+"""
+import asyncio
+import logging
+from pathlib import Path
+from backend.core.config import settings
+from backend.database.redis import unified_rs_service
+
+logger = logging.getLogger(__name__)
+
+def discover_exchanges():
+    """✅ AUTO-DISCOVERY: Dynamische Exchange-Erkennung"""
+    try:
+        exchange_dir = Path("backend/exchanges")
+        if not exchange_dir.exists():
+            logger.warning("Exchange directory not found, using fallback")
+            return []
+            
+        exchanges = [
+            dir.name for dir in exchange_dir.iterdir() 
+            if dir.is_dir() and dir.name not in ["__pycache__", "shared", "old"]
+        ]
+        
+        logger.info(f"✅ Auto-discovered {len(exchanges)} exchanges: {exchanges}")
+        return exchanges
+        
+    except Exception as e:
+        logger.error(f"Exchange discovery failed: {e}")
+        return []
+
+async def route_trade_streams(source_stream: str, target_stream: str):
+    """✅ MODERNE STREAM ROUTING - Ohne Legacy TradeRouter"""
+    logger.info(f"🔄 Routing: {source_stream} -> {target_stream}")
+    
+    try:
+        redis_client = await unified_rs_service.get_redis_client()
+        
+        # Consumer Group erstellen
+        try:
+            await redis_client.xgroup_create(source_stream, "trade_router", id="0", mkstream=True)
+        except Exception:
+            pass  # Group existiert bereits
+        
+        while True:
+            # Messages aus Source Stream lesen
+            messages = await redis_client.xreadgroup(
+                "trade_router", 
+                "router_consumer", 
+                {source_stream: ">"}, 
+                count=100, 
+                block=1000
+            )
+            
+            if not messages:
+                continue
+                
+            # Messages zu Target Stream weiterleiten
+            for stream, stream_messages in messages:
+                for msg_id, trade_data in stream_messages:
+                    try:
+                        # Trade zum Unified Stream hinzufügen
+                        await redis_client.xadd(target_stream, trade_data)
+                        
+                        # Message als verarbeitet markieren
+                        await redis_client.xack(source_stream, "trade_router", msg_id)
+                        
+                    except Exception as e:
+                        logger.error(f"Error routing trade {msg_id}: {e}")
+                        
+    except asyncio.CancelledError:
+        logger.info(f"Routing stopped: {source_stream} -> {target_stream}")
+    except Exception as e:
+        logger.error(f"Routing failed: {source_stream} -> {target_stream}: {e}")
+
+def discover_markets():
+    """✅ AUTO-DISCOVERY: Dynamische Market-Erkennung"""
+    try:
+        from backend.api.models.keys import Market
+        # Alle verfügbaren Market-Typen aus dem System
+        markets = [market.value for market in Market]
+        logger.info(f"✅ Auto-discovered {len(markets)} markets: {markets}")
+        return markets
+    except ImportError:
+        # Fallback wenn Models nicht verfügbar
+        logger.warning("Market models not found, using discovery fallback")
+        return []
+
+def get_exchange_supported_markets(exchange: str):
+    """✅ AUTO-DISCOVERY: Exchange-spezifische Markets"""
+    try:
+        # Versuche Exchange Config zu laden
+        config_module = f"backend.exchanges.{exchange}.config"
+        import importlib
+        module = importlib.import_module(config_module)
+        config = getattr(module, f"{exchange}_config", None)
+        
+        if config and hasattr(config, 'supported_markets'):
+            return config.supported_markets
+    except Exception as e:
+        logger.debug(f"Could not load market config for {exchange}: {e}")
+    
+    # Fallback: Alle Markets außer für bekannte Einschränkungen
+    all_markets = discover_markets()
+    
+    # ✅ ALLE EXCHANGES GLEICHBERECHTIGT - keine Einschränkungen
+    return all_markets
+
+async def main():
+    """✅ MODERNE MAIN - Vollständige Auto-Discovery ohne Hardcoding"""
+    logger.info("🚀 Starting Trade Router with Full Auto-Discovery")
+    
+    # ✅ AUTO-DISCOVERY für alles
+    exchanges = discover_exchanges()
+    symbols = getattr(settings, 'SYMBOLS', ['BTCUSDT', 'ETHUSDT', 'ADAUSDT'])
+    
+    tasks = []
+    total_routing_attempts = 0
+    
+    # Routing für alle entdeckten Exchanges mit ihren unterstützten Markets
+    for exchange in exchanges:
+        supported_markets = get_exchange_supported_markets(exchange)
+        
+        for symbol in symbols:
+            for market in supported_markets:
+                source_stream = f"{exchange}:trades:{market}:{symbol}"
+                target_stream = f"unified:trades:{market}:{symbol}"
+                
+                task = asyncio.create_task(route_trade_streams(source_stream, target_stream))
+                tasks.append(task)
+                total_routing_attempts += 1
+                
+                logger.info(f"✅ Started routing: {source_stream} -> {target_stream}")
+    
+    logger.info(f"🚀 Started {total_routing_attempts} routing tasks for {len(exchanges)} exchanges (auto-discovered markets)")
+    
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logger.info("⏹️ Shutdown requested")
+    finally:
+        logger.info("🛑 Trade Router stopped")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+</file>
+
 <file path="backend/services/discovery/__init__.py">
 """
 Discovery-Paket für Streams (Trades, Orderbooks, Whales, ...).
@@ -123542,232 +123691,12 @@ def start_health_monitoring():
     logger.info("🏥 Health monitoring active")
 </file>
 
-<file path="backend/services/adapter/whale_detector.py">
+<file path="backend/services/delete/unified_aggregator_entrypoint.py">
 import asyncio
-import logging
-from decimal import Decimal
-from typing import Any, Dict, Optional
-
-from backend.database.clickhouse import get_clickhouse_client
-
-logger = logging.getLogger("whale_detector")
-
-
-class WhaleDetector:
-    def __init__(self):
-        self._client = None  # lazy init
-
-    async def _get_client(self):
-        if self._client is not None:
-            return self._client
-
-        c = get_clickhouse_client()
-        if asyncio.iscoroutine(c):
-            c = await c
-
-        self._client = c
-        return self._client
-
-    async def get_threshold(self, symbol: str) -> Decimal:
-        # ... deine Logik bleibt ...
-        try:
-            threshold = await self._quantile_threshold(symbol)
-            if threshold is not None:
-                return threshold
-        except Exception as e:
-            logger.warning("[WhaleDetector] Quantile threshold calc failed for %s: %s", symbol, str(e), exc_info=True)
-
-        try:
-            avg_based = await self._average_notional_threshold(symbol)
-            if avg_based is not None:
-                return avg_based
-        except Exception as e:
-            logger.warning("[WhaleDetector] Avg-based threshold calc failed for %s: %s", symbol, str(e), exc_info=True)
-
-        fallback = Decimal("50000.00")
-        logger.warning("[WhaleDetector] Using static fallback threshold for %s: %s", symbol, str(fallback))
-        return fallback
-
-    async def _quantile_threshold(self, symbol: str) -> Optional[Decimal]:
-        client = await self._get_client()
-
-        query = """
-        SELECT quantile(0.999)(price * size)
-        FROM trading.binance_trades
-        WHERE symbol = %(symbol)s
-        AND timestamp >= now() - INTERVAL 7 DAY
-        """
-        params: Dict[str, Any] = {"symbol": symbol}
-
-        rows = await client.execute(query, params)
-        if not rows or rows[0][0] is None:
-            return None
-        return Decimal(str(rows[0][0]))
-
-    async def _average_notional_threshold(self, symbol: str) -> Optional[Decimal]:
-        client = await self._get_client()
-
-        query = """
-        SELECT avg(price * size) * 50
-        FROM trading.binance_trades
-        WHERE symbol = %(symbol)s
-        AND timestamp >= now() - INTERVAL 7 DAY
-        """
-        params: Dict[str, Any] = {"symbol": symbol}
-
-        rows = await client.execute(query, params)
-        if not rows or rows[0][0] is None:
-            return None
-        return Decimal(str(rows[0][0]))
-</file>
-
-<file path="backend/services/delete/trade_router_entrypoint.py">
-"""
-✅ MODERNIZED TRADE ROUTER ENTRYPOINT - Ohne Legacy Dependencies
-Enterprise Auto-Discovery statt hardcoded exchanges
-"""
-import asyncio
-import logging
-from pathlib import Path
-from backend.core.config import settings
-from backend.database.redis import unified_rs_service
-
-logger = logging.getLogger(__name__)
-
-def discover_exchanges():
-    """✅ AUTO-DISCOVERY: Dynamische Exchange-Erkennung"""
-    try:
-        exchange_dir = Path("backend/exchanges")
-        if not exchange_dir.exists():
-            logger.warning("Exchange directory not found, using fallback")
-            return []
-            
-        exchanges = [
-            dir.name for dir in exchange_dir.iterdir() 
-            if dir.is_dir() and dir.name not in ["__pycache__", "shared", "old"]
-        ]
-        
-        logger.info(f"✅ Auto-discovered {len(exchanges)} exchanges: {exchanges}")
-        return exchanges
-        
-    except Exception as e:
-        logger.error(f"Exchange discovery failed: {e}")
-        return []
-
-async def route_trade_streams(source_stream: str, target_stream: str):
-    """✅ MODERNE STREAM ROUTING - Ohne Legacy TradeRouter"""
-    logger.info(f"🔄 Routing: {source_stream} -> {target_stream}")
-    
-    try:
-        redis_client = await unified_rs_service.get_redis_client()
-        
-        # Consumer Group erstellen
-        try:
-            await redis_client.xgroup_create(source_stream, "trade_router", id="0", mkstream=True)
-        except Exception:
-            pass  # Group existiert bereits
-        
-        while True:
-            # Messages aus Source Stream lesen
-            messages = await redis_client.xreadgroup(
-                "trade_router", 
-                "router_consumer", 
-                {source_stream: ">"}, 
-                count=100, 
-                block=1000
-            )
-            
-            if not messages:
-                continue
-                
-            # Messages zu Target Stream weiterleiten
-            for stream, stream_messages in messages:
-                for msg_id, trade_data in stream_messages:
-                    try:
-                        # Trade zum Unified Stream hinzufügen
-                        await redis_client.xadd(target_stream, trade_data)
-                        
-                        # Message als verarbeitet markieren
-                        await redis_client.xack(source_stream, "trade_router", msg_id)
-                        
-                    except Exception as e:
-                        logger.error(f"Error routing trade {msg_id}: {e}")
-                        
-    except asyncio.CancelledError:
-        logger.info(f"Routing stopped: {source_stream} -> {target_stream}")
-    except Exception as e:
-        logger.error(f"Routing failed: {source_stream} -> {target_stream}: {e}")
-
-def discover_markets():
-    """✅ AUTO-DISCOVERY: Dynamische Market-Erkennung"""
-    try:
-        from backend.api.models.keys import Market
-        # Alle verfügbaren Market-Typen aus dem System
-        markets = [market.value for market in Market]
-        logger.info(f"✅ Auto-discovered {len(markets)} markets: {markets}")
-        return markets
-    except ImportError:
-        # Fallback wenn Models nicht verfügbar
-        logger.warning("Market models not found, using discovery fallback")
-        return []
-
-def get_exchange_supported_markets(exchange: str):
-    """✅ AUTO-DISCOVERY: Exchange-spezifische Markets"""
-    try:
-        # Versuche Exchange Config zu laden
-        config_module = f"backend.exchanges.{exchange}.config"
-        import importlib
-        module = importlib.import_module(config_module)
-        config = getattr(module, f"{exchange}_config", None)
-        
-        if config and hasattr(config, 'supported_markets'):
-            return config.supported_markets
-    except Exception as e:
-        logger.debug(f"Could not load market config for {exchange}: {e}")
-    
-    # Fallback: Alle Markets außer für bekannte Einschränkungen
-    all_markets = discover_markets()
-    
-    # ✅ ALLE EXCHANGES GLEICHBERECHTIGT - keine Einschränkungen
-    return all_markets
-
-async def main():
-    """✅ MODERNE MAIN - Vollständige Auto-Discovery ohne Hardcoding"""
-    logger.info("🚀 Starting Trade Router with Full Auto-Discovery")
-    
-    # ✅ AUTO-DISCOVERY für alles
-    exchanges = discover_exchanges()
-    symbols = getattr(settings, 'SYMBOLS', ['BTCUSDT', 'ETHUSDT', 'ADAUSDT'])
-    
-    tasks = []
-    total_routing_attempts = 0
-    
-    # Routing für alle entdeckten Exchanges mit ihren unterstützten Markets
-    for exchange in exchanges:
-        supported_markets = get_exchange_supported_markets(exchange)
-        
-        for symbol in symbols:
-            for market in supported_markets:
-                source_stream = f"{exchange}:trades:{market}:{symbol}"
-                target_stream = f"unified:trades:{market}:{symbol}"
-                
-                task = asyncio.create_task(route_trade_streams(source_stream, target_stream))
-                tasks.append(task)
-                total_routing_attempts += 1
-                
-                logger.info(f"✅ Started routing: {source_stream} -> {target_stream}")
-    
-    logger.info(f"🚀 Started {total_routing_attempts} routing tasks for {len(exchanges)} exchanges (auto-discovered markets)")
-    
-    try:
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("⏹️ Shutdown requested")
-    finally:
-        logger.info("🛑 Trade Router stopped")
+from ..adapter.unified_aggregator import run_unified_aggregator
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_unified_aggregator())
 </file>
 
 <file path="backend/services/discovery/later/dis_whales.py">
@@ -160183,300 +160112,6 @@ cl_handlers = cl_handlers_instance
 unified_clickhouse = unified_cl_service
 </file>
 
-<file path="backend/database/clickhouse/cl_manager.py">
-import asyncio
-import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from .cl_lanes import cl_lane, cl_status
-from .cl_registry import cl_registry_instance
-from .cl_config import CL_CONNECTION, CL_PERFORMANCE, EXCHANGE_CL_CONFIGS
-
-logger = logging.getLogger(__name__)
-
-class cl_manager:
-    """ClickHouse Lane Manager - Connection Management + Lane Orchestration für alle 8 Exchanges"""
-    
-    def __init__(self):
-        self.registry = cl_registry_instance
-        self.connections: Dict[str, Any] = {}  # ClickHouse connections per exchange
-        self.connection_pool = None
-        self.is_initialized = False
-        self.startup_time = datetime.now()
-        
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "manager")
-        except ImportError:
-            logger.warning("Health system not available for cl_manager")
-            self.health_component = None
-            
-        logger.info("ClickHouse cl_manager initialized")
-    
-    async def initialize(self):
-        """Initialize ClickHouse connection pool and basic infrastructure"""
-        if self.is_initialized:
-            return
-        
-        try:
-            # Initialize connection pool (will be implemented when we have clickhouse-connect)
-            await self._setup_connection_pool()
-            
-            # Register core lanes for all exchanges
-            await self._register_core_lanes()
-            
-            self.is_initialized = True
-            
-            if self.health_component:
-                self.health_component.record_success({"action": "manager_initialized"})
-                
-            logger.info("ClickHouse cl_manager successfully initialized")
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize cl_manager: {str(e)}"
-            logger.error(error_msg)
-            
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-            raise
-    
-    async def _setup_connection_pool(self):
-        """Setup ClickHouse connection pool - ECHTE Verbindung!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
-            
-            # ✅ 1) Pool holen
-            self.connection_pool = get_clickhouse_connection_pool()
-            
-            # ✅ 2) Pool + Schema wirklich initialisieren (trading DB etc.)
-            ok = await initialize_clickhouse_foundation()
-            if not ok:
-                raise RuntimeError("ClickHouse foundation initialization failed")
-            
-            # ✅ 3) Optional: einmal Client anfordern um sofort zu validieren
-            client = self.connection_pool.get_client()
-            if not client:
-                raise RuntimeError("ClickHouse client not available after initialization")
-            
-            logger.info("ClickHouse connection pool setup - REAL CONNECTION (initialized)!")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup ClickHouse connection pool: {str(e)}")
-            raise
-    
-    async def _register_core_lanes(self):
-        """Register core lanes for all 8 exchanges"""
-        exchanges = ["binance", "gateio", "bitget", "bybit", "mexc", "okx", "htx", "coinbase"]
-        operations = ["trades", "candles", "orderbook"]
-        
-        for exchange in exchanges:
-            for operation in operations:
-                try:
-                    lane = self.registry.register_lane(exchange, operation)
-                    # Set REAL ClickHouse connection reference
-                    lane.clickhouse_connection = self.connection_pool
-                    logger.debug(f"Registered cl_lane: {exchange}.{operation}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to register lane {exchange}.{operation}: {str(e)}")
-    
-    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
-        """Start a ClickHouse lane für spezifischen Exchange + Operation"""
-        if not self.is_initialized:
-            await self.initialize()
-        
-        try:
-            # Get or register lane
-            lane = self.registry.get_lane(exchange, operation_type)
-            if not lane:
-                lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            
-            # Setup ClickHouse connection for this lane
-            await self._setup_lane_connection(lane)
-            
-            # Update lane status to connecting
-            lane.status = cl_status.CONNECTING
-            
-            # Test connection and set to connected
-            if await self._test_lane_connection(lane):
-                lane.record_operation_success(0.0, {"action": "lane_started"})
-                logger.info(f"ClickHouse lane started: {exchange}.{operation_type}")
-            else:
-                lane.record_operation_error("Connection test failed")
-                logger.error(f"Failed to start ClickHouse lane: {exchange}.{operation_type}")
-            
-            return lane
-            
-        except Exception as e:
-            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
-            logger.error(f"Error starting lane {exchange}.{operation_type}: {error_msg}")
-            
-            # Create error lane
-            lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            lane.record_operation_error(error_msg)
-            
-            raise
-    
-    async def _setup_lane_connection(self, lane: cl_lane):
-        """Setup ClickHouse connection for specific lane"""
-        try:
-            # Get exchange-specific config
-            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
-            
-            # Create lane-specific connection metadata
-            connection_info = {
-                "exchange": lane.exchange,
-                "operation": lane.operation_type,
-                "database": exchange_config.get("database", lane.exchange),
-                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
-                "tables": exchange_config.get("tables", []),
-                "priority": exchange_config.get("priority", "medium")
-            }
-            
-            # Set REAL connection reference
-            lane.clickhouse_connection = connection_info
-            
-            logger.debug(f"Setup connection for lane {lane.exchange}.{lane.operation_type}")
-            
-        except Exception as e:
-            logger.error(f"Failed to setup connection for lane {lane.exchange}.{lane.operation_type}: {str(e)}")
-            raise
-    
-    async def _test_lane_connection(self, lane: cl_lane) -> bool:
-        """Test ClickHouse connection for lane - ECHTER Test mit asyncio.to_thread!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            
-            # ✅ FIX: Run in thread to get thread-local client
-            def _test():
-                client = pool.get_client()
-                if not client:
-                    raise RuntimeError("ClickHouse client not available")
-                result = client.command("SELECT 1")
-                return result == 1
-            
-            success = await asyncio.to_thread(_test)
-            
-            if success:
-                logger.debug(f"Connection test successful for {lane.exchange}.{lane.operation_type}")
-            else:
-                logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Connection test failed for {lane.exchange}.{lane.operation_type}: {str(e)}")
-            return False
-    
-    async def insert_data(self, exchange: str, operation_type: str, data: Dict[str, Any]) -> bool:
-        """Insert data into ClickHouse via lane - THREAD-SAFE mit asyncio.to_thread"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            logger.error(f"No lane found for {exchange}.{operation_type}")
-            return False
-        
-        try:
-            start_time = datetime.now()
-            
-            # ✅ FIX: Run INSERT in thread to get thread-local client
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            
-            # Determine table name based on operation_type
-            table_map = {
-                "trades": f"{exchange}_trades",
-                "candles": f"{exchange}_kline", 
-                "orderbook": f"{exchange}_orderbook"
-            }
-            
-            table_name = table_map.get(operation_type)
-            if not table_name:
-                raise Exception(f"Unknown operation type: {operation_type}")
-            
-            full_table = f"trading.{table_name}"
-            columns = list(data.keys())
-            values = list(data.values())
-            
-            # ✅ Execute INSERT in thread (thread-local client)
-            def _insert():
-                client = pool.get_client()
-                if not client:
-                    raise RuntimeError("ClickHouse client not available")
-                client.insert(full_table, [values], column_names=columns)
-            
-            await asyncio.to_thread(_insert)
-            
-            end_time = datetime.now()
-            latency_ms = (end_time - start_time).total_seconds() * 1000
-            
-            lane.record_operation_success(latency_ms, {"rows_inserted": 1})
-            
-            logger.debug(f"Data inserted to {exchange}.{operation_type} ({latency_ms:.2f}ms)")
-            return True
-            
-        except Exception as e:
-            error_msg = f"Insert failed: {str(e)}"
-            lane.record_operation_error(error_msg)
-            logger.error(f"Failed to insert data to {exchange}.{operation_type}: {error_msg}")
-            return False
-    
-    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
-        """Get status for specific lane"""
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            return None
-        
-        return lane.get_health()
-    
-    def get_all_lane_status(self) -> List[Dict[str, Any]]:
-        """Get status for all lanes"""
-        return self.registry.get_lane_health_details()
-    
-    def get_manager_health(self) -> Dict[str, Any]:
-        """Get manager health status"""
-        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
-        
-        return {
-            "component": "clickhouse.manager",
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "connection_pool": self.connection_pool,
-            "active_connections": len(self.connections),
-            "registry_health": self.registry.get_system_health()
-        }
-    
-    async def shutdown(self):
-        """Graceful shutdown of all ClickHouse operations"""
-        logger.info("Shutting down ClickHouse cl_manager...")
-        
-        try:
-            # Shutdown all lanes
-            await self.registry.shutdown_all()
-            
-            # Close connection pool - cl_unified_manager handles cleanup
-            if self.connection_pool:
-                self.connection_pool = None
-            
-            # Clear connections
-            self.connections.clear()
-            
-            self.is_initialized = False
-            
-            logger.info("ClickHouse cl_manager shutdown complete")
-            
-        except Exception as e:
-            logger.error(f"Error during cl_manager shutdown: {str(e)}")
-            raise
-
-
-# Global cl_manager instance
-cl_manager_instance = cl_manager()
-</file>
-
 <file path="backend/database/clickhouse/cl_unified_manager.py">
 """
 Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
@@ -161358,195 +160993,6 @@ class MEXCOrderbookService:
         return None
 </file>
 
-<file path="backend/services/adapter/candle_agg_1s.py">
-import time
-import logging
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
-from datetime import datetime, timezone
-from typing import Dict, Tuple, Optional, Any
-
-logger = logging.getLogger("candle_agg_1s")
-
-_Q38 = Decimal("1e-38")  # scale=38
-_MAX_76_38 = Decimal("9" * 38 + "." + "9" * 38)  # 10^38 - 10^-38
-
-
-class CandleAgg1s:
-    """
-    1-Sekunden Candle-Aggregator:
-    - Robust Timestamp parsing -> epoch ms
-    - 1s buckets, finalize on bucket switch
-    - flush_stale for stale buckets
-    - qv deterministic scale=38 (Decimal(76,38) safe)
-    - ver strictly increasing per (exchange,symbol,market,ts)
-    """
-
-    def __init__(self, stale_threshold_sec: float = 1.5):
-        self.buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-        self.stale_threshold = float(stale_threshold_sec)
-
-        # per (exchange, symbol, market, bucket_ts_ms)
-        self._ver_counter: Dict[Tuple[str, str, str, int], int] = {}
-
-        # optional prune to prevent unbounded growth
-        self._ver_prune_every = 2000
-        self._ver_prune_calls = 0
-        self._ver_prune_keep_ms = 5 * 60 * 1000  # 5 minutes
-
-    def parse_timestamp(self, ts: Any) -> int:
-        if isinstance(ts, int):
-            return ts if ts > 1_000_000_000_000 else ts * 1000
-        if isinstance(ts, float):
-            return int(ts * 1000) if ts < 1_000_000_000_000 else int(ts)
-        if isinstance(ts, str):
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
-        if isinstance(ts, datetime):
-            dt = ts
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
-        raise ValueError(f"Unsupported timestamp type: {type(ts)}")
-
-    def _q38(self, x: Decimal) -> Decimal:
-        """
-        Deterministisch:
-        - quantize to 1e-38 with ROUND_HALF_UP
-        - clamp into Decimal(76,38) range
-        - robust against InvalidOperation / NaN / Inf
-        """
-        try:
-            with localcontext() as ctx:
-                # high precision to avoid quantize InvalidOperation due to context
-                ctx.prec = 90
-                ctx.rounding = ROUND_HALF_UP
-                y = x.quantize(_Q38)  # uses ctx.rounding
-        except (InvalidOperation, ValueError):
-            y = Decimal("0").quantize(_Q38, rounding=ROUND_HALF_UP)
-
-        if y > _MAX_76_38:
-            return _MAX_76_38
-        if y < -_MAX_76_38:
-            return -_MAX_76_38
-        return y
-
-    def _next_ver(self, exchange: str, symbol: str, market: str, bucket_ts_ms: int) -> int:
-        k = (exchange, symbol, market, bucket_ts_ms)
-        c = self._ver_counter.get(k, 0) + 1
-        self._ver_counter[k] = c
-        return bucket_ts_ms * 1000 + c  # strictly increasing per key/bucket
-
-    def _prune_ver_counter(self, now_ms: int) -> None:
-        cutoff = now_ms - self._ver_prune_keep_ms
-        for k in list(self._ver_counter.keys()):
-            if k[3] < cutoff:
-                self._ver_counter.pop(k, None)
-
-    def on_trade(
-        self,
-        exchange: str,
-        symbol: str,
-        market: str,
-        timestamp: Any,
-        price: Any,
-        size: Any,
-    ) -> Optional[Dict[str, Any]]:
-        try:
-            exchange = (exchange or "").lower().strip()
-            symbol = (symbol or "").upper().strip()
-            market = (market or "spot").lower().strip()
-
-            ts_ms = self.parse_timestamp(timestamp)
-            bucket_ts = (ts_ms // 1000) * 1000
-
-            price_dec = Decimal(str(price))
-            size_dec = Decimal(str(size))
-
-            key = (exchange, symbol, market)
-            current = self.buckets.get(key)
-
-            finished = None
-
-            if current and current["ts"] != bucket_ts:
-                finished = self._finalize_candle(current)
-                current = None
-
-            if not current:
-                qv = self._q38(price_dec * size_dec)
-                self.buckets[key] = {
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "ts": bucket_ts,
-                    "o": price_dec,
-                    "h": price_dec,
-                    "l": price_dec,
-                    "c": price_dec,
-                    "v": size_dec,
-                    "qv": qv,
-                    "n": 1,
-                    "last_update": time.time(),
-                }
-            else:
-                current["c"] = price_dec
-                current["h"] = max(current["h"], price_dec)
-                current["l"] = min(current["l"], price_dec)
-                current["v"] += size_dec
-                current["qv"] = self._q38(current["qv"] + (price_dec * size_dec))
-                current["n"] += 1
-                current["last_update"] = time.time()
-
-            # periodic prune
-            self._ver_prune_calls += 1
-            if self._ver_prune_calls >= self._ver_prune_every:
-                self._ver_prune_calls = 0
-                self._prune_ver_counter(ts_ms)
-
-            return finished
-
-        except Exception as e:
-            logger.error("Error in on_trade: %s", str(e), exc_info=True)
-            return None
-
-    def flush_stale(self) -> list:
-        now = time.time()
-        finished = []
-
-        for key in list(self.buckets.keys()):
-            bucket = self.buckets[key]
-            if now - bucket["last_update"] > self.stale_threshold:
-                finished.append(self._finalize_candle(bucket))
-                del self.buckets[key]
-
-        return finished
-
-    def _finalize_candle(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
-        ex = bucket["exchange"]
-        sym = bucket["symbol"]
-        mkt = bucket["market"]
-        ts = bucket["ts"]
-
-        ver = self._next_ver(ex, sym, mkt, ts)
-
-        return {
-            "exchange": ex,
-            "symbol": sym,
-            "market": mkt,
-            "ts": ts,
-            "o": bucket["o"],
-            "h": bucket["h"],
-            "l": bucket["l"],
-            "c": bucket["c"],
-            "v": bucket["v"],
-            "qv": bucket["qv"],
-            "n": bucket["n"],
-            "src": "agg",
-            "ver": ver,
-        }
-</file>
-
 <file path="backend/services/adapter/stream_aggregator.py">
 import time
 import threading
@@ -161723,12 +161169,106 @@ class MultiResCandleAgg:
         return finished
 </file>
 
-<file path="backend/services/delete/unified_aggregator_entrypoint.py">
+<file path="backend/services/adapter/whale_detector.py">
+# backend/services/adapter/whale_detector.py
 import asyncio
-from ..adapter.unified_aggregator import run_unified_aggregator
+import logging
+import os
+from decimal import Decimal
+from typing import Any, Dict, Optional
 
-if __name__ == "__main__":
-    asyncio.run(run_unified_aggregator())
+from backend.database.clickhouse import get_clickhouse_client
+
+logger = logging.getLogger("whale_detector")
+
+
+class WhaleDetector:
+    """
+    Exchange-based "Whale Trades" Threshold Detector.
+    IMPORTANT: This is NOT on-chain whales. It's trade-notional based.
+    """
+
+    def __init__(self):
+        self._client = None  # lazy init
+        self._default_exchange = os.getenv("WHALE_TRADES_DEFAULT_EXCHANGE", "binance").strip().lower()
+        self._lookback_days = int(os.getenv("WHALE_TRADES_LOOKBACK_DAYS", "7"))
+        self._q = float(os.getenv("WHALE_TRADES_QUANTILE", "0.999"))
+        self._avg_mult = Decimal(os.getenv("WHALE_TRADES_AVG_MULT", "50"))
+
+    async def _get_client(self):
+        if self._client is not None:
+            return self._client
+
+        c = get_clickhouse_client()
+        if asyncio.iscoroutine(c):
+            c = await c
+
+        self._client = c
+        return self._client
+
+    async def get_threshold(self, symbol: str, exchange: Optional[str] = None, market: str = "spot") -> Decimal:
+        symbol = (symbol or "").upper().strip()
+        exchange = (exchange or self._default_exchange).lower().strip()
+        market = (market or "spot").lower().strip()
+
+        try:
+            threshold = await self._quantile_threshold(exchange, symbol, market)
+            if threshold is not None:
+                return threshold
+        except Exception as e:
+            logger.warning("[WhaleDetector] Quantile threshold failed for %s:%s: %s", exchange, symbol, str(e), exc_info=True)
+
+        try:
+            avg_based = await self._average_notional_threshold(exchange, symbol, market)
+            if avg_based is not None:
+                return avg_based
+        except Exception as e:
+            logger.warning("[WhaleDetector] Avg threshold failed for %s:%s: %s", exchange, symbol, str(e), exc_info=True)
+
+        fallback = Decimal(os.getenv("WHALE_TRADES_FALLBACK_USD", "50000.00"))
+        logger.warning("[WhaleDetector] Using fallback threshold for %s:%s: %s", exchange, symbol, str(fallback))
+        return fallback
+
+    async def _quantile_threshold(self, exchange: str, symbol: str, market: str) -> Optional[Decimal]:
+        client = await self._get_client()
+
+        table = f"trading.{exchange}_trades"
+        q = self._q
+        days = self._lookback_days
+
+        query = f"""
+        SELECT quantile({q})(price * size)
+        FROM {table}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND timestamp >= now() - INTERVAL {days} DAY
+        """
+        params: Dict[str, Any] = {"symbol": symbol, "market": market}
+
+        rows = await client.execute(query, params)
+        if not rows or rows[0][0] is None:
+            return None
+        return Decimal(str(rows[0][0]))
+
+    async def _average_notional_threshold(self, exchange: str, symbol: str, market: str) -> Optional[Decimal]:
+        client = await self._get_client()
+
+        table = f"trading.{exchange}_trades"
+        days = self._lookback_days
+
+        query = f"""
+        SELECT avg(price * size) * %(mult)s
+        FROM {table}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND timestamp >= now() - INTERVAL {days} DAY
+        """
+        params: Dict[str, Any] = {"symbol": symbol, "market": market, "mult": str(self._avg_mult)}
+
+        rows = await client.execute(query, params)
+        if not rows or rows[0][0] is None:
+            return None
+        return Decimal(str(rows[0][0]))
 </file>
 
 <file path="frontend/src/config/env.ts">
@@ -162339,6 +161879,464 @@ def cl_config_summary() -> Dict[str, Any]:
         "performance": CL_PERFORMANCE,
         "schemas": {k: {"suffix": v["table_suffix"], "engine": v["engine"]} for k, v in CL_SCHEMAS.items()},
     }
+</file>
+
+<file path="backend/database/clickhouse/cl_manager.py">
+# backend/database/clickhouse/cl_manager.py
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List, Union
+from datetime import datetime
+
+from .cl_lanes import cl_lane, cl_status
+from .cl_registry import cl_registry_instance
+from .cl_config import CL_PERFORMANCE, EXCHANGE_CL_CONFIGS, CL_DATABASE_PATTERNS, ENABLED_EXCHANGES
+
+logger = logging.getLogger(__name__)
+
+
+def _norm_exchange(x: str) -> str:
+    return (x or "").lower().strip()
+
+
+def _norm_symbol(x: str) -> str:
+    return (x or "").upper().strip()
+
+
+def _norm_market(x: str) -> str:
+    return (x or "spot").lower().strip()
+
+
+class cl_manager:
+    """ClickHouse Lane Manager - Connection Management + Lane Orchestration"""
+
+    def __init__(self):
+        self.registry = cl_registry_instance
+        self.connections: Dict[str, Any] = {}
+        self.connection_pool = None
+        self.is_initialized = False
+        self.startup_time = datetime.now()
+
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "manager")
+        except ImportError:
+            logger.warning("Health system not available for cl_manager")
+            self.health_component = None
+
+        logger.info("ClickHouse cl_manager initialized")
+
+    async def initialize(self):
+        if self.is_initialized:
+            return
+        try:
+            await self._setup_connection_pool()
+            await self._register_core_lanes()
+            self.is_initialized = True
+
+            if self.health_component:
+                self.health_component.record_success({"action": "manager_initialized"})
+
+            logger.info("ClickHouse cl_manager successfully initialized")
+
+        except Exception as e:
+            error_msg = f"Failed to initialize cl_manager: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+            raise
+
+    async def _setup_connection_pool(self):
+        """Setup ClickHouse connection pool - REAL connection."""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
+
+            self.connection_pool = get_clickhouse_connection_pool()
+
+            ok = await initialize_clickhouse_foundation()
+            if not ok:
+                raise RuntimeError("ClickHouse foundation initialization failed")
+
+            # validate by creating client (thread-local) and running SELECT 1
+            def _test():
+                client = self.connection_pool.get_client()
+                r = client.command("SELECT 1")
+                return int(r) == 1
+
+            success = await asyncio.to_thread(_test)
+            if not success:
+                raise RuntimeError("ClickHouse SELECT 1 failed")
+
+            logger.info("ClickHouse connection pool setup OK")
+
+        except Exception as e:
+            logger.error("Failed to setup ClickHouse connection pool: %s", str(e), exc_info=True)
+            raise
+
+    async def _register_core_lanes(self):
+        """
+        Register lanes for enabled exchanges.
+        IMPORTANT: includes whale_events (fix for your current error).
+        """
+        exchanges = ENABLED_EXCHANGES or ["binance"]
+        operations = ["trades", "candles", "orderbook", "whale_events"]
+
+        for exchange in exchanges:
+            for operation in operations:
+                try:
+                    lane = self.registry.register_lane(exchange, operation)
+                    lane.clickhouse_connection = self.connection_pool
+                    logger.debug("Registered cl_lane: %s.%s", exchange, operation)
+                except Exception as e:
+                    logger.error("Failed to register lane %s.%s: %s", exchange, operation, str(e), exc_info=True)
+
+    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
+        if not self.is_initialized:
+            await self.initialize()
+
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+
+        try:
+            lane = self.registry.get_lane(exchange, operation_type)
+            if not lane:
+                lane = self.registry.register_lane(exchange, operation_type, data_handler)
+
+            await self._setup_lane_connection(lane)
+
+            lane.status = cl_status.CONNECTING
+            if await self._test_lane_connection(lane):
+                lane.record_operation_success(0.0, {"action": "lane_started"})
+                logger.info("ClickHouse lane started: %s.%s", exchange, operation_type)
+            else:
+                lane.record_operation_error("Connection test failed")
+                logger.error("Failed to start ClickHouse lane: %s.%s", exchange, operation_type)
+
+            return lane
+
+        except Exception as e:
+            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
+            logger.error("Error starting lane %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
+            lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            lane.record_operation_error(error_msg)
+            raise
+
+    async def _setup_lane_connection(self, lane: cl_lane):
+        try:
+            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
+            connection_info = {
+                "exchange": lane.exchange,
+                "operation": lane.operation_type,
+                "database": exchange_config.get("database", "trading"),
+                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
+                "tables": exchange_config.get("tables", []),
+                "priority": exchange_config.get("priority", "medium"),
+            }
+            lane.clickhouse_connection = connection_info
+            logger.debug("Setup connection for lane %s.%s", lane.exchange, lane.operation_type)
+        except Exception as e:
+            logger.error("Failed to setup connection for lane %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
+            raise
+
+    async def _test_lane_connection(self, lane: cl_lane) -> bool:
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            pool = get_clickhouse_connection_pool()
+
+            def _test():
+                client = pool.get_client()
+                r = client.command("SELECT 1")
+                return int(r) == 1
+
+            return bool(await asyncio.to_thread(_test))
+        except Exception as e:
+            logger.error("Connection test failed for %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
+            return False
+
+    def _resolve_table(self, exchange: str, operation_type: str) -> str:
+        """
+        Single source of truth: CL_DATABASE_PATTERNS (fixes your old candles->kline bug).
+        """
+        pattern = CL_DATABASE_PATTERNS.get(operation_type)
+        if not pattern:
+            raise ValueError(f"Unknown operation type: {operation_type}")
+        return pattern.format(exchange=exchange, component=operation_type)
+
+    async def insert_data(self, exchange: str, operation_type: str, data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
+        """
+        Thread-safe INSERT:
+        - supports dict (single row) OR list[dict] (batch)  ✅ (fix for whale_events writer)
+        - routes via CL_DATABASE_PATTERNS ✅
+        """
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            logger.error("No lane found for %s.%s", exchange, operation_type)
+            return False
+
+        try:
+            start_time = datetime.now()
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            pool = get_clickhouse_connection_pool()
+
+            table = self._resolve_table(exchange, operation_type)
+
+            if isinstance(data, list):
+                rows = data
+            else:
+                rows = [data]
+
+            if not rows:
+                return True
+
+            # Ensure stable column order
+            columns = list(rows[0].keys())
+            values_rows = []
+            for r in rows:
+                values_rows.append([r.get(c) for c in columns])
+
+            def _insert():
+                client = pool.get_client()
+                client.insert(table, values_rows, column_names=columns)
+
+            await asyncio.to_thread(_insert)
+
+            latency_ms = (datetime.now() - start_time).total_seconds() * 1000.0
+            lane.record_operation_success(latency_ms, {"rows_inserted": len(rows)})
+
+            return True
+
+        except Exception as e:
+            error_msg = f"Insert failed: {str(e)}"
+            lane.record_operation_error(error_msg)
+            logger.error("Failed to insert data to %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
+            return False
+
+    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            return None
+        return lane.get_health()
+
+    def get_all_lane_status(self) -> List[Dict[str, Any]]:
+        return self.registry.get_lane_health_details()
+
+    def get_manager_health(self) -> Dict[str, Any]:
+        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
+        return {
+            "component": "clickhouse.manager",
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_pool": str(self.connection_pool) if self.connection_pool else None,
+            "active_connections": len(self.connections),
+            "registry_health": self.registry.get_system_health(),
+        }
+
+    async def shutdown(self):
+        logger.info("Shutting down ClickHouse cl_manager...")
+        try:
+            await self.registry.shutdown_all()
+            self.connection_pool = None
+            self.connections.clear()
+            self.is_initialized = False
+            logger.info("ClickHouse cl_manager shutdown complete")
+        except Exception as e:
+            logger.error("Error during cl_manager shutdown: %s", str(e), exc_info=True)
+            raise
+
+
+cl_manager_instance = cl_manager()
+</file>
+
+<file path="backend/services/adapter/candle_agg_1s.py">
+# backend/services/adapter/candle_agg_1s.py
+import time
+import logging
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
+from datetime import datetime, timezone
+from typing import Dict, Tuple, Optional, Any
+
+logger = logging.getLogger("candle_agg_1s")
+
+_Q38 = Decimal("1e-38")  # scale=38
+_MAX_76_38 = Decimal("9" * 38 + "." + "9" * 38)  # 10^38 - 10^-38
+
+
+class CandleAgg1s:
+    """
+    1-Sekunden Candle-Aggregator:
+    - Robust Timestamp parsing -> epoch ms
+    - 1s buckets, finalize on bucket switch
+    - flush_stale for stale buckets
+    - qv deterministic scale=38 (Decimal(76,38) safe)
+    - ver strictly increasing per (exchange,symbol,market,ts)
+    """
+
+    def __init__(self, stale_threshold_sec: float = 1.5):
+        self.buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self.stale_threshold = float(stale_threshold_sec)
+
+        # per (exchange, symbol, market, bucket_ts_ms)
+        self._ver_counter: Dict[Tuple[str, str, str, int], int] = {}
+
+        # prune to prevent unbounded growth
+        self._ver_prune_every = 2000
+        self._ver_prune_calls = 0
+        self._ver_prune_keep_ms = 5 * 60 * 1000  # 5 minutes
+
+    def parse_timestamp(self, ts: Any) -> int:
+        if isinstance(ts, int):
+            return ts if ts > 1_000_000_000_000 else ts * 1000
+        if isinstance(ts, float):
+            return int(ts * 1000) if ts < 1_000_000_000_000 else int(ts)
+        if isinstance(ts, str):
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        if isinstance(ts, datetime):
+            dt = ts
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        raise ValueError(f"Unsupported timestamp type: {type(ts)}")
+
+    def _q38(self, x: Decimal) -> Decimal:
+        """
+        Deterministisch + robust:
+        - localcontext prec=90 verhindert quantize InvalidOperation durch zu kleinen Context
+        - ROUND_HALF_UP
+        - clamp in Decimal(76,38) range
+        """
+        try:
+            with localcontext() as ctx:
+                ctx.prec = 90
+                ctx.rounding = ROUND_HALF_UP
+                y = x.quantize(_Q38)  # uses ctx.rounding
+        except (InvalidOperation, ValueError):
+            y = Decimal("0").quantize(_Q38, rounding=ROUND_HALF_UP)
+
+        if y > _MAX_76_38:
+            return _MAX_76_38
+        if y < -_MAX_76_38:
+            return -_MAX_76_38
+        return y
+
+    def _next_ver(self, exchange: str, symbol: str, market: str, bucket_ts_ms: int) -> int:
+        k = (exchange, symbol, market, bucket_ts_ms)
+        c = self._ver_counter.get(k, 0) + 1
+        self._ver_counter[k] = c
+        return bucket_ts_ms * 1000 + c
+
+    def _prune_ver_counter(self, now_ms: int) -> None:
+        cutoff = now_ms - self._ver_prune_keep_ms
+        for k in list(self._ver_counter.keys()):
+            if k[3] < cutoff:
+                self._ver_counter.pop(k, None)
+
+    def on_trade(
+        self,
+        exchange: str,
+        symbol: str,
+        market: str,
+        timestamp: Any,
+        price: Any,
+        size: Any,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            exchange = (exchange or "").lower().strip()
+            symbol = (symbol or "").upper().strip()
+            market = (market or "spot").lower().strip()
+
+            ts_ms = self.parse_timestamp(timestamp)
+            bucket_ts = (ts_ms // 1000) * 1000
+
+            price_dec = Decimal(str(price))
+            size_dec = Decimal(str(size))
+
+            key = (exchange, symbol, market)
+            current = self.buckets.get(key)
+
+            finished = None
+            if current and current["ts"] != bucket_ts:
+                finished = self._finalize_candle(current)
+                current = None
+
+            if not current:
+                qv = self._q38(price_dec * size_dec)
+                self.buckets[key] = {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "ts": bucket_ts,
+                    "o": price_dec,
+                    "h": price_dec,
+                    "l": price_dec,
+                    "c": price_dec,
+                    "v": size_dec,
+                    "qv": qv,
+                    "n": 1,
+                    "last_update": time.time(),
+                }
+            else:
+                current["c"] = price_dec
+                current["h"] = max(current["h"], price_dec)
+                current["l"] = min(current["l"], price_dec)
+                current["v"] += size_dec
+                current["qv"] = self._q38(current["qv"] + (price_dec * size_dec))
+                current["n"] += 1
+                current["last_update"] = time.time()
+
+            # periodic prune
+            self._ver_prune_calls += 1
+            if self._ver_prune_calls >= self._ver_prune_every:
+                self._ver_prune_calls = 0
+                self._prune_ver_counter(ts_ms)
+
+            return finished
+
+        except Exception as e:
+            logger.error("Error in on_trade: %s", str(e), exc_info=True)
+            return None
+
+    def flush_stale(self) -> list:
+        now = time.time()
+        finished = []
+        for key in list(self.buckets.keys()):
+            bucket = self.buckets[key]
+            if now - bucket["last_update"] > self.stale_threshold:
+                finished.append(self._finalize_candle(bucket))
+                del self.buckets[key]
+        return finished
+
+    def _finalize_candle(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
+        ex = bucket["exchange"]
+        sym = bucket["symbol"]
+        mkt = bucket["market"]
+        ts = bucket["ts"]
+
+        ver = self._next_ver(ex, sym, mkt, ts)
+
+        return {
+            "exchange": ex,
+            "symbol": sym,
+            "market": mkt,
+            "ts": ts,
+            "o": bucket["o"],
+            "h": bucket["h"],
+            "l": bucket["l"],
+            "c": bucket["c"],
+            "v": bucket["v"],
+            "qv": bucket["qv"],
+            "n": bucket["n"],
+            "src": "agg",
+            "ver": ver,
+        }
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -169392,239 +169390,6 @@ async def start_auto_backfill_gap_loop():
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from "react";
-import { useWsLane } from "../../../services/ws/useWsLane";
-import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
-
-/**
- * ENTERPRISE POLICY:
- * - limit counts ONLY real candles (OHLC)
- * - gaps are visualized via Whitespace bars (time-only)
- * - NO synthetic OHLC is ever generated ("kein Interpolieren")
- * - fully ENV driven (no hardcoded behavior)
- */
-
-function envInt(key: string, def: number, min: number, max: number): number {
-  const raw = (import.meta as any).env?.[key];
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-// default real-candle limit from ENV (0 = unlimited)
-const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
-
-// max whitespace points inserted per single gap
-const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
-
-function intervalToSec(interval: string | undefined): number {
-  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (!Number.isFinite(n) || n <= 0) return 60;
-
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  if (u === "w") return n * 604800;
-  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
-  if (u === "M") return n * 2592000;
-
-  return 60;
-}
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function isRealBar(b: any): b is CandleBar {
-  return (
-    isFiniteNum(b?.time) &&
-    isFiniteNum(b?.open) &&
-    isFiniteNum(b?.high) &&
-    isFiniteNum(b?.low) &&
-    isFiniteNum(b?.close)
-  );
-}
-
-/**
- * Inserts Whitespace points between REAL points to visualize missing buckets.
- * Never generates OHLC -> no interpolation.
- *
- * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
- */
-function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
-  if (sortedReal.length <= 1) return sortedReal;
-  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
-
-  const stepMs = stepSec * 1000;
-  const out: CandleData[] = [];
-
-  for (let i = 0; i < sortedReal.length; i++) {
-    const cur = sortedReal[i];
-    if (!cur) continue;
-    out.push(cur);
-
-    const nxt = sortedReal[i + 1];
-    if (!nxt) break;
-
-    const dtMs = nxt.time - cur.time;
-    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
-
-    const missingBars = Math.floor(dtMs / stepMs) - 1;
-    if (missingBars <= 0) continue;
-
-    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
-    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
-
-    for (let k = 1; k <= missingBars; k += stride) {
-      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
-    }
-  }
-
-  return out;
-}
-
-/**
- * Applies real-candle limit (N), WITHOUT counting whitespace.
- * Returns last N real candles, then injects whitespace gaps inside that window.
- */
-function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
-  if (realSorted.length === 0) return [];
-
-  let windowReal = realSorted;
-  if (maxReal > 0 && realSorted.length > maxReal) {
-    windowReal = realSorted.slice(realSorted.length - maxReal);
-  }
-
-  return injectWhitespaceGaps(windowReal, stepSec);
-}
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit?: number
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
-  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const maxReal = useMemo(() => {
-    const n = Number(limit);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return ENV_MAX_REAL;
-  }, [limit]);
-
-  const chartData = useMemo<CandleData[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    if (hist.length === 0 && live.length === 0) return [];
-
-    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
-    const map = new Map<number, CandleBar>();
-
-    const push = (c: any) => {
-      const tSec = Number(c?.t);
-      if (!Number.isFinite(tSec) || tSec <= 0) return;
-
-      const timeMs = Math.floor(tSec) * 1000;
-
-      const bar: CandleBar = {
-        time: timeMs,
-        open: Number(c?.o),
-        high: Number(c?.h),
-        low: Number(c?.l),
-        close: Number(c?.c),
-        volume: Number(c?.v),
-      };
-
-      if (!isRealBar(bar)) return;
-      map.set(timeMs, bar);
-    };
-
-    for (const c of hist) push(c);
-    for (const c of live) push(c);
-
-    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
-
-    // ✅ limit counts ONLY real candles
-    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
-  }, [historical, candles, stepSec, maxReal]);
-
-  const meta = useMemo(() => {
-    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
-    const whitespaceCount = chartData.length - realCount;
-    return {
-      status,
-      interval,
-      stepSec,
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      realCount,
-      whitespaceCount,
-      maxRealCandles: maxReal,
-      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
-    };
-  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
-
-  useEffect(() => {
-    if (status === "OPEN") {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
-      }
-      return;
-    }
-    if (status === "ERROR") {
-      setLoading(false);
-      setError(new Error("WebSocket connection failed"));
-      return;
-    }
-    setLoading(true);
-  }, [status, chartData.length]);
-
-  return {
-    chartData,
-    loading,
-    error,
-    meta,
-    fillBlock,
-  };
-}
-</file>
-
-<file path="frontend/src/main.tsx">
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import ThemeProvider from './shared/ui/theme-provider';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <App />
-      </BrowserRouter>
-    </ThemeProvider>
-  </StrictMode>,
-);
-</file>
-
 <file path="backend/services/adapter/unified_aggregator.py">
 import asyncio
 import json
@@ -170231,6 +169996,239 @@ async def run_unified_aggregator() -> None:
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
+</file>
+
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated ("kein Interpolieren")
+ * - fully ENV driven (no hardcoded behavior)
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+// default real-candle limit from ENV (0 = unlimited)
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+
+// max whitespace points inserted per single gap
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
+  if (u === "M") return n * 2592000;
+
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+/**
+ * Inserts Whitespace points between REAL points to visualize missing buckets.
+ * Never generates OHLC -> no interpolation.
+ *
+ * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
+ */
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies real-candle limit (N), WITHOUT counting whitespace.
+ * Returns last N real candles, then injects whitespace gaps inside that window.
+ */
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit?: number
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+
+    // ✅ limit counts ONLY real candles
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
+    const whitespaceCount = chartData.length - realCount;
+    return {
+      status,
+      interval,
+      stepSec,
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+      maxRealCandles: maxReal,
+      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
+    };
+  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+    if (status === "ERROR") {
+      setLoading(false);
+      setError(new Error("WebSocket connection failed"));
+      return;
+    }
+    setLoading(true);
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+    fillBlock,
+  };
+}
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import ThemeProvider from './shared/ui/theme-provider';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
+  </StrictMode>,
+);
 </file>
 
 <file path="backend/websocket/ws_manager.py">
