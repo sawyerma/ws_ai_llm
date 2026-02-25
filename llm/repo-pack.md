@@ -127748,193 +127748,6 @@ export function useMarketTrades(
 export { default } from "./TradingPage";
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/chartAdapter.ts">
-// frontend/src/shared/components/CandleChart/chartAdapter.ts
-import type { SafeCandleChartApi } from "../../../hooks/useSafeCandleChart";
-import type { CandleData } from "./types";
-
-type LWCandle = {
-  time: number; // seconds
-  open?: number;
-  high?: number;
-  low?: number;
-  close?: number;
-};
-
-function isRealCandle(d: CandleData): d is CandleData & {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-} {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-function toLwSeriesPoints(data: CandleData[]): { points: LWCandle[]; hasWhitespace: boolean } {
-  let hasWhitespace = false;
-
-  const points = (data || [])
-    .map((d) => {
-      const tSec = Math.floor((d?.time ?? 0) / 1000);
-      if (!Number.isFinite(tSec) || tSec <= 0) return null;
-
-      if (isRealCandle(d)) {
-        return {
-          time: tSec,
-          open: (d as any).open,
-          high: (d as any).high,
-          low: (d as any).low,
-          close: (d as any).close,
-        } satisfies LWCandle;
-      }
-
-      // whitespace: {time} without OHLC
-      hasWhitespace = true;
-      return { time: tSec } satisfies LWCandle;
-    })
-    .filter(Boolean) as LWCandle[];
-
-  points.sort((a, b) => a.time - b.time);
-  return { points, hasWhitespace };
-}
-
-export function isRealPoint(p: LWCandle): p is Required<LWCandle> {
-  return (
-    p.open !== undefined &&
-    Number.isFinite(p.open) &&
-    Number.isFinite(p.high) &&
-    Number.isFinite(p.low) &&
-    Number.isFinite(p.close)
-  );
-}
-
-/**
- * Enterprise chart adapter:
- * - First call: setData (supports whitespace)
- * - Live updates: only update/append last candles (no setData spam)
- * - If whitespace is present in new input -> fallback to setData (candlestick.update cannot render whitespace)
- * - Handles chart re-creation via SafeCandleChartApi.generation
- */
-export function createCandleChartAdapter(safeChart: SafeCandleChartApi) {
-  let lastGen = safeChart.generation;
-  let initialized = false;
-  let lastAppliedTime: number | null = null;
-
-  function resetState() {
-    initialized = false;
-    lastAppliedTime = null;
-    lastGen = safeChart.generation;
-  }
-
-  function ensureGen() {
-    if (safeChart.generation !== lastGen) {
-      // chart recreated -> must setData again
-      resetState();
-    }
-  }
-
-  function setAll(data: CandleData[]) {
-    ensureGen();
-    const { points } = toLwSeriesPoints(data);
-    if (!points.length) return;
-
-    safeChart.safeSetData(points);
-    initialized = true;
-    const lastPoint = points[points.length - 1];
-    lastAppliedTime = lastPoint ? lastPoint.time : null;
-  }
-
-  /**
-   * Apply latest data:
-   * - If not initialized -> setAll
-   * - If whitespace present -> setAll
-   * - Else:
-   *   - update last bar if same timestamp
-   *   - append any new bars with update()
-   *   - if data went backwards/reorg -> setAll
-   */
-  function apply(data: CandleData[]) {
-    ensureGen();
-
-    const { points, hasWhitespace } = toLwSeriesPoints(data);
-    if (!points.length) return;
-
-    const lastPointInArray = points[points.length - 1];
-    if (!lastPointInArray) return; // safety check
-
-    if (!initialized) {
-      safeChart.safeSetData(points);
-      initialized = true;
-      lastAppliedTime = lastPointInArray.time;
-      return;
-    }
-
-    // whitespace requires full redraw for candlesticks
-    if (hasWhitespace) {
-      safeChart.safeSetData(points);
-      lastAppliedTime = lastPointInArray.time;
-      return;
-    }
-
-    const newLast = lastPointInArray.time;
-    const prevLast = lastAppliedTime;
-
-    // safety fallback if state unknown
-    if (prevLast === null) {
-      safeChart.safeSetData(points);
-      lastAppliedTime = newLast;
-      return;
-    }
-
-    // data older than what we already applied -> reorg/reset
-    if (newLast < prevLast) {
-      safeChart.safeSetData(points);
-      lastAppliedTime = newLast;
-      return;
-    }
-
-    // fast path: same last timestamp -> update last bar
-    if (newLast === prevLast) {
-      if (isRealPoint(lastPointInArray)) {
-        safeChart.safeUpdate(lastPointInArray);
-      }
-      // keep lastAppliedTime
-      return;
-    }
-
-    // find first index with time > prevLast (linear from end is ok here)
-    let firstNewIdx = points.length;
-    for (let i = points.length - 1; i >= 0; i--) {
-      const point = points[i];
-      if (!point) continue;
-      const t = point.time;
-      if (t <= prevLast) {
-        firstNewIdx = i + 1;
-        break;
-      }
-      if (i === 0) firstNewIdx = 0;
-    }
-
-    for (let i = firstNewIdx; i < points.length; i++) {
-      const p = points[i];
-      if (p && isRealPoint(p)) {
-        safeChart.safeUpdate(p);
-      }
-    }
-
-    lastAppliedTime = newLast;
-  }
-
-  return { setAll, apply, resetState };
-}
-</file>
-
 <file path="frontend/src/shared/components/CandleChart/index.ts">
 /**
  * CandleChart Module Exports
@@ -161676,6 +161489,189 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/chartAdapter.ts">
+// frontend/src/shared/components/CandleChart/chartAdapter.ts
+import type { SafeCandleChartApi } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+export type LWCandle = {
+  time: number; // seconds
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
+function isRealCandle(d: CandleData): d is CandleData & {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+} {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+function toSecMaybe(msOrSec: unknown): number {
+  const n = Number(msOrSec);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
+
+/**
+ * CandlestickSeries: ONLY real OHLC.
+ * Whitespace/gaps must NOT be passed to candlestick series.
+ */
+function toLwCandles(data: CandleData[]): LWCandle[] {
+  const out: LWCandle[] = [];
+
+  for (const d of data || []) {
+    if (!isRealCandle(d)) continue;
+
+    const tSec = toSecMaybe((d as any).time);
+    if (!tSec) continue;
+
+    const open = Number((d as any).open);
+    const high = Number((d as any).high);
+    const low = Number((d as any).low);
+    const close = Number((d as any).close);
+
+    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+      continue;
+    }
+
+    out.push({ time: tSec, open, high, low, close });
+  }
+
+  // sort
+  out.sort((a, b) => a.time - b.time);
+
+  // dedup by time (keep last)
+  const dedup: LWCandle[] = [];
+  let lastTime = -1;
+
+  for (let i = 0; i < out.length; i++) {
+    const p = out[i];
+    if (!p) continue;
+
+    if (p.time !== lastTime) {
+      dedup.push(p);
+      lastTime = p.time;
+    } else {
+      const lastIdx = dedup.length - 1;
+      if (lastIdx >= 0) dedup[lastIdx] = p;
+    }
+  }
+
+  return dedup;
+}
+
+export function isRealPoint(p: unknown): p is LWCandle {
+  const x = p as any;
+  return (
+    x &&
+    typeof x.time === "number" &&
+    Number.isFinite(x.time) &&
+    Number.isFinite(x.open) &&
+    Number.isFinite(x.high) &&
+    Number.isFinite(x.low) &&
+    Number.isFinite(x.close)
+  );
+}
+
+export function createCandleChartAdapter(safeChart: SafeCandleChartApi) {
+  let lastGen = safeChart.generation;
+  let initialized = false;
+  let lastAppliedTime: number | null = null;
+
+  function resetState() {
+    initialized = false;
+    lastAppliedTime = null;
+    lastGen = safeChart.generation;
+  }
+
+  function ensureGen() {
+    if (safeChart.generation !== lastGen) resetState();
+  }
+
+  function setAll(data: CandleData[]) {
+    ensureGen();
+    const points = toLwCandles(data);
+    if (points.length === 0) return;
+
+    safeChart.safeSetData(points as any);
+
+    initialized = true;
+
+    const last = points[points.length - 1];
+    if (last) lastAppliedTime = last.time;
+    else lastAppliedTime = null;
+  }
+
+  function apply(data: CandleData[]) {
+    ensureGen();
+    const points = toLwCandles(data);
+    if (points.length === 0) return;
+
+    const last = points[points.length - 1];
+    if (!last) return;
+
+    const newLast = last.time;
+
+    if (!initialized || lastAppliedTime === null) {
+      safeChart.safeSetData(points as any);
+      initialized = true;
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    const prevLast = lastAppliedTime;
+
+    // backwards => full reset
+    if (newLast < prevLast) {
+      safeChart.safeSetData(points as any);
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    // same last timestamp => update last candle
+    if (newLast === prevLast) {
+      safeChart.safeUpdate(last as any);
+      return;
+    }
+
+    // find first index with time > prevLast
+    let firstNewIdx = points.length;
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      if (!p) continue;
+
+      if (p.time <= prevLast) {
+        firstNewIdx = i + 1;
+        break;
+      }
+      if (i === 0) firstNewIdx = 0;
+    }
+
+    for (let i = firstNewIdx; i < points.length; i++) {
+      const p = points[i];
+      if (!p) continue;
+      safeChart.safeUpdate(p as any);
+    }
+
+    lastAppliedTime = newLast;
+  }
+
+  return { setAll, apply, resetState };
+}
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx">
 // frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx
 import React, { useEffect, useMemo, useState } from "react";
@@ -161818,6 +161814,96 @@ interface ImportMeta {
   },
   "include": ["src"]
 }
+</file>
+
+<file path="docker-compose.yml">
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:${REDIS_PORT}"
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:${CLICKHOUSE_PORT}" # HTTP
+      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
+    environment:
+      CLICKHOUSE_DB: trading
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    env_file:
+      - .env
+    build: .
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    environment:
+      - ENVIRONMENT=docker
+      - REDIS_URL=redis://redis:${REDIS_PORT}
+      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
+      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
+      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=admin
+    volumes:
+      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
+      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
+      - ./logs:/app/logs               # ✅ Mount logs directory
+      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  trade-router:
+    build: .
+    command: python -m backend.services.adapter.trade_router_entrypoint
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+    depends_on:
+      - redis
+
+  unified-aggregator:
+    build: .
+    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+      CLICKHOUSE_HOST: "clickhouse"
+      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
+  redis-data:
 </file>
 
 <file path="backend/database/clickhouse/cl_config.py">
@@ -162923,96 +163009,6 @@ export const AppLayout: React.FC = () => {
     </div>
   );
 };
-</file>
-
-<file path="docker-compose.yml">
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:${REDIS_PORT}"
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8124:${CLICKHOUSE_PORT}" # HTTP
-      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
-    environment:
-      CLICKHOUSE_DB: trading
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    volumes:
-      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - clickhouse-data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    env_file:
-      - .env
-    build: .
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
-    environment:
-      - ENVIRONMENT=docker
-      - REDIS_URL=redis://redis:${REDIS_PORT}
-      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
-      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
-      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
-      - CLICKHOUSE_USER=admin
-      - CLICKHOUSE_PASSWORD=admin
-    volumes:
-      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
-      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
-      - ./logs:/app/logs               # ✅ Mount logs directory
-      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  trade-router:
-    build: .
-    command: python -m backend.services.adapter.trade_router_entrypoint
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-    depends_on:
-      - redis
-
-  unified-aggregator:
-    build: .
-    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-      CLICKHOUSE_HOST: "clickhouse"
-      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-volumes:
-  clickhouse-data:
-  redis-data:
 </file>
 
 <file path="monitor-system.sh">
@@ -168437,10 +168433,24 @@ class UnifiedAggregator:
             for candle in stale_candles:
                 ex = (candle.get("exchange") or "").lower().strip()
                 if not ex:
-                    # If CandleAgg1s doesn't include exchange (older version), skip to avoid misrouting
                     logger.warning("Stale candle missing exchange field; skipping: %s", candle)
                     continue
-                self.candle_batch.setdefault(ex, []).append(candle)
+                # Remove 'exchange' field - table doesn't have it
+                candle_for_insert = {
+                    "symbol": candle["symbol"],
+                    "market": candle["market"],
+                    "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    "o": candle["o"],
+                    "h": candle["h"],
+                    "l": candle["l"],
+                    "c": candle["c"],
+                    "v": candle["v"],
+                    "qv": candle["qv"],
+                    "n": candle["n"],
+                    "src": candle.get("src", "agg"),
+                    "ver": candle["ver"],
+                }
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
 
             await self._flush_candle_batch()
         finally:
@@ -168611,8 +168621,22 @@ class UnifiedAggregator:
 
                             if finished_candle:
                                 ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                finished_candle["exchange"] = ex  # enforce
-                                self.candle_batch.setdefault(ex, []).append(finished_candle)
+                                # Remove 'exchange' field - table doesn't have it
+                                candle_for_insert = {
+                                    "symbol": finished_candle["symbol"],
+                                    "market": finished_candle["market"],
+                                    "ts": datetime.fromtimestamp(finished_candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                                    "o": finished_candle["o"],
+                                    "h": finished_candle["h"],
+                                    "l": finished_candle["l"],
+                                    "c": finished_candle["c"],
+                                    "v": finished_candle["v"],
+                                    "qv": finished_candle["qv"],
+                                    "n": finished_candle["n"],
+                                    "src": finished_candle.get("src", "agg"),
+                                    "ver": finished_candle["ver"],
+                                }
+                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
 
                                 if len(self.candle_batch[ex]) >= self.candle_batch_size:
                                     await self._flush_candle_batch(ex)
