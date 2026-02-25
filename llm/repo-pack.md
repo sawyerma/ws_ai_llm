@@ -35285,6 +35285,10 @@ def create_tier_notification_service(config: Dict) -> TierNotificationService:
     return TierNotificationService(config)
 </file>
 
+<file path="backend/services/adapter/__init__.py">
+# Adapter Services Package
+</file>
+
 <file path="backend/services/adapter/cache_service.py">
 """
 ✅ ENTERPRISE CACHE SERVICE - rs_ + cl_ Lane System Integration
@@ -36998,6 +37002,152 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+</file>
+
+<file path="backend/services/discovery/later/dis_whales.py">
+import logging
+from typing import Any, Dict, List, Optional
+
+from backend.whales.storage.clickhouse_manager import get_whale_client
+
+logger = logging.getLogger(__name__)
+
+
+def discover_whale_tokens(
+    *,
+    min_usd_threshold: Optional[float] = None,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    """
+    Liefert eine Liste von Token-/Symbol-Konfigurationen aus ClickHouse,
+    die für Whale-Monitoring relevant sind.
+
+    Nutzt trading.all_whale_coin_config (siehe clickhouse_manager) und
+    bietet ein neutrales Discovery-Interface.
+
+    Rückgabe:
+        [
+            {
+                "symbol": "BTC",
+                "chain": "bitcoin",
+                "coingecko_id": "...",
+                "priority": 1,
+                "threshold_usd": 100000.0,
+                "is_active": 1,
+                ...
+            },
+            ...
+        ]
+    """
+    client = get_whale_client()
+
+    sql = """
+    SELECT 
+        symbol,
+        chain,
+        contract_addr,
+        coingecko_id,
+        decimals,
+        priority,
+        threshold_usd,
+        is_active,
+        created_at,
+        updated_at
+    FROM trading.all_whale_coin_config
+    WHERE 1 = 1
+    """
+
+    params: Dict[str, Any] = {}
+
+    if min_usd_threshold is not None:
+        sql += " AND threshold_usd >= %(min_usd_threshold)s"
+        params["min_usd_threshold"] = float(min_usd_threshold)
+
+    sql += " ORDER BY priority, symbol LIMIT %(limit)s"
+    params["limit"] = int(limit)
+
+    try:
+        result = client.query(sql, params)
+        rows = result.result_rows or []
+        cols = list(result.column_names or [])
+
+        configs: List[Dict[str, Any]] = [dict(zip(cols, row)) for row in rows]
+        logger.info(
+            "dis_whales: discovered %d whale token configs (min_usd_threshold=%s, limit=%d)",
+            len(configs),
+            str(min_usd_threshold) if min_usd_threshold is not None else "None",
+            limit,
+        )
+        return configs
+    except Exception as exc:
+        logger.error("dis_whales: failed to discover whale tokens: %s", exc, exc_info=True)
+        return []
+
+
+def discover_whale_events_for_symbol(
+    symbol: str,
+    *,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    """
+    Liefert die letzten Whale-Events für ein bestimmtes Symbol direkt aus ClickHouse.
+
+    Kapselt den Zugriff auf trading.all_whale als neutrales Discovery-Interface.
+    Kein Redis, keine Mock-Daten, nur reale Events.
+    """
+    client = get_whale_client()
+
+    sql = """
+    SELECT 
+        ts,
+        chain,
+        tx_hash,
+        from_addr,
+        to_addr,
+        token,
+        symbol,
+        amount,
+        is_native,
+        exchange,
+        amount_usd,
+        from_exchange,
+        from_country,
+        from_city,
+        to_exchange,
+        to_country,
+        to_city,
+        is_cross_border,
+        threshold_usd,
+        coin_rank,
+        source,
+        created_at
+    FROM trading.all_whale
+    WHERE symbol = %(symbol)s
+    ORDER BY ts DESC
+    LIMIT %(limit)s
+    """
+
+    params: Dict[str, Any] = {
+        "symbol": symbol,
+        "limit": int(limit),
+    }
+
+    try:
+        result = client.query(sql, params)
+        rows = result.result_rows or []
+        cols = list(result.column_names or [])
+
+        events: List[Dict[str, Any]] = [dict(zip(cols, row)) for row in rows]
+        logger.info(
+            "dis_whales: discovered %d whale events for symbol %s (limit=%d)",
+            len(events),
+            symbol,
+            limit,
+        )
+        return events
+    except Exception as exc:
+        logger.error("dis_whales: failed to discover whale events for %s: %s", symbol, exc, exc_info=True)
+        return []
 </file>
 
 <file path="backend/services/discovery/__init__.py">
@@ -41493,6 +41643,393 @@ __version__ = "1.0.0"
 
 # Make backend directory a proper Python package
 # This enables imports like: from backend.exchanges import ...
+</file>
+
+<file path="diag_py/quick_ch_check.py">
+#!/usr/bin/env python3
+"""
+🔍 SCHNELLER CLICKHOUSE CHECK - Nur die wichtigsten Daten
+"""
+import requests
+import os
+from datetime import datetime
+
+# ClickHouse Config
+CH_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
+CH_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
+CH_USER = os.getenv('CLICKHOUSE_USER', 'admin')
+CH_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
+CH_URL = f"http://{CH_HOST}:{CH_PORT}/"
+
+EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
+
+print("\n" + "=" * 100)
+print("  🟢 CLICKHOUSE RAW DATA CHECK")
+print("  📅 Checking: 10. Dezember 2025 20:40 Berlin Zeit")
+print("=" * 100 + "\n")
+
+# 1. Gesamt-Statistik
+print("📊 GESAMT-STATISTIK PRO EXCHANGE:\n")
+print(f"{'Exchange':<12} | {'Total Trades':<15} | {'Oldest':<25} | {'Newest':<25}")
+print("-" * 100)
+
+for exchange in EXCHANGES:
+    table_name = f"trading.{exchange}_trades"
+    
+    query = f"SELECT count(*) as cnt, min(timestamp) as oldest, max(timestamp) as newest FROM {table_name}"
+    
+    try:
+        response = requests.post(
+            f"{CH_URL}?database=trading",
+            data=query,
+            auth=(CH_USER, CH_PASSWORD),
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.text.strip().split('\t')
+            if len(data) == 3:
+                count, oldest, newest = data
+                print(f"{exchange:<12} | {count:<15} | {oldest:<25} | {newest:<25}")
+        else:
+            print(f"{exchange:<12} | ERROR: {response.status_code}")
+    except Exception as e:
+        print(f"{exchange:<12} | ERROR: {str(e)}")
+
+# 2. Binance BTCUSDT - Letzte 20 Trades
+print("\n" + "=" * 100)
+print("  🔹 BINANCE BTCUSDT - LETZTE 20 TRADES")
+print("=" * 100 + "\n")
+
+query = """
+SELECT 
+    symbol,
+    market,
+    price,
+    size,
+    side,
+    timestamp,
+    source
+FROM trading.binance_trades
+WHERE symbol = 'BTCUSDT'
+ORDER BY timestamp DESC
+LIMIT 20
+"""
+
+try:
+    response = requests.post(
+        f"{CH_URL}?database=trading",
+        data=query,
+        auth=(CH_USER, CH_PASSWORD),
+        timeout=10
+    )
+    
+    if response.status_code == 200:
+        lines = response.text.strip().split('\n')
+        
+        print(f"{'Symbol':<10} | {'Market':<8} | {'Price':<12} | {'Size':<12} | {'Side':<6} | {'Timestamp':<25} | {'Source':<10}")
+        print("-" * 100)
+        
+        for line in lines:
+            fields = line.split('\t')
+            if len(fields) >= 7:
+                print(f"{fields[0]:<10} | {fields[1]:<8} | {fields[2]:<12} | {fields[3]:<12} | {fields[4]:<6} | {fields[5]:<25} | {fields[6]:<10}")
+        
+        print(f"\n✅ {len(lines)} Trades angezeigt")
+    else:
+        print(f"❌ Query failed: {response.status_code}")
+except Exception as e:
+    print(f"❌ Error: {e}")
+
+# 3. Alle Exchanges - Letzte Timestamps
+print("\n" + "=" * 100)
+print("  📅 NEUESTE TIMESTAMPS - BEWEIS FÜR AKTUELLE DATEN")
+print("=" * 100 + "\n")
+
+current_time = datetime.now()
+print(f"Aktuelle Zeit: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+for exchange in EXCHANGES:
+    table_name = f"trading.{exchange}_trades"
+    query = f"SELECT max(timestamp) as newest, count(*) as last_minute_count FROM {table_name} WHERE timestamp > now() - INTERVAL 1 MINUTE"
+    
+    try:
+        response = requests.post(
+            f"{CH_URL}?database=trading",
+            data=query,
+            auth=(CH_USER, CH_PASSWORD),
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.text.strip().split('\t')
+            if len(data) == 2:
+                newest, count = data
+                age_seconds = (current_time - datetime.fromisoformat(newest.replace(' ', 'T'))).total_seconds() if newest != '\\N' else 999
+                status = "🟢 LIVE" if age_seconds < 60 else "⚠️  OLD"
+                print(f"{exchange:<12}: {newest:<25} | Letzte 1min: {count:>5} trades | {status}")
+        else:
+            print(f"{exchange:<12}: ERROR")
+    except Exception as e:
+        print(f"{exchange:<12}: ERROR - {str(e)}")
+
+print("\n" + "=" * 100)
+print("  ✅ CHECK COMPLETE")
+print("=" * 100 + "\n")
+</file>
+
+<file path="diag_py/redis_clickhouse_raw_check.py">
+#!/usr/bin/env python3
+"""
+🔍 REDIS + CLICKHOUSE RAW DATA DIAGNOSTIC
+Zeigt die letzten 30 Einträge aus Redis Streams und ClickHouse Tabellen
+"""
+import asyncio
+import json
+import os
+from datetime import datetime
+from redis import asyncio as aioredis
+import requests
+
+# ClickHouse Config
+CH_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
+CH_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
+CH_USER = os.getenv('CLICKHOUSE_USER', 'admin')
+CH_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
+CH_URL = f"http://{CH_HOST}:{CH_PORT}/"
+
+# Redis Config
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6380/0')
+
+# Exchanges to check
+EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
+
+def print_section(title):
+    """Print section header"""
+    print("\n" + "=" * 80)
+    print(f"  {title}")
+    print("=" * 80 + "\n")
+
+async def get_redis_streams():
+    """Hole alle Trade-Streams aus Redis"""
+    r = await aioredis.from_url(REDIS_URL, decode_responses=True)
+    
+    try:
+        # Finde alle Trade-Streams
+        pattern = "*:trades:*:*"
+        cursor = "0"
+        streams = []
+        
+        while True:
+            cursor, keys = await r.scan(cursor, match=pattern, count=100)
+            streams.extend(keys)
+            if cursor == "0":
+                break
+        
+        return r, streams
+    except Exception as e:
+        print(f"❌ Redis Fehler: {e}")
+        return r, []
+
+async def check_redis_raw_data():
+    """Zeige die letzten 30 Einträge aus Redis Streams"""
+    print_section("🔴 REDIS RAW DATA - LETZTE 30 EINTRÄGE")
+    
+    r, streams = await get_redis_streams()
+    
+    if not streams:
+        print("⚠️  Keine Trade-Streams in Redis gefunden!")
+        await r.close()
+        return
+    
+    print(f"📊 Gefundene Streams: {len(streams)}")
+    
+    # Fokus auf Binance BTCUSDT
+    binance_streams = [s for s in streams if s.startswith('binance:trades:')]
+    
+    if binance_streams:
+        print(f"\n🔹 BINANCE STREAMS ({len(binance_streams)}):")
+        for stream in binance_streams[:5]:
+            print(f"   - {stream}")
+            
+            try:
+                # Hole letzte 30 Einträge
+                messages = await r.xrevrange(stream, count=30)
+                
+                if messages:
+                    print(f"\n   📈 Letzte 30 Einträge von {stream}:")
+                    print(f"   {'ID':<20} | {'Trade ID':<15} | {'Price':<12} | {'Size':<12} | {'Side':<6} | Timestamp")
+                    print(f"   {'-'*100}")
+                    
+                    for msg_id, data in messages[:10]:  # Zeige erste 10 von 30
+                        try:
+                            trade_json = data.get('trade', '{}')
+                            trade = json.loads(trade_json)
+                            
+                            trade_id = trade.get('trade_id', trade.get('id', 'N/A'))
+                            price = trade.get('price', 'N/A')
+                            size = trade.get('size', 'N/A')
+                            side = trade.get('side', 'N/A')
+                            timestamp = trade.get('timestamp', trade.get('ts', trade.get('time', 'N/A')))
+                            
+                            # Konvertiere Timestamp zu lesbarem Format
+                            if timestamp != 'N/A':
+                                try:
+                                    dt = datetime.fromtimestamp(int(timestamp) / 1000)
+                                    ts_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                except:
+                                    ts_str = str(timestamp)
+                            else:
+                                ts_str = 'N/A'
+                            
+                            print(f"   {msg_id:<20} | {str(trade_id):<15} | {str(price):<12} | {str(size):<12} | {side:<6} | {ts_str}")
+                        except Exception as e:
+                            print(f"   {msg_id:<20} | ERROR: {str(e)}")
+                    
+                    if len(messages) > 10:
+                        print(f"   ... und {len(messages) - 10} weitere Einträge")
+                    
+                    print(f"\n   ✅ Total: {len(messages)} Einträge")
+                else:
+                    print(f"   ⚠️  Stream leer")
+                    
+            except Exception as e:
+                print(f"   ❌ Fehler beim Lesen: {e}")
+            
+            print()  # Leerzeile
+    
+    # Zeige auch andere Exchanges kurz an
+    print(f"\n📊 ALLE EXCHANGES - Stream Count:")
+    for exchange in EXCHANGES:
+        exchange_streams = [s for s in streams if s.startswith(f'{exchange}:trades:')]
+        if exchange_streams:
+            print(f"   {exchange:<10}: {len(exchange_streams)} streams")
+    
+    await r.close()
+
+def check_clickhouse_raw_data():
+    """Zeige die letzten 30 Einträge aus ClickHouse Tabellen"""
+    print_section("🟢 CLICKHOUSE RAW DATA - LETZTE 30 EINTRÄGE")
+    
+    try:
+        # Test Connection
+        response = requests.post(
+            f"{CH_URL}?database=default",
+            data="SELECT 1",
+            auth=(CH_USER, CH_PASSWORD),
+            timeout=5
+        )
+        
+        if response.status_code != 200:
+            print(f"❌ ClickHouse nicht erreichbar: {response.status_code}")
+            return
+        
+        print("✅ ClickHouse verbunden\n")
+        
+        # Prüfe jede Exchange-Tabelle
+        for exchange in EXCHANGES:
+            table_name = f"trading.{exchange}_trades"
+            
+            # Zähle Einträge
+            count_query = f"SELECT count(*) FROM {table_name}"
+            response = requests.post(
+                f"{CH_URL}?database=trading",
+                data=count_query,
+                auth=(CH_USER, CH_PASSWORD),
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                count = int(response.text.strip())
+                print(f"📊 {table_name}: {count} Einträge")
+                
+                if count > 0:
+                    # Hole letzte 30 Einträge
+                    query = f"""
+                    SELECT 
+                        symbol,
+                        market,
+                        price,
+                        size,
+                        side,
+                        timestamp,
+                        source
+                    FROM {table_name}
+                    ORDER BY timestamp DESC
+                    LIMIT 30
+                    """
+                    
+                    response = requests.post(
+                        f"{CH_URL}?database=trading",
+                        data=query,
+                        auth=(CH_USER, CH_PASSWORD),
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        lines = response.text.strip().split('\n')
+                        
+                        if exchange == "binance":  # Zeige Details nur für Binance
+                            print(f"\n   🔹 BINANCE - Letzte 10 Einträge (von 30):")
+                            print(f"   {'Symbol':<10} | {'Market':<8} | {'Price':<12} | {'Size':<12} | {'Side':<6} | {'Timestamp':<20} | Source")
+                            print(f"   {'-'*100}")
+                            
+                            for i, line in enumerate(lines[:10]):
+                                fields = line.split('\t')
+                                if len(fields) >= 7:
+                                    print(f"   {fields[0]:<10} | {fields[1]:<8} | {fields[2]:<12} | {fields[3]:<12} | {fields[4]:<6} | {fields[5]:<20} | {fields[6]}")
+                            
+                            if len(lines) > 10:
+                                print(f"   ... und {len(lines) - 10} weitere")
+                        
+                        print(f"   ✅ Total: {len(lines)} Einträge\n")
+                    else:
+                        print(f"   ❌ Query fehlgeschlagen: {response.status_code}\n")
+            else:
+                print(f"⚠️  {table_name}: Tabelle nicht gefunden oder leer\n")
+        
+        # Zeige neueste Timestamp
+        print("\n" + "=" * 80)
+        print("  📅 NEUESTE TIMESTAMPS PRO EXCHANGE")
+        print("=" * 80 + "\n")
+        
+        for exchange in EXCHANGES:
+            table_name = f"trading.{exchange}_trades"
+            query = f"SELECT max(timestamp) FROM {table_name}"
+            
+            response = requests.post(
+                f"{CH_URL}?database=trading",
+                data=query,
+                auth=(CH_USER, CH_PASSWORD),
+                timeout=10
+            )
+            
+            if response.status_code == 200 and response.text.strip():
+                latest = response.text.strip()
+                print(f"   {exchange:<10}: {latest}")
+        
+    except Exception as e:
+        print(f"❌ ClickHouse Fehler: {e}")
+
+async def main():
+    """Main diagnostic function"""
+    print("\n" + "=" * 80)
+    print("  🔍 REDIS + CLICKHOUSE RAW DATA DIAGNOSTIC")
+    print("  📅 Checking für: 10. Dezember 2025 20:11 Berlin Zeit")
+    print("=" * 80)
+    
+    # Check Redis
+    await check_redis_raw_data()
+    
+    # Check ClickHouse
+    check_clickhouse_raw_data()
+    
+    print("\n" + "=" * 80)
+    print("  ✅ DIAGNOSTIC COMPLETE")
+    print("=" * 80 + "\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 </file>
 
 <file path="frontend/lib/lightweight-charts.standalone.development.js">
@@ -123513,8 +124050,180 @@ class ProgressHealthService:
 progress_health_service = ProgressHealthService()
 </file>
 
-<file path="backend/services/adapter/__init__.py">
-# Adapter Services Package
+<file path="backend/services/adapter/stream_aggregator.py">
+import time
+import threading
+import logging
+from typing import Dict, Tuple
+
+from backend.core.utils.parse_resolution import parse_resolution
+
+logger = logging.getLogger("stream_aggregator")
+
+
+class ResolutionRegistry:
+    """
+    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+
+    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
+    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
+    """
+
+    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
+        self.defaults = set(defaults)
+        self.ttl = ttl_sec
+        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+        self.lock = threading.Lock()
+
+    def touch(self, ex: str, sym: str, res: str) -> None:
+        """
+        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
+        """
+        sec, norm = parse_resolution(res)
+        key = (ex, sym)
+        with self.lock:
+            self.active.setdefault(key, {})[norm] = {
+                "sec": sec,
+                "last": time.monotonic(),
+            }
+
+    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
+        """
+        Liefert alle relevanten Resolutions für (ex, sym):
+
+        - Basis-Resolutions aus defaults
+        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
+        """
+        key = (ex, sym)
+        now = time.monotonic()
+        with self.lock:
+            store = self.active.setdefault(key, {})
+
+            # Abgelaufene dynamische Resolutions entfernen
+            for r in list(store.keys()):
+                if now - store[r]["last"] > self.ttl:
+                    del store[r]
+
+            # Basis-Resolutions immer drin
+            out: Dict[str, Dict[str, float]] = {
+                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
+            }
+            # Dynamische Resolutions überschreiben ggf. defaults
+            out.update({r: {"sec": store[r]["sec"]} for r in store})
+
+        return out
+
+
+# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
+registry = ResolutionRegistry()
+
+
+class MultiResCandleAgg:
+    """
+    Multi-Resolution Candle-Aggregator.
+
+    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
+    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
+    """
+
+    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
+        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
+        self.exchange = exchange
+        self.symbol = symbol
+        self.market = market
+        self.resolutions = resolutions or []
+        
+        # key: (ex, sym, res_str) → candle-state
+        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+        self.last_cleanup = time.time()
+
+    def _cleanup_old_buckets(self) -> None:
+        """
+        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
+        Nur alle 5 Minuten aktiv.
+        """
+        current_time = time.time()
+        # Nur alle 5 Minuten bereinigen
+        if current_time - self.last_cleanup < 300:
+            return
+
+        current_time_ms = int(current_time * 1000)
+        # Lösche Candles älter als 1 Stunde
+        for key in list(self.state.keys()):
+            if current_time_ms - self.state[key]["timestamp"] > 3600000:
+                del self.state[key]
+
+        self.last_cleanup = current_time
+
+    @staticmethod
+    def _bucket(ts_ms: int, sec: int) -> int:
+        """
+        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
+        """
+        return (ts_ms // (sec * 1000)) * (sec * 1000)
+
+    def on_trade(
+        self,
+        ex: str,
+        sym: str,
+        market: str,
+        ts_ms: int,
+        price,
+        size,
+        resolutions: Dict[str, Dict[str, float]],
+    ):
+        """
+        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
+
+        Parameter:
+        - ex: Exchange-Name (z.B. 'binance')
+        - sym: Symbol (z.B. 'BTCUSDT')
+        - market: Markt-Typ (z.B. 'spot', 'usdtm')
+        - ts_ms: Timestamp in Millisekunden
+        - price: Preis (Decimal/float/str)
+        - size: Größe (Decimal/float/str)
+        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
+                       (kommt aus registry.list(ex, sym))
+
+        Rückgabe:
+        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
+          abgeschlossen wurden (Bucket-Wechsel).
+        """
+        self._cleanup_old_buckets()
+        finished = []
+
+        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
+        for res_str, meta in resolutions.items():
+            sec = meta["sec"]
+            key = (ex, sym, res_str)
+            b = self._bucket(ts_ms, sec)
+            c = self.state.get(key)
+
+            if c is None or c["timestamp"] != b:
+                # alter Bucket wird fertig, wenn vorhanden
+                if c:
+                    finished.append((res_str, c))
+                # neuen Candle-Bucket anlegen
+                self.state[key] = {
+                    "timestamp": b,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": size,
+                    "sec": sec,
+                    "market": market,
+                }
+            else:
+                # existierenden Candle-Bucket aktualisieren
+                c["c"] = price
+                c["v"] += size
+                if price > c["h"]:
+                    c["h"] = price
+                if price < c["l"]:
+                    c["l"] = price
+
+        return finished
 </file>
 
 <file path="backend/services/adapter/unified_exchange_service.py">
@@ -123698,152 +124407,6 @@ from ..adapter.unified_aggregator import run_unified_aggregator
 
 if __name__ == "__main__":
     asyncio.run(run_unified_aggregator())
-</file>
-
-<file path="backend/services/discovery/later/dis_whales.py">
-import logging
-from typing import Any, Dict, List, Optional
-
-from backend.whales.storage.clickhouse_manager import get_whale_client
-
-logger = logging.getLogger(__name__)
-
-
-def discover_whale_tokens(
-    *,
-    min_usd_threshold: Optional[float] = None,
-    limit: int = 1000,
-) -> List[Dict[str, Any]]:
-    """
-    Liefert eine Liste von Token-/Symbol-Konfigurationen aus ClickHouse,
-    die für Whale-Monitoring relevant sind.
-
-    Nutzt trading.all_whale_coin_config (siehe clickhouse_manager) und
-    bietet ein neutrales Discovery-Interface.
-
-    Rückgabe:
-        [
-            {
-                "symbol": "BTC",
-                "chain": "bitcoin",
-                "coingecko_id": "...",
-                "priority": 1,
-                "threshold_usd": 100000.0,
-                "is_active": 1,
-                ...
-            },
-            ...
-        ]
-    """
-    client = get_whale_client()
-
-    sql = """
-    SELECT 
-        symbol,
-        chain,
-        contract_addr,
-        coingecko_id,
-        decimals,
-        priority,
-        threshold_usd,
-        is_active,
-        created_at,
-        updated_at
-    FROM trading.all_whale_coin_config
-    WHERE 1 = 1
-    """
-
-    params: Dict[str, Any] = {}
-
-    if min_usd_threshold is not None:
-        sql += " AND threshold_usd >= %(min_usd_threshold)s"
-        params["min_usd_threshold"] = float(min_usd_threshold)
-
-    sql += " ORDER BY priority, symbol LIMIT %(limit)s"
-    params["limit"] = int(limit)
-
-    try:
-        result = client.query(sql, params)
-        rows = result.result_rows or []
-        cols = list(result.column_names or [])
-
-        configs: List[Dict[str, Any]] = [dict(zip(cols, row)) for row in rows]
-        logger.info(
-            "dis_whales: discovered %d whale token configs (min_usd_threshold=%s, limit=%d)",
-            len(configs),
-            str(min_usd_threshold) if min_usd_threshold is not None else "None",
-            limit,
-        )
-        return configs
-    except Exception as exc:
-        logger.error("dis_whales: failed to discover whale tokens: %s", exc, exc_info=True)
-        return []
-
-
-def discover_whale_events_for_symbol(
-    symbol: str,
-    *,
-    limit: int = 1000,
-) -> List[Dict[str, Any]]:
-    """
-    Liefert die letzten Whale-Events für ein bestimmtes Symbol direkt aus ClickHouse.
-
-    Kapselt den Zugriff auf trading.all_whale als neutrales Discovery-Interface.
-    Kein Redis, keine Mock-Daten, nur reale Events.
-    """
-    client = get_whale_client()
-
-    sql = """
-    SELECT 
-        ts,
-        chain,
-        tx_hash,
-        from_addr,
-        to_addr,
-        token,
-        symbol,
-        amount,
-        is_native,
-        exchange,
-        amount_usd,
-        from_exchange,
-        from_country,
-        from_city,
-        to_exchange,
-        to_country,
-        to_city,
-        is_cross_border,
-        threshold_usd,
-        coin_rank,
-        source,
-        created_at
-    FROM trading.all_whale
-    WHERE symbol = %(symbol)s
-    ORDER BY ts DESC
-    LIMIT %(limit)s
-    """
-
-    params: Dict[str, Any] = {
-        "symbol": symbol,
-        "limit": int(limit),
-    }
-
-    try:
-        result = client.query(sql, params)
-        rows = result.result_rows or []
-        cols = list(result.column_names or [])
-
-        events: List[Dict[str, Any]] = [dict(zip(cols, row)) for row in rows]
-        logger.info(
-            "dis_whales: discovered %d whale events for symbol %s (limit=%d)",
-            len(events),
-            symbol,
-            limit,
-        )
-        return events
-    except Exception as exc:
-        logger.error("dis_whales: failed to discover whale events for %s: %s", symbol, exc, exc_info=True)
-        return []
 </file>
 
 <file path="backend/services/discovery/dis_orderbook.py">
@@ -125665,393 +126228,6 @@ echo "DEEP ANALYSIS COMPLETE"
 echo "=================================================="
 echo "Analysis Duration: $(($(date +%s) - $(date -j -f "%Y-%m-%d %H:%M:%S" "$ANALYSIS_TIME" +%s 2>/dev/null || echo 0))) seconds"
 echo ""
-</file>
-
-<file path="diag_py/quick_ch_check.py">
-#!/usr/bin/env python3
-"""
-🔍 SCHNELLER CLICKHOUSE CHECK - Nur die wichtigsten Daten
-"""
-import requests
-import os
-from datetime import datetime
-
-# ClickHouse Config
-CH_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CH_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CH_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CH_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CH_URL = f"http://{CH_HOST}:{CH_PORT}/"
-
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-print("\n" + "=" * 100)
-print("  🟢 CLICKHOUSE RAW DATA CHECK")
-print("  📅 Checking: 10. Dezember 2025 20:40 Berlin Zeit")
-print("=" * 100 + "\n")
-
-# 1. Gesamt-Statistik
-print("📊 GESAMT-STATISTIK PRO EXCHANGE:\n")
-print(f"{'Exchange':<12} | {'Total Trades':<15} | {'Oldest':<25} | {'Newest':<25}")
-print("-" * 100)
-
-for exchange in EXCHANGES:
-    table_name = f"trading.{exchange}_trades"
-    
-    query = f"SELECT count(*) as cnt, min(timestamp) as oldest, max(timestamp) as newest FROM {table_name}"
-    
-    try:
-        response = requests.post(
-            f"{CH_URL}?database=trading",
-            data=query,
-            auth=(CH_USER, CH_PASSWORD),
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            data = response.text.strip().split('\t')
-            if len(data) == 3:
-                count, oldest, newest = data
-                print(f"{exchange:<12} | {count:<15} | {oldest:<25} | {newest:<25}")
-        else:
-            print(f"{exchange:<12} | ERROR: {response.status_code}")
-    except Exception as e:
-        print(f"{exchange:<12} | ERROR: {str(e)}")
-
-# 2. Binance BTCUSDT - Letzte 20 Trades
-print("\n" + "=" * 100)
-print("  🔹 BINANCE BTCUSDT - LETZTE 20 TRADES")
-print("=" * 100 + "\n")
-
-query = """
-SELECT 
-    symbol,
-    market,
-    price,
-    size,
-    side,
-    timestamp,
-    source
-FROM trading.binance_trades
-WHERE symbol = 'BTCUSDT'
-ORDER BY timestamp DESC
-LIMIT 20
-"""
-
-try:
-    response = requests.post(
-        f"{CH_URL}?database=trading",
-        data=query,
-        auth=(CH_USER, CH_PASSWORD),
-        timeout=10
-    )
-    
-    if response.status_code == 200:
-        lines = response.text.strip().split('\n')
-        
-        print(f"{'Symbol':<10} | {'Market':<8} | {'Price':<12} | {'Size':<12} | {'Side':<6} | {'Timestamp':<25} | {'Source':<10}")
-        print("-" * 100)
-        
-        for line in lines:
-            fields = line.split('\t')
-            if len(fields) >= 7:
-                print(f"{fields[0]:<10} | {fields[1]:<8} | {fields[2]:<12} | {fields[3]:<12} | {fields[4]:<6} | {fields[5]:<25} | {fields[6]:<10}")
-        
-        print(f"\n✅ {len(lines)} Trades angezeigt")
-    else:
-        print(f"❌ Query failed: {response.status_code}")
-except Exception as e:
-    print(f"❌ Error: {e}")
-
-# 3. Alle Exchanges - Letzte Timestamps
-print("\n" + "=" * 100)
-print("  📅 NEUESTE TIMESTAMPS - BEWEIS FÜR AKTUELLE DATEN")
-print("=" * 100 + "\n")
-
-current_time = datetime.now()
-print(f"Aktuelle Zeit: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-
-for exchange in EXCHANGES:
-    table_name = f"trading.{exchange}_trades"
-    query = f"SELECT max(timestamp) as newest, count(*) as last_minute_count FROM {table_name} WHERE timestamp > now() - INTERVAL 1 MINUTE"
-    
-    try:
-        response = requests.post(
-            f"{CH_URL}?database=trading",
-            data=query,
-            auth=(CH_USER, CH_PASSWORD),
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            data = response.text.strip().split('\t')
-            if len(data) == 2:
-                newest, count = data
-                age_seconds = (current_time - datetime.fromisoformat(newest.replace(' ', 'T'))).total_seconds() if newest != '\\N' else 999
-                status = "🟢 LIVE" if age_seconds < 60 else "⚠️  OLD"
-                print(f"{exchange:<12}: {newest:<25} | Letzte 1min: {count:>5} trades | {status}")
-        else:
-            print(f"{exchange:<12}: ERROR")
-    except Exception as e:
-        print(f"{exchange:<12}: ERROR - {str(e)}")
-
-print("\n" + "=" * 100)
-print("  ✅ CHECK COMPLETE")
-print("=" * 100 + "\n")
-</file>
-
-<file path="diag_py/redis_clickhouse_raw_check.py">
-#!/usr/bin/env python3
-"""
-🔍 REDIS + CLICKHOUSE RAW DATA DIAGNOSTIC
-Zeigt die letzten 30 Einträge aus Redis Streams und ClickHouse Tabellen
-"""
-import asyncio
-import json
-import os
-from datetime import datetime
-from redis import asyncio as aioredis
-import requests
-
-# ClickHouse Config
-CH_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CH_PORT = os.getenv('CLICKHOUSE_PORT', '8124')
-CH_USER = os.getenv('CLICKHOUSE_USER', 'admin')
-CH_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'admin')
-CH_URL = f"http://{CH_HOST}:{CH_PORT}/"
-
-# Redis Config
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6380/0')
-
-# Exchanges to check
-EXCHANGES = ["binance", "bitget", "mexc", "gateio", "bybit", "okx", "htx", "coinbase"]
-
-def print_section(title):
-    """Print section header"""
-    print("\n" + "=" * 80)
-    print(f"  {title}")
-    print("=" * 80 + "\n")
-
-async def get_redis_streams():
-    """Hole alle Trade-Streams aus Redis"""
-    r = await aioredis.from_url(REDIS_URL, decode_responses=True)
-    
-    try:
-        # Finde alle Trade-Streams
-        pattern = "*:trades:*:*"
-        cursor = "0"
-        streams = []
-        
-        while True:
-            cursor, keys = await r.scan(cursor, match=pattern, count=100)
-            streams.extend(keys)
-            if cursor == "0":
-                break
-        
-        return r, streams
-    except Exception as e:
-        print(f"❌ Redis Fehler: {e}")
-        return r, []
-
-async def check_redis_raw_data():
-    """Zeige die letzten 30 Einträge aus Redis Streams"""
-    print_section("🔴 REDIS RAW DATA - LETZTE 30 EINTRÄGE")
-    
-    r, streams = await get_redis_streams()
-    
-    if not streams:
-        print("⚠️  Keine Trade-Streams in Redis gefunden!")
-        await r.close()
-        return
-    
-    print(f"📊 Gefundene Streams: {len(streams)}")
-    
-    # Fokus auf Binance BTCUSDT
-    binance_streams = [s for s in streams if s.startswith('binance:trades:')]
-    
-    if binance_streams:
-        print(f"\n🔹 BINANCE STREAMS ({len(binance_streams)}):")
-        for stream in binance_streams[:5]:
-            print(f"   - {stream}")
-            
-            try:
-                # Hole letzte 30 Einträge
-                messages = await r.xrevrange(stream, count=30)
-                
-                if messages:
-                    print(f"\n   📈 Letzte 30 Einträge von {stream}:")
-                    print(f"   {'ID':<20} | {'Trade ID':<15} | {'Price':<12} | {'Size':<12} | {'Side':<6} | Timestamp")
-                    print(f"   {'-'*100}")
-                    
-                    for msg_id, data in messages[:10]:  # Zeige erste 10 von 30
-                        try:
-                            trade_json = data.get('trade', '{}')
-                            trade = json.loads(trade_json)
-                            
-                            trade_id = trade.get('trade_id', trade.get('id', 'N/A'))
-                            price = trade.get('price', 'N/A')
-                            size = trade.get('size', 'N/A')
-                            side = trade.get('side', 'N/A')
-                            timestamp = trade.get('timestamp', trade.get('ts', trade.get('time', 'N/A')))
-                            
-                            # Konvertiere Timestamp zu lesbarem Format
-                            if timestamp != 'N/A':
-                                try:
-                                    dt = datetime.fromtimestamp(int(timestamp) / 1000)
-                                    ts_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                                except:
-                                    ts_str = str(timestamp)
-                            else:
-                                ts_str = 'N/A'
-                            
-                            print(f"   {msg_id:<20} | {str(trade_id):<15} | {str(price):<12} | {str(size):<12} | {side:<6} | {ts_str}")
-                        except Exception as e:
-                            print(f"   {msg_id:<20} | ERROR: {str(e)}")
-                    
-                    if len(messages) > 10:
-                        print(f"   ... und {len(messages) - 10} weitere Einträge")
-                    
-                    print(f"\n   ✅ Total: {len(messages)} Einträge")
-                else:
-                    print(f"   ⚠️  Stream leer")
-                    
-            except Exception as e:
-                print(f"   ❌ Fehler beim Lesen: {e}")
-            
-            print()  # Leerzeile
-    
-    # Zeige auch andere Exchanges kurz an
-    print(f"\n📊 ALLE EXCHANGES - Stream Count:")
-    for exchange in EXCHANGES:
-        exchange_streams = [s for s in streams if s.startswith(f'{exchange}:trades:')]
-        if exchange_streams:
-            print(f"   {exchange:<10}: {len(exchange_streams)} streams")
-    
-    await r.close()
-
-def check_clickhouse_raw_data():
-    """Zeige die letzten 30 Einträge aus ClickHouse Tabellen"""
-    print_section("🟢 CLICKHOUSE RAW DATA - LETZTE 30 EINTRÄGE")
-    
-    try:
-        # Test Connection
-        response = requests.post(
-            f"{CH_URL}?database=default",
-            data="SELECT 1",
-            auth=(CH_USER, CH_PASSWORD),
-            timeout=5
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ ClickHouse nicht erreichbar: {response.status_code}")
-            return
-        
-        print("✅ ClickHouse verbunden\n")
-        
-        # Prüfe jede Exchange-Tabelle
-        for exchange in EXCHANGES:
-            table_name = f"trading.{exchange}_trades"
-            
-            # Zähle Einträge
-            count_query = f"SELECT count(*) FROM {table_name}"
-            response = requests.post(
-                f"{CH_URL}?database=trading",
-                data=count_query,
-                auth=(CH_USER, CH_PASSWORD),
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                count = int(response.text.strip())
-                print(f"📊 {table_name}: {count} Einträge")
-                
-                if count > 0:
-                    # Hole letzte 30 Einträge
-                    query = f"""
-                    SELECT 
-                        symbol,
-                        market,
-                        price,
-                        size,
-                        side,
-                        timestamp,
-                        source
-                    FROM {table_name}
-                    ORDER BY timestamp DESC
-                    LIMIT 30
-                    """
-                    
-                    response = requests.post(
-                        f"{CH_URL}?database=trading",
-                        data=query,
-                        auth=(CH_USER, CH_PASSWORD),
-                        timeout=10
-                    )
-                    
-                    if response.status_code == 200:
-                        lines = response.text.strip().split('\n')
-                        
-                        if exchange == "binance":  # Zeige Details nur für Binance
-                            print(f"\n   🔹 BINANCE - Letzte 10 Einträge (von 30):")
-                            print(f"   {'Symbol':<10} | {'Market':<8} | {'Price':<12} | {'Size':<12} | {'Side':<6} | {'Timestamp':<20} | Source")
-                            print(f"   {'-'*100}")
-                            
-                            for i, line in enumerate(lines[:10]):
-                                fields = line.split('\t')
-                                if len(fields) >= 7:
-                                    print(f"   {fields[0]:<10} | {fields[1]:<8} | {fields[2]:<12} | {fields[3]:<12} | {fields[4]:<6} | {fields[5]:<20} | {fields[6]}")
-                            
-                            if len(lines) > 10:
-                                print(f"   ... und {len(lines) - 10} weitere")
-                        
-                        print(f"   ✅ Total: {len(lines)} Einträge\n")
-                    else:
-                        print(f"   ❌ Query fehlgeschlagen: {response.status_code}\n")
-            else:
-                print(f"⚠️  {table_name}: Tabelle nicht gefunden oder leer\n")
-        
-        # Zeige neueste Timestamp
-        print("\n" + "=" * 80)
-        print("  📅 NEUESTE TIMESTAMPS PRO EXCHANGE")
-        print("=" * 80 + "\n")
-        
-        for exchange in EXCHANGES:
-            table_name = f"trading.{exchange}_trades"
-            query = f"SELECT max(timestamp) FROM {table_name}"
-            
-            response = requests.post(
-                f"{CH_URL}?database=trading",
-                data=query,
-                auth=(CH_USER, CH_PASSWORD),
-                timeout=10
-            )
-            
-            if response.status_code == 200 and response.text.strip():
-                latest = response.text.strip()
-                print(f"   {exchange:<10}: {latest}")
-        
-    except Exception as e:
-        print(f"❌ ClickHouse Fehler: {e}")
-
-async def main():
-    """Main diagnostic function"""
-    print("\n" + "=" * 80)
-    print("  🔍 REDIS + CLICKHOUSE RAW DATA DIAGNOSTIC")
-    print("  📅 Checking für: 10. Dezember 2025 20:11 Berlin Zeit")
-    print("=" * 80)
-    
-    # Check Redis
-    await check_redis_raw_data()
-    
-    # Check ClickHouse
-    check_clickhouse_raw_data()
-    
-    print("\n" + "=" * 80)
-    print("  ✅ DIAGNOSTIC COMPLETE")
-    print("=" * 80 + "\n")
-
-if __name__ == "__main__":
-    asyncio.run(main())
 </file>
 
 <file path="diag_py/verify_all_metrics.sh">
@@ -161084,182 +161260,6 @@ class MEXCOrderbookService:
         return None
 </file>
 
-<file path="backend/services/adapter/stream_aggregator.py">
-import time
-import threading
-import logging
-from typing import Dict, Tuple
-
-from backend.core.utils.parse_resolution import parse_resolution
-
-logger = logging.getLogger("stream_aggregator")
-
-
-class ResolutionRegistry:
-    """
-    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
-
-    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
-    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
-    """
-
-    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
-        self.defaults = set(defaults)
-        self.ttl = ttl_sec
-        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
-        self.lock = threading.Lock()
-
-    def touch(self, ex: str, sym: str, res: str) -> None:
-        """
-        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
-        """
-        sec, norm = parse_resolution(res)
-        key = (ex, sym)
-        with self.lock:
-            self.active.setdefault(key, {})[norm] = {
-                "sec": sec,
-                "last": time.monotonic(),
-            }
-
-    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
-        """
-        Liefert alle relevanten Resolutions für (ex, sym):
-
-        - Basis-Resolutions aus defaults
-        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
-        """
-        key = (ex, sym)
-        now = time.monotonic()
-        with self.lock:
-            store = self.active.setdefault(key, {})
-
-            # Abgelaufene dynamische Resolutions entfernen
-            for r in list(store.keys()):
-                if now - store[r]["last"] > self.ttl:
-                    del store[r]
-
-            # Basis-Resolutions immer drin
-            out: Dict[str, Dict[str, float]] = {
-                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
-            }
-            # Dynamische Resolutions überschreiben ggf. defaults
-            out.update({r: {"sec": store[r]["sec"]} for r in store})
-
-        return out
-
-
-# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
-registry = ResolutionRegistry()
-
-
-class MultiResCandleAgg:
-    """
-    Multi-Resolution Candle-Aggregator.
-
-    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
-    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
-    """
-
-    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
-        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
-        self.exchange = exchange
-        self.symbol = symbol
-        self.market = market
-        self.resolutions = resolutions or []
-        
-        # key: (ex, sym, res_str) → candle-state
-        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        self.last_cleanup = time.time()
-
-    def _cleanup_old_buckets(self) -> None:
-        """
-        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
-        Nur alle 5 Minuten aktiv.
-        """
-        current_time = time.time()
-        # Nur alle 5 Minuten bereinigen
-        if current_time - self.last_cleanup < 300:
-            return
-
-        current_time_ms = int(current_time * 1000)
-        # Lösche Candles älter als 1 Stunde
-        for key in list(self.state.keys()):
-            if current_time_ms - self.state[key]["timestamp"] > 3600000:
-                del self.state[key]
-
-        self.last_cleanup = current_time
-
-    @staticmethod
-    def _bucket(ts_ms: int, sec: int) -> int:
-        """
-        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
-        """
-        return (ts_ms // (sec * 1000)) * (sec * 1000)
-
-    def on_trade(
-        self,
-        ex: str,
-        sym: str,
-        market: str,
-        ts_ms: int,
-        price,
-        size,
-        resolutions: Dict[str, Dict[str, float]],
-    ):
-        """
-        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
-
-        Parameter:
-        - ex: Exchange-Name (z.B. 'binance')
-        - sym: Symbol (z.B. 'BTCUSDT')
-        - market: Markt-Typ (z.B. 'spot', 'usdtm')
-        - ts_ms: Timestamp in Millisekunden
-        - price: Preis (Decimal/float/str)
-        - size: Größe (Decimal/float/str)
-        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
-                       (kommt aus registry.list(ex, sym))
-
-        Rückgabe:
-        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
-          abgeschlossen wurden (Bucket-Wechsel).
-        """
-        self._cleanup_old_buckets()
-        finished = []
-
-        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
-        for res_str, meta in resolutions.items():
-            sec = meta["sec"]
-            key = (ex, sym, res_str)
-            b = self._bucket(ts_ms, sec)
-            c = self.state.get(key)
-
-            if c is None or c["timestamp"] != b:
-                # alter Bucket wird fertig, wenn vorhanden
-                if c:
-                    finished.append((res_str, c))
-                # neuen Candle-Bucket anlegen
-                self.state[key] = {
-                    "timestamp": b,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": size,
-                    "sec": sec,
-                    "market": market,
-                }
-            else:
-                # existierenden Candle-Bucket aktualisieren
-                c["c"] = price
-                c["v"] += size
-                if price > c["h"]:
-                    c["h"] = price
-                if price < c["l"]:
-                    c["l"] = price
-
-        return finished
-</file>
-
 <file path="backend/services/adapter/whale_detector.py">
 # backend/services/adapter/whale_detector.py
 import asyncio
@@ -161904,6 +161904,476 @@ interface ImportMeta {
   },
   "include": ["src"]
 }
+</file>
+
+<file path="monitor-system.sh">
+#!/usr/bin/env bash
+# =============================================================================
+# CONTINUOUS SYSTEM MONITOR (READABLE EDITION)
+# - compact snapshot table (no wrap)
+# - per-exchange details with bars and sizes
+# - backfill progress table + per-pair bars in details
+# =============================================================================
+
+set +e
+
+# ---- REQUIREMENTS (Bash >= 5) ----
+if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
+  echo "ERROR: Bash >= 5 required."
+  echo "Install:  brew install bash"
+  echo "Run:      /opt/homebrew/bin/bash ./monitor.sh   (Apple Silicon)"
+  exit 1
+fi
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+REFRESH_INTERVAL="${REFRESH_INTERVAL:-10}"
+
+GW_URL="${GW_URL:-http://localhost:8100}"
+GW_TIMEOUT_S="${GW_TIMEOUT_S:-3}"
+
+REDIS_PORT="${REDIS_PORT:-6380}"
+
+CH_CONT="${CH_CONT:-0_ws_ai-clickhouse-1}"
+BE_CONT="${BE_CONT:-0_ws_ai-backend-1}"
+
+BACKFILL_TARGET_DATE="${AUTO_BACKFILL_UNTIL_DATE:-${BACKFILL_TARGET_DATE:-2024-01-01}}"
+
+# Display
+OUTPUT_MODE="${OUTPUT_MODE:-compact}"   # compact | wide
+DETAIL_TOP_EX="${DETAIL_TOP_EX:-8}"    # how many exchanges show details
+DETAIL_TOP_PAIRS="${DETAIL_TOP_PAIRS:-15}"  # how many backfill pairs show details
+SHOW_GAP="${SHOW_GAP:-0}"              # 1=show (expensive), 0=hide
+
+# Bars scaling references
+REDIS_RATE_MAX="${REDIS_RATE_MAX:-20000}"     # msgs/s => 100%
+BF_RATE_MAX="${BF_RATE_MAX:-200000}"          # rows/refresh => 100%
+CH_SIZE_MAX_GB="${CH_SIZE_MAX_GB:-200}"       # GB => 100%
+
+# Gap
+GAP_SCAN_DAYS="${GAP_SCAN_DAYS:-7}"
+GAP_BUCKET_SECONDS="${GAP_BUCKET_SECONDS:-60}"
+GAP_SOURCE_FILTER="${GAP_SOURCE_FILTER:-live,rest_backfill}"
+GAP_MAX_PAIRS="${GAP_MAX_PAIRS:-20}"
+
+MAX_HISTORY="${MAX_HISTORY:-5}"
+
+mkdir -p logs/monitor
+
+# -----------------------------
+# UTILS
+# -----------------------------
+with_timeout() {
+  local s="$1"; shift
+  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
+  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
+  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
+  fi
+}
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+tcols() {
+  local c
+  c="$(tput cols 2>/dev/null || echo 120)"
+  is_uint "$c" || c=120
+  [[ "$c" -lt 80 ]] && c=80
+  echo "$c"
+}
+
+# clamp 0..100 float
+clamp_pct() {
+  awk -v p="$1" 'BEGIN{if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
+}
+
+pct_of() { # value max -> 0..100
+  awk -v v="$1" -v m="$2" 'BEGIN{if(m<=0)m=1; p=(v/m)*100; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
+}
+
+bar() { # pct width
+  local pct="${1:-0}" w="${2:-16}"
+  pct="$(clamp_pct "$pct")"
+  local filled
+  filled="$(awk -v p="$pct" -v w="$w" 'BEGIN{f=int((p/100)*w); if(f<0)f=0; if(f>w)f=w; print f}')"
+  local empty=$((w - filled))
+  printf "["
+  if (( filled > 0 )); then printf "%0.s█" $(seq 1 "$filled" 2>/dev/null); fi
+  if (( empty  > 0 )); then printf "%0.s░" $(seq 1 "$empty"  2>/dev/null); fi
+  printf "]"
+}
+
+fmt_gb() { awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024/1024}'; }
+fmt_mb() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1024/1024}'; }
+
+short() { # short "text" maxlen
+  local s="$1" m="$2"
+  [[ "${#s}" -le "$m" ]] && { printf "%s" "$s"; return; }
+  printf "%s…" "${s:0:$((m-1))}"
+}
+
+ch_query() {
+  docker exec "$CH_CONT" clickhouse-client --query "$1" 2>/dev/null
+}
+
+# Redis sum XLEN for streams matching pattern
+sum_xlen_pattern() {
+  local pattern="$1"
+  local cursor=0 total=0
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p "$REDIS_PORT" --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+    [[ -z "$scan_result" ]] && { echo "$total"; return; }
+    local new_cursor="" first=true
+    while IFS= read -r line; do
+      if [[ "$first" == "true" ]]; then new_cursor="$line"; first=false
+      else
+        [[ -z "$line" ]] && continue
+        local l
+        l="$(redis-cli -p "$REDIS_PORT" XLEN "$line" 2>/dev/null || echo 0)"
+        is_uint "$l" || l=0
+        total=$((total + l))
+      fi
+    done <<< "$scan_result"
+    cursor="$new_cursor"
+    [[ "$cursor" == "0" ]] && break
+  done
+  echo "$total"
+}
+
+# Discover exchanges from CH trading.*_trades
+discover_exchanges() {
+  ch_query "
+    SELECT replaceOne(name,'_trades','')
+    FROM system.tables
+    WHERE database='trading' AND name LIKE '%\\_trades'
+    ORDER BY 1
+    FORMAT TSV
+  " | sed '/^$/d'
+}
+
+# ✅ ENTERPRISE FIX: Build UNION query mit DIREKTER Progress-Berechnung (keine String-Manipulation!)
+build_union_backfill_pairs_query() {
+  local tables
+  tables="$(ch_query "
+    SELECT name
+    FROM system.tables
+    WHERE database='trading' AND name LIKE '%\\_trades'
+    ORDER BY name
+    FORMAT TSV
+  " | sed '/^$/d')"
+  [[ -z "$tables" ]] && { echo ""; return; }
+
+  local q=""
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    local ex="${t%_trades}"
+    [[ -n "$q" ]] && q+=" UNION ALL "
+    q+="
+      SELECT
+        '${ex}' AS exchange,
+        symbol,
+        market,
+        countIf(source='rest_backfill') AS bf_rows,
+        minIf(timestamp, source='rest_backfill') AS bf_oldest,
+        maxIf(timestamp, source='rest_backfill') AS bf_newest,
+        dateDiff('day', minIf(timestamp, source='rest_backfill'), maxIf(timestamp, source='rest_backfill')) AS covered_days,
+        round(100.0 * covered_days / ${TOTAL_DAYS}, 1) AS progress_pct
+      FROM trading.${t}
+      GROUP BY symbol, market
+      HAVING bf_rows > 0
+    "
+  done <<< "$tables"
+
+  cat <<EOF
+SELECT exchange, symbol, market, bf_rows, bf_oldest, bf_newest, covered_days, progress_pct
+FROM (${q})
+ORDER BY exchange, bf_rows DESC
+FORMAT TSV
+EOF
+}
+
+discover_backfill_pairs() {
+  local uq
+  uq="$(build_union_backfill_pairs_query)"
+  [[ -z "$uq" ]] && return
+  ch_query "$uq"
+}
+
+# -----------------------------
+# STATE
+# -----------------------------
+declare -A LAST_REDIS_TOTAL=()
+declare -A LAST_REDIS_TS=()
+declare -A LAST_BF_ROWS=()
+
+BACKFILL_HISTORY=()
+
+# Progress time base
+TARGET_TS="$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET_DATE" +%s 2>/dev/null || echo 0)"
+NOW_TS="$(date +%s)"
+TOTAL_DAYS=0
+if is_uint "$TARGET_TS" && [[ "$TARGET_TS" -gt 0 ]]; then
+  TOTAL_DAYS=$(( (NOW_TS - TARGET_TS) / 86400 ))
+  [[ $TOTAL_DAYS -gt 0 ]] || TOTAL_DAYS=0
+fi
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+ITER=0
+while true; do
+  ITER=$((ITER + 1))
+  TS_FULL="$(date "+%Y-%m-%d %H:%M:%S")"
+  NOW="$(date +%s)"
+  COLS="$(tcols)"
+
+  # dynamic bar width for details only
+  # keep it stable: 12..28
+  BARW=$(( (COLS - 60) / 6 ))
+  [[ $BARW -lt 12 ]] && BARW=12
+  [[ $BARW -gt 28 ]] && BARW=28
+
+  # backend/CH/redis status
+  HEALTH_READY="$(curl -sf --max-time 2 "${GW_URL}/health/ready" 2>/dev/null)"
+  HEALTH_CODE=$?
+  backend_icon="❌"; backend_txt="offline"; comp_txt="N/A"
+  if [[ $HEALTH_CODE -eq 0 ]]; then
+    SYSTEM_STATUS="$(echo "$HEALTH_READY" | jq -r '.system_status // "unknown"' 2>/dev/null || echo unknown)"
+    READY_BOOL="$(echo "$HEALTH_READY" | jq -r '.ready // false' 2>/dev/null || echo false)"
+    HEALTHY="$(echo "$HEALTH_READY" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo 0)"
+    TOTAL="$(echo "$HEALTH_READY" | jq -r '.summary.total_components // 0' 2>/dev/null || echo 0)"
+    comp_txt="${HEALTHY}/${TOTAL}"
+    if [[ "$READY_BOOL" == "true" && "$SYSTEM_STATUS" == "healthy" ]]; then backend_icon="✅"; backend_txt="healthy"
+    elif [[ "$READY_BOOL" == "true" ]]; then backend_icon="⚠️"; backend_txt="$SYSTEM_STATUS"
+    else backend_icon="❌"; backend_txt="$SYSTEM_STATUS"
+    fi
+  fi
+
+  ch_ping="$(ch_query "SELECT 1" | tr -d '\r\n')"
+  ch_icon=$([[ "$ch_ping" == "1" ]] && echo "✅" || echo "❌")
+
+  redis_ping="$(redis-cli -p "$REDIS_PORT" ping 2>/dev/null | tr -d '\r\n')"
+  redis_icon=$([[ "$redis_ping" == "PONG" ]] && echo "✅" || echo "❌")
+
+  clear
+  echo "=================================================="
+  echo "📊 CONTINUOUS SYSTEM MONITOR | Iteration #${ITER} | ${TS_FULL} | cols=${COLS}"
+  echo "Refresh: ${REFRESH_INTERVAL}s | Backend: ${backend_icon} ${backend_txt} (${comp_txt}) | CH: ${ch_icon} | Redis: ${redis_icon}"
+  echo "=================================================="
+  echo
+
+  # --- exchanges ---
+  mapfile -t EXS < <(discover_exchanges)
+  if [[ "${#EXS[@]}" -eq 0 ]]; then
+    EXS=(binance bitget mexc gateio bybit okx htx coinbase)
+  fi
+
+  # 1) COMPACT PIPELINE TABLE (no bars)
+  echo "1️⃣ PIPELINE (compact, no wrap)"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "%-9s | %6s | %7s | %5s | %4s | %4s | %8s | %8s | %7s | %s\n" \
+    "Exchange" "Redis" "R/s" "GW" "Lat" "WS" "CH5m" "SizeMB" "Status" "Note"
+  echo "--------------------------------------------------------------------------------------------------------------"
+
+  h=0; p=0; f=0
+  shown_ex=0
+
+  # We also keep details data for top exchanges
+  DETAILS_EX=()
+
+  for ex in "${EXS[@]}"; do
+    # redis totals
+    rs="$(sum_xlen_pattern "${ex}:trades:spot:*" 2>/dev/null || echo 0)"
+    ru="$(sum_xlen_pattern "${ex}:trades:usdtm:*" 2>/dev/null || echo 0)"
+    rc="$(sum_xlen_pattern "${ex}:trades:coinm:*" 2>/dev/null || echo 0)"
+    rd="$(sum_xlen_pattern "${ex}:trades:usdcm:*" 2>/dev/null || echo 0)"
+    is_uint "$rs" || rs=0; is_uint "$ru" || ru=0; is_uint "$rc" || rc=0; is_uint "$rd" || rd=0
+    rtotal=$((rs+ru+rc+rd))
+
+    # redis rate
+    last_total="${LAST_REDIS_TOTAL[$ex]:-}"
+    last_ts="${LAST_REDIS_TS[$ex]:-}"
+    rrate=0
+    if [[ -n "$last_total" && -n "$last_ts" ]]; then
+      dt=$((NOW - last_ts)); [[ $dt -gt 0 ]] || dt=1
+      dmsg=$((rtotal - last_total)); [[ $dmsg -ge 0 ]] || dmsg=0
+      rrate=$((dmsg / dt))
+    fi
+    LAST_REDIS_TOTAL["$ex"]="$rtotal"
+    LAST_REDIS_TS["$ex"]="$NOW"
+
+    # GW sample
+    test_symbol="BTCUSDT"; [[ "$ex" == "coinbase" ]] && test_symbol="BTC-USD"
+    api_resp="$(
+      with_timeout "$GW_TIMEOUT_S" curl -s --max-time "$GW_TIMEOUT_S" -w "\n%{time_total}" \
+        "${GW_URL}/gw/trades?symbol=${test_symbol}&exchange=${ex}&market=spot&limit=10" \
+      || echo -e "[]\n0"
+    )"
+    api_n="$(echo "$api_resp" | sed '$d' | jq 'length' 2>/dev/null || echo 0)"
+    api_lat="$(echo "$api_resp" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)"
+    is_uint "$api_n" || api_n=0; is_uint "$api_lat" || api_lat=0
+
+    gw=$([[ $api_n -gt 0 ]] && echo "✓" || echo "✗")
+    ws=$([[ $rtotal -gt 0 ]] && echo "✓" || echo "✗")
+
+    # CH live 5m
+    ch5="$(ch_query "SELECT count() FROM trading.${ex}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'")"
+    is_uint "$ch5" || ch5=0
+
+    # size compressed bytes -> MB
+    sb="$(ch_query "SELECT ifNull(sum(data_compressed_bytes),0) FROM system.parts WHERE active=1 AND database='trading' AND table='${ex}_trades'")"
+    is_uint "$sb" || sb=0
+    smb="$(fmt_mb "$sb")"
+
+    status="FAILED"
+    if (( rtotal > 0 && api_n > 0 && ch5 > 0 )); then status="HEALTHY"
+    elif (( rtotal > 0 || api_n > 0 || ch5 > 0 )); then status="PARTIAL"
+    fi
+
+    case "$status" in
+      HEALTHY) ((h++)) ;;
+      PARTIAL) ((p++)) ;;
+      *)       ((f++)) ;;
+    esac
+
+    note=""
+    [[ "$ex" == "coinbase" ]] && note="sym=${test_symbol}"
+    printf "%-9s | %6d | %7d | %5s | %4d | %4s | %8d | %8s | %7s | %s\n" \
+      "$ex" "$rtotal" "$rrate" "$gw" "$api_lat" "$ws" "$ch5" "$smb" "$status" "$note"
+
+    # collect top exchanges for details (just first N, deterministic)
+    if (( shown_ex < DETAIL_TOP_EX )); then
+      DETAILS_EX+=("$ex:$test_symbol:$rtotal:$rrate:$ch5:$sb:$api_lat:$api_n")
+      shown_ex=$((shown_ex+1))
+    fi
+  done
+
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "Summary: HEALTHY=%d | PARTIAL=%d | FAILED=%d\n" "$h" "$p" "$f"
+  echo
+
+  # 1b) DETAILS per exchange (bars here, no wrap because fewer columns)
+  echo "1️⃣b EXCHANGE DETAILS (bars + sizes, top ${DETAIL_TOP_EX})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  for line in "${DETAILS_EX[@]}"; do
+    IFS=':' read -r ex sym rtotal rrate ch5 sb api_lat api_n <<< "$line"
+    size_gb="$(fmt_gb "$sb")"
+    sz_pct="$(pct_of "$size_gb" "$CH_SIZE_MAX_GB")"
+    rr_pct="$(pct_of "$rrate" "$REDIS_RATE_MAX")"
+    echo "• ${ex}  (test=${sym})"
+    printf "  RedisRate  %s %6d/s   RedisTotal=%d\n" "$(bar "$rr_pct" "$BARW")" "$rrate" "$rtotal"
+    printf "  CH-Size    %s %6sGB   (compressed)\n"  "$(bar "$sz_pct" "$BARW")" "$size_gb"
+    printf "  CH(5m)=%d   GW: %s  Lat=%dms  API10=%d\n" "$ch5" "$([[ $api_n -gt 0 ]] && echo ✓ || echo ✗)" "$api_lat" "$api_n"
+    echo
+  done
+
+  # 2) BACKFILL PROGRESS (compact table + details bars)
+  echo "2️⃣ BACKFILL (compact)"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
+    "Pair" "Rows" "ΔRows" "Oldest" "Newest" "State"
+  echo "--------------------------------------------------------------------------------------------------------------"
+
+  pairs_tsv="$(discover_backfill_pairs)"
+  shown_pairs=0
+  DETAILS_PAIRS=()
+
+  # ✅ ENTERPRISE FIX: Query liefert jetzt covered_days + progress_pct direkt!
+  while IFS=$'\t' read -r ex sym mk bf_rows bf_oldest bf_newest bf_days prog; do
+    [[ -z "$ex" || -z "$sym" || -z "$mk" ]] && continue
+    is_uint "$bf_rows" || bf_rows=0
+    is_uint "$bf_days" || bf_days=0
+
+    key="${ex}:${sym}:${mk}"
+    last="${LAST_BF_ROWS[$key]:-}"
+    delta=0
+    if [[ -n "$last" ]]; then
+      delta=$((bf_rows - last)); [[ $delta -ge 0 ]] || delta=0
+    fi
+    LAST_BF_ROWS["$key"]="$bf_rows"
+
+    # prog kommt jetzt direkt aus ClickHouse!
+    prog="$(clamp_pct "${prog:-0.0}")"
+
+    state="🔄 RUNNING"
+    if (( TOTAL_DAYS > 0 && bf_days >= TOTAL_DAYS )); then state="✅ COMPLETE"; fi
+
+    # shorten timestamps to keep compact
+    o="$(short "${bf_oldest:-N/A}" 19)"
+    n="$(short "${bf_newest:-N/A}" 19)"
+
+    printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
+      "${ex}:${sym}:${mk}" \
+      "$(printf "%'d" "$bf_rows")" \
+      "+$(printf "%'d" "$delta")" \
+      "$o" "$n" "$state"
+
+    if (( shown_pairs < DETAIL_TOP_PAIRS )); then
+      DETAILS_PAIRS+=("${ex}:${sym}:${mk}:${bf_rows}:${delta}:${bf_days}:${prog}:${bf_oldest}:${bf_newest}")
+      shown_pairs=$((shown_pairs+1))
+    fi
+  done <<< "$pairs_tsv"
+
+  if (( shown_pairs == 0 )); then
+    echo "(no active backfill pairs found)"
+  fi
+
+  echo "--------------------------------------------------------------------------------------------------------------"
+  echo "Notes: progress uses covered_days(backfill oldest→newest) / total_days(now→target=${BACKFILL_TARGET_DATE})."
+  echo
+
+  echo "2️⃣b BACKFILL DETAILS (bars, top ${DETAIL_TOP_PAIRS})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  for pl in "${DETAILS_PAIRS[@]}"; do
+    IFS=':' read -r ex sym mk bf_rows delta bf_days prog bf_oldest bf_newest <<< "$pl"
+    dr_pct="$(pct_of "$delta" "$BF_RATE_MAX")"
+    echo "• ${ex}:${sym}:${mk}"
+    printf "  Progress   %s  %5.1f%%  (%dd/%dd)\n" "$(bar "$prog" "$BARW")" "$prog" "$bf_days" "$TOTAL_DAYS"
+    printf "  Speed      %s  +%d rows/refresh\n" "$(bar "$dr_pct" "$BARW")" "$delta"
+    printf "  Rows=%'d  Oldest=%s  Newest=%s\n" "$bf_rows" "$(short "${bf_oldest:-N/A}" 28)" "$(short "${bf_newest:-N/A}" 28)"
+    echo
+  done
+
+  # 3) Optional GAP section (default OFF)
+  if [[ "$SHOW_GAP" == "1" ]]; then
+    echo "3️⃣ GAP COMPLETENESS (expensive) - disabled by default unless SHOW_GAP=1"
+    echo
+  fi
+
+  # 4) Backfill loop history (dedup + keep last N)
+  echo "4️⃣ BACKFILL LOOP ACTIVITY (history, last ${MAX_HISTORY})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  latest_logs="$(docker logs "$BE_CONT" 2>&1 | grep -E '(\[BACKFILL_METRIC\]|BACKFILL GAP-LOOP|GAP PRIO|BATCH|TARGET REACHED|loaded<=0)' | tail -n 5 2>/dev/null)"
+  if [[ -n "$latest_logs" ]]; then
+    while IFS= read -r ln; do
+      [[ -z "$ln" ]] && continue
+      # dedup: do not append same line twice in a row
+      last_idx=$(( ${#BACKFILL_HISTORY[@]} - 1 ))
+      if (( last_idx >= 0 )) && [[ "${BACKFILL_HISTORY[$last_idx]}" == *"$ln" ]]; then
+        continue
+      fi
+      BACKFILL_HISTORY+=("[$(date +%H:%M:%S)] $ln")
+      if (( ${#BACKFILL_HISTORY[@]} > MAX_HISTORY )); then
+        BACKFILL_HISTORY=("${BACKFILL_HISTORY[@]:1}")
+      fi
+    done <<< "$latest_logs"
+  fi
+
+  if (( ${#BACKFILL_HISTORY[@]} > 0 )); then
+    for e in "${BACKFILL_HISTORY[@]}"; do echo "$e"; done
+  else
+    echo "(no backfill activity detected yet)"
+  fi
+  echo "--------------------------------------------------------------------------------------------------------------"
+  echo
+  echo "=================================================="
+  echo "Next refresh in ${REFRESH_INTERVAL}s... (Ctrl+C to stop)"
+  echo "=================================================="
+
+  echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
+  sleep "$REFRESH_INTERVAL"
+done
 </file>
 
 <file path="backend/database/clickhouse/cl_config.py">
@@ -162739,476 +163209,6 @@ export const AppLayout: React.FC = () => {
 };
 </file>
 
-<file path="monitor-system.sh">
-#!/usr/bin/env bash
-# =============================================================================
-# CONTINUOUS SYSTEM MONITOR (READABLE EDITION)
-# - compact snapshot table (no wrap)
-# - per-exchange details with bars and sizes
-# - backfill progress table + per-pair bars in details
-# =============================================================================
-
-set +e
-
-# ---- REQUIREMENTS (Bash >= 5) ----
-if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
-  echo "ERROR: Bash >= 5 required."
-  echo "Install:  brew install bash"
-  echo "Run:      /opt/homebrew/bin/bash ./monitor.sh   (Apple Silicon)"
-  exit 1
-fi
-
-# -----------------------------
-# CONFIG
-# -----------------------------
-REFRESH_INTERVAL="${REFRESH_INTERVAL:-10}"
-
-GW_URL="${GW_URL:-http://localhost:8100}"
-GW_TIMEOUT_S="${GW_TIMEOUT_S:-3}"
-
-REDIS_PORT="${REDIS_PORT:-6380}"
-
-CH_CONT="${CH_CONT:-0_ws_ai-clickhouse-1}"
-BE_CONT="${BE_CONT:-0_ws_ai-backend-1}"
-
-BACKFILL_TARGET_DATE="${AUTO_BACKFILL_UNTIL_DATE:-${BACKFILL_TARGET_DATE:-2024-01-01}}"
-
-# Display
-OUTPUT_MODE="${OUTPUT_MODE:-compact}"   # compact | wide
-DETAIL_TOP_EX="${DETAIL_TOP_EX:-8}"    # how many exchanges show details
-DETAIL_TOP_PAIRS="${DETAIL_TOP_PAIRS:-15}"  # how many backfill pairs show details
-SHOW_GAP="${SHOW_GAP:-0}"              # 1=show (expensive), 0=hide
-
-# Bars scaling references
-REDIS_RATE_MAX="${REDIS_RATE_MAX:-20000}"     # msgs/s => 100%
-BF_RATE_MAX="${BF_RATE_MAX:-200000}"          # rows/refresh => 100%
-CH_SIZE_MAX_GB="${CH_SIZE_MAX_GB:-200}"       # GB => 100%
-
-# Gap
-GAP_SCAN_DAYS="${GAP_SCAN_DAYS:-7}"
-GAP_BUCKET_SECONDS="${GAP_BUCKET_SECONDS:-60}"
-GAP_SOURCE_FILTER="${GAP_SOURCE_FILTER:-live,rest_backfill}"
-GAP_MAX_PAIRS="${GAP_MAX_PAIRS:-20}"
-
-MAX_HISTORY="${MAX_HISTORY:-5}"
-
-mkdir -p logs/monitor
-
-# -----------------------------
-# UTILS
-# -----------------------------
-with_timeout() {
-  local s="$1"; shift
-  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
-  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
-  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
-  fi
-}
-
-is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
-
-tcols() {
-  local c
-  c="$(tput cols 2>/dev/null || echo 120)"
-  is_uint "$c" || c=120
-  [[ "$c" -lt 80 ]] && c=80
-  echo "$c"
-}
-
-# clamp 0..100 float
-clamp_pct() {
-  awk -v p="$1" 'BEGIN{if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
-}
-
-pct_of() { # value max -> 0..100
-  awk -v v="$1" -v m="$2" 'BEGIN{if(m<=0)m=1; p=(v/m)*100; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
-}
-
-bar() { # pct width
-  local pct="${1:-0}" w="${2:-16}"
-  pct="$(clamp_pct "$pct")"
-  local filled
-  filled="$(awk -v p="$pct" -v w="$w" 'BEGIN{f=int((p/100)*w); if(f<0)f=0; if(f>w)f=w; print f}')"
-  local empty=$((w - filled))
-  printf "["
-  if (( filled > 0 )); then printf "%0.s█" $(seq 1 "$filled" 2>/dev/null); fi
-  if (( empty  > 0 )); then printf "%0.s░" $(seq 1 "$empty"  2>/dev/null); fi
-  printf "]"
-}
-
-fmt_gb() { awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024/1024}'; }
-fmt_mb() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1024/1024}'; }
-
-short() { # short "text" maxlen
-  local s="$1" m="$2"
-  [[ "${#s}" -le "$m" ]] && { printf "%s" "$s"; return; }
-  printf "%s…" "${s:0:$((m-1))}"
-}
-
-ch_query() {
-  docker exec "$CH_CONT" clickhouse-client --query "$1" 2>/dev/null
-}
-
-# Redis sum XLEN for streams matching pattern
-sum_xlen_pattern() {
-  local pattern="$1"
-  local cursor=0 total=0
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p "$REDIS_PORT" --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-    [[ -z "$scan_result" ]] && { echo "$total"; return; }
-    local new_cursor="" first=true
-    while IFS= read -r line; do
-      if [[ "$first" == "true" ]]; then new_cursor="$line"; first=false
-      else
-        [[ -z "$line" ]] && continue
-        local l
-        l="$(redis-cli -p "$REDIS_PORT" XLEN "$line" 2>/dev/null || echo 0)"
-        is_uint "$l" || l=0
-        total=$((total + l))
-      fi
-    done <<< "$scan_result"
-    cursor="$new_cursor"
-    [[ "$cursor" == "0" ]] && break
-  done
-  echo "$total"
-}
-
-# Discover exchanges from CH trading.*_trades
-discover_exchanges() {
-  ch_query "
-    SELECT replaceOne(name,'_trades','')
-    FROM system.tables
-    WHERE database='trading' AND name LIKE '%\\_trades'
-    ORDER BY 1
-    FORMAT TSV
-  " | sed '/^$/d'
-}
-
-# ✅ ENTERPRISE FIX: Build UNION query mit DIREKTER Progress-Berechnung (keine String-Manipulation!)
-build_union_backfill_pairs_query() {
-  local tables
-  tables="$(ch_query "
-    SELECT name
-    FROM system.tables
-    WHERE database='trading' AND name LIKE '%\\_trades'
-    ORDER BY name
-    FORMAT TSV
-  " | sed '/^$/d')"
-  [[ -z "$tables" ]] && { echo ""; return; }
-
-  local q=""
-  while IFS= read -r t; do
-    [[ -z "$t" ]] && continue
-    local ex="${t%_trades}"
-    [[ -n "$q" ]] && q+=" UNION ALL "
-    q+="
-      SELECT
-        '${ex}' AS exchange,
-        symbol,
-        market,
-        countIf(source='rest_backfill') AS bf_rows,
-        minIf(timestamp, source='rest_backfill') AS bf_oldest,
-        maxIf(timestamp, source='rest_backfill') AS bf_newest,
-        dateDiff('day', minIf(timestamp, source='rest_backfill'), maxIf(timestamp, source='rest_backfill')) AS covered_days,
-        round(100.0 * covered_days / ${TOTAL_DAYS}, 1) AS progress_pct
-      FROM trading.${t}
-      GROUP BY symbol, market
-      HAVING bf_rows > 0
-    "
-  done <<< "$tables"
-
-  cat <<EOF
-SELECT exchange, symbol, market, bf_rows, bf_oldest, bf_newest, covered_days, progress_pct
-FROM (${q})
-ORDER BY exchange, bf_rows DESC
-FORMAT TSV
-EOF
-}
-
-discover_backfill_pairs() {
-  local uq
-  uq="$(build_union_backfill_pairs_query)"
-  [[ -z "$uq" ]] && return
-  ch_query "$uq"
-}
-
-# -----------------------------
-# STATE
-# -----------------------------
-declare -A LAST_REDIS_TOTAL=()
-declare -A LAST_REDIS_TS=()
-declare -A LAST_BF_ROWS=()
-
-BACKFILL_HISTORY=()
-
-# Progress time base
-TARGET_TS="$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET_DATE" +%s 2>/dev/null || echo 0)"
-NOW_TS="$(date +%s)"
-TOTAL_DAYS=0
-if is_uint "$TARGET_TS" && [[ "$TARGET_TS" -gt 0 ]]; then
-  TOTAL_DAYS=$(( (NOW_TS - TARGET_TS) / 86400 ))
-  [[ $TOTAL_DAYS -gt 0 ]] || TOTAL_DAYS=0
-fi
-
-# -----------------------------
-# MAIN LOOP
-# -----------------------------
-ITER=0
-while true; do
-  ITER=$((ITER + 1))
-  TS_FULL="$(date "+%Y-%m-%d %H:%M:%S")"
-  NOW="$(date +%s)"
-  COLS="$(tcols)"
-
-  # dynamic bar width for details only
-  # keep it stable: 12..28
-  BARW=$(( (COLS - 60) / 6 ))
-  [[ $BARW -lt 12 ]] && BARW=12
-  [[ $BARW -gt 28 ]] && BARW=28
-
-  # backend/CH/redis status
-  HEALTH_READY="$(curl -sf --max-time 2 "${GW_URL}/health/ready" 2>/dev/null)"
-  HEALTH_CODE=$?
-  backend_icon="❌"; backend_txt="offline"; comp_txt="N/A"
-  if [[ $HEALTH_CODE -eq 0 ]]; then
-    SYSTEM_STATUS="$(echo "$HEALTH_READY" | jq -r '.system_status // "unknown"' 2>/dev/null || echo unknown)"
-    READY_BOOL="$(echo "$HEALTH_READY" | jq -r '.ready // false' 2>/dev/null || echo false)"
-    HEALTHY="$(echo "$HEALTH_READY" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo 0)"
-    TOTAL="$(echo "$HEALTH_READY" | jq -r '.summary.total_components // 0' 2>/dev/null || echo 0)"
-    comp_txt="${HEALTHY}/${TOTAL}"
-    if [[ "$READY_BOOL" == "true" && "$SYSTEM_STATUS" == "healthy" ]]; then backend_icon="✅"; backend_txt="healthy"
-    elif [[ "$READY_BOOL" == "true" ]]; then backend_icon="⚠️"; backend_txt="$SYSTEM_STATUS"
-    else backend_icon="❌"; backend_txt="$SYSTEM_STATUS"
-    fi
-  fi
-
-  ch_ping="$(ch_query "SELECT 1" | tr -d '\r\n')"
-  ch_icon=$([[ "$ch_ping" == "1" ]] && echo "✅" || echo "❌")
-
-  redis_ping="$(redis-cli -p "$REDIS_PORT" ping 2>/dev/null | tr -d '\r\n')"
-  redis_icon=$([[ "$redis_ping" == "PONG" ]] && echo "✅" || echo "❌")
-
-  clear
-  echo "=================================================="
-  echo "📊 CONTINUOUS SYSTEM MONITOR | Iteration #${ITER} | ${TS_FULL} | cols=${COLS}"
-  echo "Refresh: ${REFRESH_INTERVAL}s | Backend: ${backend_icon} ${backend_txt} (${comp_txt}) | CH: ${ch_icon} | Redis: ${redis_icon}"
-  echo "=================================================="
-  echo
-
-  # --- exchanges ---
-  mapfile -t EXS < <(discover_exchanges)
-  if [[ "${#EXS[@]}" -eq 0 ]]; then
-    EXS=(binance bitget mexc gateio bybit okx htx coinbase)
-  fi
-
-  # 1) COMPACT PIPELINE TABLE (no bars)
-  echo "1️⃣ PIPELINE (compact, no wrap)"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "%-9s | %6s | %7s | %5s | %4s | %4s | %8s | %8s | %7s | %s\n" \
-    "Exchange" "Redis" "R/s" "GW" "Lat" "WS" "CH5m" "SizeMB" "Status" "Note"
-  echo "--------------------------------------------------------------------------------------------------------------"
-
-  h=0; p=0; f=0
-  shown_ex=0
-
-  # We also keep details data for top exchanges
-  DETAILS_EX=()
-
-  for ex in "${EXS[@]}"; do
-    # redis totals
-    rs="$(sum_xlen_pattern "${ex}:trades:spot:*" 2>/dev/null || echo 0)"
-    ru="$(sum_xlen_pattern "${ex}:trades:usdtm:*" 2>/dev/null || echo 0)"
-    rc="$(sum_xlen_pattern "${ex}:trades:coinm:*" 2>/dev/null || echo 0)"
-    rd="$(sum_xlen_pattern "${ex}:trades:usdcm:*" 2>/dev/null || echo 0)"
-    is_uint "$rs" || rs=0; is_uint "$ru" || ru=0; is_uint "$rc" || rc=0; is_uint "$rd" || rd=0
-    rtotal=$((rs+ru+rc+rd))
-
-    # redis rate
-    last_total="${LAST_REDIS_TOTAL[$ex]:-}"
-    last_ts="${LAST_REDIS_TS[$ex]:-}"
-    rrate=0
-    if [[ -n "$last_total" && -n "$last_ts" ]]; then
-      dt=$((NOW - last_ts)); [[ $dt -gt 0 ]] || dt=1
-      dmsg=$((rtotal - last_total)); [[ $dmsg -ge 0 ]] || dmsg=0
-      rrate=$((dmsg / dt))
-    fi
-    LAST_REDIS_TOTAL["$ex"]="$rtotal"
-    LAST_REDIS_TS["$ex"]="$NOW"
-
-    # GW sample
-    test_symbol="BTCUSDT"; [[ "$ex" == "coinbase" ]] && test_symbol="BTC-USD"
-    api_resp="$(
-      with_timeout "$GW_TIMEOUT_S" curl -s --max-time "$GW_TIMEOUT_S" -w "\n%{time_total}" \
-        "${GW_URL}/gw/trades?symbol=${test_symbol}&exchange=${ex}&market=spot&limit=10" \
-      || echo -e "[]\n0"
-    )"
-    api_n="$(echo "$api_resp" | sed '$d' | jq 'length' 2>/dev/null || echo 0)"
-    api_lat="$(echo "$api_resp" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)"
-    is_uint "$api_n" || api_n=0; is_uint "$api_lat" || api_lat=0
-
-    gw=$([[ $api_n -gt 0 ]] && echo "✓" || echo "✗")
-    ws=$([[ $rtotal -gt 0 ]] && echo "✓" || echo "✗")
-
-    # CH live 5m
-    ch5="$(ch_query "SELECT count() FROM trading.${ex}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'")"
-    is_uint "$ch5" || ch5=0
-
-    # size compressed bytes -> MB
-    sb="$(ch_query "SELECT ifNull(sum(data_compressed_bytes),0) FROM system.parts WHERE active=1 AND database='trading' AND table='${ex}_trades'")"
-    is_uint "$sb" || sb=0
-    smb="$(fmt_mb "$sb")"
-
-    status="FAILED"
-    if (( rtotal > 0 && api_n > 0 && ch5 > 0 )); then status="HEALTHY"
-    elif (( rtotal > 0 || api_n > 0 || ch5 > 0 )); then status="PARTIAL"
-    fi
-
-    case "$status" in
-      HEALTHY) ((h++)) ;;
-      PARTIAL) ((p++)) ;;
-      *)       ((f++)) ;;
-    esac
-
-    note=""
-    [[ "$ex" == "coinbase" ]] && note="sym=${test_symbol}"
-    printf "%-9s | %6d | %7d | %5s | %4d | %4s | %8d | %8s | %7s | %s\n" \
-      "$ex" "$rtotal" "$rrate" "$gw" "$api_lat" "$ws" "$ch5" "$smb" "$status" "$note"
-
-    # collect top exchanges for details (just first N, deterministic)
-    if (( shown_ex < DETAIL_TOP_EX )); then
-      DETAILS_EX+=("$ex:$test_symbol:$rtotal:$rrate:$ch5:$sb:$api_lat:$api_n")
-      shown_ex=$((shown_ex+1))
-    fi
-  done
-
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "Summary: HEALTHY=%d | PARTIAL=%d | FAILED=%d\n" "$h" "$p" "$f"
-  echo
-
-  # 1b) DETAILS per exchange (bars here, no wrap because fewer columns)
-  echo "1️⃣b EXCHANGE DETAILS (bars + sizes, top ${DETAIL_TOP_EX})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  for line in "${DETAILS_EX[@]}"; do
-    IFS=':' read -r ex sym rtotal rrate ch5 sb api_lat api_n <<< "$line"
-    size_gb="$(fmt_gb "$sb")"
-    sz_pct="$(pct_of "$size_gb" "$CH_SIZE_MAX_GB")"
-    rr_pct="$(pct_of "$rrate" "$REDIS_RATE_MAX")"
-    echo "• ${ex}  (test=${sym})"
-    printf "  RedisRate  %s %6d/s   RedisTotal=%d\n" "$(bar "$rr_pct" "$BARW")" "$rrate" "$rtotal"
-    printf "  CH-Size    %s %6sGB   (compressed)\n"  "$(bar "$sz_pct" "$BARW")" "$size_gb"
-    printf "  CH(5m)=%d   GW: %s  Lat=%dms  API10=%d\n" "$ch5" "$([[ $api_n -gt 0 ]] && echo ✓ || echo ✗)" "$api_lat" "$api_n"
-    echo
-  done
-
-  # 2) BACKFILL PROGRESS (compact table + details bars)
-  echo "2️⃣ BACKFILL (compact)"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
-    "Pair" "Rows" "ΔRows" "Oldest" "Newest" "State"
-  echo "--------------------------------------------------------------------------------------------------------------"
-
-  pairs_tsv="$(discover_backfill_pairs)"
-  shown_pairs=0
-  DETAILS_PAIRS=()
-
-  # ✅ ENTERPRISE FIX: Query liefert jetzt covered_days + progress_pct direkt!
-  while IFS=$'\t' read -r ex sym mk bf_rows bf_oldest bf_newest bf_days prog; do
-    [[ -z "$ex" || -z "$sym" || -z "$mk" ]] && continue
-    is_uint "$bf_rows" || bf_rows=0
-    is_uint "$bf_days" || bf_days=0
-
-    key="${ex}:${sym}:${mk}"
-    last="${LAST_BF_ROWS[$key]:-}"
-    delta=0
-    if [[ -n "$last" ]]; then
-      delta=$((bf_rows - last)); [[ $delta -ge 0 ]] || delta=0
-    fi
-    LAST_BF_ROWS["$key"]="$bf_rows"
-
-    # prog kommt jetzt direkt aus ClickHouse!
-    prog="$(clamp_pct "${prog:-0.0}")"
-
-    state="🔄 RUNNING"
-    if (( TOTAL_DAYS > 0 && bf_days >= TOTAL_DAYS )); then state="✅ COMPLETE"; fi
-
-    # shorten timestamps to keep compact
-    o="$(short "${bf_oldest:-N/A}" 19)"
-    n="$(short "${bf_newest:-N/A}" 19)"
-
-    printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
-      "${ex}:${sym}:${mk}" \
-      "$(printf "%'d" "$bf_rows")" \
-      "+$(printf "%'d" "$delta")" \
-      "$o" "$n" "$state"
-
-    if (( shown_pairs < DETAIL_TOP_PAIRS )); then
-      DETAILS_PAIRS+=("${ex}:${sym}:${mk}:${bf_rows}:${delta}:${bf_days}:${prog}:${bf_oldest}:${bf_newest}")
-      shown_pairs=$((shown_pairs+1))
-    fi
-  done <<< "$pairs_tsv"
-
-  if (( shown_pairs == 0 )); then
-    echo "(no active backfill pairs found)"
-  fi
-
-  echo "--------------------------------------------------------------------------------------------------------------"
-  echo "Notes: progress uses covered_days(backfill oldest→newest) / total_days(now→target=${BACKFILL_TARGET_DATE})."
-  echo
-
-  echo "2️⃣b BACKFILL DETAILS (bars, top ${DETAIL_TOP_PAIRS})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  for pl in "${DETAILS_PAIRS[@]}"; do
-    IFS=':' read -r ex sym mk bf_rows delta bf_days prog bf_oldest bf_newest <<< "$pl"
-    dr_pct="$(pct_of "$delta" "$BF_RATE_MAX")"
-    echo "• ${ex}:${sym}:${mk}"
-    printf "  Progress   %s  %5.1f%%  (%dd/%dd)\n" "$(bar "$prog" "$BARW")" "$prog" "$bf_days" "$TOTAL_DAYS"
-    printf "  Speed      %s  +%d rows/refresh\n" "$(bar "$dr_pct" "$BARW")" "$delta"
-    printf "  Rows=%'d  Oldest=%s  Newest=%s\n" "$bf_rows" "$(short "${bf_oldest:-N/A}" 28)" "$(short "${bf_newest:-N/A}" 28)"
-    echo
-  done
-
-  # 3) Optional GAP section (default OFF)
-  if [[ "$SHOW_GAP" == "1" ]]; then
-    echo "3️⃣ GAP COMPLETENESS (expensive) - disabled by default unless SHOW_GAP=1"
-    echo
-  fi
-
-  # 4) Backfill loop history (dedup + keep last N)
-  echo "4️⃣ BACKFILL LOOP ACTIVITY (history, last ${MAX_HISTORY})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  latest_logs="$(docker logs "$BE_CONT" 2>&1 | grep -E '(\[BACKFILL_METRIC\]|BACKFILL GAP-LOOP|GAP PRIO|BATCH|TARGET REACHED|loaded<=0)' | tail -n 5 2>/dev/null)"
-  if [[ -n "$latest_logs" ]]; then
-    while IFS= read -r ln; do
-      [[ -z "$ln" ]] && continue
-      # dedup: do not append same line twice in a row
-      last_idx=$(( ${#BACKFILL_HISTORY[@]} - 1 ))
-      if (( last_idx >= 0 )) && [[ "${BACKFILL_HISTORY[$last_idx]}" == *"$ln" ]]; then
-        continue
-      fi
-      BACKFILL_HISTORY+=("[$(date +%H:%M:%S)] $ln")
-      if (( ${#BACKFILL_HISTORY[@]} > MAX_HISTORY )); then
-        BACKFILL_HISTORY=("${BACKFILL_HISTORY[@]:1}")
-      fi
-    done <<< "$latest_logs"
-  fi
-
-  if (( ${#BACKFILL_HISTORY[@]} > 0 )); then
-    for e in "${BACKFILL_HISTORY[@]}"; do echo "$e"; done
-  else
-    echo "(no backfill activity detected yet)"
-  fi
-  echo "--------------------------------------------------------------------------------------------------------------"
-  echo
-  echo "=================================================="
-  echo "Next refresh in ${REFRESH_INTERVAL}s... (Ctrl+C to stop)"
-  echo "=================================================="
-
-  echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
-  sleep "$REFRESH_INTERVAL"
-done
-</file>
-
 <file path="backend/api/routers/ro_user_settings.py">
 # backend/api/routers/ro_user_settings.py
 """
@@ -163833,6 +163833,635 @@ class cl_manager:
 
 
 cl_manager_instance = cl_manager()
+</file>
+
+<file path="backend/services/adapter/unified_aggregator.py">
+import asyncio
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
+
+from redis import asyncio as aioredis
+from redis.exceptions import ConnectionError, ResponseError
+
+from backend.api.models.keys import Market
+from backend.database.clickhouse import (
+    cl_handlers_instance,
+    cl_manager_instance,
+    get_clickhouse_client,
+)
+from backend.services.adapter.candle_agg_1s import CandleAgg1s
+from backend.services.adapter.whale_detector import WhaleDetector
+from backend.services.discovery.dis_config import get_streams_per_exchange
+from backend.services.discovery.dis_trades import discover_trade_streams
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+
+# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
+from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+
+logger = logging.getLogger("unified_aggregator")
+
+
+class UnifiedAggregator:
+    """
+    Zentraler Aggregator:
+    - konsumiert Redis-Streams (discover_trade_streams)
+    - queued Trades -> ClickHouse (cl_handlers_instance)
+    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
+    - Whale detection (optional insert into whale_events via cl_manager)
+    """
+
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
+        self.r = None  # Redis client (set in run_unified_aggregator)
+        self.group = "unified_agg_group"
+        self.consumer = "unified_consumer"
+        self.running = True
+
+        # ClickHouse
+        self.ch_client = get_clickhouse_client()
+
+        # Whale Detection
+        self.whale_detector = WhaleDetector()
+        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
+
+        # 1s Candle Aggregation
+        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
+        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
+        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
+        self.last_candle_flush = time.time()
+        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
+
+        # Legacy multi-res aggregation (optional)
+        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
+        self.agg = MultiResCandleAgg() if self.enable_multires else None
+
+    # -----------------------------
+    # Normalization helpers
+    # -----------------------------
+
+    def _normalize_side(self, side: Any) -> str:
+        """
+        Normalize any exchange side variants -> 'buy'/'sell'
+        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
+        """
+        if side is None:
+            return "buy"
+        s = str(side).strip().lower()
+
+        if s in ("buy", "b", "bid", "1", "true", "t"):
+            return "buy"
+        if s in ("sell", "s", "ask", "2", "false", "f"):
+            return "sell"
+
+        # Some exchanges use uppercase or words; also handle common variants
+        if "buy" in s:
+            return "buy"
+        if "sell" in s:
+            return "sell"
+
+        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
+        return "buy"
+
+    def _ts_ms(self, timestamp: Any) -> int:
+        """
+        Robust timestamp -> milliseconds since epoch (int).
+        Uses CandleAgg1s parser for consistency.
+        """
+        return self.candle_agg.parse_timestamp(timestamp)
+
+    def _to_decimal(self, x: Any) -> Decimal:
+        return Decimal(str(x))
+
+    # -----------------------------
+    # Whale logic
+    # -----------------------------
+
+    async def process_whale_trade(self, trade_data: dict) -> None:
+        """
+        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
+        """
+        try:
+            symbol = trade_data.get("symbol")
+            price = trade_data.get("price")
+            size = trade_data.get("size")
+            if not symbol or price is None or size is None:
+                return
+
+            trade_value = self._to_decimal(price) * self._to_decimal(size)
+            threshold = await self.whale_detector.get_threshold(symbol)
+
+            if trade_value >= threshold:
+                if self.enable_whale_events:
+                    await self._store_whale_event(trade_data, trade_value, threshold)
+                else:
+                    logger.info(
+                        "[WHALE] %s %s value=%s threshold=%s",
+                        trade_data.get("exchange"),
+                        symbol,
+                        str(trade_value),
+                        str(threshold),
+                    )
+
+        except Exception:
+            logger.error("Unexpected error in process_whale_trade", exc_info=True)
+
+    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
+        """
+        Stores whale event as a ROW event (not aggregate states).
+        Requires cl_manager routing for operation_type='whale_events' to
+        table pattern: trading.{exchange}_whale_events
+        """
+        try:
+            exchange = str(trade.get("exchange", "")).lower().strip()
+            symbol = trade.get("symbol")
+            ts_ms = self._ts_ms(trade.get("timestamp"))
+
+            payload = {
+                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
+                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "chain": "na",
+                "tx_hash": "na",
+                "from_addr": "na",
+                "to_addr": "na",
+                "token": None,
+                "symbol": symbol,
+                "amount": self._to_decimal(trade.get("size")),
+                "is_native": 0,
+                "amount_usd": self._to_decimal(trade_value),
+                "from_exchange": exchange,
+                "from_country": "na",
+                "from_city": "na",
+                "to_exchange": exchange,
+                "to_country": "na",
+                "to_city": "na",
+                "is_cross_border": 0,
+                "source": "live_ws",
+                "threshold_usd": self._to_decimal(threshold),
+                "coin_rank": 0,
+            }
+
+            ok = await cl_manager_instance.insert_data(
+                exchange=exchange,
+                operation_type="whale_events",
+                data=[payload],
+            )
+            if not ok:
+                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
+
+        except Exception:
+            logger.error("Failed to store whale_event", exc_info=True)
+
+    # -----------------------------
+    # Candle batching
+    # -----------------------------
+
+    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
+        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
+        """
+        return {
+            "symbol": candle["symbol"],
+            "market": candle["market"],
+            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            "o": candle["o"],
+            "h": candle["h"],
+            "l": candle["l"],
+            "c": candle["c"],
+            "v": candle["v"],
+            "qv": candle["qv"],
+            "n": candle["n"],
+            "src": candle.get("src", "agg"),
+            "ver": candle["ver"],
+        }
+
+    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
+        """
+        Flush candle batches to ClickHouse via cl_manager.
+        operation_type must map to: trading.{exchange}_candles_1s
+        """
+        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
+
+        for ex in exchanges_to_flush:
+            candles = self.candle_batch.get(ex, [])
+            if not candles:
+                continue
+
+            try:
+                ok = await cl_manager_instance.insert_data(
+                    exchange=ex,
+                    operation_type="candles",
+                    data=candles,
+                )
+                if ok:
+                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
+                    self.candle_batch[ex] = []
+                else:
+                    logger.warning("⚠️ Failed to flush candles for %s", ex)
+
+            except Exception:
+                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
+
+    async def _check_timer_flush(self) -> None:
+        """
+        Timer-based flush:
+        - finalize stale buckets
+        - flush all candle batches
+        """
+        now = time.time()
+        if now - self.last_candle_flush <= self.candle_flush_interval:
+            return
+
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+        finally:
+            self.last_candle_flush = now
+
+    # -----------------------------
+    # Trade queue
+    # -----------------------------
+
+    async def _queue_trade_for_clickhouse(
+        self,
+        exchange: str,
+        trade_id: str,
+        symbol: str,
+        market: str,
+        price: Any,
+        size: Any,
+        side: Any,
+        timestamp_ms: int,
+    ) -> None:
+        """
+        Queue one trade to ClickHouse handlers.
+        """
+        try:
+            labels = await get_symbol_labels(exchange, symbol, market)
+
+            trade_payload = {
+                "exchange": exchange,
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "market": market,
+                "price": self._to_decimal(price),
+                "size": self._to_decimal(size),
+                "side": self._normalize_side(side),
+                "timestamp": int(timestamp_ms),  # ms
+                "asset_key": labels.get("asset_key"),
+                "instrument_uid": labels.get("instrument_uid"),
+            }
+
+            ok = await cl_handlers_instance.queue_message(
+                exchange=exchange,
+                message_type="trades",
+                data=trade_payload,
+            )
+            if not ok:
+                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
+            else:
+                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
+
+        except Exception:
+            logger.error("Error queuing trade for ClickHouse", exc_info=True)
+
+    # -----------------------------
+    # Main consume loop
+    # -----------------------------
+
+    async def consume_trades(self, streams: List[str]) -> None:
+        """
+        Consume trades from Redis Streams.
+
+        Expected stream key format:
+            <exchange>:trades:<market_type>:<symbol>
+        e.g. binance:trades:spot:BTCUSDT
+        """
+        if not streams:
+            logger.error("No streams provided to consume_trades")
+            return
+
+        # Initialize consumer groups only for existing streams
+        active_streams: List[str] = []
+        for stream_key in streams:
+            try:
+                exists = await self.r.exists(stream_key)
+                if not exists:
+                    logger.debug("Stream does not exist yet: %s", stream_key)
+                    continue
+
+                active_streams.append(stream_key)
+                try:
+                    await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
+                except ResponseError as e:
+                    if "BUSYGROUP" not in str(e):
+                        raise
+
+            except Exception:
+                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
+
+        if not active_streams:
+            logger.error("No active streams found - cannot consume")
+            return
+
+        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
+        streams = active_streams
+
+        while self.running:
+            try:
+                stream_dict = {s: ">" for s in streams}
+                messages = await self.r.xreadgroup(
+                    groupname=self.group,
+                    consumername=self.consumer,
+                    streams=stream_dict,
+                    count=200,
+                    block=5000,
+                )
+
+                if not messages:
+                    await self._check_timer_flush()
+                    continue
+
+                for stream_key, msgs in messages:
+                    for msg_id, data in msgs:
+                        try:
+                            raw = data.get("trade")
+                            if not raw:
+                                logger.warning("Missing 'trade' field in message %s", msg_id)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            trade = json.loads(raw)
+
+                            parts = stream_key.split(":", 3)
+                            if len(parts) != 4:
+                                logger.warning("Unexpected stream key format: %s", stream_key)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            exchange, _, market_type, symbol_from_key = parts
+                            exchange = exchange.lower().strip()
+
+                            trade_id = trade.get("trade_id") or trade.get("id") or ""
+                            price = trade.get("price")
+                            size = trade.get("size")
+                            side = trade.get("side")
+                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
+                            market = trade.get("market", market_type)
+
+                            symbol = trade.get("symbol") or symbol_from_key
+
+                            if not symbol or timestamp is None or price is None or size is None:
+                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            # Normalize timestamp once (ms)
+                            ts_ms = self._ts_ms(timestamp)
+
+                            # Queue trade -> CH
+                            await self._queue_trade_for_clickhouse(
+                                exchange=exchange,
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                price=price,
+                                size=size,
+                                side=side,
+                                timestamp_ms=ts_ms,
+                            )
+
+                            # 1s Candle aggregation (final candle on bucket switch)
+                            finished_candle = self.candle_agg.on_trade(
+                                exchange=exchange,
+                                symbol=symbol,
+                                market=market,
+                                timestamp=ts_ms,  # already normalized
+                                price=price,
+                                size=size,
+                            )
+
+                            if finished_candle:
+                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
+                                candle_for_insert = self._candle_row_from_agg(finished_candle)
+                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
+                                    await self._flush_candle_batch(ex)
+
+                            # Legacy multi-res aggregation (optional)
+                            if self.enable_multires and self.agg is not None:
+                                res_map = registry.list(exchange, symbol)
+                                if res_map:
+                                    _ = self.agg.on_trade(
+                                        exchange,
+                                        symbol,
+                                        market,
+                                        ts_ms,  # normalized
+                                        price,
+                                        size,
+                                        res_map,
+                                    )
+
+                            # Whale detection (optional)
+                            await self.process_whale_trade(
+                                {
+                                    "exchange": exchange,
+                                    "symbol": symbol,
+                                    "price": price,
+                                    "size": size,
+                                    "timestamp": ts_ms,
+                                    "trade_id": trade_id,
+                                }
+                            )
+
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                        except json.JSONDecodeError:
+                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+                        except Exception:
+                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                # Timer flush after each batch
+                await self._check_timer_flush()
+
+            except (ConnectionError, ResponseError) as e:
+                logger.error("Redis error in consume_trades: %s", str(e))
+                await asyncio.sleep(5)
+            except Exception:
+                logger.error("Unexpected error in consume_trades", exc_info=True)
+                await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        """
+        Stop aggregator cleanly + final flush.
+        """
+        self.running = False
+        logger.info("UnifiedAggregator stopping...")
+
+        # Final candle flush
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+            logger.info("✅ Final candle flush completed")
+        except Exception:
+            logger.warning("Error during final candle flush", exc_info=True)
+
+        if self.r is not None:
+            try:
+                await self.r.close()
+            except Exception:
+                logger.warning("Error closing Redis client", exc_info=True)
+
+
+async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
+    """
+    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
+    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
+
+    If exchange not enabled: return deterministic fallback without warnings.
+    """
+    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
+    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
+
+    if exchange.lower() not in enabled_exchanges:
+        return {
+            "asset_key": f"{exchange}/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
+        }
+
+    try:
+        market = Market.SPOT if market_type == "spot" else Market.USDTM
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
+
+        meta = next(
+            (
+                x
+                for x in catalog
+                if x.get("native_symbol", "").upper() == native_symbol.upper()
+            ),
+            None,
+        )
+
+        if meta:
+            return {
+                "asset_key": meta.get("asset_key"),
+                "instrument_uid": meta.get("instrument_uid"),
+            }
+
+        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
+        return {
+            "asset_key": f"UNKNOWN/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
+        }
+
+    except Exception:
+        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
+        return {
+            "asset_key": f"ERROR/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
+        }
+
+
+async def run_unified_aggregator() -> None:
+    """
+    Entry point:
+    - initializes cl_manager + cl_handlers
+    - discovers streams dynamically
+    - runs consume loop
+    """
+    from backend.core.config import settings
+
+    aggregator = UnifiedAggregator(settings.REDIS_URL)
+    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
+
+    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
+
+    # ClickHouse lanes registration
+    logger.info("🔧 Initializing ClickHouse Manager...")
+    await cl_manager_instance.initialize()
+    logger.info("✅ ClickHouse Manager initialized with all lanes")
+
+    # ClickHouse workers
+    workers = int(os.getenv("CH_WORKERS", "3"))
+    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
+    await cl_handlers_instance.start_processing(num_workers=workers)
+    logger.info("✅ ClickHouse handlers started")
+
+    try:
+        while True:
+            try:
+                redis_conn = getattr(aggregator, "r", None)
+                if redis_conn is None:
+                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
+
+                per_exchange_limit = get_streams_per_exchange()
+
+                streams, active_symbols, existing_streams = await discover_trade_streams(
+                    redis_conn,
+                    per_exchange_limit=per_exchange_limit,
+                )
+
+                if not existing_streams:
+                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                if not streams:
+                    logger.warning(
+                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
+                logger.info("📋 Active symbols from config: %s", active_symbols)
+                logger.info(
+                    "📊 Final stream count: %d (limit %d per exchange)",
+                    len(streams),
+                    per_exchange_limit,
+                )
+
+                await aggregator.consume_trades(streams)
+
+                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
+                await asyncio.sleep(retry_interval)
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Unified Aggregator shutdown signal received")
+                await aggregator.stop()
+                break
+            except Exception:
+                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
+                await asyncio.sleep(retry_interval)
+    finally:
+        await aggregator.stop()
+        logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -167312,1544 +167941,6 @@ echo ""
 exit $exit_code
 </file>
 
-<file path="backend/database/clickhouse/init.sql">
--- ========================================
--- TRADING SYSTEM CLICKHOUSE SCHEMA
--- AUTO-GENERIERT von 000_generate_init_sql.py
--- NICHT MANUELL BEARBEITEN!
--- ========================================
--- Single Source of Truth: Python Migration Scripts
--- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-
-CREATE DATABASE IF NOT EXISTS trading;
-
--- Tabelle 1/46
-CREATE TABLE IF NOT EXISTS trading.binance_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 2/46
-CREATE TABLE IF NOT EXISTS trading.bitget_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 3/46
-CREATE TABLE IF NOT EXISTS trading.mexc_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 4/46
-CREATE TABLE IF NOT EXISTS trading.gateio_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 5/46
-CREATE TABLE IF NOT EXISTS trading.bybit_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 6/46
-CREATE TABLE IF NOT EXISTS trading.okx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 7/46
-CREATE TABLE IF NOT EXISTS trading.htx_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 8/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
-            symbol LowCardinality(String),
-            market LowCardinality(String) DEFAULT 'spot',
-            price Decimal(76,38),
-            size Decimal(76,38), 
-            side Enum8('buy' = 1, 'sell' = 2),
-            timestamp DateTime64(3, 'UTC'),
-            trade_id UInt64 MATERIALIZED cityHash64(
-                symbol, market, toString(timestamp), toString(price), toString(size)
-            ),
-            source LowCardinality(String) DEFAULT 'live_ws'
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, market, timestamp, trade_id)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 9/46
-CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 10/46
-CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 11/46
-CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 12/46
-CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 13/46
-CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 14/46
-CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 15/46
-CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 16/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
-            symbol LowCardinality(String),
-            side Enum8('bid' = 1, 'ask' = 2),
-            price Decimal(76,38),
-            quantity Decimal(76,38),
-            level UInt16,
-            timestamp DateTime64(3, 'UTC'),
-            INDEX idx_price price TYPE minmax GRANULARITY 1
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, side, level, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 17/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 18/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 19/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 20/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 21/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 22/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 23/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 24/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
-            event_id String,
-            ts DateTime64(3, 'UTC'),
-            chain String,
-            tx_hash String,
-            from_addr String,
-            to_addr String,
-            token Nullable(String),
-            symbol String,
-            amount Decimal(76,38),
-            is_native UInt8,
-            amount_usd Decimal(76,38),
-            from_exchange String,
-            from_country String,
-            from_city String,
-            to_exchange String,
-            to_country String,
-            to_city String,
-            is_cross_border UInt8,
-            source String,
-            threshold_usd Decimal(76,38),
-            coin_rank UInt32,
-            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(ts)
-        ORDER BY (chain, symbol, ts, amount_usd)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 25/46
-CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 26/46
-CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 27/46
-CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 28/46
-CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 29/46
-CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 30/46
-CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 31/46
-CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 32/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
-            symbol LowCardinality(String),
-            time_bucket DateTime64(3, 'UTC'),
-            total_volume AggregateFunction(sum, Decimal(76,38)),
-            avg_price AggregateFunction(avg, Decimal(76,38)),
-            whale_count AggregateFunction(count)
-        ) ENGINE = AggregatingMergeTree()
-        PARTITION BY toYYYYMM(time_bucket)
-        ORDER BY (symbol, time_bucket)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 33/46
-CREATE TABLE IF NOT EXISTS trading.base_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            signal_type LowCardinality(String),
-            signal_strength Decimal(5,4),
-            price Decimal(18,8),
-            volume Decimal(18,8),
-            confidence Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 34/46
-CREATE TABLE IF NOT EXISTS trading.tier1_signals (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            tier1_score Decimal(5,4),
-            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
-            entry_price Decimal(18,8),
-            stop_loss Decimal(18,8),
-            take_profit Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 35/46
-CREATE TABLE IF NOT EXISTS trading.alma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            alma_value Decimal(18,8),
-            alma_slope Decimal(5,4),
-            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 36/46
-CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            wave_count UInt8,
-            wave_type LowCardinality(String),
-            wave_confidence Decimal(5,4),
-            price_target Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 37/46
-CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            whale_score Decimal(5,4),
-            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
-            volume_impact Decimal(18,8),
-            price_impact Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 38/46
-CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            sigma_level Decimal(5,4),
-            is_extreme UInt8,
-            reversion_probability Decimal(5,4),
-            expected_price Decimal(18,8)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 39/46
-CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            dominant_frequency Decimal(5,4),
-            power_spectrum Decimal(5,4),
-            cycle_length UInt16,
-            phase Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 40/46
-CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            volatility Decimal(5,4),
-            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
-            atr Decimal(18,8),
-            bollinger_width Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 41/46
-CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol1 LowCardinality(String),
-            symbol2 LowCardinality(String),
-            exchange LowCardinality(String),
-            correlation Decimal(5,4),
-            rolling_correlation Decimal(5,4),
-            divergence_score Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol1, symbol2, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 42/46
-CREATE TABLE IF NOT EXISTS trading.regime_indicators (
-            timestamp DateTime64(3, 'UTC'),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
-            regime_confidence Decimal(5,4),
-            regime_duration UInt32,
-            transition_probability Decimal(5,4)
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 43/46
-CREATE TABLE IF NOT EXISTS trading.indicator_performance (
-            timestamp DateTime64(3, 'UTC'),
-            indicator_name LowCardinality(String),
-            symbol LowCardinality(String),
-            exchange LowCardinality(String),
-            accuracy Decimal(5,4),
-            profit_factor Decimal(5,4),
-            sharpe_ratio Decimal(5,4),
-            total_signals UInt32,
-            winning_signals UInt32
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(timestamp)
-        ORDER BY (indicator_name, symbol, exchange, timestamp)
-        SETTINGS index_granularity = 8192;
-
--- Tabelle 44/46
-CREATE TABLE IF NOT EXISTS trading.binance_candles_1s (
-  symbol LowCardinality(String),
-  market LowCardinality(String),
-  ts DateTime64(3, 'UTC'),
-  o  Decimal(76,38),
-  h  Decimal(76,38),
-  l  Decimal(76,38),
-  c  Decimal(76,38),
-  v  Decimal(76,38),
-  qv Decimal(76,38),
-  n  UInt32,
-  src LowCardinality(String) DEFAULT 'agg',
-  ver UInt64
-) ENGINE = ReplacingMergeTree(ver)
-PARTITION BY toYYYYMMDD(ts)
-ORDER BY (symbol, market, ts)
-SETTINGS index_granularity = 8192;
-
--- Tabelle 45/46
-CREATE TABLE IF NOT EXISTS trading.bitget_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 46/46
-CREATE TABLE IF NOT EXISTS trading.mexc_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 47/46
-CREATE TABLE IF NOT EXISTS trading.gateio_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 48/46
-CREATE TABLE IF NOT EXISTS trading.bybit_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 49/46
-CREATE TABLE IF NOT EXISTS trading.okx_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 50/46
-CREATE TABLE IF NOT EXISTS trading.htx_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 51/46
-CREATE TABLE IF NOT EXISTS trading.coinbase_candles_1s
-AS trading.binance_candles_1s
-ENGINE = ReplacingMergeTree(ver);
-
--- Tabelle 52/46
-CREATE TABLE IF NOT EXISTS trading.all_orderbook (
-        ts DateTime64(3, 'UTC'),
-        symbol LowCardinality(String),
-        exchange LowCardinality(String),
-        best_bid_price Decimal(76,38),
-        best_bid_size Decimal(76,38),
-        best_ask_price Decimal(76,38),
-        best_ask_size Decimal(76,38),
-        spread Decimal(76,38),
-        mid_price Decimal(76,38)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (symbol, exchange, ts)
-    SETTINGS index_granularity = 8192;
-
--- Tabelle 53/46
-CREATE TABLE IF NOT EXISTS trading.all_whale (
-        event_id String,
-        exchange LowCardinality(String),
-        ts DateTime64(3, 'UTC'),
-        chain String,
-        tx_hash String,
-        from_addr String,
-        to_addr String,
-        token Nullable(String),
-        symbol String,
-        amount Decimal(76,38),
-        is_native UInt8,
-        amount_usd Decimal(76,38),
-        from_exchange String,
-        from_country String,
-        from_city String,
-        to_exchange String,
-        to_country String,
-        to_city String,
-        is_cross_border UInt8,
-        source String,
-        threshold_usd Decimal(76,38),
-        coin_rank UInt32,
-        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMMDD(ts)
-    ORDER BY (exchange, symbol, ts, amount_usd)
-    SETTINGS index_granularity = 8192;
-
--- ========================================
--- ZUSAMMENFASSUNG
--- ========================================
--- Database: trading
--- Gesamtanzahl Tabellen: 53
---
---    Exchange-spezifische Tabellen:
---    • 8  *_trades              (MergeTree)
---    • 8  *_orderbook           (MergeTree)
---    • 8  *_whale_events        (MergeTree)
---    • 8  *_whale_orders        (AggregatingMergeTree)
---    • 8  *_candles_1s           (ReplacingMergeTree)
---
---    System- / Indicator-Tabellen:
---    • 11 Indicator-/Signal-Tabellen
---    • 1  all_orderbook
---    • 1  all_whale
---
--- ============================================================
--- Candle-Architektur (entscheidend für Determinismus)
--- ============================================================
---
--- ENGINE: ReplacingMergeTree(ver)
--- ORDER BY: (symbol, market, ts)
---
--- ⚠ WICHTIG:
--- Die Spalte "ver" (UInt64) MUSS bei jedem Update
--- derselben (symbol, market, ts) Kombination
--- STRICTLY INCREASING sein.
---
--- Beispiel (zulässig):
---   ver = int(time.time() * 1000)
---
--- oder deterministischer:
---   ver = (bucket_ts_ms * 1000) + intra_bucket_counter
---
--- Wenn "ver" konstant bleibt oder nicht monoton steigt,
--- ist das Ersetzungsverhalten von ReplacingMergeTree
--- nicht deterministisch.
---
--- ============================================================
--- Architekturprinzip
--- ============================================================
---
--- • Keine Materialized Views
--- • Keine FINAL-Abfragen erforderlich
--- • Aggregation erfolgt ausschließlich im unified_aggregator
--- • Pro Exchange eigene Candle-Tabelle (Isolation)
--- • Deterministische Upserts über monotone Versionierung
---
--- ============================================================
--- Hinweis zur Tabellen-Nummerierung
--- ============================================================
---
--- Die Kommentarnummerierung (z.B. 44/46, 47/46 usw.)
--- ist rein kosmetisch und funktional irrelevant.
--- Tatsächlich existieren 53 Tabellen.
---
--- ========================================
--- Generiert automatisch via:
--- python3 backend/db/migrations/000_generate_init_sql.py
--- ========================================
-</file>
-
-<file path="backend/services/adapter/unified_aggregator.py">
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
-
-from redis import asyncio as aioredis
-from redis.exceptions import ConnectionError, ResponseError
-
-from backend.api.models.keys import Market
-from backend.database.clickhouse import (
-    cl_handlers_instance,
-    cl_manager_instance,
-    get_clickhouse_client,
-)
-from backend.services.adapter.candle_agg_1s import CandleAgg1s
-from backend.services.adapter.whale_detector import WhaleDetector
-from backend.services.discovery.dis_config import get_streams_per_exchange
-from backend.services.discovery.dis_trades import discover_trade_streams
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-
-# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
-from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
-
-logger = logging.getLogger("unified_aggregator")
-
-
-class UnifiedAggregator:
-    """
-    Zentraler Aggregator:
-    - konsumiert Redis-Streams (discover_trade_streams)
-    - queued Trades -> ClickHouse (cl_handlers_instance)
-    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
-    - Whale detection (optional insert into whale_events via cl_manager)
-    """
-
-    def __init__(self, redis_url: str):
-        self.redis_url = redis_url
-        self.r = None  # Redis client (set in run_unified_aggregator)
-        self.group = "unified_agg_group"
-        self.consumer = "unified_consumer"
-        self.running = True
-
-        # ClickHouse
-        self.ch_client = get_clickhouse_client()
-
-        # Whale Detection
-        self.whale_detector = WhaleDetector()
-        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
-
-        # 1s Candle Aggregation
-        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
-        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
-        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
-        self.last_candle_flush = time.time()
-        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
-
-        # Legacy multi-res aggregation (optional)
-        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
-        self.agg = MultiResCandleAgg() if self.enable_multires else None
-
-    # -----------------------------
-    # Normalization helpers
-    # -----------------------------
-
-    def _normalize_side(self, side: Any) -> str:
-        """
-        Normalize any exchange side variants -> 'buy'/'sell'
-        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
-        """
-        if side is None:
-            return "buy"
-        s = str(side).strip().lower()
-
-        if s in ("buy", "b", "bid", "1", "true", "t"):
-            return "buy"
-        if s in ("sell", "s", "ask", "2", "false", "f"):
-            return "sell"
-
-        # Some exchanges use uppercase or words; also handle common variants
-        if "buy" in s:
-            return "buy"
-        if "sell" in s:
-            return "sell"
-
-        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
-        return "buy"
-
-    def _ts_ms(self, timestamp: Any) -> int:
-        """
-        Robust timestamp -> milliseconds since epoch (int).
-        Uses CandleAgg1s parser for consistency.
-        """
-        return self.candle_agg.parse_timestamp(timestamp)
-
-    def _to_decimal(self, x: Any) -> Decimal:
-        return Decimal(str(x))
-
-    # -----------------------------
-    # Whale logic
-    # -----------------------------
-
-    async def process_whale_trade(self, trade_data: dict) -> None:
-        """
-        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
-        """
-        try:
-            symbol = trade_data.get("symbol")
-            price = trade_data.get("price")
-            size = trade_data.get("size")
-            if not symbol or price is None or size is None:
-                return
-
-            trade_value = self._to_decimal(price) * self._to_decimal(size)
-            threshold = await self.whale_detector.get_threshold(symbol)
-
-            if trade_value >= threshold:
-                if self.enable_whale_events:
-                    await self._store_whale_event(trade_data, trade_value, threshold)
-                else:
-                    logger.info(
-                        "[WHALE] %s %s value=%s threshold=%s",
-                        trade_data.get("exchange"),
-                        symbol,
-                        str(trade_value),
-                        str(threshold),
-                    )
-
-        except Exception:
-            logger.error("Unexpected error in process_whale_trade", exc_info=True)
-
-    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
-        """
-        Stores whale event as a ROW event (not aggregate states).
-        Requires cl_manager routing for operation_type='whale_events' to
-        table pattern: trading.{exchange}_whale_events
-        """
-        try:
-            exchange = str(trade.get("exchange", "")).lower().strip()
-            symbol = trade.get("symbol")
-            ts_ms = self._ts_ms(trade.get("timestamp"))
-
-            payload = {
-                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
-                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                "chain": "na",
-                "tx_hash": "na",
-                "from_addr": "na",
-                "to_addr": "na",
-                "token": None,
-                "symbol": symbol,
-                "amount": self._to_decimal(trade.get("size")),
-                "is_native": 0,
-                "amount_usd": self._to_decimal(trade_value),
-                "from_exchange": exchange,
-                "from_country": "na",
-                "from_city": "na",
-                "to_exchange": exchange,
-                "to_country": "na",
-                "to_city": "na",
-                "is_cross_border": 0,
-                "source": "live_ws",
-                "threshold_usd": self._to_decimal(threshold),
-                "coin_rank": 0,
-            }
-
-            ok = await cl_manager_instance.insert_data(
-                exchange=exchange,
-                operation_type="whale_events",
-                data=[payload],
-            )
-            if not ok:
-                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
-
-        except Exception:
-            logger.error("Failed to store whale_event", exc_info=True)
-
-    # -----------------------------
-    # Candle batching
-    # -----------------------------
-
-    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
-        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
-        """
-        return {
-            "symbol": candle["symbol"],
-            "market": candle["market"],
-            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "o": candle["o"],
-            "h": candle["h"],
-            "l": candle["l"],
-            "c": candle["c"],
-            "v": candle["v"],
-            "qv": candle["qv"],
-            "n": candle["n"],
-            "src": candle.get("src", "agg"),
-            "ver": candle["ver"],
-        }
-
-    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
-        """
-        Flush candle batches to ClickHouse via cl_manager.
-        operation_type must map to: trading.{exchange}_candles_1s
-        """
-        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
-
-        for ex in exchanges_to_flush:
-            candles = self.candle_batch.get(ex, [])
-            if not candles:
-                continue
-
-            try:
-                ok = await cl_manager_instance.insert_data(
-                    exchange=ex,
-                    operation_type="candles",
-                    data=candles,
-                )
-                if ok:
-                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
-                    self.candle_batch[ex] = []
-                else:
-                    logger.warning("⚠️ Failed to flush candles for %s", ex)
-
-            except Exception:
-                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
-
-    async def _check_timer_flush(self) -> None:
-        """
-        Timer-based flush:
-        - finalize stale buckets
-        - flush all candle batches
-        """
-        now = time.time()
-        if now - self.last_candle_flush <= self.candle_flush_interval:
-            return
-
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-        finally:
-            self.last_candle_flush = now
-
-    # -----------------------------
-    # Trade queue
-    # -----------------------------
-
-    async def _queue_trade_for_clickhouse(
-        self,
-        exchange: str,
-        trade_id: str,
-        symbol: str,
-        market: str,
-        price: Any,
-        size: Any,
-        side: Any,
-        timestamp_ms: int,
-    ) -> None:
-        """
-        Queue one trade to ClickHouse handlers.
-        """
-        try:
-            labels = await get_symbol_labels(exchange, symbol, market)
-
-            trade_payload = {
-                "exchange": exchange,
-                "trade_id": trade_id,
-                "symbol": symbol,
-                "market": market,
-                "price": self._to_decimal(price),
-                "size": self._to_decimal(size),
-                "side": self._normalize_side(side),
-                "timestamp": int(timestamp_ms),  # ms
-                "asset_key": labels.get("asset_key"),
-                "instrument_uid": labels.get("instrument_uid"),
-            }
-
-            ok = await cl_handlers_instance.queue_message(
-                exchange=exchange,
-                message_type="trades",
-                data=trade_payload,
-            )
-            if not ok:
-                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
-            else:
-                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
-
-        except Exception:
-            logger.error("Error queuing trade for ClickHouse", exc_info=True)
-
-    # -----------------------------
-    # Main consume loop
-    # -----------------------------
-
-    async def consume_trades(self, streams: List[str]) -> None:
-        """
-        Consume trades from Redis Streams.
-
-        Expected stream key format:
-            <exchange>:trades:<market_type>:<symbol>
-        e.g. binance:trades:spot:BTCUSDT
-        """
-        if not streams:
-            logger.error("No streams provided to consume_trades")
-            return
-
-        # Initialize consumer groups only for existing streams
-        active_streams: List[str] = []
-        for stream_key in streams:
-            try:
-                exists = await self.r.exists(stream_key)
-                if not exists:
-                    logger.debug("Stream does not exist yet: %s", stream_key)
-                    continue
-
-                active_streams.append(stream_key)
-                try:
-                    await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
-                except ResponseError as e:
-                    if "BUSYGROUP" not in str(e):
-                        raise
-
-            except Exception:
-                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
-
-        if not active_streams:
-            logger.error("No active streams found - cannot consume")
-            return
-
-        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
-        streams = active_streams
-
-        while self.running:
-            try:
-                stream_dict = {s: ">" for s in streams}
-                messages = await self.r.xreadgroup(
-                    groupname=self.group,
-                    consumername=self.consumer,
-                    streams=stream_dict,
-                    count=200,
-                    block=5000,
-                )
-
-                if not messages:
-                    await self._check_timer_flush()
-                    continue
-
-                for stream_key, msgs in messages:
-                    for msg_id, data in msgs:
-                        try:
-                            raw = data.get("trade")
-                            if not raw:
-                                logger.warning("Missing 'trade' field in message %s", msg_id)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            trade = json.loads(raw)
-
-                            parts = stream_key.split(":", 3)
-                            if len(parts) != 4:
-                                logger.warning("Unexpected stream key format: %s", stream_key)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            exchange, _, market_type, symbol_from_key = parts
-                            exchange = exchange.lower().strip()
-
-                            trade_id = trade.get("trade_id") or trade.get("id") or ""
-                            price = trade.get("price")
-                            size = trade.get("size")
-                            side = trade.get("side")
-                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
-                            market = trade.get("market", market_type)
-
-                            symbol = trade.get("symbol") or symbol_from_key
-
-                            if not symbol or timestamp is None or price is None or size is None:
-                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            # Normalize timestamp once (ms)
-                            ts_ms = self._ts_ms(timestamp)
-
-                            # Queue trade -> CH
-                            await self._queue_trade_for_clickhouse(
-                                exchange=exchange,
-                                trade_id=trade_id,
-                                symbol=symbol,
-                                market=market,
-                                price=price,
-                                size=size,
-                                side=side,
-                                timestamp_ms=ts_ms,
-                            )
-
-                            # 1s Candle aggregation (final candle on bucket switch)
-                            finished_candle = self.candle_agg.on_trade(
-                                exchange=exchange,
-                                symbol=symbol,
-                                market=market,
-                                timestamp=ts_ms,  # already normalized
-                                price=price,
-                                size=size,
-                            )
-
-                            if finished_candle:
-                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                candle_for_insert = self._candle_row_from_agg(finished_candle)
-                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
-                                    await self._flush_candle_batch(ex)
-
-                            # Legacy multi-res aggregation (optional)
-                            if self.enable_multires and self.agg is not None:
-                                res_map = registry.list(exchange, symbol)
-                                if res_map:
-                                    _ = self.agg.on_trade(
-                                        exchange,
-                                        symbol,
-                                        market,
-                                        ts_ms,  # normalized
-                                        price,
-                                        size,
-                                        res_map,
-                                    )
-
-                            # Whale detection (optional)
-                            await self.process_whale_trade(
-                                {
-                                    "exchange": exchange,
-                                    "symbol": symbol,
-                                    "price": price,
-                                    "size": size,
-                                    "timestamp": ts_ms,
-                                    "trade_id": trade_id,
-                                }
-                            )
-
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                        except json.JSONDecodeError:
-                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-                        except Exception:
-                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                # Timer flush after each batch
-                await self._check_timer_flush()
-
-            except (ConnectionError, ResponseError) as e:
-                logger.error("Redis error in consume_trades: %s", str(e))
-                await asyncio.sleep(5)
-            except Exception:
-                logger.error("Unexpected error in consume_trades", exc_info=True)
-                await asyncio.sleep(1)
-
-    async def stop(self) -> None:
-        """
-        Stop aggregator cleanly + final flush.
-        """
-        self.running = False
-        logger.info("UnifiedAggregator stopping...")
-
-        # Final candle flush
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-            logger.info("✅ Final candle flush completed")
-        except Exception:
-            logger.warning("Error during final candle flush", exc_info=True)
-
-        if self.r is not None:
-            try:
-                await self.r.close()
-            except Exception:
-                logger.warning("Error closing Redis client", exc_info=True)
-
-
-async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
-    """
-    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
-    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
-
-    If exchange not enabled: return deterministic fallback without warnings.
-    """
-    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
-    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
-
-    if exchange.lower() not in enabled_exchanges:
-        return {
-            "asset_key": f"{exchange}/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
-        }
-
-    try:
-        market = Market.SPOT if market_type == "spot" else Market.USDTM
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
-
-        meta = next(
-            (
-                x
-                for x in catalog
-                if x.get("native_symbol", "").upper() == native_symbol.upper()
-            ),
-            None,
-        )
-
-        if meta:
-            return {
-                "asset_key": meta.get("asset_key"),
-                "instrument_uid": meta.get("instrument_uid"),
-            }
-
-        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
-        return {
-            "asset_key": f"UNKNOWN/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
-        }
-
-    except Exception:
-        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
-        return {
-            "asset_key": f"ERROR/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
-        }
-
-
-async def run_unified_aggregator() -> None:
-    """
-    Entry point:
-    - initializes cl_manager + cl_handlers
-    - discovers streams dynamically
-    - runs consume loop
-    """
-    from backend.core.config import settings
-
-    aggregator = UnifiedAggregator(settings.REDIS_URL)
-    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
-
-    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
-
-    # ClickHouse lanes registration
-    logger.info("🔧 Initializing ClickHouse Manager...")
-    await cl_manager_instance.initialize()
-    logger.info("✅ ClickHouse Manager initialized with all lanes")
-
-    # ClickHouse workers
-    workers = int(os.getenv("CH_WORKERS", "3"))
-    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
-    await cl_handlers_instance.start_processing(num_workers=workers)
-    logger.info("✅ ClickHouse handlers started")
-
-    try:
-        while True:
-            try:
-                redis_conn = getattr(aggregator, "r", None)
-                if redis_conn is None:
-                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
-
-                per_exchange_limit = get_streams_per_exchange()
-
-                streams, active_symbols, existing_streams = await discover_trade_streams(
-                    redis_conn,
-                    per_exchange_limit=per_exchange_limit,
-                )
-
-                if not existing_streams:
-                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                if not streams:
-                    logger.warning(
-                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
-                logger.info("📋 Active symbols from config: %s", active_symbols)
-                logger.info(
-                    "📊 Final stream count: %d (limit %d per exchange)",
-                    len(streams),
-                    per_exchange_limit,
-                )
-
-                await aggregator.consume_trades(streams)
-
-                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
-                await asyncio.sleep(retry_interval)
-
-            except asyncio.CancelledError:
-                logger.info("🛑 Unified Aggregator shutdown signal received")
-                await aggregator.stop()
-                break
-            except Exception:
-                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
-                await asyncio.sleep(retry_interval)
-    finally:
-        await aggregator.stop()
-        logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
 <file path="frontend/src/config/exchangeSupport.ts">
 // frontend/src/config/exchangeSupport.ts
 
@@ -169960,6 +169051,1013 @@ const GlobalNav = () => {
 };
 
 export default GlobalNav;
+</file>
+
+<file path="backend/database/clickhouse/init.sql">
+-- ========================================
+-- TRADING SYSTEM CLICKHOUSE SCHEMA
+-- AUTO-GENERIERT von 000_generate_init_sql.py
+-- NICHT MANUELL BEARBEITEN!
+-- ========================================
+-- Single Source of Truth: Python Migration Scripts
+-- Um zu aktualisieren: python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
+
+CREATE DATABASE IF NOT EXISTS trading;
+
+-- Tabelle 1/46
+CREATE TABLE IF NOT EXISTS trading.binance_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 2/46
+CREATE TABLE IF NOT EXISTS trading.bitget_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 3/46
+CREATE TABLE IF NOT EXISTS trading.mexc_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 4/46
+CREATE TABLE IF NOT EXISTS trading.gateio_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 5/46
+CREATE TABLE IF NOT EXISTS trading.bybit_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 6/46
+CREATE TABLE IF NOT EXISTS trading.okx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 7/46
+CREATE TABLE IF NOT EXISTS trading.htx_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 8/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_trades (
+            symbol LowCardinality(String),
+            market LowCardinality(String) DEFAULT 'spot',
+            price Decimal(76,38),
+            size Decimal(76,38), 
+            side Enum8('buy' = 1, 'sell' = 2),
+            timestamp DateTime64(3, 'UTC'),
+            trade_id UInt64 MATERIALIZED cityHash64(
+                symbol, market, toString(timestamp), toString(price), toString(size)
+            ),
+            source LowCardinality(String) DEFAULT 'live_ws'
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, market, timestamp, trade_id)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 9/46
+CREATE TABLE IF NOT EXISTS trading.binance_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 10/46
+CREATE TABLE IF NOT EXISTS trading.bitget_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 11/46
+CREATE TABLE IF NOT EXISTS trading.mexc_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 12/46
+CREATE TABLE IF NOT EXISTS trading.gateio_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 13/46
+CREATE TABLE IF NOT EXISTS trading.bybit_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 14/46
+CREATE TABLE IF NOT EXISTS trading.okx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 15/46
+CREATE TABLE IF NOT EXISTS trading.htx_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 16/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_orderbook (
+            symbol LowCardinality(String),
+            side Enum8('bid' = 1, 'ask' = 2),
+            price Decimal(76,38),
+            quantity Decimal(76,38),
+            level UInt16,
+            timestamp DateTime64(3, 'UTC'),
+            INDEX idx_price price TYPE minmax GRANULARITY 1
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, side, level, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 17/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 18/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 19/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 20/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 21/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 22/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 23/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 24/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_events (
+            event_id String,
+            ts DateTime64(3, 'UTC'),
+            chain String,
+            tx_hash String,
+            from_addr String,
+            to_addr String,
+            token Nullable(String),
+            symbol String,
+            amount Decimal(76,38),
+            is_native UInt8,
+            amount_usd Decimal(76,38),
+            from_exchange String,
+            from_country String,
+            from_city String,
+            to_exchange String,
+            to_country String,
+            to_city String,
+            is_cross_border UInt8,
+            source String,
+            threshold_usd Decimal(76,38),
+            coin_rank UInt32,
+            created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(ts)
+        ORDER BY (chain, symbol, ts, amount_usd)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 25/46
+CREATE TABLE IF NOT EXISTS trading.binance_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 26/46
+CREATE TABLE IF NOT EXISTS trading.bitget_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 27/46
+CREATE TABLE IF NOT EXISTS trading.mexc_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 28/46
+CREATE TABLE IF NOT EXISTS trading.gateio_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 29/46
+CREATE TABLE IF NOT EXISTS trading.bybit_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 30/46
+CREATE TABLE IF NOT EXISTS trading.okx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 31/46
+CREATE TABLE IF NOT EXISTS trading.htx_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 32/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_whale_orders (
+            symbol LowCardinality(String),
+            time_bucket DateTime64(3, 'UTC'),
+            total_volume AggregateFunction(sum, Decimal(76,38)),
+            avg_price AggregateFunction(avg, Decimal(76,38)),
+            whale_count AggregateFunction(count)
+        ) ENGINE = AggregatingMergeTree()
+        PARTITION BY toYYYYMM(time_bucket)
+        ORDER BY (symbol, time_bucket)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 33/46
+CREATE TABLE IF NOT EXISTS trading.base_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            signal_type LowCardinality(String),
+            signal_strength Decimal(5,4),
+            price Decimal(18,8),
+            volume Decimal(18,8),
+            confidence Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 34/46
+CREATE TABLE IF NOT EXISTS trading.tier1_signals (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            tier1_score Decimal(5,4),
+            direction Enum8('long' = 1, 'short' = 2, 'neutral' = 3),
+            entry_price Decimal(18,8),
+            stop_loss Decimal(18,8),
+            take_profit Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 35/46
+CREATE TABLE IF NOT EXISTS trading.alma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            alma_value Decimal(18,8),
+            alma_slope Decimal(5,4),
+            alma_signal Enum8('buy' = 1, 'sell' = 2, 'hold' = 3)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 36/46
+CREATE TABLE IF NOT EXISTS trading.elliott_wave_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            wave_count UInt8,
+            wave_type LowCardinality(String),
+            wave_confidence Decimal(5,4),
+            price_target Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 37/46
+CREATE TABLE IF NOT EXISTS trading.whale_impact_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            whale_score Decimal(5,4),
+            impact_direction Enum8('bullish' = 1, 'bearish' = 2, 'neutral' = 3),
+            volume_impact Decimal(18,8),
+            price_impact Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 38/46
+CREATE TABLE IF NOT EXISTS trading.six_sigma_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            sigma_level Decimal(5,4),
+            is_extreme UInt8,
+            reversion_probability Decimal(5,4),
+            expected_price Decimal(18,8)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 39/46
+CREATE TABLE IF NOT EXISTS trading.spectral_power_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            dominant_frequency Decimal(5,4),
+            power_spectrum Decimal(5,4),
+            cycle_length UInt16,
+            phase Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 40/46
+CREATE TABLE IF NOT EXISTS trading.volatility_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            volatility Decimal(5,4),
+            volatility_regime Enum8('low' = 1, 'medium' = 2, 'high' = 3, 'extreme' = 4),
+            atr Decimal(18,8),
+            bollinger_width Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 41/46
+CREATE TABLE IF NOT EXISTS trading.correlation_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol1 LowCardinality(String),
+            symbol2 LowCardinality(String),
+            exchange LowCardinality(String),
+            correlation Decimal(5,4),
+            rolling_correlation Decimal(5,4),
+            divergence_score Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol1, symbol2, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 42/46
+CREATE TABLE IF NOT EXISTS trading.regime_indicators (
+            timestamp DateTime64(3, 'UTC'),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            regime Enum8('bull' = 1, 'bear' = 2, 'sideways' = 3, 'volatile' = 4),
+            regime_confidence Decimal(5,4),
+            regime_duration UInt32,
+            transition_probability Decimal(5,4)
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 43/46
+CREATE TABLE IF NOT EXISTS trading.indicator_performance (
+            timestamp DateTime64(3, 'UTC'),
+            indicator_name LowCardinality(String),
+            symbol LowCardinality(String),
+            exchange LowCardinality(String),
+            accuracy Decimal(5,4),
+            profit_factor Decimal(5,4),
+            sharpe_ratio Decimal(5,4),
+            total_signals UInt32,
+            winning_signals UInt32
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (indicator_name, symbol, exchange, timestamp)
+        SETTINGS index_granularity = 8192;
+
+-- Tabelle 44/46
+CREATE TABLE IF NOT EXISTS trading.binance_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 45/46
+CREATE TABLE IF NOT EXISTS trading.bitget_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 46/46
+CREATE TABLE IF NOT EXISTS trading.mexc_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 47/46
+CREATE TABLE IF NOT EXISTS trading.gateio_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 48/46
+CREATE TABLE IF NOT EXISTS trading.bybit_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 49/46
+CREATE TABLE IF NOT EXISTS trading.okx_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 50/46
+CREATE TABLE IF NOT EXISTS trading.htx_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 51/46
+CREATE TABLE IF NOT EXISTS trading.coinbase_candles_1s (
+  symbol LowCardinality(String),
+  market LowCardinality(String),
+  ts DateTime64(3, 'UTC'),
+  o  Decimal(76,38),
+  h  Decimal(76,38),
+  l  Decimal(76,38),
+  c  Decimal(76,38),
+  v  Decimal(76,38),
+  qv Decimal(76,38),
+  n  UInt32,
+  src LowCardinality(String) DEFAULT 'agg',
+  ver UInt64
+) ENGINE = ReplacingMergeTree(ver)
+PARTITION BY toYYYYMMDD(ts)
+ORDER BY (symbol, market, ts)
+SETTINGS index_granularity = 8192;
+
+-- Tabelle 52/46
+CREATE TABLE IF NOT EXISTS trading.all_orderbook (
+        ts DateTime64(3, 'UTC'),
+        symbol LowCardinality(String),
+        exchange LowCardinality(String),
+        best_bid_price Decimal(76,38),
+        best_bid_size Decimal(76,38),
+        best_ask_price Decimal(76,38),
+        best_ask_size Decimal(76,38),
+        spread Decimal(76,38),
+        mid_price Decimal(76,38)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (symbol, exchange, ts)
+    SETTINGS index_granularity = 8192;
+
+-- Tabelle 53/46
+CREATE TABLE IF NOT EXISTS trading.all_whale (
+        event_id String,
+        exchange LowCardinality(String),
+        ts DateTime64(3, 'UTC'),
+        chain String,
+        tx_hash String,
+        from_addr String,
+        to_addr String,
+        token Nullable(String),
+        symbol String,
+        amount Decimal(76,38),
+        is_native UInt8,
+        amount_usd Decimal(76,38),
+        from_exchange String,
+        from_country String,
+        from_city String,
+        to_exchange String,
+        to_country String,
+        to_city String,
+        is_cross_border UInt8,
+        source String,
+        threshold_usd Decimal(76,38),
+        coin_rank UInt32,
+        created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (exchange, symbol, ts, amount_usd)
+    SETTINGS index_granularity = 8192;
+
+-- ========================================
+-- ZUSAMMENFASSUNG
+-- ========================================
+-- Database: trading
+-- Gesamtanzahl Tabellen: 53
+--
+--    Exchange-spezifische Tabellen:
+--    • 8  *_trades              (MergeTree)
+--    • 8  *_orderbook           (MergeTree)
+--    • 8  *_whale_events        (MergeTree)
+--    • 8  *_whale_orders        (AggregatingMergeTree)
+--    • 8  *_candles_1s           (ReplacingMergeTree)
+--
+--    System- / Indicator-Tabellen:
+--    • 11 Indicator-/Signal-Tabellen
+--    • 1  all_orderbook
+--    • 1  all_whale
+--
+-- ============================================================
+-- Candle-Architektur (entscheidend für Determinismus)
+-- ============================================================
+--
+-- ENGINE: ReplacingMergeTree(ver)
+-- ORDER BY: (symbol, market, ts)
+--
+-- ⚠ WICHTIG:
+-- Die Spalte "ver" (UInt64) MUSS bei jedem Update
+-- derselben (symbol, market, ts) Kombination
+-- STRICTLY INCREASING sein.
+--
+-- Beispiel (zulässig):
+--   ver = int(time.time() * 1000)
+--
+-- oder deterministischer:
+--   ver = (bucket_ts_ms * 1000) + intra_bucket_counter
+--
+-- Wenn "ver" konstant bleibt oder nicht monoton steigt,
+-- ist das Ersetzungsverhalten von ReplacingMergeTree
+-- nicht deterministisch.
+--
+-- ============================================================
+-- Architekturprinzip
+-- ============================================================
+--
+-- • Keine Materialized Views
+-- • Keine FINAL-Abfragen erforderlich
+-- • Aggregation erfolgt ausschließlich im unified_aggregator
+-- • Pro Exchange eigene Candle-Tabelle (Isolation)
+-- • Deterministische Upserts über monotone Versionierung
+--
+-- ============================================================
+-- Hinweis zur Tabellen-Nummerierung
+-- ============================================================
+--
+-- Die Kommentarnummerierung (z.B. 44/46, 47/46 usw.)
+-- ist rein kosmetisch und funktional irrelevant.
+-- Tatsächlich existieren 53 Tabellen.
+--
+-- ========================================
+-- Generiert automatisch via:
+-- python3 backend/db/migrations/000_generate_init_sql.py
+-- ========================================
 </file>
 
 <file path="backend/services/adapter/collector_starter.py">
