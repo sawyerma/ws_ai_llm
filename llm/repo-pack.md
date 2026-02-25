@@ -121841,258 +121841,6 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
-<file path="backend/database/clickhouse/cl_unified_manager.py">
-"""
-Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
-Environment Detection, Connection Pooling, Schema Management
-
-FIX (Enterprise):
-- clickhouse_connect Client ist NICHT concurrent-safe pro Session.
-- Lösung: pro Thread EIN Client (thread-local).
-- Alle DB-Operationen sollen aus async Code via asyncio.to_thread() laufen (siehe ClickHouseClientWrapper.execute).
-"""
-
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-import threading
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-
-import clickhouse_connect
-from clickhouse_connect.driver import Client
-
-from .cl_config import (
-    CL_CONNECTION,
-    CL_SCHEMAS,
-)
-
-logger = logging.getLogger(__name__)
-
-
-class ClickHouseConnectionPool:
-    """
-    ClickHouse Connection Pool
-
-    Enterprise Policy:
-    - pro Thread genau 1 Client (thread-local)
-    - KEIN shared Client über Async-Tasks
-    """
-
-    def __init__(self) -> None:
-        self.environment = self._detect_environment()
-        self.is_initialized = False
-        self.initialization_time: Optional[datetime] = None
-
-        # thread-local Clients: { connection_name -> Client }
-        self._thread_local = threading.local()
-
-        # config once
-        self.connection_config = self._get_environment_config()
-
-        logger.info("ClickHouseConnectionPool created | env=%s | cfg=%s:%s/%s",
-                    self.environment,
-                    self.connection_config.get("host"),
-                    self.connection_config.get("port"),
-                    self.connection_config.get("database"))
-
-    def _detect_environment(self) -> str:
-        if os.path.exists("/.dockerenv"):
-            return "docker"
-        if os.environ.get("ENVIRONMENT") == "production":
-            return "production"
-        return "local"
-
-    def _get_environment_config(self) -> Dict[str, Any]:
-        """
-        Nutzt CL_CONNECTION als SSOT.
-        Override nur Host/Port Defaults je Environment (ohne Overengineering).
-        """
-        cfg = dict(CL_CONNECTION)
-
-        # Docker: Service-Name "clickhouse" im Compose-Netz
-        if self.environment == "docker":
-            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "clickhouse")) or "clickhouse"
-            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
-        else:
-            # local/dev: meistens localhost
-            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "localhost")) or "localhost"
-            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
-
-        # Filter: nur Parameter, die clickhouse_connect.get_client akzeptiert (HTTP)
-        allowed = {
-            "host",
-            "port",
-            "username",
-            "password",
-            "database",
-            "connect_timeout",
-            "send_receive_timeout",
-        }
-        cfg = {k: v for k, v in cfg.items() if k in allowed and v is not None}
-        return cfg
-
-    def _make_client(self) -> Client:
-        return clickhouse_connect.get_client(**self.connection_config)
-
-    async def initialize(self) -> bool:
-        if self.is_initialized:
-            return True
-
-        try:
-            self.initialization_time = datetime.now()
-            # Ping über thread-local Client im Thread (kein Blocking im Eventloop)
-            def _ping() -> None:
-                c = self.get_client()
-                c.ping()
-
-            await asyncio.to_thread(_ping)
-            self.is_initialized = True
-            logger.info("ClickHouseConnectionPool initialized | env=%s", self.environment)
-            return True
-        except Exception as e:
-            logger.error("ClickHouseConnectionPool init failed: %s", e, exc_info=True)
-            self.is_initialized = False
-            return False
-
-    def get_client(self, connection_name: str = "primary") -> Client:
-        """
-        Thread-local Client.
-        WICHTIG: Dieser Client darf nur im aktuellen Thread benutzt werden.
-        """
-        clients = getattr(self._thread_local, "clients", None)
-        if clients is None:
-            clients = {}
-            self._thread_local.clients = clients
-
-        c = clients.get(connection_name)
-        if c is None:
-            c = self._make_client()
-            clients[connection_name] = c
-        return c
-
-    def get_pool_health(self) -> Dict[str, Any]:
-        """
-        Get connection pool health status
-        """
-        uptime_seconds = 0
-        if self.initialization_time:
-            uptime_seconds = (datetime.now() - self.initialization_time).total_seconds()
-
-        return {
-            "service": "clickhouse_connection_pool",
-            "environment": self.environment,
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "connection_config": {
-                "host": self.connection_config.get("host"),
-                "port": self.connection_config.get("port"),
-                "database": self.connection_config.get("database", "trading")
-            },
-            "status": "healthy" if self.is_initialized else "initializing"
-        }
-
-    async def shutdown(self) -> None:
-        # optional: thread-local clients schließen (best-effort)
-        self.is_initialized = False
-        logger.info("ClickHouseConnectionPool shutdown requested")
-
-
-class SchemaManager:
-    """
-    Minimaler Schema-Ensurer (falls du es nutzt).
-    """
-
-    def __init__(self, pool: ClickHouseConnectionPool) -> None:
-        self.pool = pool
-        self.managed_databases: List[str] = []
-        self.managed_tables: Dict[str, List[str]] = {}
-
-    async def ensure_database(self, database_name: str = "trading") -> bool:
-        try:
-            def _run() -> None:
-                c = self.pool.get_client()
-                c.command(f"CREATE DATABASE IF NOT EXISTS {database_name}")
-
-            await asyncio.to_thread(_run)
-            if database_name not in self.managed_databases:
-                self.managed_databases.append(database_name)
-            return True
-        except Exception as e:
-            logger.error("ensure_database failed: %s", e, exc_info=True)
-            return False
-
-    async def ensure_exchange_tables(self, exchange: str, database: str = "trading") -> bool:
-        """
-        Achtung: Deine echten Tabellen sind bereits vorhanden (binance_trades, ...).
-        Das hier ist nur, falls du CL_SCHEMAS aktiv nutzt.
-        """
-        try:
-            def _run() -> int:
-                c = self.pool.get_client()
-                ok = 0
-                for _, schema in CL_SCHEMAS.items():
-                    table = f"{database}.{exchange}{schema['table_suffix']}"
-                    q = f"CREATE TABLE IF NOT EXISTS {table} ({schema['columns']}) ENGINE = {schema['engine']}"
-                    c.command(q)
-                    ok += 1
-                return ok
-
-            created = await asyncio.to_thread(_run)
-            self.managed_tables.setdefault(database, [])
-            return created == len(CL_SCHEMAS)
-        except Exception as e:
-            logger.error("ensure_exchange_tables failed: %s", e, exc_info=True)
-            return False
-
-    def get_schema_health(self) -> Dict[str, Any]:
-        """
-        Get schema management health status
-        """
-        return {
-            "service": "clickhouse_schema_manager",
-            "managed_databases": self.managed_databases,
-            "managed_tables": dict(self.managed_tables),
-            "total_databases": len(self.managed_databases),
-            "total_tables": sum(len(tables) for tables in self.managed_tables.values()),
-            "status": "healthy" if len(self.managed_databases) > 0 else "initializing"
-        }
-
-
-_connection_pool: Optional[ClickHouseConnectionPool] = None
-_schema_manager: Optional[SchemaManager] = None
-
-
-def get_clickhouse_connection_pool() -> ClickHouseConnectionPool:
-    global _connection_pool
-    if _connection_pool is None:
-        _connection_pool = ClickHouseConnectionPool()
-    return _connection_pool
-
-
-def get_schema_manager() -> SchemaManager:
-    global _schema_manager, _connection_pool
-    if _schema_manager is None:
-        if _connection_pool is None:
-            _connection_pool = ClickHouseConnectionPool()
-        _schema_manager = SchemaManager(_connection_pool)
-    return _schema_manager
-
-
-async def initialize_clickhouse_foundation() -> bool:
-    pool = get_clickhouse_connection_pool()
-    ok = await pool.initialize()
-    if not ok:
-        return False
-
-    # optional DB ensure
-    schema = get_schema_manager()
-    await schema.ensure_database("trading")
-    return True
-</file>
-
 <file path="backend/database/clickhouse/cl_user_settings.py">
 import asyncio
 import logging
@@ -160686,6 +160434,263 @@ class cl_manager:
 cl_manager_instance = cl_manager()
 </file>
 
+<file path="backend/database/clickhouse/cl_unified_manager.py">
+"""
+Core Unified ClickHouse Manager - LOW-LEVEL Foundation (Task 22)
+Environment Detection, Connection Pooling, Schema Management
+
+FIX (Enterprise):
+- clickhouse_connect Client ist NICHT concurrent-safe pro Session.
+- Lösung: pro Thread EIN Client (thread-local).
+- Alle DB-Operationen sollen aus async Code via asyncio.to_thread() laufen (siehe ClickHouseClientWrapper.execute).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+import clickhouse_connect
+from clickhouse_connect.driver import Client
+
+from .cl_config import (
+    CL_CONNECTION,
+    CL_SCHEMAS,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ClickHouseConnectionPool:
+    """
+    ClickHouse Connection Pool
+
+    Enterprise Policy:
+    - pro Thread genau 1 Client (thread-local)
+    - KEIN shared Client über Async-Tasks
+    """
+
+    def __init__(self) -> None:
+        self.environment = self._detect_environment()
+        self.is_initialized = False
+        self.initialization_time: Optional[datetime] = None
+
+        # thread-local Clients: { connection_name -> Client }
+        self._thread_local = threading.local()
+
+        # config once
+        self.connection_config = self._get_environment_config()
+
+        logger.info("ClickHouseConnectionPool created | env=%s | cfg=%s:%s/%s",
+                    self.environment,
+                    self.connection_config.get("host"),
+                    self.connection_config.get("port"),
+                    self.connection_config.get("database"))
+
+    def _detect_environment(self) -> str:
+        if os.path.exists("/.dockerenv"):
+            return "docker"
+        if os.environ.get("ENVIRONMENT") == "production":
+            return "production"
+        return "local"
+
+    def _get_environment_config(self) -> Dict[str, Any]:
+        """
+        Nutzt CL_CONNECTION als SSOT.
+        Override nur Host/Port Defaults je Environment (ohne Overengineering).
+        """
+        cfg = dict(CL_CONNECTION)
+
+        # Docker: Service-Name "clickhouse" im Compose-Netz
+        if self.environment == "docker":
+            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "clickhouse")) or "clickhouse"
+            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
+        else:
+            # local/dev: meistens localhost
+            cfg["host"] = os.getenv("CLICKHOUSE_HOST", cfg.get("host", "localhost")) or "localhost"
+            cfg["port"] = int(os.getenv("CLICKHOUSE_PORT", str(cfg.get("port", 8123))))
+
+        # WICHTIG: database nicht setzen beim Connection-Init, da trading möglicherweise noch nicht existiert
+        # Die Verbindung wird ohne spezifische Datenbank hergestellt
+        cfg.pop("database", None)
+
+        # Filter: nur Parameter, die clickhouse_connect.get_client akzeptiert (HTTP)
+        allowed = {
+            "host",
+            "port",
+            "username",
+            "password",
+            "connect_timeout",
+            "send_receive_timeout",
+        }
+        cfg = {k: v for k, v in cfg.items() if k in allowed and v is not None}
+        return cfg
+
+    def _make_client(self) -> Client:
+        return clickhouse_connect.get_client(**self.connection_config)
+
+    async def initialize(self) -> bool:
+        if self.is_initialized:
+            return True
+
+        try:
+            self.initialization_time = datetime.now()
+            # Ping über thread-local Client im Thread (kein Blocking im Eventloop)
+            def _ping() -> None:
+                c = self.get_client()
+                c.ping()
+
+            await asyncio.to_thread(_ping)
+            self.is_initialized = True
+            logger.info("ClickHouseConnectionPool initialized | env=%s", self.environment)
+            return True
+        except Exception as e:
+            logger.error("ClickHouseConnectionPool init failed: %s", e, exc_info=True)
+            self.is_initialized = False
+            return False
+
+    def get_client(self, connection_name: str = "primary") -> Client:
+        """
+        Thread-local Client.
+        WICHTIG: Dieser Client darf nur im aktuellen Thread benutzt werden.
+        """
+        clients = getattr(self._thread_local, "clients", None)
+        if clients is None:
+            clients = {}
+            self._thread_local.clients = clients
+
+        c = clients.get(connection_name)
+        if c is None:
+            c = self._make_client()
+            clients[connection_name] = c
+        return c
+
+    def get_pool_health(self) -> Dict[str, Any]:
+        """
+        Get connection pool health status
+        """
+        uptime_seconds = 0.0
+        if self.initialization_time:
+            uptime_seconds = (datetime.now() - self.initialization_time).total_seconds()
+
+        return {
+            "service": "clickhouse_connection_pool",
+            "environment": self.environment,
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_config": {
+                "host": self.connection_config.get("host"),
+                "port": self.connection_config.get("port"),
+                # Hinweis: Client wird OHNE database initialisiert (by design)
+                "database": None,
+                "default_database": "trading",
+            },
+            "status": "healthy" if self.is_initialized else "initializing",
+        }
+
+    async def shutdown(self) -> None:
+        # optional: thread-local clients schließen (best-effort)
+        self.is_initialized = False
+        logger.info("ClickHouseConnectionPool shutdown requested")
+
+
+class SchemaManager:
+    """
+    Minimaler Schema-Ensurer (falls du es nutzt).
+    """
+
+    def __init__(self, pool: ClickHouseConnectionPool) -> None:
+        self.pool = pool
+        self.managed_databases: List[str] = []
+        self.managed_tables: Dict[str, List[str]] = {}
+
+    async def ensure_database(self, database_name: str = "trading") -> bool:
+        try:
+            def _run() -> None:
+                c = self.pool.get_client()
+                c.command(f"CREATE DATABASE IF NOT EXISTS {database_name}")
+
+            await asyncio.to_thread(_run)
+            if database_name not in self.managed_databases:
+                self.managed_databases.append(database_name)
+            return True
+        except Exception as e:
+            logger.error("ensure_database failed: %s", e, exc_info=True)
+            return False
+
+    async def ensure_exchange_tables(self, exchange: str, database: str = "trading") -> bool:
+        """
+        Achtung: Deine echten Tabellen sind bereits vorhanden (binance_trades, ...).
+        Das hier ist nur, falls du CL_SCHEMAS aktiv nutzt.
+        """
+        try:
+            def _run() -> int:
+                c = self.pool.get_client()
+                ok = 0
+                for _, schema in CL_SCHEMAS.items():
+                    table = f"{database}.{exchange}{schema['table_suffix']}"
+                    q = f"CREATE TABLE IF NOT EXISTS {table} ({schema['columns']}) ENGINE = {schema['engine']}"
+                    c.command(q)
+                    ok += 1
+                return ok
+
+            created = await asyncio.to_thread(_run)
+            self.managed_tables.setdefault(database, [])
+            return created == len(CL_SCHEMAS)
+        except Exception as e:
+            logger.error("ensure_exchange_tables failed: %s", e, exc_info=True)
+            return False
+
+    def get_schema_health(self) -> Dict[str, Any]:
+        """
+        Get schema management health status
+        """
+        return {
+            "service": "clickhouse_schema_manager",
+            "managed_databases": self.managed_databases,
+            "managed_tables": dict(self.managed_tables),
+            "total_databases": len(self.managed_databases),
+            "total_tables": sum(len(tables) for tables in self.managed_tables.values()),
+            "status": "healthy" if len(self.managed_databases) > 0 else "initializing"
+        }
+
+
+_connection_pool: Optional[ClickHouseConnectionPool] = None
+_schema_manager: Optional[SchemaManager] = None
+
+
+def get_clickhouse_connection_pool() -> ClickHouseConnectionPool:
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = ClickHouseConnectionPool()
+    return _connection_pool
+
+
+def get_schema_manager() -> SchemaManager:
+    global _schema_manager, _connection_pool
+    if _schema_manager is None:
+        if _connection_pool is None:
+            _connection_pool = ClickHouseConnectionPool()
+        _schema_manager = SchemaManager(_connection_pool)
+    return _schema_manager
+
+
+async def initialize_clickhouse_foundation() -> bool:
+    pool = get_clickhouse_connection_pool()
+    ok = await pool.initialize()
+    if not ok:
+        return False
+
+    # optional DB ensure
+    schema = get_schema_manager()
+    await schema.ensure_database("trading")
+    return True
+</file>
+
 <file path="backend/database/schema_reconcile.py">
 from __future__ import annotations
 
@@ -161308,6 +161313,182 @@ class MEXCOrderbookService:
             logger.error(f"MEXC orderbook parsing error: {e}")
         
         return None
+</file>
+
+<file path="backend/services/adapter/stream_aggregator.py">
+import time
+import threading
+import logging
+from typing import Dict, Tuple
+
+from backend.core.utils.parse_resolution import parse_resolution
+
+logger = logging.getLogger("stream_aggregator")
+
+
+class ResolutionRegistry:
+    """
+    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
+
+    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
+    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
+    """
+
+    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
+        self.defaults = set(defaults)
+        self.ttl = ttl_sec
+        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+        self.lock = threading.Lock()
+
+    def touch(self, ex: str, sym: str, res: str) -> None:
+        """
+        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
+        """
+        sec, norm = parse_resolution(res)
+        key = (ex, sym)
+        with self.lock:
+            self.active.setdefault(key, {})[norm] = {
+                "sec": sec,
+                "last": time.monotonic(),
+            }
+
+    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
+        """
+        Liefert alle relevanten Resolutions für (ex, sym):
+
+        - Basis-Resolutions aus defaults
+        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
+        """
+        key = (ex, sym)
+        now = time.monotonic()
+        with self.lock:
+            store = self.active.setdefault(key, {})
+
+            # Abgelaufene dynamische Resolutions entfernen
+            for r in list(store.keys()):
+                if now - store[r]["last"] > self.ttl:
+                    del store[r]
+
+            # Basis-Resolutions immer drin
+            out: Dict[str, Dict[str, float]] = {
+                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
+            }
+            # Dynamische Resolutions überschreiben ggf. defaults
+            out.update({r: {"sec": store[r]["sec"]} for r in store})
+
+        return out
+
+
+# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
+registry = ResolutionRegistry()
+
+
+class MultiResCandleAgg:
+    """
+    Multi-Resolution Candle-Aggregator.
+
+    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
+    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
+    """
+
+    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
+        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
+        self.exchange = exchange
+        self.symbol = symbol
+        self.market = market
+        self.resolutions = resolutions or []
+        
+        # key: (ex, sym, res_str) → candle-state
+        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+        self.last_cleanup = time.time()
+
+    def _cleanup_old_buckets(self) -> None:
+        """
+        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
+        Nur alle 5 Minuten aktiv.
+        """
+        current_time = time.time()
+        # Nur alle 5 Minuten bereinigen
+        if current_time - self.last_cleanup < 300:
+            return
+
+        current_time_ms = int(current_time * 1000)
+        # Lösche Candles älter als 1 Stunde
+        for key in list(self.state.keys()):
+            if current_time_ms - self.state[key]["timestamp"] > 3600000:
+                del self.state[key]
+
+        self.last_cleanup = current_time
+
+    @staticmethod
+    def _bucket(ts_ms: int, sec: int) -> int:
+        """
+        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
+        """
+        return (ts_ms // (sec * 1000)) * (sec * 1000)
+
+    def on_trade(
+        self,
+        ex: str,
+        sym: str,
+        market: str,
+        ts_ms: int,
+        price,
+        size,
+        resolutions: Dict[str, Dict[str, float]],
+    ):
+        """
+        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
+
+        Parameter:
+        - ex: Exchange-Name (z.B. 'binance')
+        - sym: Symbol (z.B. 'BTCUSDT')
+        - market: Markt-Typ (z.B. 'spot', 'usdtm')
+        - ts_ms: Timestamp in Millisekunden
+        - price: Preis (Decimal/float/str)
+        - size: Größe (Decimal/float/str)
+        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
+                       (kommt aus registry.list(ex, sym))
+
+        Rückgabe:
+        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
+          abgeschlossen wurden (Bucket-Wechsel).
+        """
+        self._cleanup_old_buckets()
+        finished = []
+
+        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
+        for res_str, meta in resolutions.items():
+            sec = meta["sec"]
+            key = (ex, sym, res_str)
+            b = self._bucket(ts_ms, sec)
+            c = self.state.get(key)
+
+            if c is None or c["timestamp"] != b:
+                # alter Bucket wird fertig, wenn vorhanden
+                if c:
+                    finished.append((res_str, c))
+                # neuen Candle-Bucket anlegen
+                self.state[key] = {
+                    "timestamp": b,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": size,
+                    "sec": sec,
+                    "market": market,
+                }
+            else:
+                # existierenden Candle-Bucket aktualisieren
+                c["c"] = price
+                c["v"] += size
+                if price > c["h"]:
+                    c["h"] = price
+                if price < c["l"]:
+                    c["l"] = price
+
+        return finished
 </file>
 
 <file path="backend/services/delete/unified_aggregator_entrypoint.py">
@@ -162236,182 +162417,6 @@ def cl_config_summary() -> Dict[str, Any]:
         "performance": CL_PERFORMANCE,
         "schemas": {k: {"suffix": v["table_suffix"], "engine": v["engine"]} for k, v in CL_SCHEMAS.items()},
     }
-</file>
-
-<file path="backend/services/adapter/stream_aggregator.py">
-import time
-import threading
-import logging
-from typing import Dict, Tuple
-
-from backend.core.utils.parse_resolution import parse_resolution
-
-logger = logging.getLogger("stream_aggregator")
-
-
-class ResolutionRegistry:
-    """
-    Registry für aktive Candle-Resolutions pro (Exchange, Symbol).
-
-    - defaults: Basis-Resolutions, die IMMER aktiv sind (z.B. 1s, 1m, 5m, 1h)
-    - ttl_sec: Zeit, nach der inaktive, dynamisch angefragte Resolutions gelöscht werden
-    """
-
-    def __init__(self, defaults=("1s", "1m", "5m", "1h"), ttl_sec=600):
-        self.defaults = set(defaults)
-        self.ttl = ttl_sec
-        self.active: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
-        self.lock = threading.Lock()
-
-    def touch(self, ex: str, sym: str, res: str) -> None:
-        """
-        Markiert eine Resolution für (ex, sym) als aktiv und setzt/aktualisiert ihren Timestamp.
-        """
-        sec, norm = parse_resolution(res)
-        key = (ex, sym)
-        with self.lock:
-            self.active.setdefault(key, {})[norm] = {
-                "sec": sec,
-                "last": time.monotonic(),
-            }
-
-    def list(self, ex: str, sym: str) -> Dict[str, Dict[str, float]]:
-        """
-        Liefert alle relevanten Resolutions für (ex, sym):
-
-        - Basis-Resolutions aus defaults
-        - plus dynamisch angefragte Resolutions (so lange sie nicht abgelaufen sind)
-        """
-        key = (ex, sym)
-        now = time.monotonic()
-        with self.lock:
-            store = self.active.setdefault(key, {})
-
-            # Abgelaufene dynamische Resolutions entfernen
-            for r in list(store.keys()):
-                if now - store[r]["last"] > self.ttl:
-                    del store[r]
-
-            # Basis-Resolutions immer drin
-            out: Dict[str, Dict[str, float]] = {
-                r: {"sec": parse_resolution(r)[0]} for r in self.defaults
-            }
-            # Dynamische Resolutions überschreiben ggf. defaults
-            out.update({r: {"sec": store[r]["sec"]} for r in store})
-
-        return out
-
-
-# Globale Registry-Instanz – wird vom UnifiedAggregator verwendet
-registry = ResolutionRegistry()
-
-
-class MultiResCandleAgg:
-    """
-    Multi-Resolution Candle-Aggregator.
-
-    Hält für jede (ex, sym, resolution) den aktuellen, noch offenen Candle-Bucket im Speicher
-    und liefert beim Bucket-Wechsel fertige Candles als Liste zurück.
-    """
-
-    def __init__(self, exchange: str = None, symbol: str = None, market: str = None, resolutions: list = None):
-        # ✅ FIX: Akzeptiere Parameter für WebSocket-Integration (ws_manager.py)
-        self.exchange = exchange
-        self.symbol = symbol
-        self.market = market
-        self.resolutions = resolutions or []
-        
-        # key: (ex, sym, res_str) → candle-state
-        self.state: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        self.last_cleanup = time.time()
-
-    def _cleanup_old_buckets(self) -> None:
-        """
-        Entfernt alte Candle-Buckets aus self.state, um Speicherverbrauch zu begrenzen.
-        Nur alle 5 Minuten aktiv.
-        """
-        current_time = time.time()
-        # Nur alle 5 Minuten bereinigen
-        if current_time - self.last_cleanup < 300:
-            return
-
-        current_time_ms = int(current_time * 1000)
-        # Lösche Candles älter als 1 Stunde
-        for key in list(self.state.keys()):
-            if current_time_ms - self.state[key]["timestamp"] > 3600000:
-                del self.state[key]
-
-        self.last_cleanup = current_time
-
-    @staticmethod
-    def _bucket(ts_ms: int, sec: int) -> int:
-        """
-        Rundet den Timestamp (ms) auf den entsprechenden Candle-Bucket für die angegebene Sekundenauflösung.
-        """
-        return (ts_ms // (sec * 1000)) * (sec * 1000)
-
-    def on_trade(
-        self,
-        ex: str,
-        sym: str,
-        market: str,
-        ts_ms: int,
-        price,
-        size,
-        resolutions: Dict[str, Dict[str, float]],
-    ):
-        """
-        Verarbeitet einen Trade und aktualisiert die Candles für alle angegebenen resolutions.
-
-        Parameter:
-        - ex: Exchange-Name (z.B. 'binance')
-        - sym: Symbol (z.B. 'BTCUSDT')
-        - market: Markt-Typ (z.B. 'spot', 'usdtm')
-        - ts_ms: Timestamp in Millisekunden
-        - price: Preis (Decimal/float/str)
-        - size: Größe (Decimal/float/str)
-        - resolutions: Mapping res_str → {"sec": <auflösung_in_sekunden>}
-                       (kommt aus registry.list(ex, sym))
-
-        Rückgabe:
-        - Liste von (res_str, candle_dict) für alle Candles, die im Zuge dieses Trades
-          abgeschlossen wurden (Bucket-Wechsel).
-        """
-        self._cleanup_old_buckets()
-        finished = []
-
-        # Preis/Size so verwenden, wie sie kommen; Aggregator ist typenagnostisch
-        for res_str, meta in resolutions.items():
-            sec = meta["sec"]
-            key = (ex, sym, res_str)
-            b = self._bucket(ts_ms, sec)
-            c = self.state.get(key)
-
-            if c is None or c["timestamp"] != b:
-                # alter Bucket wird fertig, wenn vorhanden
-                if c:
-                    finished.append((res_str, c))
-                # neuen Candle-Bucket anlegen
-                self.state[key] = {
-                    "timestamp": b,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": size,
-                    "sec": sec,
-                    "market": market,
-                }
-            else:
-                # existierenden Candle-Bucket aktualisieren
-                c["c"] = price
-                c["v"] += size
-                if price > c["h"]:
-                    c["h"] = price
-                if price < c["l"]:
-                    c["l"] = price
-
-        return finished
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
