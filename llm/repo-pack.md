@@ -625,6 +625,7 @@ frontend/
       components/
         CandleChart/
           CandleChart.tsx
+          chartAdapter.ts
           chartThemes.ts
           index.ts
           LoadingBlockOverlay.tsx
@@ -127747,6 +127748,193 @@ export function useMarketTrades(
 export { default } from "./TradingPage";
 </file>
 
+<file path="frontend/src/shared/components/CandleChart/chartAdapter.ts">
+// frontend/src/shared/components/CandleChart/chartAdapter.ts
+import type { SafeCandleChartApi } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+type LWCandle = {
+  time: number; // seconds
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+};
+
+function isRealCandle(d: CandleData): d is CandleData & {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+} {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+function toLwSeriesPoints(data: CandleData[]): { points: LWCandle[]; hasWhitespace: boolean } {
+  let hasWhitespace = false;
+
+  const points = (data || [])
+    .map((d) => {
+      const tSec = Math.floor((d?.time ?? 0) / 1000);
+      if (!Number.isFinite(tSec) || tSec <= 0) return null;
+
+      if (isRealCandle(d)) {
+        return {
+          time: tSec,
+          open: (d as any).open,
+          high: (d as any).high,
+          low: (d as any).low,
+          close: (d as any).close,
+        } satisfies LWCandle;
+      }
+
+      // whitespace: {time} without OHLC
+      hasWhitespace = true;
+      return { time: tSec } satisfies LWCandle;
+    })
+    .filter(Boolean) as LWCandle[];
+
+  points.sort((a, b) => a.time - b.time);
+  return { points, hasWhitespace };
+}
+
+export function isRealPoint(p: LWCandle): p is Required<LWCandle> {
+  return (
+    p.open !== undefined &&
+    Number.isFinite(p.open) &&
+    Number.isFinite(p.high) &&
+    Number.isFinite(p.low) &&
+    Number.isFinite(p.close)
+  );
+}
+
+/**
+ * Enterprise chart adapter:
+ * - First call: setData (supports whitespace)
+ * - Live updates: only update/append last candles (no setData spam)
+ * - If whitespace is present in new input -> fallback to setData (candlestick.update cannot render whitespace)
+ * - Handles chart re-creation via SafeCandleChartApi.generation
+ */
+export function createCandleChartAdapter(safeChart: SafeCandleChartApi) {
+  let lastGen = safeChart.generation;
+  let initialized = false;
+  let lastAppliedTime: number | null = null;
+
+  function resetState() {
+    initialized = false;
+    lastAppliedTime = null;
+    lastGen = safeChart.generation;
+  }
+
+  function ensureGen() {
+    if (safeChart.generation !== lastGen) {
+      // chart recreated -> must setData again
+      resetState();
+    }
+  }
+
+  function setAll(data: CandleData[]) {
+    ensureGen();
+    const { points } = toLwSeriesPoints(data);
+    if (!points.length) return;
+
+    safeChart.safeSetData(points);
+    initialized = true;
+    const lastPoint = points[points.length - 1];
+    lastAppliedTime = lastPoint ? lastPoint.time : null;
+  }
+
+  /**
+   * Apply latest data:
+   * - If not initialized -> setAll
+   * - If whitespace present -> setAll
+   * - Else:
+   *   - update last bar if same timestamp
+   *   - append any new bars with update()
+   *   - if data went backwards/reorg -> setAll
+   */
+  function apply(data: CandleData[]) {
+    ensureGen();
+
+    const { points, hasWhitespace } = toLwSeriesPoints(data);
+    if (!points.length) return;
+
+    const lastPointInArray = points[points.length - 1];
+    if (!lastPointInArray) return; // safety check
+
+    if (!initialized) {
+      safeChart.safeSetData(points);
+      initialized = true;
+      lastAppliedTime = lastPointInArray.time;
+      return;
+    }
+
+    // whitespace requires full redraw for candlesticks
+    if (hasWhitespace) {
+      safeChart.safeSetData(points);
+      lastAppliedTime = lastPointInArray.time;
+      return;
+    }
+
+    const newLast = lastPointInArray.time;
+    const prevLast = lastAppliedTime;
+
+    // safety fallback if state unknown
+    if (prevLast === null) {
+      safeChart.safeSetData(points);
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    // data older than what we already applied -> reorg/reset
+    if (newLast < prevLast) {
+      safeChart.safeSetData(points);
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    // fast path: same last timestamp -> update last bar
+    if (newLast === prevLast) {
+      if (isRealPoint(lastPointInArray)) {
+        safeChart.safeUpdate(lastPointInArray);
+      }
+      // keep lastAppliedTime
+      return;
+    }
+
+    // find first index with time > prevLast (linear from end is ok here)
+    let firstNewIdx = points.length;
+    for (let i = points.length - 1; i >= 0; i--) {
+      const point = points[i];
+      if (!point) continue;
+      const t = point.time;
+      if (t <= prevLast) {
+        firstNewIdx = i + 1;
+        break;
+      }
+      if (i === 0) firstNewIdx = 0;
+    }
+
+    for (let i = firstNewIdx; i < points.length; i++) {
+      const p = points[i];
+      if (p && isRealPoint(p)) {
+        safeChart.safeUpdate(p);
+      }
+    }
+
+    lastAppliedTime = newLast;
+  }
+
+  return { setAll, apply, resetState };
+}
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/index.ts">
 /**
  * CandleChart Module Exports
@@ -162737,6 +162925,96 @@ export const AppLayout: React.FC = () => {
 };
 </file>
 
+<file path="docker-compose.yml">
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:${REDIS_PORT}"
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:${CLICKHOUSE_PORT}" # HTTP
+      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
+    environment:
+      CLICKHOUSE_DB: trading
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    env_file:
+      - .env
+    build: .
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    environment:
+      - ENVIRONMENT=docker
+      - REDIS_URL=redis://redis:${REDIS_PORT}
+      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
+      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
+      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=admin
+    volumes:
+      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
+      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
+      - ./logs:/app/logs               # ✅ Mount logs directory
+      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  trade-router:
+    build: .
+    command: python -m backend.services.adapter.trade_router_entrypoint
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+    depends_on:
+      - redis
+
+  unified-aggregator:
+    build: .
+    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+      CLICKHOUSE_HOST: "clickhouse"
+      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
+  redis-data:
+</file>
+
 <file path="monitor-system.sh">
 #!/usr/bin/env bash
 # =============================================================================
@@ -165343,96 +165621,6 @@ Gleiche Umstellung:
 ---
 </file>
 
-<file path="docker-compose.yml">
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:${REDIS_PORT}"
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8124:${CLICKHOUSE_PORT}" # HTTP
-      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
-    environment:
-      CLICKHOUSE_DB: trading
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    volumes:
-      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - clickhouse-data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    env_file:
-      - .env
-    build: .
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
-    environment:
-      - ENVIRONMENT=docker
-      - REDIS_URL=redis://redis:${REDIS_PORT}
-      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
-      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
-      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
-      - CLICKHOUSE_USER=admin
-      - CLICKHOUSE_PASSWORD=admin
-    volumes:
-      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
-      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
-      - ./logs:/app/logs               # ✅ Mount logs directory
-      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  trade-router:
-    build: .
-    command: python -m backend.services.adapter.trade_router_entrypoint
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-    depends_on:
-      - redis
-
-  unified-aggregator:
-    build: .
-    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-      CLICKHOUSE_HOST: "clickhouse"
-      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-volumes:
-  clickhouse-data:
-  redis-data:
-</file>
-
 <file path="start-system.sh">
 #!/bin/bash
 
@@ -168022,6 +168210,614 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
+<file path="backend/services/adapter/unified_aggregator.py">
+import asyncio
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
+
+from redis import asyncio as aioredis
+from redis.exceptions import ConnectionError, ResponseError
+
+from backend.api.models.keys import Market
+from backend.database.clickhouse import (
+    cl_handlers_instance,
+    cl_manager_instance,
+    get_clickhouse_client,
+)
+from backend.services.adapter.candle_agg_1s import CandleAgg1s
+from backend.services.adapter.whale_detector import WhaleDetector
+from backend.services.discovery.dis_config import get_streams_per_exchange
+from backend.services.discovery.dis_trades import discover_trade_streams
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+
+# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
+from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+
+logger = logging.getLogger("unified_aggregator")
+
+
+class UnifiedAggregator:
+    """
+    Zentraler Aggregator:
+    - konsumiert Redis-Streams (discover_trade_streams)
+    - queued Trades -> ClickHouse (cl_handlers_instance)
+    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
+    - Whale detection (optional insert into whale_events via cl_manager)
+    """
+
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
+        self.r = None  # Redis client (set in run_unified_aggregator)
+        self.group = "unified_agg_group"
+        self.consumer = "unified_consumer"
+        self.running = True
+
+        # ClickHouse
+        self.ch_client = get_clickhouse_client()
+
+        # Whale Detection
+        self.whale_detector = WhaleDetector()
+        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
+
+        # 1s Candle Aggregation
+        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
+        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
+        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
+        self.last_candle_flush = time.time()
+        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
+
+        # Legacy multi-res aggregation (optional)
+        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
+        self.agg = MultiResCandleAgg() if self.enable_multires else None
+
+    # -----------------------------
+    # Normalization helpers
+    # -----------------------------
+
+    def _normalize_side(self, side: Any) -> str:
+        """
+        Normalize any exchange side variants -> 'buy'/'sell'
+        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
+        """
+        if side is None:
+            return "buy"
+        s = str(side).strip().lower()
+
+        if s in ("buy", "b", "bid", "1", "true", "t"):
+            return "buy"
+        if s in ("sell", "s", "ask", "2", "false", "f"):
+            return "sell"
+
+        # Some exchanges use uppercase or words; also handle common variants
+        if "buy" in s:
+            return "buy"
+        if "sell" in s:
+            return "sell"
+
+        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
+        return "buy"
+
+    def _ts_ms(self, timestamp: Any) -> int:
+        """
+        Robust timestamp -> milliseconds since epoch (int).
+        Uses CandleAgg1s parser for consistency.
+        """
+        return self.candle_agg.parse_timestamp(timestamp)
+
+    def _to_decimal(self, x: Any) -> Decimal:
+        return Decimal(str(x))
+
+    # -----------------------------
+    # Whale logic
+    # -----------------------------
+
+    async def process_whale_trade(self, trade_data: dict) -> None:
+        """
+        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
+        """
+        try:
+            symbol = trade_data.get("symbol")
+            price = trade_data.get("price")
+            size = trade_data.get("size")
+            if not symbol or price is None or size is None:
+                return
+
+            trade_value = self._to_decimal(price) * self._to_decimal(size)
+            threshold = await self.whale_detector.get_threshold(symbol)
+
+            if trade_value >= threshold:
+                if self.enable_whale_events:
+                    await self._store_whale_event(trade_data, trade_value, threshold)
+                else:
+                    logger.info(
+                        "[WHALE] %s %s value=%s threshold=%s",
+                        trade_data.get("exchange"),
+                        symbol,
+                        str(trade_value),
+                        str(threshold),
+                    )
+
+        except Exception:
+            logger.error("Unexpected error in process_whale_trade", exc_info=True)
+
+    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
+        """
+        Stores whale event as a ROW event (not aggregate states).
+        Requires cl_manager routing for operation_type='whale_events' to
+        table pattern: trading.{exchange}_whale_events
+        """
+        try:
+            exchange = str(trade.get("exchange", "")).lower().strip()
+            symbol = trade.get("symbol")
+            ts_ms = self._ts_ms(trade.get("timestamp"))
+
+            payload = {
+                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
+                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "chain": "na",
+                "tx_hash": "na",
+                "from_addr": "na",
+                "to_addr": "na",
+                "token": None,
+                "symbol": symbol,
+                "amount": self._to_decimal(trade.get("size")),
+                "is_native": 0,
+                "amount_usd": self._to_decimal(trade_value),
+                "from_exchange": exchange,
+                "from_country": "na",
+                "from_city": "na",
+                "to_exchange": exchange,
+                "to_country": "na",
+                "to_city": "na",
+                "is_cross_border": 0,
+                "source": "live_ws",
+                "threshold_usd": self._to_decimal(threshold),
+                "coin_rank": 0,
+            }
+
+            ok = await cl_manager_instance.insert_data(
+                exchange=exchange,
+                operation_type="whale_events",
+                data=[payload],
+            )
+            if not ok:
+                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
+
+        except Exception:
+            logger.error("Failed to store whale_event", exc_info=True)
+
+    # -----------------------------
+    # Candle batching
+    # -----------------------------
+
+    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
+        """
+        Flush candle batches to ClickHouse via cl_manager.
+        operation_type must map to: trading.{exchange}_candles_1s
+        """
+        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
+
+        for ex in exchanges_to_flush:
+            candles = self.candle_batch.get(ex, [])
+            if not candles:
+                continue
+
+            try:
+                ok = await cl_manager_instance.insert_data(
+                    exchange=ex,
+                    operation_type="candles",
+                    data=candles,
+                )
+                if ok:
+                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
+                    self.candle_batch[ex] = []
+                else:
+                    logger.warning("⚠️ Failed to flush candles for %s", ex)
+
+            except Exception:
+                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
+
+    async def _check_timer_flush(self) -> None:
+        """
+        Timer-based flush:
+        - finalize stale buckets
+        - flush all candle batches
+        """
+        now = time.time()
+        if now - self.last_candle_flush <= self.candle_flush_interval:
+            return
+
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    # If CandleAgg1s doesn't include exchange (older version), skip to avoid misrouting
+                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
+                    continue
+                self.candle_batch.setdefault(ex, []).append(candle)
+
+            await self._flush_candle_batch()
+        finally:
+            self.last_candle_flush = now
+
+    # -----------------------------
+    # Trade queue
+    # -----------------------------
+
+    async def _queue_trade_for_clickhouse(
+        self,
+        exchange: str,
+        trade_id: str,
+        symbol: str,
+        market: str,
+        price: Any,
+        size: Any,
+        side: Any,
+        timestamp_ms: int,
+    ) -> None:
+        """
+        Queue one trade to ClickHouse handlers.
+        """
+        try:
+            labels = await get_symbol_labels(exchange, symbol, market)
+
+            trade_payload = {
+                "exchange": exchange,
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "market": market,
+                "price": self._to_decimal(price),
+                "size": self._to_decimal(size),
+                "side": self._normalize_side(side),
+                "timestamp": int(timestamp_ms),  # ms
+                "asset_key": labels.get("asset_key"),
+                "instrument_uid": labels.get("instrument_uid"),
+            }
+
+            ok = await cl_handlers_instance.queue_message(
+                exchange=exchange,
+                message_type="trades",
+                data=trade_payload,
+            )
+            if not ok:
+                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
+            else:
+                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
+
+        except Exception:
+            logger.error("Error queuing trade for ClickHouse", exc_info=True)
+
+    # -----------------------------
+    # Main consume loop
+    # -----------------------------
+
+    async def consume_trades(self, streams: List[str]) -> None:
+        """
+        Consume trades from Redis Streams.
+
+        Expected stream key format:
+            <exchange>:trades:<market_type>:<symbol>
+        e.g. binance:trades:spot:BTCUSDT
+        """
+        if not streams:
+            logger.error("No streams provided to consume_trades")
+            return
+
+        # Initialize consumer groups only for existing streams
+        active_streams: List[str] = []
+        for stream_key in streams:
+            try:
+                exists = await self.r.exists(stream_key)
+                if not exists:
+                    logger.debug("Stream does not exist yet: %s", stream_key)
+                    continue
+
+                active_streams.append(stream_key)
+                try:
+                    await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
+                except ResponseError as e:
+                    if "BUSYGROUP" not in str(e):
+                        raise
+
+            except Exception:
+                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
+
+        if not active_streams:
+            logger.error("No active streams found - cannot consume")
+            return
+
+        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
+        streams = active_streams
+
+        while self.running:
+            try:
+                stream_dict = {s: ">" for s in streams}
+                messages = await self.r.xreadgroup(
+                    groupname=self.group,
+                    consumername=self.consumer,
+                    streams=stream_dict,
+                    count=200,
+                    block=5000,
+                )
+
+                if not messages:
+                    await self._check_timer_flush()
+                    continue
+
+                for stream_key, msgs in messages:
+                    for msg_id, data in msgs:
+                        try:
+                            raw = data.get("trade")
+                            if not raw:
+                                logger.warning("Missing 'trade' field in message %s", msg_id)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            trade = json.loads(raw)
+
+                            parts = stream_key.split(":", 3)
+                            if len(parts) != 4:
+                                logger.warning("Unexpected stream key format: %s", stream_key)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            exchange, _, market_type, symbol_from_key = parts
+                            exchange = exchange.lower().strip()
+
+                            trade_id = trade.get("trade_id") or trade.get("id") or ""
+                            price = trade.get("price")
+                            size = trade.get("size")
+                            side = trade.get("side")
+                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
+                            market = trade.get("market", market_type)
+
+                            symbol = trade.get("symbol") or symbol_from_key
+
+                            if not symbol or timestamp is None or price is None or size is None:
+                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            # Normalize timestamp once (ms)
+                            ts_ms = self._ts_ms(timestamp)
+
+                            # Queue trade -> CH
+                            await self._queue_trade_for_clickhouse(
+                                exchange=exchange,
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                price=price,
+                                size=size,
+                                side=side,
+                                timestamp_ms=ts_ms,
+                            )
+
+                            # 1s Candle aggregation (final candle on bucket switch)
+                            finished_candle = self.candle_agg.on_trade(
+                                exchange=exchange,
+                                symbol=symbol,
+                                market=market,
+                                timestamp=ts_ms,  # already normalized
+                                price=price,
+                                size=size,
+                            )
+
+                            if finished_candle:
+                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
+                                finished_candle["exchange"] = ex  # enforce
+                                self.candle_batch.setdefault(ex, []).append(finished_candle)
+
+                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
+                                    await self._flush_candle_batch(ex)
+
+                            # Legacy multi-res aggregation (optional)
+                            if self.enable_multires and self.agg is not None:
+                                res_map = registry.list(exchange, symbol)
+                                if res_map:
+                                    _ = self.agg.on_trade(
+                                        exchange,
+                                        symbol,
+                                        market,
+                                        ts_ms,  # normalized
+                                        price,
+                                        size,
+                                        res_map,
+                                    )
+
+                            # Whale detection (optional)
+                            await self.process_whale_trade(
+                                {
+                                    "exchange": exchange,
+                                    "symbol": symbol,
+                                    "price": price,
+                                    "size": size,
+                                    "timestamp": ts_ms,
+                                    "trade_id": trade_id,
+                                }
+                            )
+
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                        except json.JSONDecodeError:
+                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+                        except Exception:
+                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                # Timer flush after each batch
+                await self._check_timer_flush()
+
+            except (ConnectionError, ResponseError) as e:
+                logger.error("Redis error in consume_trades: %s", str(e))
+                await asyncio.sleep(5)
+            except Exception:
+                logger.error("Unexpected error in consume_trades", exc_info=True)
+                await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        """
+        Stop aggregator cleanly + final flush.
+        """
+        self.running = False
+        logger.info("UnifiedAggregator stopping...")
+
+        # Final candle flush
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    continue
+                self.candle_batch.setdefault(ex, []).append(candle)
+
+            await self._flush_candle_batch()
+            logger.info("✅ Final candle flush completed")
+        except Exception:
+            logger.warning("Error during final candle flush", exc_info=True)
+
+        if self.r is not None:
+            try:
+                await self.r.close()
+            except Exception:
+                logger.warning("Error closing Redis client", exc_info=True)
+
+
+async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
+    """
+    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
+    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
+
+    If exchange not enabled: return deterministic fallback without warnings.
+    """
+    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
+    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
+
+    if exchange.lower() not in enabled_exchanges:
+        return {
+            "asset_key": f"{exchange}/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
+        }
+
+    try:
+        market = Market.SPOT if market_type == "spot" else Market.USDTM
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
+
+        meta = next(
+            (
+                x
+                for x in catalog
+                if x.get("native_symbol", "").upper() == native_symbol.upper()
+            ),
+            None,
+        )
+
+        if meta:
+            return {
+                "asset_key": meta.get("asset_key"),
+                "instrument_uid": meta.get("instrument_uid"),
+            }
+
+        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
+        return {
+            "asset_key": f"UNKNOWN/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
+        }
+
+    except Exception:
+        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
+        return {
+            "asset_key": f"ERROR/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
+        }
+
+
+async def run_unified_aggregator() -> None:
+    """
+    Entry point:
+    - initializes cl_manager + cl_handlers
+    - discovers streams dynamically
+    - runs consume loop
+    """
+    from backend.core.config import settings
+
+    aggregator = UnifiedAggregator(settings.REDIS_URL)
+    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
+
+    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
+
+    # ClickHouse lanes registration
+    logger.info("🔧 Initializing ClickHouse Manager...")
+    await cl_manager_instance.initialize()
+    logger.info("✅ ClickHouse Manager initialized with all lanes")
+
+    # ClickHouse workers
+    workers = int(os.getenv("CH_WORKERS", "3"))
+    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
+    await cl_handlers_instance.start_processing(num_workers=workers)
+    logger.info("✅ ClickHouse handlers started")
+
+    try:
+        while True:
+            try:
+                redis_conn = getattr(aggregator, "r", None)
+                if redis_conn is None:
+                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
+
+                per_exchange_limit = get_streams_per_exchange()
+
+                streams, active_symbols, existing_streams = await discover_trade_streams(
+                    redis_conn,
+                    per_exchange_limit=per_exchange_limit,
+                )
+
+                if not existing_streams:
+                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                if not streams:
+                    logger.warning(
+                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
+                logger.info("📋 Active symbols from config: %s", active_symbols)
+                logger.info(
+                    "📊 Final stream count: %d (limit %d per exchange)",
+                    len(streams),
+                    per_exchange_limit,
+                )
+
+                await aggregator.consume_trades(streams)
+
+                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
+                await asyncio.sleep(retry_interval)
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Unified Aggregator shutdown signal received")
+                await aggregator.stop()
+                break
+            except Exception:
+                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
+                await asyncio.sleep(retry_interval)
+    finally:
+        await aggregator.stop()
+        logger.info("✅ Unified Aggregator stopped gracefully")
+</file>
+
 <file path="frontend/src/config/exchangeSupport.ts">
 // frontend/src/config/exchangeSupport.ts
 
@@ -169388,614 +170184,6 @@ async def start_auto_backfill_gap_loop():
             logger.info(f"✅ LOOP started: {exchange}:{symbol}")
         except Exception as e:
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
-</file>
-
-<file path="backend/services/adapter/unified_aggregator.py">
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
-
-from redis import asyncio as aioredis
-from redis.exceptions import ConnectionError, ResponseError
-
-from backend.api.models.keys import Market
-from backend.database.clickhouse import (
-    cl_handlers_instance,
-    cl_manager_instance,
-    get_clickhouse_client,
-)
-from backend.services.adapter.candle_agg_1s import CandleAgg1s
-from backend.services.adapter.whale_detector import WhaleDetector
-from backend.services.discovery.dis_config import get_streams_per_exchange
-from backend.services.discovery.dis_trades import discover_trade_streams
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-
-# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
-from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
-
-logger = logging.getLogger("unified_aggregator")
-
-
-class UnifiedAggregator:
-    """
-    Zentraler Aggregator:
-    - konsumiert Redis-Streams (discover_trade_streams)
-    - queued Trades -> ClickHouse (cl_handlers_instance)
-    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
-    - Whale detection (optional insert into whale_events via cl_manager)
-    """
-
-    def __init__(self, redis_url: str):
-        self.redis_url = redis_url
-        self.r = None  # Redis client (set in run_unified_aggregator)
-        self.group = "unified_agg_group"
-        self.consumer = "unified_consumer"
-        self.running = True
-
-        # ClickHouse
-        self.ch_client = get_clickhouse_client()
-
-        # Whale Detection
-        self.whale_detector = WhaleDetector()
-        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
-
-        # 1s Candle Aggregation
-        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
-        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
-        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
-        self.last_candle_flush = time.time()
-        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
-
-        # Legacy multi-res aggregation (optional)
-        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
-        self.agg = MultiResCandleAgg() if self.enable_multires else None
-
-    # -----------------------------
-    # Normalization helpers
-    # -----------------------------
-
-    def _normalize_side(self, side: Any) -> str:
-        """
-        Normalize any exchange side variants -> 'buy'/'sell'
-        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
-        """
-        if side is None:
-            return "buy"
-        s = str(side).strip().lower()
-
-        if s in ("buy", "b", "bid", "1", "true", "t"):
-            return "buy"
-        if s in ("sell", "s", "ask", "2", "false", "f"):
-            return "sell"
-
-        # Some exchanges use uppercase or words; also handle common variants
-        if "buy" in s:
-            return "buy"
-        if "sell" in s:
-            return "sell"
-
-        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
-        return "buy"
-
-    def _ts_ms(self, timestamp: Any) -> int:
-        """
-        Robust timestamp -> milliseconds since epoch (int).
-        Uses CandleAgg1s parser for consistency.
-        """
-        return self.candle_agg.parse_timestamp(timestamp)
-
-    def _to_decimal(self, x: Any) -> Decimal:
-        return Decimal(str(x))
-
-    # -----------------------------
-    # Whale logic
-    # -----------------------------
-
-    async def process_whale_trade(self, trade_data: dict) -> None:
-        """
-        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
-        """
-        try:
-            symbol = trade_data.get("symbol")
-            price = trade_data.get("price")
-            size = trade_data.get("size")
-            if not symbol or price is None or size is None:
-                return
-
-            trade_value = self._to_decimal(price) * self._to_decimal(size)
-            threshold = await self.whale_detector.get_threshold(symbol)
-
-            if trade_value >= threshold:
-                if self.enable_whale_events:
-                    await self._store_whale_event(trade_data, trade_value, threshold)
-                else:
-                    logger.info(
-                        "[WHALE] %s %s value=%s threshold=%s",
-                        trade_data.get("exchange"),
-                        symbol,
-                        str(trade_value),
-                        str(threshold),
-                    )
-
-        except Exception:
-            logger.error("Unexpected error in process_whale_trade", exc_info=True)
-
-    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
-        """
-        Stores whale event as a ROW event (not aggregate states).
-        Requires cl_manager routing for operation_type='whale_events' to
-        table pattern: trading.{exchange}_whale_events
-        """
-        try:
-            exchange = str(trade.get("exchange", "")).lower().strip()
-            symbol = trade.get("symbol")
-            ts_ms = self._ts_ms(trade.get("timestamp"))
-
-            payload = {
-                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
-                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                "chain": "na",
-                "tx_hash": "na",
-                "from_addr": "na",
-                "to_addr": "na",
-                "token": None,
-                "symbol": symbol,
-                "amount": self._to_decimal(trade.get("size")),
-                "is_native": 0,
-                "amount_usd": self._to_decimal(trade_value),
-                "from_exchange": exchange,
-                "from_country": "na",
-                "from_city": "na",
-                "to_exchange": exchange,
-                "to_country": "na",
-                "to_city": "na",
-                "is_cross_border": 0,
-                "source": "live_ws",
-                "threshold_usd": self._to_decimal(threshold),
-                "coin_rank": 0,
-            }
-
-            ok = await cl_manager_instance.insert_data(
-                exchange=exchange,
-                operation_type="whale_events",
-                data=[payload],
-            )
-            if not ok:
-                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
-
-        except Exception:
-            logger.error("Failed to store whale_event", exc_info=True)
-
-    # -----------------------------
-    # Candle batching
-    # -----------------------------
-
-    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
-        """
-        Flush candle batches to ClickHouse via cl_manager.
-        operation_type must map to: trading.{exchange}_candles_1s
-        """
-        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
-
-        for ex in exchanges_to_flush:
-            candles = self.candle_batch.get(ex, [])
-            if not candles:
-                continue
-
-            try:
-                ok = await cl_manager_instance.insert_data(
-                    exchange=ex,
-                    operation_type="candles",
-                    data=candles,
-                )
-                if ok:
-                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
-                    self.candle_batch[ex] = []
-                else:
-                    logger.warning("⚠️ Failed to flush candles for %s", ex)
-
-            except Exception:
-                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
-
-    async def _check_timer_flush(self) -> None:
-        """
-        Timer-based flush:
-        - finalize stale buckets
-        - flush all candle batches
-        """
-        now = time.time()
-        if now - self.last_candle_flush <= self.candle_flush_interval:
-            return
-
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    # If CandleAgg1s doesn't include exchange (older version), skip to avoid misrouting
-                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
-                    continue
-                self.candle_batch.setdefault(ex, []).append(candle)
-
-            await self._flush_candle_batch()
-        finally:
-            self.last_candle_flush = now
-
-    # -----------------------------
-    # Trade queue
-    # -----------------------------
-
-    async def _queue_trade_for_clickhouse(
-        self,
-        exchange: str,
-        trade_id: str,
-        symbol: str,
-        market: str,
-        price: Any,
-        size: Any,
-        side: Any,
-        timestamp_ms: int,
-    ) -> None:
-        """
-        Queue one trade to ClickHouse handlers.
-        """
-        try:
-            labels = await get_symbol_labels(exchange, symbol, market)
-
-            trade_payload = {
-                "exchange": exchange,
-                "trade_id": trade_id,
-                "symbol": symbol,
-                "market": market,
-                "price": self._to_decimal(price),
-                "size": self._to_decimal(size),
-                "side": self._normalize_side(side),
-                "timestamp": int(timestamp_ms),  # ms
-                "asset_key": labels.get("asset_key"),
-                "instrument_uid": labels.get("instrument_uid"),
-            }
-
-            ok = await cl_handlers_instance.queue_message(
-                exchange=exchange,
-                message_type="trades",
-                data=trade_payload,
-            )
-            if not ok:
-                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
-            else:
-                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
-
-        except Exception:
-            logger.error("Error queuing trade for ClickHouse", exc_info=True)
-
-    # -----------------------------
-    # Main consume loop
-    # -----------------------------
-
-    async def consume_trades(self, streams: List[str]) -> None:
-        """
-        Consume trades from Redis Streams.
-
-        Expected stream key format:
-            <exchange>:trades:<market_type>:<symbol>
-        e.g. binance:trades:spot:BTCUSDT
-        """
-        if not streams:
-            logger.error("No streams provided to consume_trades")
-            return
-
-        # Initialize consumer groups only for existing streams
-        active_streams: List[str] = []
-        for stream_key in streams:
-            try:
-                exists = await self.r.exists(stream_key)
-                if not exists:
-                    logger.debug("Stream does not exist yet: %s", stream_key)
-                    continue
-
-                active_streams.append(stream_key)
-                try:
-                    await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
-                except ResponseError as e:
-                    if "BUSYGROUP" not in str(e):
-                        raise
-
-            except Exception:
-                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
-
-        if not active_streams:
-            logger.error("No active streams found - cannot consume")
-            return
-
-        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
-        streams = active_streams
-
-        while self.running:
-            try:
-                stream_dict = {s: ">" for s in streams}
-                messages = await self.r.xreadgroup(
-                    groupname=self.group,
-                    consumername=self.consumer,
-                    streams=stream_dict,
-                    count=200,
-                    block=5000,
-                )
-
-                if not messages:
-                    await self._check_timer_flush()
-                    continue
-
-                for stream_key, msgs in messages:
-                    for msg_id, data in msgs:
-                        try:
-                            raw = data.get("trade")
-                            if not raw:
-                                logger.warning("Missing 'trade' field in message %s", msg_id)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            trade = json.loads(raw)
-
-                            parts = stream_key.split(":", 3)
-                            if len(parts) != 4:
-                                logger.warning("Unexpected stream key format: %s", stream_key)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            exchange, _, market_type, symbol_from_key = parts
-                            exchange = exchange.lower().strip()
-
-                            trade_id = trade.get("trade_id") or trade.get("id") or ""
-                            price = trade.get("price")
-                            size = trade.get("size")
-                            side = trade.get("side")
-                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
-                            market = trade.get("market", market_type)
-
-                            symbol = trade.get("symbol") or symbol_from_key
-
-                            if not symbol or timestamp is None or price is None or size is None:
-                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            # Normalize timestamp once (ms)
-                            ts_ms = self._ts_ms(timestamp)
-
-                            # Queue trade -> CH
-                            await self._queue_trade_for_clickhouse(
-                                exchange=exchange,
-                                trade_id=trade_id,
-                                symbol=symbol,
-                                market=market,
-                                price=price,
-                                size=size,
-                                side=side,
-                                timestamp_ms=ts_ms,
-                            )
-
-                            # 1s Candle aggregation (final candle on bucket switch)
-                            finished_candle = self.candle_agg.on_trade(
-                                exchange=exchange,
-                                symbol=symbol,
-                                market=market,
-                                timestamp=ts_ms,  # already normalized
-                                price=price,
-                                size=size,
-                            )
-
-                            if finished_candle:
-                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                finished_candle["exchange"] = ex  # enforce
-                                self.candle_batch.setdefault(ex, []).append(finished_candle)
-
-                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
-                                    await self._flush_candle_batch(ex)
-
-                            # Legacy multi-res aggregation (optional)
-                            if self.enable_multires and self.agg is not None:
-                                res_map = registry.list(exchange, symbol)
-                                if res_map:
-                                    _ = self.agg.on_trade(
-                                        exchange,
-                                        symbol,
-                                        market,
-                                        ts_ms,  # normalized
-                                        price,
-                                        size,
-                                        res_map,
-                                    )
-
-                            # Whale detection (optional)
-                            await self.process_whale_trade(
-                                {
-                                    "exchange": exchange,
-                                    "symbol": symbol,
-                                    "price": price,
-                                    "size": size,
-                                    "timestamp": ts_ms,
-                                    "trade_id": trade_id,
-                                }
-                            )
-
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                        except json.JSONDecodeError:
-                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-                        except Exception:
-                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                # Timer flush after each batch
-                await self._check_timer_flush()
-
-            except (ConnectionError, ResponseError) as e:
-                logger.error("Redis error in consume_trades: %s", str(e))
-                await asyncio.sleep(5)
-            except Exception:
-                logger.error("Unexpected error in consume_trades", exc_info=True)
-                await asyncio.sleep(1)
-
-    async def stop(self) -> None:
-        """
-        Stop aggregator cleanly + final flush.
-        """
-        self.running = False
-        logger.info("UnifiedAggregator stopping...")
-
-        # Final candle flush
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    continue
-                self.candle_batch.setdefault(ex, []).append(candle)
-
-            await self._flush_candle_batch()
-            logger.info("✅ Final candle flush completed")
-        except Exception:
-            logger.warning("Error during final candle flush", exc_info=True)
-
-        if self.r is not None:
-            try:
-                await self.r.close()
-            except Exception:
-                logger.warning("Error closing Redis client", exc_info=True)
-
-
-async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
-    """
-    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
-    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
-
-    If exchange not enabled: return deterministic fallback without warnings.
-    """
-    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
-    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
-
-    if exchange.lower() not in enabled_exchanges:
-        return {
-            "asset_key": f"{exchange}/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
-        }
-
-    try:
-        market = Market.SPOT if market_type == "spot" else Market.USDTM
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
-
-        meta = next(
-            (
-                x
-                for x in catalog
-                if x.get("native_symbol", "").upper() == native_symbol.upper()
-            ),
-            None,
-        )
-
-        if meta:
-            return {
-                "asset_key": meta.get("asset_key"),
-                "instrument_uid": meta.get("instrument_uid"),
-            }
-
-        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
-        return {
-            "asset_key": f"UNKNOWN/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
-        }
-
-    except Exception:
-        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
-        return {
-            "asset_key": f"ERROR/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
-        }
-
-
-async def run_unified_aggregator() -> None:
-    """
-    Entry point:
-    - initializes cl_manager + cl_handlers
-    - discovers streams dynamically
-    - runs consume loop
-    """
-    from backend.core.config import settings
-
-    aggregator = UnifiedAggregator(settings.REDIS_URL)
-    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
-
-    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
-
-    # ClickHouse lanes registration
-    logger.info("🔧 Initializing ClickHouse Manager...")
-    await cl_manager_instance.initialize()
-    logger.info("✅ ClickHouse Manager initialized with all lanes")
-
-    # ClickHouse workers
-    workers = int(os.getenv("CH_WORKERS", "3"))
-    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
-    await cl_handlers_instance.start_processing(num_workers=workers)
-    logger.info("✅ ClickHouse handlers started")
-
-    try:
-        while True:
-            try:
-                redis_conn = getattr(aggregator, "r", None)
-                if redis_conn is None:
-                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
-
-                per_exchange_limit = get_streams_per_exchange()
-
-                streams, active_symbols, existing_streams = await discover_trade_streams(
-                    redis_conn,
-                    per_exchange_limit=per_exchange_limit,
-                )
-
-                if not existing_streams:
-                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                if not streams:
-                    logger.warning(
-                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
-                logger.info("📋 Active symbols from config: %s", active_symbols)
-                logger.info(
-                    "📊 Final stream count: %d (limit %d per exchange)",
-                    len(streams),
-                    per_exchange_limit,
-                )
-
-                await aggregator.consume_trades(streams)
-
-                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
-                await asyncio.sleep(retry_interval)
-
-            except asyncio.CancelledError:
-                logger.info("🛑 Unified Aggregator shutdown signal received")
-                await aggregator.stop()
-                break
-            except Exception:
-                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
-                await asyncio.sleep(retry_interval)
-    finally:
-        await aggregator.stop()
-        logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
 <file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
@@ -172448,12 +172636,14 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
 </file>
 
 <file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+// frontend/src/shared/components/CandleChart/useCandleChart.ts
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { useTheme } from "../../ui/theme-provider";
 import { getChartTheme, getSeriesTheme } from "./chartThemes";
 import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
 import type { CandleData } from "./types";
+import { createCandleChartAdapter, isRealPoint } from "./chartAdapter";
 
 interface UseCandleChartOptions {
   interval: string;
@@ -172464,13 +172654,25 @@ interface UseCandleChartReturn {
   chartInstance: React.MutableRefObject<any>;
   seriesInstance: React.MutableRefObject<any>;
   isChartReady: boolean;
+
+  /**
+   * Backward compatible:
+   * - You can keep calling setChartData(mergedSeries)
+   * - Adapter will choose setData vs update automatically.
+   */
   setChartData: (data: CandleData[]) => void;
+
   setInitialVisibleRangeOnce: (data: CandleData[]) => void;
 }
 
 const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
 
-function isRealCandle(d: CandleData): d is any {
+function isRealCandle(d: CandleData): d is CandleData & {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+} {
   return (
     (d as any).open !== undefined &&
     Number.isFinite((d as any).open) &&
@@ -172490,28 +172692,27 @@ export function useCandleChart({
   const [isChartReady, setIsChartReady] = useState(false);
   const initialRangeSetRef = useRef(false);
 
-  // ✅ TASK 3: Nutze Safe Chart Hook
   const isDark = actualTheme === "dark";
-  
-  // ✅ Performance: Memoize themes to prevent unnecessary chart re-initialization
   const chartTheme = useMemo(() => getChartTheme(isDark, interval), [isDark, interval]);
   const seriesTheme = useMemo(() => getSeriesTheme(isDark), [isDark]);
 
   const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
 
+  // adapter instance per chart generation
+  const adapterRef = useRef<ReturnType<typeof createCandleChartAdapter> | null>(null);
+
   useEffect(() => {
     if (safeChart) {
       chartInstance.current = safeChart.chart;
       seriesInstance.current = safeChart.series;
+      adapterRef.current = createCandleChartAdapter(safeChart);
       setIsChartReady(true);
 
-      // Theme Observer
       const themeObserver = new MutationObserver(() => {
         if (safeChart.chart && safeChart.series) {
           const isDarkNow = document.documentElement.classList.contains("dark");
           const newChartTheme = getChartTheme(isDarkNow, interval);
           const newSeriesTheme = getSeriesTheme(isDarkNow);
-
           try {
             safeChart.chart.applyOptions(newChartTheme);
             safeChart.series.applyOptions(newSeriesTheme);
@@ -172520,12 +172721,12 @@ export function useCandleChart({
           }
         }
       });
+
       themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["class"],
       });
 
-      // Resize Observer
       const container = containerRef.current;
       let resizeObserver: ResizeObserver | null = null;
       if (container) {
@@ -172541,9 +172742,11 @@ export function useCandleChart({
       return () => {
         themeObserver.disconnect();
         resizeObserver?.disconnect();
+        adapterRef.current = null;
       };
     } else {
       setIsChartReady(false);
+      adapterRef.current = null;
     }
   }, [safeChart, interval, containerRef]);
 
@@ -172551,33 +172754,11 @@ export function useCandleChart({
     if (!isChartReady || !safeChart) return;
     if (!data || data.length === 0) return;
 
-    // Lightweight-charts expects seconds.
-    // Whitespace is supported by passing {time} without OHLC.
-    const formatted = data
-      .map((d) => {
-        const tSec = Math.floor(d.time / 1000);
-        if (!Number.isFinite(tSec) || tSec <= 0) return null;
+    const adapter = adapterRef.current;
+    if (!adapter) return;
 
-        if (isRealCandle(d)) {
-          return {
-            time: tSec,
-            open: (d as any).open,
-            high: (d as any).high,
-            low: (d as any).low,
-            close: (d as any).close,
-          };
-        }
-        return { time: tSec }; // ✅ Whitespace
-      })
-      .filter(Boolean) as any[];
-
-    if (formatted.length <= 0) return;
-
-    // Safety: ensure ascending order by time
-    formatted.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-
-    // ✅ disposed-safe
-    safeChart.safeSetData(formatted);
+    // ✅ Key behavior: auto choose setData vs update()
+    adapter.apply(data);
   };
 
   const setInitialVisibleRangeOnce = (data: CandleData[]) => {
@@ -172585,7 +172766,6 @@ export function useCandleChart({
     if (!data || data.length === 0) return;
     if (initialRangeSetRef.current) return;
 
-    // Use first/last REAL candles (ignore whitespace)
     const real = data.filter(isRealCandle);
     if (real.length === 0) return;
 
