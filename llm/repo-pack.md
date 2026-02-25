@@ -157438,6 +157438,96 @@ Wenn Backend NICHT in Docker läuft (z.B. `python -m uvicorn backend.core.main:a
 **FIX:** `.env` als Volume mounten ODER `env_file: .env` in `docker-compose.yml` hinzufügen
 </file>
 
+<file path="docker-compose.yml">
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:${REDIS_PORT}"
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:${CLICKHOUSE_PORT}" # HTTP
+      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
+    environment:
+      CLICKHOUSE_DB: trading
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    env_file:
+      - .env
+    build: .
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    environment:
+      - ENVIRONMENT=docker
+      - REDIS_URL=redis://redis:${REDIS_PORT}
+      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
+      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
+      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=admin
+    volumes:
+      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
+      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
+      - ./logs:/app/logs               # ✅ Mount logs directory
+      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  trade-router:
+    build: .
+    command: python -m backend.services.adapter.trade_router_entrypoint
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+    depends_on:
+      - redis
+
+  unified-aggregator:
+    build: .
+    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
+    environment:
+      REDIS_URL: redis://redis:${REDIS_PORT}
+      CLICKHOUSE_HOST: "clickhouse"
+      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
+  redis-data:
+</file>
+
 <file path="Dockerfile">
 FROM python:3.11-slim
 
@@ -161816,96 +161906,6 @@ interface ImportMeta {
 }
 </file>
 
-<file path="docker-compose.yml">
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:${REDIS_PORT}"
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8124:${CLICKHOUSE_PORT}" # HTTP
-      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
-    environment:
-      CLICKHOUSE_DB: trading
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    volumes:
-      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - clickhouse-data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    env_file:
-      - .env
-    build: .
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
-    environment:
-      - ENVIRONMENT=docker
-      - REDIS_URL=redis://redis:${REDIS_PORT}
-      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
-      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
-      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
-      - CLICKHOUSE_USER=admin
-      - CLICKHOUSE_PASSWORD=admin
-    volumes:
-      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
-      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
-      - ./logs:/app/logs               # ✅ Mount logs directory
-      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  trade-router:
-    build: .
-    command: python -m backend.services.adapter.trade_router_entrypoint
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-    depends_on:
-      - redis
-
-  unified-aggregator:
-    build: .
-    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-      CLICKHOUSE_HOST: "clickhouse"
-      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-volumes:
-  clickhouse-data:
-  redis-data:
-</file>
-
 <file path="backend/database/clickhouse/cl_config.py">
 import os
 from typing import Any, Dict, Set
@@ -162153,278 +162153,6 @@ def cl_config_summary() -> Dict[str, Any]:
         "performance": CL_PERFORMANCE,
         "schemas": {k: {"suffix": v["table_suffix"], "engine": v["engine"]} for k, v in CL_SCHEMAS.items()},
     }
-</file>
-
-<file path="backend/database/clickhouse/cl_manager.py">
-# backend/database/clickhouse/cl_manager.py
-import asyncio
-import logging
-from typing import Dict, Any, Optional, List, Union
-from datetime import datetime
-
-from .cl_lanes import cl_lane, cl_status
-from .cl_registry import cl_registry_instance
-from .cl_config import CL_PERFORMANCE, EXCHANGE_CL_CONFIGS, CL_DATABASE_PATTERNS, ENABLED_EXCHANGES
-
-logger = logging.getLogger(__name__)
-
-
-def _norm_exchange(x: str) -> str:
-    return (x or "").lower().strip()
-
-
-def _norm_symbol(x: str) -> str:
-    return (x or "").upper().strip()
-
-
-def _norm_market(x: str) -> str:
-    return (x or "spot").lower().strip()
-
-
-class cl_manager:
-    """ClickHouse Lane Manager - Connection Management + Lane Orchestration"""
-
-    def __init__(self):
-        self.registry = cl_registry_instance
-        self.connections: Dict[str, Any] = {}
-        self.connection_pool = None
-        self.is_initialized = False
-        self.startup_time = datetime.now()
-
-        # Health Integration
-        try:
-            from backend.health import health_registry
-            self.health_component = health_registry.register_component("cl", "manager")
-        except ImportError:
-            logger.warning("Health system not available for cl_manager")
-            self.health_component = None
-
-        logger.info("ClickHouse cl_manager initialized")
-
-    async def initialize(self):
-        if self.is_initialized:
-            return
-        try:
-            await self._setup_connection_pool()
-            await self._register_core_lanes()
-            self.is_initialized = True
-
-            if self.health_component:
-                self.health_component.record_success({"action": "manager_initialized"})
-
-            logger.info("ClickHouse cl_manager successfully initialized")
-
-        except Exception as e:
-            error_msg = f"Failed to initialize cl_manager: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            if self.health_component:
-                self.health_component.record_error(error_msg)
-            raise
-
-    async def _setup_connection_pool(self):
-        """Setup ClickHouse connection pool - REAL connection."""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
-
-            self.connection_pool = get_clickhouse_connection_pool()
-
-            ok = await initialize_clickhouse_foundation()
-            if not ok:
-                raise RuntimeError("ClickHouse foundation initialization failed")
-
-            # validate by creating client (thread-local) and running SELECT 1
-            def _test():
-                client = self.connection_pool.get_client()
-                r = client.command("SELECT 1")
-                return int(r) == 1
-
-            success = await asyncio.to_thread(_test)
-            if not success:
-                raise RuntimeError("ClickHouse SELECT 1 failed")
-
-            logger.info("ClickHouse connection pool setup OK")
-
-        except Exception as e:
-            logger.error("Failed to setup ClickHouse connection pool: %s", str(e), exc_info=True)
-            raise
-
-    async def _register_core_lanes(self):
-        """
-        Register lanes for enabled exchanges.
-        IMPORTANT: includes whale_events (fix for your current error).
-        """
-        exchanges = ENABLED_EXCHANGES or ["binance"]
-        operations = ["trades", "candles", "orderbook", "whale_events"]
-
-        for exchange in exchanges:
-            for operation in operations:
-                try:
-                    lane = self.registry.register_lane(exchange, operation)
-                    lane.clickhouse_connection = self.connection_pool
-                    logger.debug("Registered cl_lane: %s.%s", exchange, operation)
-                except Exception as e:
-                    logger.error("Failed to register lane %s.%s: %s", exchange, operation, str(e), exc_info=True)
-
-    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
-        if not self.is_initialized:
-            await self.initialize()
-
-        exchange = _norm_exchange(exchange)
-        operation_type = (operation_type or "").lower().strip()
-
-        try:
-            lane = self.registry.get_lane(exchange, operation_type)
-            if not lane:
-                lane = self.registry.register_lane(exchange, operation_type, data_handler)
-
-            await self._setup_lane_connection(lane)
-
-            lane.status = cl_status.CONNECTING
-            if await self._test_lane_connection(lane):
-                lane.record_operation_success(0.0, {"action": "lane_started"})
-                logger.info("ClickHouse lane started: %s.%s", exchange, operation_type)
-            else:
-                lane.record_operation_error("Connection test failed")
-                logger.error("Failed to start ClickHouse lane: %s.%s", exchange, operation_type)
-
-            return lane
-
-        except Exception as e:
-            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
-            logger.error("Error starting lane %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
-            lane = self.registry.register_lane(exchange, operation_type, data_handler)
-            lane.record_operation_error(error_msg)
-            raise
-
-    async def _setup_lane_connection(self, lane: cl_lane):
-        try:
-            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
-            connection_info = {
-                "exchange": lane.exchange,
-                "operation": lane.operation_type,
-                "database": exchange_config.get("database", "trading"),
-                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
-                "tables": exchange_config.get("tables", []),
-                "priority": exchange_config.get("priority", "medium"),
-            }
-            lane.clickhouse_connection = connection_info
-            logger.debug("Setup connection for lane %s.%s", lane.exchange, lane.operation_type)
-        except Exception as e:
-            logger.error("Failed to setup connection for lane %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
-            raise
-
-    async def _test_lane_connection(self, lane: cl_lane) -> bool:
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            pool = get_clickhouse_connection_pool()
-
-            def _test():
-                client = pool.get_client()
-                r = client.command("SELECT 1")
-                return int(r) == 1
-
-            return bool(await asyncio.to_thread(_test))
-        except Exception as e:
-            logger.error("Connection test failed for %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
-            return False
-
-    def _resolve_table(self, exchange: str, operation_type: str) -> str:
-        """
-        Single source of truth: CL_DATABASE_PATTERNS (fixes your old candles->kline bug).
-        """
-        pattern = CL_DATABASE_PATTERNS.get(operation_type)
-        if not pattern:
-            raise ValueError(f"Unknown operation type: {operation_type}")
-        return pattern.format(exchange=exchange, component=operation_type)
-
-    async def insert_data(self, exchange: str, operation_type: str, data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
-        """
-        Thread-safe INSERT:
-        - supports dict (single row) OR list[dict] (batch)  ✅ (fix for whale_events writer)
-        - routes via CL_DATABASE_PATTERNS ✅
-        """
-        exchange = _norm_exchange(exchange)
-        operation_type = (operation_type or "").lower().strip()
-
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            logger.error("No lane found for %s.%s", exchange, operation_type)
-            return False
-
-        try:
-            start_time = datetime.now()
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            pool = get_clickhouse_connection_pool()
-
-            table = self._resolve_table(exchange, operation_type)
-
-            if isinstance(data, list):
-                rows = data
-            else:
-                rows = [data]
-
-            if not rows:
-                return True
-
-            # Ensure stable column order
-            columns = list(rows[0].keys())
-            values_rows = []
-            for r in rows:
-                values_rows.append([r.get(c) for c in columns])
-
-            def _insert():
-                client = pool.get_client()
-                client.insert(table, values_rows, column_names=columns)
-
-            await asyncio.to_thread(_insert)
-
-            latency_ms = (datetime.now() - start_time).total_seconds() * 1000.0
-            lane.record_operation_success(latency_ms, {"rows_inserted": len(rows)})
-
-            return True
-
-        except Exception as e:
-            error_msg = f"Insert failed: {str(e)}"
-            lane.record_operation_error(error_msg)
-            logger.error("Failed to insert data to %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
-            return False
-
-    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
-        exchange = _norm_exchange(exchange)
-        operation_type = (operation_type or "").lower().strip()
-        lane = self.registry.get_lane(exchange, operation_type)
-        if not lane:
-            return None
-        return lane.get_health()
-
-    def get_all_lane_status(self) -> List[Dict[str, Any]]:
-        return self.registry.get_lane_health_details()
-
-    def get_manager_health(self) -> Dict[str, Any]:
-        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
-        return {
-            "component": "clickhouse.manager",
-            "initialized": self.is_initialized,
-            "uptime_seconds": round(uptime_seconds, 2),
-            "connection_pool": str(self.connection_pool) if self.connection_pool else None,
-            "active_connections": len(self.connections),
-            "registry_health": self.registry.get_system_health(),
-        }
-
-    async def shutdown(self):
-        logger.info("Shutting down ClickHouse cl_manager...")
-        try:
-            await self.registry.shutdown_all()
-            self.connection_pool = None
-            self.connections.clear()
-            self.is_initialized = False
-            logger.info("ClickHouse cl_manager shutdown complete")
-        except Exception as e:
-            logger.error("Error during cl_manager shutdown: %s", str(e), exc_info=True)
-            raise
-
-
-cl_manager_instance = cl_manager()
 </file>
 
 <file path="backend/services/adapter/candle_agg_1s.py">
@@ -163818,6 +163546,293 @@ __all__ = [
     "get_system_redis_config", 
     "get_system_clickhouse_config"
 ]
+</file>
+
+<file path="backend/database/clickhouse/cl_manager.py">
+# backend/database/clickhouse/cl_manager.py
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List, Union
+from datetime import datetime
+
+from .cl_lanes import cl_lane, cl_status
+from .cl_registry import cl_registry_instance
+from .cl_config import CL_PERFORMANCE, EXCHANGE_CL_CONFIGS, CL_DATABASE_PATTERNS, ENABLED_EXCHANGES
+
+logger = logging.getLogger(__name__)
+
+
+def _norm_exchange(x: str) -> str:
+    return (x or "").lower().strip()
+
+
+def _norm_symbol(x: str) -> str:
+    return (x or "").upper().strip()
+
+
+def _norm_market(x: str) -> str:
+    return (x or "spot").lower().strip()
+
+
+class cl_manager:
+    """ClickHouse Lane Manager - Connection Management + Lane Orchestration"""
+
+    def __init__(self):
+        self.registry = cl_registry_instance
+        self.connections: Dict[str, Any] = {}
+        self.connection_pool = None
+        self.is_initialized = False
+        self.startup_time = datetime.now()
+
+        # Health Integration
+        try:
+            from backend.health import health_registry
+            self.health_component = health_registry.register_component("cl", "manager")
+        except ImportError:
+            logger.warning("Health system not available for cl_manager")
+            self.health_component = None
+
+        logger.info("ClickHouse cl_manager initialized")
+
+    async def initialize(self):
+        if self.is_initialized:
+            return
+        try:
+            await self._setup_connection_pool()
+            await self._register_core_lanes()
+            self.is_initialized = True
+
+            if self.health_component:
+                self.health_component.record_success({"action": "manager_initialized"})
+
+            logger.info("ClickHouse cl_manager successfully initialized")
+
+        except Exception as e:
+            error_msg = f"Failed to initialize cl_manager: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            if self.health_component:
+                self.health_component.record_error(error_msg)
+            raise
+
+    async def _setup_connection_pool(self):
+        """Setup ClickHouse connection pool - REAL connection."""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool, initialize_clickhouse_foundation
+
+            self.connection_pool = get_clickhouse_connection_pool()
+
+            ok = await initialize_clickhouse_foundation()
+            if not ok:
+                raise RuntimeError("ClickHouse foundation initialization failed")
+
+            # validate by creating client (thread-local) and running SELECT 1
+            def _test():
+                client = self.connection_pool.get_client()
+                r = client.command("SELECT 1")
+                return int(r) == 1
+
+            success = await asyncio.to_thread(_test)
+            if not success:
+                raise RuntimeError("ClickHouse SELECT 1 failed")
+
+            logger.info("ClickHouse connection pool setup OK")
+
+        except Exception as e:
+            logger.error("Failed to setup ClickHouse connection pool: %s", str(e), exc_info=True)
+            raise
+
+    async def _register_core_lanes(self):
+        """
+        Register lanes for enabled exchanges.
+        IMPORTANT: includes whale_events (fix for your current error).
+        """
+        exchanges = ENABLED_EXCHANGES or ["binance"]
+        operations = ["trades", "candles", "orderbook", "whale_events"]
+
+        for exchange in exchanges:
+            for operation in operations:
+                try:
+                    lane = self.registry.register_lane(exchange, operation)
+                    lane.clickhouse_connection = self.connection_pool
+                    logger.debug("Registered cl_lane: %s.%s", exchange, operation)
+                except Exception as e:
+                    logger.error("Failed to register lane %s.%s: %s", exchange, operation, str(e), exc_info=True)
+
+    async def start_clickhouse_lane(self, exchange: str, operation_type: str, data_handler=None) -> cl_lane:
+        if not self.is_initialized:
+            await self.initialize()
+
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+
+        try:
+            lane = self.registry.get_lane(exchange, operation_type)
+            if not lane:
+                lane = self.registry.register_lane(exchange, operation_type, data_handler)
+
+            await self._setup_lane_connection(lane)
+
+            lane.status = cl_status.CONNECTING
+            if await self._test_lane_connection(lane):
+                lane.record_operation_success(0.0, {"action": "lane_started"})
+                logger.info("ClickHouse lane started: %s.%s", exchange, operation_type)
+            else:
+                lane.record_operation_error("Connection test failed")
+                logger.error("Failed to start ClickHouse lane: %s.%s", exchange, operation_type)
+
+            return lane
+
+        except Exception as e:
+            error_msg = f"ClickHouse Lane setup failed: {str(e)}"
+            logger.error("Error starting lane %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
+            lane = self.registry.register_lane(exchange, operation_type, data_handler)
+            lane.record_operation_error(error_msg)
+            raise
+
+    async def _setup_lane_connection(self, lane: cl_lane):
+        try:
+            exchange_config = EXCHANGE_CL_CONFIGS.get(lane.exchange, {})
+            connection_info = {
+                "exchange": lane.exchange,
+                "operation": lane.operation_type,
+                "database": exchange_config.get("database", "trading"),
+                "batch_size": exchange_config.get("batch_size", CL_PERFORMANCE["batch_size"]),
+                "tables": exchange_config.get("tables", []),
+                "priority": exchange_config.get("priority", "medium"),
+            }
+            # Store metadata separately - don't overwrite clickhouse_connection pool
+            lane.connection_info = connection_info
+            logger.debug("Setup connection for lane %s.%s", lane.exchange, lane.operation_type)
+        except Exception as e:
+            logger.error("Failed to setup connection for lane %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
+            raise
+
+    async def _test_lane_connection(self, lane: cl_lane) -> bool:
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            pool = get_clickhouse_connection_pool()
+
+            def _test():
+                client = pool.get_client()
+                r = client.command("SELECT 1")
+                return int(r) == 1
+
+            return bool(await asyncio.to_thread(_test))
+        except Exception as e:
+            logger.error("Connection test failed for %s.%s: %s", lane.exchange, lane.operation_type, str(e), exc_info=True)
+            return False
+
+    def _resolve_table(self, exchange: str, operation_type: str) -> str:
+        """
+        Single source of truth: CL_DATABASE_PATTERNS (fixes your old candles->kline bug).
+        """
+        pattern = CL_DATABASE_PATTERNS.get(operation_type)
+        if not pattern:
+            raise ValueError(f"Unknown operation type: {operation_type}")
+        return pattern.format(exchange=exchange, component=operation_type)
+
+    async def insert_data(self, exchange: str, operation_type: str, data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
+        """
+        Thread-safe INSERT:
+        - supports dict (single row) OR list[dict] (batch)  ✅ (fix for whale_events writer)
+        - routes via CL_DATABASE_PATTERNS ✅
+        - auto-registers missing lanes dynamically ✅
+        """
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            # HARDENING: auto-register lane if missing (dynamisch, nicht hardcoded)
+            try:
+                lane = self.registry.register_lane(exchange, operation_type)
+                lane.clickhouse_connection = self.connection_pool
+                logger.warning("Auto-registered missing lane: %s.%s", exchange, operation_type)
+            except Exception as e:
+                logger.error("No lane found for %s.%s and auto-register failed: %s", exchange, operation_type, str(e))
+                return False
+
+        try:
+            start_time = datetime.now()
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            pool = get_clickhouse_connection_pool()
+
+            table = self._resolve_table(exchange, operation_type)
+
+            if isinstance(data, list):
+                rows = data
+            else:
+                rows = [data]
+
+            if not rows:
+                return True
+
+            # Ensure stable column order with strict validation
+            columns = list(rows[0].keys())
+            
+            # Strict validation: all rows must have same columns
+            for idx, r in enumerate(rows[1:], start=1):
+                if set(r.keys()) != set(columns):
+                    raise ValueError(
+                        f"Row {idx} columns mismatch in batch insert. "
+                        f"Expected: {set(columns)}, Got: {set(r.keys())}"
+                    )
+            
+            values_rows = [[r[c] for c in columns] for r in rows]
+
+            def _insert():
+                client = pool.get_client()
+                client.insert(table, values_rows, column_names=columns)
+
+            await asyncio.to_thread(_insert)
+
+            latency_ms = (datetime.now() - start_time).total_seconds() * 1000.0
+            lane.record_operation_success(latency_ms, {"rows_inserted": len(rows)})
+
+            return True
+
+        except Exception as e:
+            error_msg = f"Insert failed: {str(e)}"
+            lane.record_operation_error(error_msg)
+            logger.error("Failed to insert data to %s.%s: %s", exchange, operation_type, error_msg, exc_info=True)
+            return False
+
+    def get_lane_status(self, exchange: str, operation_type: str) -> Optional[Dict[str, Any]]:
+        exchange = _norm_exchange(exchange)
+        operation_type = (operation_type or "").lower().strip()
+        lane = self.registry.get_lane(exchange, operation_type)
+        if not lane:
+            return None
+        return lane.get_health()
+
+    def get_all_lane_status(self) -> List[Dict[str, Any]]:
+        return self.registry.get_lane_health_details()
+
+    def get_manager_health(self) -> Dict[str, Any]:
+        uptime_seconds = (datetime.now() - self.startup_time).total_seconds()
+        return {
+            "component": "clickhouse.manager",
+            "initialized": self.is_initialized,
+            "uptime_seconds": round(uptime_seconds, 2),
+            "connection_pool": str(self.connection_pool) if self.connection_pool else None,
+            "active_connections": len(self.connections),
+            "registry_health": self.registry.get_system_health(),
+        }
+
+    async def shutdown(self):
+        logger.info("Shutting down ClickHouse cl_manager...")
+        try:
+            await self.registry.shutdown_all()
+            self.connection_pool = None
+            self.connections.clear()
+            self.is_initialized = False
+            logger.info("ClickHouse cl_manager shutdown complete")
+        except Exception as e:
+            logger.error("Error during cl_manager shutdown: %s", str(e), exc_info=True)
+            raise
+
+
+cl_manager_instance = cl_manager()
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -168391,6 +168406,26 @@ class UnifiedAggregator:
     # Candle batching
     # -----------------------------
 
+    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
+        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
+        """
+        return {
+            "symbol": candle["symbol"],
+            "market": candle["market"],
+            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            "o": candle["o"],
+            "h": candle["h"],
+            "l": candle["l"],
+            "c": candle["c"],
+            "v": candle["v"],
+            "qv": candle["qv"],
+            "n": candle["n"],
+            "src": candle.get("src", "agg"),
+            "ver": candle["ver"],
+        }
+
     async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
         """
         Flush candle batches to ClickHouse via cl_manager.
@@ -168435,21 +168470,7 @@ class UnifiedAggregator:
                 if not ex:
                     logger.warning("Stale candle missing exchange field; skipping: %s", candle)
                     continue
-                # Remove 'exchange' field - table doesn't have it
-                candle_for_insert = {
-                    "symbol": candle["symbol"],
-                    "market": candle["market"],
-                    "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                    "o": candle["o"],
-                    "h": candle["h"],
-                    "l": candle["l"],
-                    "c": candle["c"],
-                    "v": candle["v"],
-                    "qv": candle["qv"],
-                    "n": candle["n"],
-                    "src": candle.get("src", "agg"),
-                    "ver": candle["ver"],
-                }
+                candle_for_insert = self._candle_row_from_agg(candle)
                 self.candle_batch.setdefault(ex, []).append(candle_for_insert)
 
             await self._flush_candle_batch()
@@ -168621,21 +168642,7 @@ class UnifiedAggregator:
 
                             if finished_candle:
                                 ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                # Remove 'exchange' field - table doesn't have it
-                                candle_for_insert = {
-                                    "symbol": finished_candle["symbol"],
-                                    "market": finished_candle["market"],
-                                    "ts": datetime.fromtimestamp(finished_candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                                    "o": finished_candle["o"],
-                                    "h": finished_candle["h"],
-                                    "l": finished_candle["l"],
-                                    "c": finished_candle["c"],
-                                    "v": finished_candle["v"],
-                                    "qv": finished_candle["qv"],
-                                    "n": finished_candle["n"],
-                                    "src": finished_candle.get("src", "agg"),
-                                    "ver": finished_candle["ver"],
-                                }
+                                candle_for_insert = self._candle_row_from_agg(finished_candle)
                                 self.candle_batch.setdefault(ex, []).append(candle_for_insert)
 
                                 if len(self.candle_batch[ex]) >= self.candle_batch_size:
@@ -168700,7 +168707,8 @@ class UnifiedAggregator:
                 ex = (candle.get("exchange") or "").lower().strip()
                 if not ex:
                     continue
-                self.candle_batch.setdefault(ex, []).append(candle)
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
 
             await self._flush_candle_batch()
             logger.info("✅ Final candle flush completed")
