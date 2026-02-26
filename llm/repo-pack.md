@@ -164506,6 +164506,262 @@ class CandleAgg1s:
         }
 </file>
 
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'TRADING_SYMBOLS', 
+    'BTCUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
 <file path="backend/services/usecases/unified_historical.py">
 # /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
 
@@ -168016,891 +168272,6 @@ echo ""
 exit $exit_code
 </file>
 
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'TRADING_SYMBOLS', 
-    'BTCUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
-</file>
-
-<file path="backend/services/adapter/unified_aggregator.py">
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
-
-from redis import asyncio as aioredis
-from redis.exceptions import ConnectionError, ResponseError
-
-from backend.api.models.keys import Market
-from backend.database.clickhouse import (
-    cl_handlers_instance,
-    cl_manager_instance,
-    get_clickhouse_client,
-)
-from backend.services.adapter.candle_agg_1s import CandleAgg1s
-from backend.services.adapter.whale_detector import WhaleDetector
-from backend.services.discovery.dis_config import get_streams_per_exchange
-from backend.services.discovery.dis_trades import discover_trade_streams
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-
-# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
-from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
-
-logger = logging.getLogger("unified_aggregator")
-
-
-class UnifiedAggregator:
-    """
-    Zentraler Aggregator:
-    - konsumiert Redis-Streams (discover_trade_streams)
-    - queued Trades -> ClickHouse (cl_handlers_instance)
-    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
-    - Whale detection (optional insert into whale_events via cl_manager)
-    """
-
-    def __init__(self, redis_url: str):
-        self.redis_url = redis_url
-        self.r = None  # Redis client (set in run_unified_aggregator)
-        self.group = "unified_agg_group"
-        self.consumer = "unified_consumer"
-        self.running = True
-
-        # ClickHouse
-        self.ch_client = get_clickhouse_client()
-
-        # Whale Detection
-        self.whale_detector = WhaleDetector()
-        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
-
-        # 1s Candle Aggregation
-        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
-        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
-        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
-        self.last_candle_flush = time.time()
-        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
-
-        # Legacy multi-res aggregation (optional)
-        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
-        self.agg = MultiResCandleAgg() if self.enable_multires else None
-
-    # -----------------------------
-    # Normalization helpers
-    # -----------------------------
-
-    def _normalize_side(self, side: Any) -> str:
-        """
-        Normalize any exchange side variants -> 'buy'/'sell'
-        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
-        """
-        if side is None:
-            return "buy"
-        s = str(side).strip().lower()
-
-        if s in ("buy", "b", "bid", "1", "true", "t"):
-            return "buy"
-        if s in ("sell", "s", "ask", "2", "false", "f"):
-            return "sell"
-
-        # Some exchanges use uppercase or words; also handle common variants
-        if "buy" in s:
-            return "buy"
-        if "sell" in s:
-            return "sell"
-
-        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
-        return "buy"
-
-    def _ts_ms(self, timestamp: Any) -> int:
-        """
-        Robust timestamp -> milliseconds since epoch (int).
-        Uses CandleAgg1s parser for consistency.
-        """
-        return self.candle_agg.parse_timestamp(timestamp)
-
-    def _to_decimal(self, x: Any) -> Decimal:
-        return Decimal(str(x))
-
-    # -----------------------------
-    # Whale logic
-    # -----------------------------
-
-    async def process_whale_trade(self, trade_data: dict) -> None:
-        """
-        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
-        """
-        try:
-            symbol = trade_data.get("symbol")
-            price = trade_data.get("price")
-            size = trade_data.get("size")
-            if not symbol or price is None or size is None:
-                return
-
-            trade_value = self._to_decimal(price) * self._to_decimal(size)
-            threshold = await self.whale_detector.get_threshold(symbol)
-
-            if trade_value >= threshold:
-                if self.enable_whale_events:
-                    await self._store_whale_event(trade_data, trade_value, threshold)
-                else:
-                    logger.info(
-                        "[WHALE] %s %s value=%s threshold=%s",
-                        trade_data.get("exchange"),
-                        symbol,
-                        str(trade_value),
-                        str(threshold),
-                    )
-
-        except Exception:
-            logger.error("Unexpected error in process_whale_trade", exc_info=True)
-
-    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
-        """
-        Stores whale event as a ROW event (not aggregate states).
-        Requires cl_manager routing for operation_type='whale_events' to
-        table pattern: trading.{exchange}_whale_events
-        """
-        try:
-            exchange = str(trade.get("exchange", "")).lower().strip()
-            symbol = trade.get("symbol")
-            ts_ms = self._ts_ms(trade.get("timestamp"))
-
-            payload = {
-                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
-                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                "chain": "na",
-                "tx_hash": "na",
-                "from_addr": "na",
-                "to_addr": "na",
-                "token": None,
-                "symbol": symbol,
-                "amount": self._to_decimal(trade.get("size")),
-                "is_native": 0,
-                "amount_usd": self._to_decimal(trade_value),
-                "from_exchange": exchange,
-                "from_country": "na",
-                "from_city": "na",
-                "to_exchange": exchange,
-                "to_country": "na",
-                "to_city": "na",
-                "is_cross_border": 0,
-                "source": "live_ws",
-                "threshold_usd": self._to_decimal(threshold),
-                "coin_rank": 0,
-            }
-
-            ok = await cl_manager_instance.insert_data(
-                exchange=exchange,
-                operation_type="whale_events",
-                data=[payload],
-            )
-            if not ok:
-                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
-
-        except Exception:
-            logger.error("Failed to store whale_event", exc_info=True)
-
-    # -----------------------------
-    # Candle batching
-    # -----------------------------
-
-    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
-        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
-        """
-        return {
-            "symbol": candle["symbol"],
-            "market": candle["market"],
-            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "o": candle["o"],
-            "h": candle["h"],
-            "l": candle["l"],
-            "c": candle["c"],
-            "v": candle["v"],
-            "qv": candle["qv"],
-            "n": candle["n"],
-            "src": candle.get("src", "agg"),
-            "ver": candle["ver"],
-        }
-
-    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
-        """
-        Flush candle batches to ClickHouse via cl_manager.
-        operation_type must map to: trading.{exchange}_candles_1s
-        """
-        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
-
-        for ex in exchanges_to_flush:
-            candles = self.candle_batch.get(ex, [])
-            if not candles:
-                continue
-
-            try:
-                ok = await cl_manager_instance.insert_data(
-                    exchange=ex,
-                    operation_type="candles",
-                    data=candles,
-                )
-                if ok:
-                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
-                    self.candle_batch[ex] = []
-                else:
-                    logger.warning("⚠️ Failed to flush candles for %s", ex)
-
-            except Exception:
-                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
-
-    async def _check_timer_flush(self) -> None:
-        """
-        Timer-based flush:
-        - finalize stale buckets
-        - flush all candle batches
-        """
-        now = time.time()
-        if now - self.last_candle_flush <= self.candle_flush_interval:
-            return
-
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-        finally:
-            self.last_candle_flush = now
-
-    # -----------------------------
-    # Trade queue
-    # -----------------------------
-
-    async def _queue_trade_for_clickhouse(
-        self,
-        exchange: str,
-        trade_id: str,
-        symbol: str,
-        market: str,
-        price: Any,
-        size: Any,
-        side: Any,
-        timestamp_ms: int,
-    ) -> None:
-        """
-        Queue one trade to ClickHouse handlers.
-        """
-        try:
-            labels = await get_symbol_labels(exchange, symbol, market)
-
-            trade_payload = {
-                "exchange": exchange,
-                "trade_id": trade_id,
-                "symbol": symbol,
-                "market": market,
-                "price": self._to_decimal(price),
-                "size": self._to_decimal(size),
-                "side": self._normalize_side(side),
-                "timestamp": int(timestamp_ms),  # ms
-                "asset_key": labels.get("asset_key"),
-                "instrument_uid": labels.get("instrument_uid"),
-            }
-
-            ok = await cl_handlers_instance.queue_message(
-                exchange=exchange,
-                message_type="trades",
-                data=trade_payload,
-            )
-            if not ok:
-                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
-            else:
-                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
-
-        except Exception:
-            logger.error("Error queuing trade for ClickHouse", exc_info=True)
-
-    # -----------------------------
-    # Main consume loop
-    # -----------------------------
-
-    async def consume_trades(self, streams: List[str]) -> None:
-        """
-        Consume trades from Redis Streams.
-
-        Expected stream key format:
-            <exchange>:trades:<market_type>:<symbol>
-        e.g. binance:trades:spot:BTCUSDT
-        """
-        if not streams:
-            logger.error("No streams provided to consume_trades")
-            return
-
-        # Initialize consumer groups only for existing streams
-        active_streams: List[str] = []
-        for stream_key in streams:
-            try:
-                exists = await self.r.exists(stream_key)
-                if not exists:
-                    logger.debug("Stream does not exist yet: %s", stream_key)
-                    continue
-
-                active_streams.append(stream_key)
-                try:
-                    await self.r.xgroup_create(stream_key, self.group, id="$", mkstream=True)
-                except ResponseError as e:
-                    if "BUSYGROUP" not in str(e):
-                        raise
-
-            except Exception:
-                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
-
-        if not active_streams:
-            logger.error("No active streams found - cannot consume")
-            return
-
-        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
-        streams = active_streams
-
-        while self.running:
-            try:
-                stream_dict = {s: ">" for s in streams}
-                messages = await self.r.xreadgroup(
-                    groupname=self.group,
-                    consumername=self.consumer,
-                    streams=stream_dict,
-                    count=200,
-                    block=5000,
-                )
-
-                if not messages:
-                    await self._check_timer_flush()
-                    continue
-
-                for stream_key, msgs in messages:
-                    for msg_id, data in msgs:
-                        try:
-                            raw = data.get("trade")
-                            if not raw:
-                                logger.warning("Missing 'trade' field in message %s", msg_id)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            trade = json.loads(raw)
-
-                            parts = stream_key.split(":", 3)
-                            if len(parts) != 4:
-                                logger.warning("Unexpected stream key format: %s", stream_key)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            exchange, _, market_type, symbol_from_key = parts
-                            exchange = exchange.lower().strip()
-
-                            trade_id = trade.get("trade_id") or trade.get("id") or ""
-                            price = trade.get("price")
-                            size = trade.get("size")
-                            side = trade.get("side")
-                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
-                            market = trade.get("market", market_type)
-
-                            symbol = trade.get("symbol") or symbol_from_key
-
-                            if not symbol or timestamp is None or price is None or size is None:
-                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            # Normalize timestamp once (ms)
-                            ts_ms = self._ts_ms(timestamp)
-
-                            # Queue trade -> CH
-                            await self._queue_trade_for_clickhouse(
-                                exchange=exchange,
-                                trade_id=trade_id,
-                                symbol=symbol,
-                                market=market,
-                                price=price,
-                                size=size,
-                                side=side,
-                                timestamp_ms=ts_ms,
-                            )
-
-                            # 1s Candle aggregation (final candle on bucket switch)
-                            finished_candle = self.candle_agg.on_trade(
-                                exchange=exchange,
-                                symbol=symbol,
-                                market=market,
-                                timestamp=ts_ms,  # already normalized
-                                price=price,
-                                size=size,
-                            )
-
-                            if finished_candle:
-                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                candle_for_insert = self._candle_row_from_agg(finished_candle)
-                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
-                                    await self._flush_candle_batch(ex)
-
-                            # Legacy multi-res aggregation (optional)
-                            if self.enable_multires and self.agg is not None:
-                                res_map = registry.list(exchange, symbol)
-                                if res_map:
-                                    _ = self.agg.on_trade(
-                                        exchange,
-                                        symbol,
-                                        market,
-                                        ts_ms,  # normalized
-                                        price,
-                                        size,
-                                        res_map,
-                                    )
-
-                            # Whale detection (optional)
-                            await self.process_whale_trade(
-                                {
-                                    "exchange": exchange,
-                                    "symbol": symbol,
-                                    "price": price,
-                                    "size": size,
-                                    "timestamp": ts_ms,
-                                    "trade_id": trade_id,
-                                }
-                            )
-
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                        except json.JSONDecodeError:
-                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-                        except Exception:
-                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                # Timer flush after each batch
-                await self._check_timer_flush()
-
-            except (ConnectionError, ResponseError) as e:
-                logger.error("Redis error in consume_trades: %s", str(e))
-                await asyncio.sleep(5)
-            except Exception:
-                logger.error("Unexpected error in consume_trades", exc_info=True)
-                await asyncio.sleep(1)
-
-    async def stop(self) -> None:
-        """
-        Stop aggregator cleanly + final flush.
-        """
-        self.running = False
-        logger.info("UnifiedAggregator stopping...")
-
-        # Final candle flush
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-            logger.info("✅ Final candle flush completed")
-        except Exception:
-            logger.warning("Error during final candle flush", exc_info=True)
-
-        if self.r is not None:
-            try:
-                await self.r.close()
-            except Exception:
-                logger.warning("Error closing Redis client", exc_info=True)
-
-
-async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
-    """
-    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
-    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
-
-    If exchange not enabled: return deterministic fallback without warnings.
-    """
-    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
-    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
-
-    if exchange.lower() not in enabled_exchanges:
-        return {
-            "asset_key": f"{exchange}/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
-        }
-
-    try:
-        market = Market.SPOT if market_type == "spot" else Market.USDTM
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
-
-        meta = next(
-            (
-                x
-                for x in catalog
-                if x.get("native_symbol", "").upper() == native_symbol.upper()
-            ),
-            None,
-        )
-
-        if meta:
-            return {
-                "asset_key": meta.get("asset_key"),
-                "instrument_uid": meta.get("instrument_uid"),
-            }
-
-        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
-        return {
-            "asset_key": f"UNKNOWN/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
-        }
-
-    except Exception:
-        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
-        return {
-            "asset_key": f"ERROR/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
-        }
-
-
-async def run_unified_aggregator() -> None:
-    """
-    Entry point:
-    - initializes cl_manager + cl_handlers
-    - discovers streams dynamically
-    - runs consume loop
-    """
-    from backend.core.config import settings
-
-    aggregator = UnifiedAggregator(settings.REDIS_URL)
-    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
-
-    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
-
-    # ClickHouse lanes registration
-    logger.info("🔧 Initializing ClickHouse Manager...")
-    await cl_manager_instance.initialize()
-    logger.info("✅ ClickHouse Manager initialized with all lanes")
-
-    # ClickHouse workers
-    workers = int(os.getenv("CH_WORKERS", "3"))
-    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
-    await cl_handlers_instance.start_processing(num_workers=workers)
-    logger.info("✅ ClickHouse handlers started")
-
-    try:
-        while True:
-            try:
-                redis_conn = getattr(aggregator, "r", None)
-                if redis_conn is None:
-                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
-
-                per_exchange_limit = get_streams_per_exchange()
-
-                streams, active_symbols, existing_streams = await discover_trade_streams(
-                    redis_conn,
-                    per_exchange_limit=per_exchange_limit,
-                )
-
-                if not existing_streams:
-                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                if not streams:
-                    logger.warning(
-                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
-                logger.info("📋 Active symbols from config: %s", active_symbols)
-                logger.info(
-                    "📊 Final stream count: %d (limit %d per exchange)",
-                    len(streams),
-                    per_exchange_limit,
-                )
-
-                await aggregator.consume_trades(streams)
-
-                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
-                await asyncio.sleep(retry_interval)
-
-            except asyncio.CancelledError:
-                logger.info("🛑 Unified Aggregator shutdown signal received")
-                await aggregator.stop()
-                break
-            except Exception:
-                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
-                await asyncio.sleep(retry_interval)
-    finally:
-        await aggregator.stop()
-        logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
 <file path="frontend/src/config/exchangeSupport.ts">
 // frontend/src/config/exchangeSupport.ts
 
@@ -171018,6 +170389,662 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- Generiert automatisch via:
 -- python3 backend/db/migrations/000_generate_init_sql.py
 -- ========================================
+</file>
+
+<file path="backend/services/adapter/unified_aggregator.py">
+import asyncio
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
+
+from redis import asyncio as aioredis
+from redis.exceptions import ConnectionError, ResponseError
+
+from backend.api.models.keys import Market
+from backend.database.clickhouse import (
+    cl_handlers_instance,
+    cl_manager_instance,
+    get_clickhouse_client,
+)
+from backend.services.adapter.candle_agg_1s import CandleAgg1s
+from backend.services.adapter.whale_detector import WhaleDetector
+from backend.services.discovery.dis_config import get_streams_per_exchange
+from backend.services.discovery.dis_trades import discover_trade_streams
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+
+# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
+from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+
+logger = logging.getLogger("unified_aggregator")
+
+
+class UnifiedAggregator:
+    """
+    Zentraler Aggregator:
+    - konsumiert Redis-Streams (discover_trade_streams)
+    - queued Trades -> ClickHouse (cl_handlers_instance)
+    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
+    - Whale detection (optional insert into whale_events via cl_manager)
+    """
+
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
+        self.r = None  # Redis client (set in run_unified_aggregator)
+        self.group = "unified_agg_group"
+        self.consumer = "unified_consumer"
+        self.running = True
+
+        # ClickHouse
+        self.ch_client = get_clickhouse_client()
+
+        # Whale Detection
+        self.whale_detector = WhaleDetector()
+        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
+
+        # 1s Candle Aggregation
+        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
+        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
+        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
+        self.last_candle_flush = time.time()
+        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
+
+        # Legacy multi-res aggregation (optional)
+        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
+        self.agg = MultiResCandleAgg() if self.enable_multires else None
+
+    # -----------------------------
+    # Normalization helpers
+    # -----------------------------
+
+    def _normalize_side(self, side: Any) -> str:
+        """
+        Normalize any exchange side variants -> 'buy'/'sell'
+        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
+        """
+        if side is None:
+            return "buy"
+        s = str(side).strip().lower()
+
+        if s in ("buy", "b", "bid", "1", "true", "t"):
+            return "buy"
+        if s in ("sell", "s", "ask", "2", "false", "f"):
+            return "sell"
+
+        # Some exchanges use uppercase or words; also handle common variants
+        if "buy" in s:
+            return "buy"
+        if "sell" in s:
+            return "sell"
+
+        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
+        return "buy"
+
+    def _ts_ms(self, timestamp: Any) -> int:
+        """
+        Robust timestamp -> milliseconds since epoch (int).
+        Uses CandleAgg1s parser for consistency.
+        """
+        return self.candle_agg.parse_timestamp(timestamp)
+
+    def _to_decimal(self, x: Any) -> Decimal:
+        return Decimal(str(x))
+
+    # -----------------------------
+    # Whale logic
+    # -----------------------------
+
+    async def process_whale_trade(self, trade_data: dict) -> None:
+        """
+        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
+        """
+        try:
+            symbol = trade_data.get("symbol")
+            price = trade_data.get("price")
+            size = trade_data.get("size")
+            if not symbol or price is None or size is None:
+                return
+
+            trade_value = self._to_decimal(price) * self._to_decimal(size)
+            threshold = await self.whale_detector.get_threshold(symbol)
+
+            if trade_value >= threshold:
+                if self.enable_whale_events:
+                    await self._store_whale_event(trade_data, trade_value, threshold)
+                else:
+                    logger.info(
+                        "[WHALE] %s %s value=%s threshold=%s",
+                        trade_data.get("exchange"),
+                        symbol,
+                        str(trade_value),
+                        str(threshold),
+                    )
+
+        except Exception:
+            logger.error("Unexpected error in process_whale_trade", exc_info=True)
+
+    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
+        """
+        Stores whale event as a ROW event (not aggregate states).
+        Requires cl_manager routing for operation_type='whale_events' to
+        table pattern: trading.{exchange}_whale_events
+        """
+        try:
+            exchange = str(trade.get("exchange", "")).lower().strip()
+            symbol = trade.get("symbol")
+            ts_ms = self._ts_ms(trade.get("timestamp"))
+
+            payload = {
+                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
+                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "chain": "na",
+                "tx_hash": "na",
+                "from_addr": "na",
+                "to_addr": "na",
+                "token": None,
+                "symbol": symbol,
+                "amount": self._to_decimal(trade.get("size")),
+                "is_native": 0,
+                "amount_usd": self._to_decimal(trade_value),
+                "from_exchange": exchange,
+                "from_country": "na",
+                "from_city": "na",
+                "to_exchange": exchange,
+                "to_country": "na",
+                "to_city": "na",
+                "is_cross_border": 0,
+                "source": "live_ws",
+                "threshold_usd": self._to_decimal(threshold),
+                "coin_rank": 0,
+            }
+
+            ok = await cl_manager_instance.insert_data(
+                exchange=exchange,
+                operation_type="whale_events",
+                data=[payload],
+            )
+            if not ok:
+                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
+
+        except Exception:
+            logger.error("Failed to store whale_event", exc_info=True)
+
+    # -----------------------------
+    # Candle batching
+    # -----------------------------
+
+    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
+        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
+        """
+        return {
+            "symbol": candle["symbol"],
+            "market": candle["market"],
+            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            "o": candle["o"],
+            "h": candle["h"],
+            "l": candle["l"],
+            "c": candle["c"],
+            "v": candle["v"],
+            "qv": candle["qv"],
+            "n": candle["n"],
+            "src": candle.get("src", "agg"),
+            "ver": candle["ver"],
+        }
+
+    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
+        """
+        Flush candle batches to ClickHouse via cl_manager.
+        operation_type must map to: trading.{exchange}_candles_1s
+        """
+        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
+
+        for ex in exchanges_to_flush:
+            candles = self.candle_batch.get(ex, [])
+            if not candles:
+                continue
+
+            try:
+                ok = await cl_manager_instance.insert_data(
+                    exchange=ex,
+                    operation_type="candles",
+                    data=candles,
+                )
+                if ok:
+                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
+                    self.candle_batch[ex] = []
+                else:
+                    logger.warning("⚠️ Failed to flush candles for %s", ex)
+
+            except Exception:
+                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
+
+    async def _check_timer_flush(self) -> None:
+        """
+        Timer-based flush:
+        - finalize stale buckets
+        - flush all candle batches
+        """
+        now = time.time()
+        if now - self.last_candle_flush <= self.candle_flush_interval:
+            return
+
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+        finally:
+            self.last_candle_flush = now
+
+    # -----------------------------
+    # Trade queue
+    # -----------------------------
+
+    async def _queue_trade_for_clickhouse(
+        self,
+        exchange: str,
+        trade_id: str,
+        symbol: str,
+        market: str,
+        price: Any,
+        size: Any,
+        side: Any,
+        timestamp_ms: int,
+    ) -> None:
+        """
+        Queue one trade to ClickHouse handlers.
+        """
+        try:
+            labels = await get_symbol_labels(exchange, symbol, market)
+
+            trade_payload = {
+                "exchange": exchange,
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "market": market,
+                "price": self._to_decimal(price),
+                "size": self._to_decimal(size),
+                "side": self._normalize_side(side),
+                "timestamp": int(timestamp_ms),  # ms
+                "asset_key": labels.get("asset_key"),
+                "instrument_uid": labels.get("instrument_uid"),
+            }
+
+            ok = await cl_handlers_instance.queue_message(
+                exchange=exchange,
+                message_type="trades",
+                data=trade_payload,
+            )
+            if not ok:
+                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
+            else:
+                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
+
+        except Exception:
+            logger.error("Error queuing trade for ClickHouse", exc_info=True)
+
+    # -----------------------------
+    # Main consume loop
+    # -----------------------------
+
+    async def _ensure_consumer_group(self, stream_key: str) -> bool:
+        """
+        Ensure consumer group exists for stream. Returns True if ready, False otherwise.
+        Handles NOGROUP errors by creating group on-demand.
+        """
+        try:
+            # Check if stream exists
+            exists = await self.r.exists(stream_key)
+            if not exists:
+                logger.debug("Stream does not exist yet: %s", stream_key)
+                return False
+
+            # Try to create group (idempotent with BUSYGROUP check)
+            try:
+                await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
+                logger.info("✅ Created consumer group '%s' for stream: %s", self.group, stream_key)
+            except ResponseError as e:
+                if "BUSYGROUP" in str(e):
+                    # Group already exists - this is OK
+                    pass
+                else:
+                    logger.error("Failed to create consumer group for %s: %s", stream_key, str(e))
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.error("Error ensuring consumer group for %s: %s", stream_key, str(e), exc_info=True)
+            return False
+
+    async def consume_trades(self, streams: List[str]) -> None:
+        """
+        Consume trades from Redis Streams.
+
+        Expected stream key format:
+            <exchange>:trades:<market_type>:<symbol>
+        e.g. binance:trades:spot:BTCUSDT
+        """
+        if not streams:
+            logger.error("No streams provided to consume_trades")
+            return
+
+        # Initialize consumer groups for all streams
+        active_streams: List[str] = []
+        for stream_key in streams:
+            if await self._ensure_consumer_group(stream_key):
+                active_streams.append(stream_key)
+            else:
+                logger.warning("⚠️ Skipping stream (not ready): %s", stream_key)
+
+        if not active_streams:
+            logger.error("No active streams found - cannot consume")
+            return
+
+        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
+        streams = active_streams
+
+        while self.running:
+            try:
+                stream_dict = {s: ">" for s in streams}
+                messages = await self.r.xreadgroup(
+                    groupname=self.group,
+                    consumername=self.consumer,
+                    streams=stream_dict,
+                    count=200,
+                    block=5000,
+                )
+
+                if not messages:
+                    await self._check_timer_flush()
+                    continue
+
+                for stream_key, msgs in messages:
+                    for msg_id, data in msgs:
+                        try:
+                            raw = data.get("trade")
+                            if not raw:
+                                logger.warning("Missing 'trade' field in message %s", msg_id)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            trade = json.loads(raw)
+
+                            parts = stream_key.split(":", 3)
+                            if len(parts) != 4:
+                                logger.warning("Unexpected stream key format: %s", stream_key)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            exchange, _, market_type, symbol_from_key = parts
+                            exchange = exchange.lower().strip()
+
+                            trade_id = trade.get("trade_id") or trade.get("id") or ""
+                            price = trade.get("price")
+                            size = trade.get("size")
+                            side = trade.get("side")
+                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
+                            market = trade.get("market", market_type)
+
+                            symbol = trade.get("symbol") or symbol_from_key
+
+                            if not symbol or timestamp is None or price is None or size is None:
+                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            # Normalize timestamp once (ms)
+                            ts_ms = self._ts_ms(timestamp)
+
+                            # Queue trade -> CH
+                            await self._queue_trade_for_clickhouse(
+                                exchange=exchange,
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                price=price,
+                                size=size,
+                                side=side,
+                                timestamp_ms=ts_ms,
+                            )
+
+                            # 1s Candle aggregation (final candle on bucket switch)
+                            finished_candle = self.candle_agg.on_trade(
+                                exchange=exchange,
+                                symbol=symbol,
+                                market=market,
+                                timestamp=ts_ms,  # already normalized
+                                price=price,
+                                size=size,
+                            )
+
+                            if finished_candle:
+                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
+                                candle_for_insert = self._candle_row_from_agg(finished_candle)
+                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
+                                    await self._flush_candle_batch(ex)
+
+                            # Legacy multi-res aggregation (optional)
+                            if self.enable_multires and self.agg is not None:
+                                res_map = registry.list(exchange, symbol)
+                                if res_map:
+                                    _ = self.agg.on_trade(
+                                        exchange,
+                                        symbol,
+                                        market,
+                                        ts_ms,  # normalized
+                                        price,
+                                        size,
+                                        res_map,
+                                    )
+
+                            # Whale detection (optional)
+                            await self.process_whale_trade(
+                                {
+                                    "exchange": exchange,
+                                    "symbol": symbol,
+                                    "price": price,
+                                    "size": size,
+                                    "timestamp": ts_ms,
+                                    "trade_id": trade_id,
+                                }
+                            )
+
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                        except json.JSONDecodeError:
+                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+                        except Exception:
+                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                # Timer flush after each batch
+                await self._check_timer_flush()
+
+            except (ConnectionError, ResponseError) as e:
+                error_msg = str(e)
+                logger.error("Redis error in consume_trades: %s", error_msg)
+                
+                # Handle NOGROUP error by re-initializing consumer groups
+                if "NOGROUP" in error_msg:
+                    logger.warning("⚠️ NOGROUP error detected - re-initializing consumer groups...")
+                    for stream_key in streams:
+                        await self._ensure_consumer_group(stream_key)
+                
+                await asyncio.sleep(5)
+            except Exception:
+                logger.error("Unexpected error in consume_trades", exc_info=True)
+                await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        """
+        Stop aggregator cleanly + final flush.
+        """
+        self.running = False
+        logger.info("UnifiedAggregator stopping...")
+
+        # Final candle flush
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+            logger.info("✅ Final candle flush completed")
+        except Exception:
+            logger.warning("Error during final candle flush", exc_info=True)
+
+        if self.r is not None:
+            try:
+                await self.r.close()
+            except Exception:
+                logger.warning("Error closing Redis client", exc_info=True)
+
+
+async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
+    """
+    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
+    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
+
+    If exchange not enabled: return deterministic fallback without warnings.
+    """
+    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
+    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
+
+    if exchange.lower() not in enabled_exchanges:
+        return {
+            "asset_key": f"{exchange}/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
+        }
+
+    try:
+        market = Market.SPOT if market_type == "spot" else Market.USDTM
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
+
+        meta = next(
+            (
+                x
+                for x in catalog
+                if x.get("native_symbol", "").upper() == native_symbol.upper()
+            ),
+            None,
+        )
+
+        if meta:
+            return {
+                "asset_key": meta.get("asset_key"),
+                "instrument_uid": meta.get("instrument_uid"),
+            }
+
+        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
+        return {
+            "asset_key": f"UNKNOWN/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
+        }
+
+    except Exception:
+        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
+        return {
+            "asset_key": f"ERROR/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
+        }
+
+
+async def run_unified_aggregator() -> None:
+    """
+    Entry point:
+    - initializes cl_manager + cl_handlers
+    - discovers streams dynamically
+    - runs consume loop
+    """
+    from backend.core.config import settings
+
+    aggregator = UnifiedAggregator(settings.REDIS_URL)
+    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
+
+    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
+
+    # ClickHouse lanes registration
+    logger.info("🔧 Initializing ClickHouse Manager...")
+    await cl_manager_instance.initialize()
+    logger.info("✅ ClickHouse Manager initialized with all lanes")
+
+    # ClickHouse workers
+    workers = int(os.getenv("CH_WORKERS", "3"))
+    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
+    await cl_handlers_instance.start_processing(num_workers=workers)
+    logger.info("✅ ClickHouse handlers started")
+
+    try:
+        while True:
+            try:
+                redis_conn = getattr(aggregator, "r", None)
+                if redis_conn is None:
+                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
+
+                per_exchange_limit = get_streams_per_exchange()
+
+                streams, active_symbols, existing_streams = await discover_trade_streams(
+                    redis_conn,
+                    per_exchange_limit=per_exchange_limit,
+                )
+
+                if not existing_streams:
+                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                if not streams:
+                    logger.warning(
+                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
+                logger.info("📋 Active symbols from config: %s", active_symbols)
+                logger.info(
+                    "📊 Final stream count: %d (limit %d per exchange)",
+                    len(streams),
+                    per_exchange_limit,
+                )
+
+                await aggregator.consume_trades(streams)
+
+                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
+                await asyncio.sleep(retry_interval)
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Unified Aggregator shutdown signal received")
+                await aggregator.stop()
+                break
+            except Exception:
+                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
+                await asyncio.sleep(retry_interval)
+    finally:
+        await aggregator.stop()
+        logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
 <file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
