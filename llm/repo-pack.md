@@ -15063,130 +15063,6 @@ class CentralizedRsManager:
 rs_manager = CentralizedRsManager()
 </file>
 
-<file path="backend/database/redis/rs_message_handlers.py">
-import json
-import logging
-from typing import Dict, Any, Optional
-from datetime import datetime
-from decimal import Decimal
-
-logger = logging.getLogger(__name__)
-
-class ExchangeMessageHandler:
-    """Base class für Exchange-spezifische Redis Message Handler"""
-    
-    def __init__(self, exchange: str):
-        self.exchange = exchange
-        
-    async def handle_operation(self, operation_type: str, redis_conn, *args, **kwargs) -> Any:
-        """Handle Redis operation für spezifische Exchange"""
-        if operation_type == "add_trade":
-            return await self._add_trade(redis_conn, *args, **kwargs)
-        elif operation_type == "get_recent_trades":
-            return await self._get_recent_trades(redis_conn, *args, **kwargs)
-        elif operation_type == "add_candle":
-            return await self._add_candle(redis_conn, *args, **kwargs)
-        elif operation_type == "get_candles":
-            return await self._get_candles(redis_conn, *args, **kwargs)
-        else:
-            logger.warning(f"Unknown operation type: {operation_type} for {self.exchange}")
-            return {"error": f"Unknown operation: {operation_type}"}
-    
-    async def _add_trade(self, redis_conn, symbol: str, trade: dict, market_type: str = "spot"):
-        """Füge Trade zu Redis Stream hinzu"""
-        key = f"{self.exchange}:trades:{market_type}:{symbol}"
-        trade_str = json.dumps(trade, default=self._decimal_serializer)
-        await redis_conn.xadd(key, {"trade": trade_str})
-        await redis_conn.expire(key, 86400)  # 24 hours retention
-        return {"status": "success", "key": key}
-    
-    async def _get_recent_trades(self, redis_conn, symbol: str, market_type: str = "spot", limit: int = 100):
-        """Hole recent trades aus Redis Stream"""
-        key = f"{self.exchange}:trades:{market_type}:{symbol}"
-        trades = await redis_conn.xrevrange(key, count=limit)
-        return [json.loads(trade[1]['trade'], parse_float=Decimal) for trade in trades]
-    
-    async def _add_candle(self, redis_conn, symbol: str, candle: dict, market_type: str = "spot", interval: str = "1m"):
-        """Füge Candle zu Redis Stream hinzu"""
-        key = f"{self.exchange}:candles:{market_type}:{symbol}:{interval}"
-        candle_str = json.dumps(candle, default=self._decimal_serializer)
-        await redis_conn.xadd(key, {"candle": candle_str})
-        await redis_conn.expire(key, 86400)  # 24 hours retention
-        return {"status": "success", "key": key}
-    
-    async def _get_candles(self, redis_conn, symbol: str, market_type: str = "spot", interval: str = "1m", limit: int = 100):
-        """Hole Candles aus Redis Stream"""
-        key = f"{self.exchange}:candles:{market_type}:{symbol}:{interval}"
-        candles = await redis_conn.xrevrange(key, count=limit)
-        return [json.loads(candle[1]['candle'], parse_float=Decimal) for candle in candles]
-    
-    def _decimal_serializer(self, obj):
-        """Serializer für Decimal und DateTime Objekte"""
-        if isinstance(obj, Decimal):
-            return str(obj)  # String für maximale Präzision
-        elif isinstance(obj, datetime):
-            return obj.isoformat()  # DateTime zu ISO-String
-        elif isinstance(obj, (list, tuple)):
-            return [self._decimal_serializer(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {k: self._decimal_serializer(v) for k, v in obj.items()}
-        raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
-
-# Exchange-spezifische Handler
-class BinanceMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("binance")
-
-class BitgetMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("bitget")
-
-class BybitMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("bybit")
-
-class GateIOMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("gateio")
-
-class HTXMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("htx")
-
-class MEXCMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("mexc")
-
-class OKXMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("okx")
-
-class CoinbaseMessageHandler(ExchangeMessageHandler):
-    def __init__(self):
-        super().__init__("coinbase")
-
-# Handler Factory
-_HANDLERS = {
-    "binance": BinanceMessageHandler(),
-    "bitget": BitgetMessageHandler(),
-    "bybit": BybitMessageHandler(),
-    "gateio": GateIOMessageHandler(),
-    "htx": HTXMessageHandler(),
-    "mexc": MEXCMessageHandler(),
-    "okx": OKXMessageHandler(),
-    "coinbase": CoinbaseMessageHandler()
-}
-
-def get_message_handler(exchange: str) -> ExchangeMessageHandler:
-    """Factory function für Exchange Message Handler"""
-    handler = _HANDLERS.get(exchange.lower())
-    if not handler:
-        logger.warning(f"No message handler found for exchange: {exchange}")
-        # Return default handler
-        return ExchangeMessageHandler(exchange)
-    return handler
-</file>
-
 <file path="backend/database/redis/rs_registry.py">
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -122708,6 +122584,145 @@ RS_HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
+<file path="backend/database/redis/rs_message_handlers.py">
+import json
+import logging
+import os
+from typing import Dict, Any, Optional
+from datetime import datetime
+from decimal import Decimal
+
+logger = logging.getLogger(__name__)
+
+class ExchangeMessageHandler:
+    """Base class für Exchange-spezifische Redis Message Handler"""
+
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+
+    async def handle_operation(self, operation_type: str, redis_conn, *args, **kwargs) -> Any:
+        """Handle Redis operation für spezifische Exchange"""
+        if operation_type == "add_trade":
+            return await self._add_trade(redis_conn, *args, **kwargs)
+        elif operation_type == "get_recent_trades":
+            return await self._get_recent_trades(redis_conn, *args, **kwargs)
+        elif operation_type == "add_candle":
+            return await self._add_candle(redis_conn, *args, **kwargs)
+        elif operation_type == "get_candles":
+            return await self._get_candles(redis_conn, *args, **kwargs)
+        else:
+            logger.warning(f"Unknown operation type: {operation_type} for {self.exchange}")
+            return {"error": f"Unknown operation: {operation_type}"}
+
+    async def _add_trade(self, redis_conn, symbol: str, trade: dict, market_type: str = "spot"):
+        """
+        Füge Trade zu Redis Stream hinzu (bounded MAXLEN).
+        ENV:
+          TRADE_STREAM_MAXLEN (default: 200000, 0 = unbounded)
+        """
+        key = f"{self.exchange}:trades:{market_type}:{symbol}"
+        trade_str = json.dumps(trade, default=self._decimal_serializer)
+
+        try:
+            maxlen = int(os.getenv("TRADE_STREAM_MAXLEN", "200000"))
+        except Exception:
+            maxlen = 200000
+
+        if maxlen > 0:
+            # approximate trimming for performance (Redis best practice)
+            await redis_conn.xadd(key, {"trade": trade_str}, maxlen=maxlen, approximate=True)
+        else:
+            await redis_conn.xadd(key, {"trade": trade_str})
+
+        await redis_conn.expire(key, 86400)  # 24 hours retention
+        return {"status": "success", "key": key}
+
+    async def _get_recent_trades(self, redis_conn, symbol: str, market_type: str = "spot", limit: int = 100):
+        """Hole recent trades aus Redis Stream"""
+        key = f"{self.exchange}:trades:{market_type}:{symbol}"
+        trades = await redis_conn.xrevrange(key, count=limit)
+        return [json.loads(trade[1]["trade"], parse_float=Decimal) for trade in trades]
+
+    async def _add_candle(self, redis_conn, symbol: str, candle: dict, market_type: str = "spot", interval: str = "1m"):
+        """Füge Candle zu Redis Stream hinzu"""
+        key = f"{self.exchange}:candles:{market_type}:{symbol}:{interval}"
+        candle_str = json.dumps(candle, default=self._decimal_serializer)
+        await redis_conn.xadd(key, {"candle": candle_str})
+        await redis_conn.expire(key, 86400)  # 24 hours retention
+        return {"status": "success", "key": key}
+
+    async def _get_candles(self, redis_conn, symbol: str, market_type: str = "spot", interval: str = "1m", limit: int = 100):
+        """Hole Candles aus Redis Stream"""
+        key = f"{self.exchange}:candles:{market_type}:{symbol}:{interval}"
+        candles = await redis_conn.xrevrange(key, count=limit)
+        return [json.loads(candle[1]["candle"], parse_float=Decimal) for candle in candles]
+
+    def _decimal_serializer(self, obj):
+        """Serializer für Decimal und DateTime Objekte"""
+        if isinstance(obj, Decimal):
+            return str(obj)  # String für maximale Präzision
+        elif isinstance(obj, datetime):
+            return obj.isoformat()  # DateTime zu ISO-String
+        elif isinstance(obj, (list, tuple)):
+            return [self._decimal_serializer(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: self._decimal_serializer(v) for k, v in obj.items()}
+        raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+# Exchange-spezifische Handler
+class BinanceMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("binance")
+
+class BitgetMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("bitget")
+
+class BybitMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("bybit")
+
+class GateIOMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("gateio")
+
+class HTXMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("htx")
+
+class MEXCMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("mexc")
+
+class OKXMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("okx")
+
+class CoinbaseMessageHandler(ExchangeMessageHandler):
+    def __init__(self):
+        super().__init__("coinbase")
+
+
+_HANDLERS = {
+    "binance": BinanceMessageHandler(),
+    "bitget": BitgetMessageHandler(),
+    "bybit": BybitMessageHandler(),
+    "gateio": GateIOMessageHandler(),
+    "htx": HTXMessageHandler(),
+    "mexc": MEXCMessageHandler(),
+    "okx": OKXMessageHandler(),
+    "coinbase": CoinbaseMessageHandler(),
+}
+
+def get_message_handler(exchange: str) -> ExchangeMessageHandler:
+    handler = _HANDLERS.get(exchange.lower())
+    if not handler:
+        logger.warning(f"No message handler found for exchange: {exchange}")
+        return ExchangeMessageHandler(exchange)
+    return handler
+</file>
+
 <file path="backend/exchanges/binance/services/orderbook.py">
 #!/usr/bin/env python3
 """
@@ -161661,6 +161676,262 @@ class MEXCOrderbookService:
         return None
 </file>
 
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'TRADING_SYMBOLS', 
+    'BTCUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
 <file path="backend/services/adapter/unified_exchange_service.py">
 # backend/services/exchange_services.py
 """
@@ -163104,262 +163375,6 @@ def cl_config_summary() -> Dict[str, Any]:
         "performance": CL_PERFORMANCE,
         "schemas": {k: {"suffix": v["table_suffix"], "engine": v["engine"]} for k, v in CL_SCHEMAS.items()},
     }
-</file>
-
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'TRADING_SYMBOLS', 
-    'BTCUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
@@ -170393,6 +170408,239 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated ("kein Interpolieren")
+ * - fully ENV driven (no hardcoded behavior)
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+// default real-candle limit from ENV (0 = unlimited)
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+
+// max whitespace points inserted per single gap
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
+  if (u === "M") return n * 2592000;
+
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+/**
+ * Inserts Whitespace points between REAL points to visualize missing buckets.
+ * Never generates OHLC -> no interpolation.
+ *
+ * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
+ */
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies real-candle limit (N), WITHOUT counting whitespace.
+ * Returns last N real candles, then injects whitespace gaps inside that window.
+ */
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit?: number
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+
+    // ✅ limit counts ONLY real candles
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
+    const whitespaceCount = chartData.length - realCount;
+    return {
+      status,
+      interval,
+      stepSec,
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+      maxRealCandles: maxReal,
+      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
+    };
+  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+    if (status === "ERROR") {
+      setLoading(false);
+      setError(new Error("WebSocket connection failed"));
+      return;
+    }
+    setLoading(true);
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+    fillBlock,
+  };
+}
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import ThemeProvider from './shared/ui/theme-provider';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
+  </StrictMode>,
+);
+</file>
+
 <file path="backend/services/adapter/unified_aggregator.py">
 import asyncio
 import json
@@ -170439,6 +170687,11 @@ class UnifiedAggregator:
         self.group = "unified_agg_group"
         self.consumer = "unified_consumer"
         self.running = True
+
+        # --- Trading-Live ConsumerGroup Policy (ENV-driven) ---
+        # "$" = nur neue Trades (LIVE). "0" = backlog ab Anfang (für Rebuild/Replay)
+        self.group_start_id = os.getenv("AGG_GROUP_START_ID", "$").strip() or "$"
+        self.force_group_setid = os.getenv("AGG_GROUP_FORCE_SETID", "1").strip() == "1"
 
         # ClickHouse
         self.ch_client = get_clickhouse_client()
@@ -170702,27 +170955,34 @@ class UnifiedAggregator:
 
     async def _ensure_consumer_group(self, stream_key: str) -> bool:
         """
-        Ensure consumer group exists for stream. Returns True if ready, False otherwise.
-        Handles NOGROUP errors by creating group on-demand.
+        Trading-safe consumer group setup:
+          - Idempotent XGROUP CREATE (MKSTREAM)
+          - Default start id = "$" (LIVE) -> no backlog catch-up
+          - Optional FORCE_SETID -> always jump to start id on each start (trading mode)
         """
-        try:
-            # Check if stream exists
-            exists = await self.r.exists(stream_key)
-            if not exists:
-                logger.debug("Stream does not exist yet: %s", stream_key)
-                return False
+        start_id = self.group_start_id
 
-            # Try to create group (idempotent with BUSYGROUP check)
+        try:
+            # Create group (idempotent). MKSTREAM creates stream if missing.
             try:
-                await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
-                logger.info("✅ Created consumer group '%s' for stream: %s", self.group, stream_key)
+                await self.r.xgroup_create(stream_key, self.group, id=start_id, mkstream=True)
+                logger.info("✅ XGROUP created | stream=%s group=%s start_id=%s", stream_key, self.group, start_id)
             except ResponseError as e:
-                if "BUSYGROUP" in str(e):
-                    # Group already exists - this is OK
+                msg = str(e)
+                if "BUSYGROUP" in msg:
+                    # group already exists -> OK
                     pass
                 else:
-                    logger.error("Failed to create consumer group for %s: %s", stream_key, str(e))
+                    logger.error("❌ XGROUP create failed | stream=%s group=%s err=%s", stream_key, self.group, msg)
                     return False
+
+            # Trading mode: jump to LIVE (or chosen start_id) on each start
+            if self.force_group_setid:
+                try:
+                    await self.r.xgroup_setid(stream_key, self.group, start_id)
+                    logger.info("✅ XGROUP setid | stream=%s group=%s id=%s", stream_key, self.group, start_id)
+                except ResponseError as e:
+                    logger.warning("⚠️ XGROUP setid failed | stream=%s group=%s err=%s", stream_key, self.group, str(e))
 
             return True
 
@@ -171047,239 +171307,6 @@ async def run_unified_aggregator() -> None:
     finally:
         await aggregator.stop()
         logger.info("✅ Unified Aggregator stopped gracefully")
-</file>
-
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from "react";
-import { useWsLane } from "../../../services/ws/useWsLane";
-import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
-
-/**
- * ENTERPRISE POLICY:
- * - limit counts ONLY real candles (OHLC)
- * - gaps are visualized via Whitespace bars (time-only)
- * - NO synthetic OHLC is ever generated ("kein Interpolieren")
- * - fully ENV driven (no hardcoded behavior)
- */
-
-function envInt(key: string, def: number, min: number, max: number): number {
-  const raw = (import.meta as any).env?.[key];
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-// default real-candle limit from ENV (0 = unlimited)
-const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
-
-// max whitespace points inserted per single gap
-const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
-
-function intervalToSec(interval: string | undefined): number {
-  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (!Number.isFinite(n) || n <= 0) return 60;
-
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  if (u === "w") return n * 604800;
-  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
-  if (u === "M") return n * 2592000;
-
-  return 60;
-}
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function isRealBar(b: any): b is CandleBar {
-  return (
-    isFiniteNum(b?.time) &&
-    isFiniteNum(b?.open) &&
-    isFiniteNum(b?.high) &&
-    isFiniteNum(b?.low) &&
-    isFiniteNum(b?.close)
-  );
-}
-
-/**
- * Inserts Whitespace points between REAL points to visualize missing buckets.
- * Never generates OHLC -> no interpolation.
- *
- * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
- */
-function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
-  if (sortedReal.length <= 1) return sortedReal;
-  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
-
-  const stepMs = stepSec * 1000;
-  const out: CandleData[] = [];
-
-  for (let i = 0; i < sortedReal.length; i++) {
-    const cur = sortedReal[i];
-    if (!cur) continue;
-    out.push(cur);
-
-    const nxt = sortedReal[i + 1];
-    if (!nxt) break;
-
-    const dtMs = nxt.time - cur.time;
-    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
-
-    const missingBars = Math.floor(dtMs / stepMs) - 1;
-    if (missingBars <= 0) continue;
-
-    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
-    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
-
-    for (let k = 1; k <= missingBars; k += stride) {
-      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
-    }
-  }
-
-  return out;
-}
-
-/**
- * Applies real-candle limit (N), WITHOUT counting whitespace.
- * Returns last N real candles, then injects whitespace gaps inside that window.
- */
-function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
-  if (realSorted.length === 0) return [];
-
-  let windowReal = realSorted;
-  if (maxReal > 0 && realSorted.length > maxReal) {
-    windowReal = realSorted.slice(realSorted.length - maxReal);
-  }
-
-  return injectWhitespaceGaps(windowReal, stepSec);
-}
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit?: number
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
-  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const maxReal = useMemo(() => {
-    const n = Number(limit);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return ENV_MAX_REAL;
-  }, [limit]);
-
-  const chartData = useMemo<CandleData[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    if (hist.length === 0 && live.length === 0) return [];
-
-    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
-    const map = new Map<number, CandleBar>();
-
-    const push = (c: any) => {
-      const tSec = Number(c?.t);
-      if (!Number.isFinite(tSec) || tSec <= 0) return;
-
-      const timeMs = Math.floor(tSec) * 1000;
-
-      const bar: CandleBar = {
-        time: timeMs,
-        open: Number(c?.o),
-        high: Number(c?.h),
-        low: Number(c?.l),
-        close: Number(c?.c),
-        volume: Number(c?.v),
-      };
-
-      if (!isRealBar(bar)) return;
-      map.set(timeMs, bar);
-    };
-
-    for (const c of hist) push(c);
-    for (const c of live) push(c);
-
-    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
-
-    // ✅ limit counts ONLY real candles
-    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
-  }, [historical, candles, stepSec, maxReal]);
-
-  const meta = useMemo(() => {
-    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
-    const whitespaceCount = chartData.length - realCount;
-    return {
-      status,
-      interval,
-      stepSec,
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      realCount,
-      whitespaceCount,
-      maxRealCandles: maxReal,
-      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
-    };
-  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
-
-  useEffect(() => {
-    if (status === "OPEN") {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
-      }
-      return;
-    }
-    if (status === "ERROR") {
-      setLoading(false);
-      setError(new Error("WebSocket connection failed"));
-      return;
-    }
-    setLoading(true);
-  }, [status, chartData.length]);
-
-  return {
-    chartData,
-    loading,
-    error,
-    meta,
-    fillBlock,
-  };
-}
-</file>
-
-<file path="frontend/src/main.tsx">
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import ThemeProvider from './shared/ui/theme-provider';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <App />
-      </BrowserRouter>
-    </ThemeProvider>
-  </StrictMode>,
-);
 </file>
 
 <file path="backend/websocket/ws_manager.py">
@@ -172688,6 +172715,256 @@ if __name__ == "__main__":
     start()
 </file>
 
+<file path="backend/services/usecases/backfill_loop_service.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from backend.services.usecases.unified_historical import UnifiedHistoricalService
+from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
+
+logger = logging.getLogger(__name__)
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class BackfillLoopService:
+    """
+    Enterprise Backfill LOOP
+
+    Eigenschaften:
+    - ClickHouse als Single Source of Truth (oldest_ts)
+    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
+    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus CH)
+    - Keine Hardcodes (Exchange/Symbol per ENV)
+    """
+
+    def __init__(
+        self,
+        exchange: str,
+        symbol: str,
+        until_date: datetime,
+        market: str = "spot",
+        batch_size: int = 5000,
+        pause_seconds: int = 2,
+        gap_scan_days: int = 7,
+        gap_bucket_seconds: int = 60,
+        gap_sources_csv: str = "live_ws,rest_backfill",
+    ):
+        self.exchange = exchange.strip().lower()
+        self.symbol = symbol.strip().upper()
+        self.until_date = _utc(until_date)
+        self.market = market.strip().lower()
+
+        self.batch_size = int(batch_size)
+        self.pause_seconds = int(pause_seconds)
+
+        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
+        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
+
+        env_sources = os.getenv("GAP_SOURCE_FILTER")
+        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
+
+        self._historical = UnifiedHistoricalService(self.exchange)
+
+        self._running = False
+        self._total_trades = 0
+        self._batch_count = 0
+
+        self._global_oldest_ts: Optional[datetime] = None
+
+        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
+        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
+        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
+        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _pause_for_exchange(self) -> int:
+        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
+        v = os.getenv(env_key)
+        if v:
+            try:
+                return max(0, int(v))
+            except Exception:
+                pass
+        try:
+            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
+        except Exception:
+            return self.pause_seconds
+
+    def _get_ch_client_sync(self):
+        """
+        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+        """
+        from backend.database.clickhouse import unified_cl_service
+        import asyncio as _asyncio
+
+        try:
+            if hasattr(unified_cl_service, "get_client_sync"):
+                return unified_cl_service.get_client_sync()
+
+            loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(loop)
+            try:
+                if not unified_cl_service.is_initialized:
+                    loop.run_until_complete(unified_cl_service.initialize())
+
+                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
+                if pool is None:
+                    raise RuntimeError("unified_cl_service returned None pool")
+
+                if not pool.is_initialized:
+                    loop.run_until_complete(pool.initialize())
+
+                client = pool.get_client()
+                if client is None:
+                    raise RuntimeError("pool.get_client() returned None")
+                return client
+            finally:
+                loop.close()
+        except Exception as e:
+            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
+
+    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
+        table_name = f"{self.exchange}_trades"
+        query = f"""
+            SELECT minOrNull(timestamp) AS oldest
+            FROM trading.{table_name}
+            WHERE source = 'rest_backfill'
+              AND symbol = %(symbol)s
+              AND market = %(market)s
+        """
+
+        try:
+            def _run():
+                client = self._get_ch_client_sync()
+                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
+                if not res.result_rows:
+                    return None
+                v = res.result_rows[0][0]
+                if isinstance(v, datetime):
+                    if v.year < 2000:
+                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
+                        return None
+                    return v
+                return None
+
+            oldest = await asyncio.to_thread(_run)
+            return _utc(oldest) if oldest else None
+        except Exception as e:
+            logger.error(
+                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
+                exc_info=True,
+            )
+            return None
+
+    async def _find_gaps(self) -> List[GapWindow]:
+        scanner = GapScanService(
+            exchange=self.exchange,
+            symbol=self.symbol,
+            market=self.market,
+            gap_scan_days=self.gap_scan_days,
+            gap_bucket_seconds=self.gap_bucket_seconds,
+            gap_sources=self.gap_sources,
+            fine_scan_minutes=self._fine_scan_minutes,
+            fine_bucket_seconds=self._fine_bucket_seconds,
+            max_missing_buckets=self._max_missing_buckets,
+            max_windows=self._max_windows,
+        )
+        return await scanner.scan()
+
+    async def run(self) -> None:
+        self._running = True
+        self._total_trades = 0
+        self._batch_count = 0
+
+        logger.info(
+            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
+            f"market={self.market} until={self.until_date.date().isoformat()} "
+            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
+            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
+            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
+            f"sources={','.join(self.gap_sources)}"
+        )
+
+        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
+        if self._global_oldest_ts:
+            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
+
+        try:
+            while self._running:
+                gaps = await self._find_gaps()
+
+                if gaps:
+                    g = gaps[0]
+                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=g.start,
+                        to_date=g.end,
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+                else:
+                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
+                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
+                        break
+
+                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=self.until_date,
+                        to_date=cursor_to,
+                        interval="1m",
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+
+                if trades_loaded <= 0:
+                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
+                    await asyncio.sleep(self._pause_for_exchange())
+                    continue
+
+                self._total_trades += trades_loaded
+                self._batch_count += 1
+
+                batch_oldest = await self._get_oldest_backfill_timestamp()
+                if batch_oldest is not None:
+                    if self._global_oldest_ts is None:
+                        self._global_oldest_ts = batch_oldest
+                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
+                    elif batch_oldest < self._global_oldest_ts:
+                        self._global_oldest_ts = batch_oldest
+                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
+
+                await asyncio.sleep(self._pause_for_exchange())
+
+        except asyncio.CancelledError:
+            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
+        finally:
+            self._running = False
+            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
 <file path="backend/websocket/ws_router.py">
 import asyncio
 import logging
@@ -173056,256 +173333,6 @@ export default function App() {
     </TradingProvider>
   );
 }
-</file>
-
-<file path="backend/services/usecases/backfill_loop_service.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional
-
-from backend.services.usecases.unified_historical import UnifiedHistoricalService
-from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
-
-logger = logging.getLogger(__name__)
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class BackfillLoopService:
-    """
-    Enterprise Backfill LOOP
-
-    Eigenschaften:
-    - ClickHouse als Single Source of Truth (oldest_ts)
-    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
-    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus CH)
-    - Keine Hardcodes (Exchange/Symbol per ENV)
-    """
-
-    def __init__(
-        self,
-        exchange: str,
-        symbol: str,
-        until_date: datetime,
-        market: str = "spot",
-        batch_size: int = 5000,
-        pause_seconds: int = 2,
-        gap_scan_days: int = 7,
-        gap_bucket_seconds: int = 60,
-        gap_sources_csv: str = "live_ws,rest_backfill",
-    ):
-        self.exchange = exchange.strip().lower()
-        self.symbol = symbol.strip().upper()
-        self.until_date = _utc(until_date)
-        self.market = market.strip().lower()
-
-        self.batch_size = int(batch_size)
-        self.pause_seconds = int(pause_seconds)
-
-        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
-        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
-
-        env_sources = os.getenv("GAP_SOURCE_FILTER")
-        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
-
-        self._historical = UnifiedHistoricalService(self.exchange)
-
-        self._running = False
-        self._total_trades = 0
-        self._batch_count = 0
-
-        self._global_oldest_ts: Optional[datetime] = None
-
-        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
-        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
-        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
-        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _pause_for_exchange(self) -> int:
-        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-        v = os.getenv(env_key)
-        if v:
-            try:
-                return max(0, int(v))
-            except Exception:
-                pass
-        try:
-            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
-        except Exception:
-            return self.pause_seconds
-
-    def _get_ch_client_sync(self):
-        """
-        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-        """
-        from backend.database.clickhouse import unified_cl_service
-        import asyncio as _asyncio
-
-        try:
-            if hasattr(unified_cl_service, "get_client_sync"):
-                return unified_cl_service.get_client_sync()
-
-            loop = _asyncio.new_event_loop()
-            _asyncio.set_event_loop(loop)
-            try:
-                if not unified_cl_service.is_initialized:
-                    loop.run_until_complete(unified_cl_service.initialize())
-
-                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
-                if pool is None:
-                    raise RuntimeError("unified_cl_service returned None pool")
-
-                if not pool.is_initialized:
-                    loop.run_until_complete(pool.initialize())
-
-                client = pool.get_client()
-                if client is None:
-                    raise RuntimeError("pool.get_client() returned None")
-                return client
-            finally:
-                loop.close()
-        except Exception as e:
-            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
-
-    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-        table_name = f"{self.exchange}_trades"
-        query = f"""
-            SELECT minOrNull(timestamp) AS oldest
-            FROM trading.{table_name}
-            WHERE source = 'rest_backfill'
-              AND symbol = %(symbol)s
-              AND market = %(market)s
-        """
-
-        try:
-            def _run():
-                client = self._get_ch_client_sync()
-                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
-                if not res.result_rows:
-                    return None
-                v = res.result_rows[0][0]
-                if isinstance(v, datetime):
-                    if v.year < 2000:
-                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
-                        return None
-                    return v
-                return None
-
-            oldest = await asyncio.to_thread(_run)
-            return _utc(oldest) if oldest else None
-        except Exception as e:
-            logger.error(
-                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
-                exc_info=True,
-            )
-            return None
-
-    async def _find_gaps(self) -> List[GapWindow]:
-        scanner = GapScanService(
-            exchange=self.exchange,
-            symbol=self.symbol,
-            market=self.market,
-            gap_scan_days=self.gap_scan_days,
-            gap_bucket_seconds=self.gap_bucket_seconds,
-            gap_sources=self.gap_sources,
-            fine_scan_minutes=self._fine_scan_minutes,
-            fine_bucket_seconds=self._fine_bucket_seconds,
-            max_missing_buckets=self._max_missing_buckets,
-            max_windows=self._max_windows,
-        )
-        return await scanner.scan()
-
-    async def run(self) -> None:
-        self._running = True
-        self._total_trades = 0
-        self._batch_count = 0
-
-        logger.info(
-            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
-            f"market={self.market} until={self.until_date.date().isoformat()} "
-            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
-            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
-            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
-            f"sources={','.join(self.gap_sources)}"
-        )
-
-        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-        if self._global_oldest_ts:
-            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
-
-        try:
-            while self._running:
-                gaps = await self._find_gaps()
-
-                if gaps:
-                    g = gaps[0]
-                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=g.start,
-                        to_date=g.end,
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-                else:
-                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
-                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
-                        break
-
-                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=self.until_date,
-                        to_date=cursor_to,
-                        interval="1m",
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-
-                if trades_loaded <= 0:
-                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
-                    await asyncio.sleep(self._pause_for_exchange())
-                    continue
-
-                self._total_trades += trades_loaded
-                self._batch_count += 1
-
-                batch_oldest = await self._get_oldest_backfill_timestamp()
-                if batch_oldest is not None:
-                    if self._global_oldest_ts is None:
-                        self._global_oldest_ts = batch_oldest
-                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
-                    elif batch_oldest < self._global_oldest_ts:
-                        self._global_oldest_ts = batch_oldest
-                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
-
-                await asyncio.sleep(self._pause_for_exchange())
-
-        except asyncio.CancelledError:
-            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
-        finally:
-            self._running = False
-            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
 <file path="backend/websocket/ws_frontend_handler.py">
