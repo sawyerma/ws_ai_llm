@@ -26334,6 +26334,408 @@ class HealthLane:
         }
 </file>
 
+<file path="backend/health/health_progress.py">
+# backend/health/progress_health.py
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
+
+import clickhouse_connect
+
+from backend.database.clickhouse.cl_config import CL_CONNECTION
+from backend.health.health_registry import health_registry
+
+logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return default
+
+
+def _parse_str(name: str, default: str) -> str:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s if s else default
+
+
+def _parse_until_date() -> datetime:
+    # Default: 2024-01-01 UTC (wie bei dir)
+    s = _parse_str("AUTO_BACKFILL_UNTIL_DATE", "2024-01-01")
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d")
+        return dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class TradeTable:
+    exchange: str
+    table: str  # full table name without DB prefix, e.g. "binance_trades"
+
+
+class ProgressHealthService:
+    """
+    Progress/Gaps Health Service
+
+    - Discovery: findet automatisch alle trading.*_trades MergeTree Tabellen
+    - Pro Tabelle: berechnet
+        - history_oldest_ts, history_newest_ts, history_progress_pct
+        - gaps im Scan-Fenster (Buckets), missing_count, completeness_pct
+    - Schreibt Ergebnisse in HealthRegistry als Komponenten:
+        - progress.{exchange}.{symbol}.{market}
+    """
+
+    def __init__(self):
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+
+        # Intervalle/Parameter via ENV
+        self.interval_seconds = _parse_int("PROGRESS_HEALTH_INTERVAL_SECONDS", 30)
+
+        # Gap-Scan Fenster (z.B. letzte 7 Tage)
+        self.gap_scan_days = _parse_int("GAP_SCAN_DAYS", 7)
+
+        # Bucket-Size in Sekunden (Standard: 60 = Minute)
+        self.gap_bucket_seconds = _parse_int("GAP_BUCKET_SECONDS", 60)
+
+        # Filter: nur diese Sources zählen (leer = alle)
+        self.source_filter = _parse_str("GAP_SOURCE_FILTER", "live,rest_backfill").strip()
+
+        # Backfill-Target
+        self.until_date = _parse_until_date()
+
+        # Optional: Market-Whitelist (z.B. "spot,futures"); leer = alle
+        self.market_filter = _parse_str("GAP_MARKET_FILTER", "").strip()
+
+        # Optional: Symbol-Whitelist (z.B. "BTCUSDT,ETHUSDT"); leer = alle
+        self.symbol_filter = _parse_str("GAP_SYMBOL_FILTER", "").strip()
+
+    def start(self) -> None:
+        if self._task and not self._task.done():
+            return
+        self._running = True
+        self._task = asyncio.create_task(self.run(), name="progress-health-service")
+        logger.info(
+            "ProgressHealthService started (interval=%ss, scan_days=%s, bucket=%ss)",
+            self.interval_seconds,
+            self.gap_scan_days,
+            self.gap_bucket_seconds,
+        )
+
+    def stop(self) -> None:
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+    def _ch_client(self):
+        return clickhouse_connect.get_client(
+            host=CL_CONNECTION["host"],
+            port=CL_CONNECTION["port"],
+            username=CL_CONNECTION.get("username", "default"),
+            password=CL_CONNECTION.get("password", ""),
+            database=CL_CONNECTION.get("database", "default"),
+            connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
+            send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
+        )
+
+    async def run(self) -> None:
+        while self._running:
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("ProgressHealthService tick failed: %s", e, exc_info=True)
+
+            await asyncio.sleep(max(1, self.interval_seconds))
+
+    async def _tick(self) -> None:
+        tables = await asyncio.to_thread(self._discover_trade_tables)
+        if not tables:
+            return
+
+        # Pro Tabelle: pro Symbol+Market aggregieren.
+        for t in tables:
+            try:
+                rows = await asyncio.to_thread(self._discover_symbol_markets, t)
+            except Exception as e:
+                logger.warning("discover_symbol_markets failed for %s: %s", t.table, e)
+                continue
+
+            for (symbol, market) in rows:
+                if not self._passes_filters(symbol, market):
+                    continue
+
+                comp_name = f"{t.exchange}.{symbol}.{market}".lower()
+
+                # Register lane if missing
+                lane = health_registry.get_component_health("progress", comp_name)
+                if lane is None:
+                    lane = health_registry.register_component("progress", comp_name)
+
+                try:
+                    metrics = await asyncio.to_thread(self._compute_metrics, t, symbol, market)
+                    lane.record_success(metrics=metrics)
+                except Exception as e:
+                    lane.record_error(f"progress computation failed: {e}")
+
+    def _passes_filters(self, symbol: str, market: str) -> bool:
+        if self.market_filter:
+            allowed = {x.strip().lower() for x in self.market_filter.split(",") if x.strip()}
+            if market.lower() not in allowed:
+                return False
+        if self.symbol_filter:
+            allowed = {x.strip().upper() for x in self.symbol_filter.split(",") if x.strip()}
+            if symbol.upper() not in allowed:
+                return False
+        return True
+
+    def _discover_trade_tables(self) -> List[TradeTable]:
+        """
+        Auto-Discovery: trading.*_trades, MergeTree
+        exchange wird aus Tabellennamen abgeleitet: "<exchange>_trades"
+        """
+        client = self._ch_client()
+        q = """
+            SELECT name
+            FROM system.tables
+            WHERE database = 'trading'
+              AND name LIKE '%\\_trades'
+              AND engine LIKE '%MergeTree%'
+            ORDER BY name
+        """
+        res = client.query(q)
+        out: List[TradeTable] = []
+        for (name,) in res.result_rows:
+            # name: "binance_trades" -> exchange "binance"
+            if not isinstance(name, str):
+                continue
+            if not name.endswith("_trades"):
+                continue
+            ex = name[: -len("_trades")].strip().lower()
+            if not ex:
+                continue
+            out.append(TradeTable(exchange=ex, table=name))
+        return out
+
+    def _discover_symbol_markets(self, t: TradeTable) -> List[Tuple[str, str]]:
+        """
+        Finds distinct (symbol, market) pairs present in the table.
+        Assumes columns: symbol, market
+        """
+        client = self._ch_client()
+        q = f"""
+            SELECT DISTINCT symbol, market
+            FROM trading.{t.table}
+            WHERE symbol != '' AND market != ''
+            ORDER BY symbol, market
+        """
+        res = client.query(q)
+        pairs: List[Tuple[str, str]] = []
+        for row in res.result_rows:
+            if len(row) != 2:
+                continue
+            sym, mkt = row
+            if isinstance(sym, str) and isinstance(mkt, str) and sym and mkt:
+                pairs.append((sym.upper(), mkt.lower()))
+        return pairs
+
+    def _compute_metrics(self, t: TradeTable, symbol: str, market: str) -> Dict[str, object]:
+        """
+        Computes:
+        - oldest/newest timestamps for chosen sources (optional)
+        - history_progress_pct relative to until_date
+        - gap completeness in last N days using bucketization
+        """
+        now = _utc_now()
+        scan_from = now - timedelta(days=max(1, self.gap_scan_days))
+        bucket = max(1, self.gap_bucket_seconds)
+
+        sources = [s.strip() for s in self.source_filter.split(",") if s.strip()] if self.source_filter else []
+        source_clause, params = self._source_where_clause(sources)
+
+        # 1) Oldest/Newest for the chosen subset (sources)
+        oldest, newest, total = self._query_oldest_newest_count(t, symbol, market, source_clause, params)
+
+        # 2) History progress %
+        history_progress = self._calc_history_progress(oldest, now, self.until_date)
+
+        # 3) Gap completeness in scan window
+        missing_count, expected_count, completeness = self._gap_scan(
+            t=t,
+            symbol=symbol,
+            market=market,
+            scan_from=scan_from,
+            scan_to=now,
+            bucket_seconds=bucket,
+            source_clause=source_clause,
+            params=params,
+        )
+
+        return {
+            "exchange": t.exchange,
+            "table": t.table,
+            "symbol": symbol,
+            "market": market,
+            "source_filter": ",".join(sources) if sources else "ALL",
+            "until_date_utc": self.until_date.isoformat(),
+            "now_utc": now.isoformat(),
+            "history": {
+                "oldest_ts_utc": oldest.isoformat() if oldest else None,
+                "newest_ts_utc": newest.isoformat() if newest else None,
+                "row_count": int(total),
+                "progress_pct": round(history_progress, 4),
+            },
+            "gap_scan": {
+                "window_from_utc": scan_from.isoformat(),
+                "window_to_utc": now.isoformat(),
+                "bucket_seconds": bucket,
+                "expected_buckets": int(expected_count),
+                "missing_buckets": int(missing_count),
+                "completeness_pct": round(completeness, 4),
+            },
+        }
+
+    def _source_where_clause(self, sources: List[str]) -> Tuple[str, Dict[str, object]]:
+        """
+        Returns (sql_snippet, params_dict)
+        If sources empty: returns "", {}
+        Assumes column name: source
+        """
+        if not sources:
+            return "", {}
+        # clickhouse_connect parameterization: %(name)s
+        # Build IN list using tuple params is not supported in all versions -> build OR chain.
+        parts = []
+        params: Dict[str, object] = {}
+        for i, s in enumerate(sources):
+            key = f"src{i}"
+            parts.append(f"source = %({key})s")
+            params[key] = s
+        return " AND (" + " OR ".join(parts) + ")", params
+
+    def _query_oldest_newest_count(
+        self,
+        t: TradeTable,
+        symbol: str,
+        market: str,
+        source_clause: str,
+        source_params: Dict[str, object],
+    ) -> Tuple[Optional[datetime], Optional[datetime], int]:
+        client = self._ch_client()
+        q = f"""
+            SELECT
+              MIN(timestamp) AS oldest,
+              MAX(timestamp) AS newest,
+              count() AS cnt
+            FROM trading.{t.table}
+            WHERE symbol = %(symbol)s
+              AND market = %(market)s
+              {source_clause}
+        """
+        params = {"symbol": symbol, "market": market, **source_params}
+        res = client.query(q, parameters=params)
+        if not res.result_rows:
+            return None, None, 0
+        oldest, newest, cnt = res.result_rows[0]
+        return (
+            oldest if isinstance(oldest, datetime) else None,
+            newest if isinstance(newest, datetime) else None,
+            int(cnt) if cnt is not None else 0,
+        )
+
+    def _calc_history_progress(self, oldest: Optional[datetime], now: datetime, until_date: datetime) -> float:
+        """
+        Progress = covered / total = (now - oldest) / (now - until_date)
+        """
+        if oldest is None:
+            return 0.0
+        total = (now - until_date).total_seconds()
+        if total <= 0:
+            return 0.0
+        covered = (now - oldest).total_seconds()
+        if covered <= 0:
+            return 0.0
+        if covered >= total:
+            return 100.0
+        return (covered / total) * 100.0
+
+    def _gap_scan(
+        self,
+        t: TradeTable,
+        symbol: str,
+        market: str,
+        scan_from: datetime,
+        scan_to: datetime,
+        bucket_seconds: int,
+        source_clause: str,
+        source_params: Dict[str, object],
+    ) -> Tuple[int, int, float]:
+        """
+        Bucket-based gap scan in [scan_from, scan_to).
+        Expected buckets: floor((scan_to - scan_from)/bucket)
+        Present buckets: countDistinct(bucket_start)
+        Missing = expected - present
+
+        Assumes timestamp is DateTime64/DateTime.
+        """
+        expected = int((scan_to - scan_from).total_seconds() // bucket_seconds)
+        if expected <= 0:
+            return 0, 0, 100.0
+
+        client = self._ch_client()
+
+        # Use toStartOfInterval for bucketization
+        q = f"""
+            SELECT
+              countDistinct(toStartOfInterval(timestamp, INTERVAL {bucket_seconds} SECOND)) AS present_buckets
+            FROM trading.{t.table}
+            WHERE symbol = %(symbol)s
+              AND market = %(market)s
+              AND timestamp >= %(t_from)s
+              AND timestamp < %(t_to)s
+              {source_clause}
+        """
+        params = {
+            "symbol": symbol,
+            "market": market,
+            "t_from": scan_from,
+            "t_to": scan_to,
+            **source_params,
+        }
+        res = client.query(q, parameters=params)
+        present = 0
+        if res.result_rows and res.result_rows[0] and res.result_rows[0][0] is not None:
+            present = int(res.result_rows[0][0])
+
+        missing = max(0, expected - present)
+        completeness = (present / expected) * 100.0 if expected > 0 else 100.0
+        return missing, expected, completeness
+
+
+# Singleton instance
+progress_health_service = ProgressHealthService()
+</file>
+
 <file path="backend/health/health_registry.py">
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -35290,329 +35692,6 @@ class ExchangeFactory:
         cls._available_exchanges = None
 </file>
 
-<file path="backend/services/adapter/unified_collector.py">
-"""
-✅ UNIFIED COLLECTOR SERVICE - Business Logic Service für alle Exchange Collectors
-Ersetzt die 8x fehlenden Exchange Collectors mit einem zentralen Service
-"""
-
-import asyncio
-import logging
-from datetime import datetime
-from typing import Dict, List, Optional, Set
-from backend.websocket.ws_unified import universal_ws_service, start_websocket_service
-
-logger = logging.getLogger("unified-collector-service")
-
-class UnifiedCollectorService:
-    """
-    ✅ UNIFIED COLLECTOR SERVICE - Business Logic für alle Exchange Collectors
-    
-    Zentraler Service der alle Exchange Collector-Funktionen managed:
-    - Alle 8 Exchanges: Binance, GateIO, Bybit, OKX, MEXC, HTX, Coinbase, Bitget
-    - Nutzt WebSocket Service für technische WebSocket-Verwaltung
-    - Business Logic für Collector-Management
-    - Generische API für alle Exchanges
-    """
-    
-    def __init__(self, supported_exchanges=None, symbols=None, market_types=None):
-        # ✅ Generisch - nichts hardcoded
-        self.exchanges = supported_exchanges or [
-            'binance', 'bitget', 'mexc', 'gateio', 'bybit', 'okx', 'htx', 'coinbase'
-        ]
-        self.symbols = symbols or ['BTCUSDT', 'ETHUSDT', 'ADAUSDT']
-        self.market_types = market_types or ['spot', 'usdtm']
-        
-        self.running = False
-        self.active_collectors: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
-        
-    async def start(self):
-        """Startet den Unified Collector Service"""
-        if self.running:
-            logger.info("Unified Collector Service bereits gestartet")
-            return
-            
-        logger.info("🚀 Starting Unified Collector Service")
-        
-        # ✅ Nutzt ws_unified.py für WebSocket-Anteil
-        await start_websocket_service()
-        
-        self.running = True
-        logger.info("✅ Unified Collector Service started")
-    
-    async def start_all_collectors(self):
-        """
-        ✅ ENTERPRISE: PARALLEL Collector Startup
-        
-        Startet alle Collectors gleichzeitig mittels asyncio.gather()
-        - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
-        - Resilient: Einzelne Failures crashen nicht das System
-        - Fast: 10-15x schneller als serieller Start
-        """
-        if not self.running:
-            await self.start()
-            
-        logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
-        
-        # ✅ Sammle alle Start-Tasks (KEIN await hier!)
-        tasks = []
-        total_collectors = 0
-        
-        for exchange in self.exchanges:
-            for symbol in self.symbols:
-                for market_type in self.market_types:
-                    # ✅ Generisch: Prüfe über _should_skip_collector
-                    if self._should_skip_collector(exchange, market_type):
-                        continue
-                    
-                    # ✅ Task erstellen ohne zu awaiten
-                    task = self._start_exchange_collector_safe(
-                        exchange, symbol, market_type
-                    )
-                    tasks.append(task)
-                    total_collectors += 1
-        
-        logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
-        
-        # ✅ PARALLEL ausführen mit asyncio.gather()
-        # return_exceptions=True → Einzelne Failures crashen nicht alle
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # ✅ Ergebnisse auswerten
-        started_count = 0
-        failed_count = 0
-        
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                failed_count += 1
-                logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
-            else:
-                started_count += 1
-        
-        # ✅ Performance Metrics loggen
-        success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
-        
-        logger.info(
-            f"✅ PARALLEL Collectors: COMPLETE "
-            f"({started_count} started, {failed_count} failed, "
-            f"{success_rate:.1f}% success rate)"
-        )
-        
-        # ✅ Health System Update
-        if hasattr(self, 'health_component'):
-            self.health_component.record_success({
-                "action": "collectors_started_parallel",
-                "total": total_collectors,
-                "started": started_count,
-                "failed": failed_count,
-                "success_rate": success_rate
-            })
-    
-    def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
-        """
-        ✅ ENTERPRISE: Generische Skip-Logik
-        
-        Keine hardcoded If-Bedingungen, nutzt Exchange-Config
-        """
-        # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
-        # Coinbase unterstützt keine Futures
-        if exchange == 'coinbase' and market_type in ['usdtm', 'coinm', 'usdcm']:
-            return True
-        
-        # Weitere generische Prüfungen können hier ergänzt werden
-        # z.B. via EXCHANGE_REGISTRY.get(exchange, {}).get("supported_markets")
-        
-        return False
-    
-    async def _start_exchange_collector_safe(
-        self, 
-        exchange: str, 
-        symbol: str, 
-        market_type: str
-    ) -> bool:
-        """
-        ✅ ENTERPRISE: Safe Wrapper für Collector Start
-        
-        Wrapped _start_exchange_collector mit Error Handling
-        - Einzelne Failures crashen nicht das System
-        - Detailed Logging für Debugging
-        - Returns bool statt raising Exception
-        """
-        collector_key = f"{exchange}:{symbol}:{market_type}"
-        
-        try:
-            await self._start_exchange_collector(exchange, symbol, market_type)
-            logger.debug(f"✅ Collector started: {collector_key}")
-            return True
-            
-        except Exception as e:
-            logger.warning(
-                f"⚠️ Failed to start collector {collector_key}: {e}",
-                exc_info=False  # Keine full traceback in production
-            )
-            
-            # ✅ Health System Integration
-            if hasattr(self, 'health_component'):
-                self.health_component.record_error(
-                    f"Collector start failed: {collector_key}: {str(e)}"
-                )
-            
-            return False
-        
-    async def _start_exchange_collector(self, exchange: str, symbol: str, market: str, queue: asyncio.Queue = None):
-        """
-        Startet einzelnen Exchange Collector
-        ✅ Nutzt ws_unified.py für WebSocket-Anteil
-        """
-        collector_key = f"{exchange}:{symbol}:{market}"
-        
-        if collector_key in self.active_collectors:
-            logger.debug(f"Collector already active: {collector_key}")
-            return
-            
-        try:
-            # Coinbase Symbol-Format anpassen
-            ws_symbol = symbol
-            if exchange == 'coinbase':
-                ws_symbol = symbol.replace('USDT', '-USD')  # BTCUSDT → BTC-USD
-            
-            # ✅ Nutze WebSocket Service für WebSocket-Verbindung
-            lane_key = await universal_ws_service.start_exchange_websocket(
-                exchange=exchange,
-                symbol=ws_symbol,
-                market_type=market
-            )
-            
-            # Queue-Integration für lokale broadcast_task
-            if queue:
-                async def queue_handler(trade_data):
-                    await queue.put(trade_data)
-                logger.info(f"✅ Queue-Integration aktiviert für {collector_key}")
-            
-            # Speichere Collector Info
-            self.active_collectors[collector_key] = {
-                "exchange": exchange,
-                "symbol": symbol,
-                "ws_symbol": ws_symbol,
-                "market_type": market,
-                "lane_key": lane_key,
-                "started_at": datetime.now(),
-                "status": "active",
-                "queue_enabled": queue is not None
-            }
-            
-            logger.info(f"✅ Collector started: {collector_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start collector {collector_key}: {e}")
-            raise
-    
-    async def stop_exchange_collector(self, exchange: str, symbol: str, market_type: str):
-        """Stoppt einzelnen Exchange Collector"""
-        collector_key = f"{exchange}:{symbol}:{market_type}"
-        
-        if collector_key not in self.active_collectors:
-            logger.warning(f"Collector not active: {collector_key}")
-            return
-            
-        try:
-            collector_info = self.active_collectors[collector_key]
-            ws_symbol = collector_info["ws_symbol"]
-            
-            # ✅ Nutze WebSocket Service zum Stoppen
-            await universal_ws_service.stop_exchange_websocket(exchange, ws_symbol, market_type)
-            
-            # Aus aktiven Collectors entfernen
-            del self.active_collectors[collector_key]
-            
-            logger.info(f"✅ Collector stopped: {collector_key}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to stop collector {collector_key}: {e}")
-    
-    async def stop_all_collectors(self):
-        """Stoppt alle laufenden Collectors"""
-        logger.info("🛑 Stopping all collectors...")
-        
-        # Alle aktiven Collectors stoppen
-        active_collectors_copy = list(self.active_collectors.keys())
-        for collector_key in active_collectors_copy:
-            exchange, symbol, market_type = collector_key.split(":")
-            await self.stop_exchange_collector(exchange, symbol, market_type)
-        
-        # WebSocket Service stoppen
-        await universal_ws_service.stop()
-        
-        self.running = False
-        logger.info("✅ All collectors stopped")
-    
-    def get_service_status(self) -> Dict:
-        """Status des Unified Collector Service"""
-        # Hole WebSocket Service Status
-        ws_status = universal_ws_service.get_service_status()
-        
-        return {
-            "service": "unified_collector_service",
-            "running": self.running,
-            "total_collectors": len(self.active_collectors),
-            "active_exchanges": list(set(info["exchange"] for info in self.active_collectors.values())),
-            "websocket_service": ws_status,
-            "collectors": {
-                collector_key: {
-                    "exchange": info["exchange"],
-                    "symbol": info["symbol"],
-                    "market_type": info["market_type"],
-                    "status": info["status"],
-                    "started_at": info["started_at"].isoformat()
-                }
-                for collector_key, info in self.active_collectors.items()
-            },
-            "configuration": {
-                "supported_exchanges": self.exchanges,
-                "symbols": self.symbols,
-                "market_types": self.market_types
-            }
-        }
-    
-    def get_exchange_collectors(self, exchange: str) -> List[Dict]:
-        """Alle aktiven Collectors für eine Exchange"""
-        return [
-            {
-                "collector_key": collector_key,
-                "symbol": info["symbol"],
-                "market_type": info["market_type"],
-                "status": info["status"]
-            }
-            for collector_key, info in self.active_collectors.items()
-            if info["exchange"] == exchange
-        ]
-
-
-# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
-unified_collector_service = UnifiedCollectorService()
-
-# ✅ SERVICE API - Einfache Funktionen für collector_starter.py
-async def start_unified_collector_service():
-    """Startet den Unified Collector Service"""
-    await unified_collector_service.start()
-
-async def stop_unified_collector_service():
-    """Stoppt den Unified Collector Service"""
-    await unified_collector_service.stop_all_collectors()
-
-async def start_all_exchange_collectors():
-    """Startet alle Exchange Collectors - API für collector_starter.py"""
-    await unified_collector_service.start_all_collectors()
-
-def get_unified_collector_status() -> Dict:
-    """Service Status - API für Health Checks"""
-    return unified_collector_service.get_service_status()
-
-def get_exchange_collector_status(exchange: str) -> List[Dict]:
-    """Exchange Collector Status - API für Exchange Health"""
-    return unified_collector_service.get_exchange_collectors(exchange)
-</file>
-
 <file path="backend/services/adapter/unified_trade_api.py">
 import asyncio
 import json
@@ -36301,155 +36380,6 @@ def get_available_user_exchanges():
     return list(unified_user_apis.keys())
 </file>
 
-<file path="backend/services/delete/trade_router_entrypoint.py">
-"""
-✅ MODERNIZED TRADE ROUTER ENTRYPOINT - Ohne Legacy Dependencies
-Enterprise Auto-Discovery statt hardcoded exchanges
-"""
-import asyncio
-import logging
-from pathlib import Path
-from backend.core.config import settings
-from backend.database.redis import unified_rs_service
-
-logger = logging.getLogger(__name__)
-
-def discover_exchanges():
-    """✅ AUTO-DISCOVERY: Dynamische Exchange-Erkennung"""
-    try:
-        exchange_dir = Path("backend/exchanges")
-        if not exchange_dir.exists():
-            logger.warning("Exchange directory not found, using fallback")
-            return []
-            
-        exchanges = [
-            dir.name for dir in exchange_dir.iterdir() 
-            if dir.is_dir() and dir.name not in ["__pycache__", "shared", "old"]
-        ]
-        
-        logger.info(f"✅ Auto-discovered {len(exchanges)} exchanges: {exchanges}")
-        return exchanges
-        
-    except Exception as e:
-        logger.error(f"Exchange discovery failed: {e}")
-        return []
-
-async def route_trade_streams(source_stream: str, target_stream: str):
-    """✅ MODERNE STREAM ROUTING - Ohne Legacy TradeRouter"""
-    logger.info(f"🔄 Routing: {source_stream} -> {target_stream}")
-    
-    try:
-        redis_client = await unified_rs_service.get_redis_client()
-        
-        # Consumer Group erstellen
-        try:
-            await redis_client.xgroup_create(source_stream, "trade_router", id="0", mkstream=True)
-        except Exception:
-            pass  # Group existiert bereits
-        
-        while True:
-            # Messages aus Source Stream lesen
-            messages = await redis_client.xreadgroup(
-                "trade_router", 
-                "router_consumer", 
-                {source_stream: ">"}, 
-                count=100, 
-                block=1000
-            )
-            
-            if not messages:
-                continue
-                
-            # Messages zu Target Stream weiterleiten
-            for stream, stream_messages in messages:
-                for msg_id, trade_data in stream_messages:
-                    try:
-                        # Trade zum Unified Stream hinzufügen
-                        await redis_client.xadd(target_stream, trade_data)
-                        
-                        # Message als verarbeitet markieren
-                        await redis_client.xack(source_stream, "trade_router", msg_id)
-                        
-                    except Exception as e:
-                        logger.error(f"Error routing trade {msg_id}: {e}")
-                        
-    except asyncio.CancelledError:
-        logger.info(f"Routing stopped: {source_stream} -> {target_stream}")
-    except Exception as e:
-        logger.error(f"Routing failed: {source_stream} -> {target_stream}: {e}")
-
-def discover_markets():
-    """✅ AUTO-DISCOVERY: Dynamische Market-Erkennung"""
-    try:
-        from backend.api.models.keys import Market
-        # Alle verfügbaren Market-Typen aus dem System
-        markets = [market.value for market in Market]
-        logger.info(f"✅ Auto-discovered {len(markets)} markets: {markets}")
-        return markets
-    except ImportError:
-        # Fallback wenn Models nicht verfügbar
-        logger.warning("Market models not found, using discovery fallback")
-        return []
-
-def get_exchange_supported_markets(exchange: str):
-    """✅ AUTO-DISCOVERY: Exchange-spezifische Markets"""
-    try:
-        # Versuche Exchange Config zu laden
-        config_module = f"backend.exchanges.{exchange}.config"
-        import importlib
-        module = importlib.import_module(config_module)
-        config = getattr(module, f"{exchange}_config", None)
-        
-        if config and hasattr(config, 'supported_markets'):
-            return config.supported_markets
-    except Exception as e:
-        logger.debug(f"Could not load market config for {exchange}: {e}")
-    
-    # Fallback: Alle Markets außer für bekannte Einschränkungen
-    all_markets = discover_markets()
-    
-    # ✅ ALLE EXCHANGES GLEICHBERECHTIGT - keine Einschränkungen
-    return all_markets
-
-async def main():
-    """✅ MODERNE MAIN - Vollständige Auto-Discovery ohne Hardcoding"""
-    logger.info("🚀 Starting Trade Router with Full Auto-Discovery")
-    
-    # ✅ AUTO-DISCOVERY für alles
-    exchanges = discover_exchanges()
-    symbols = getattr(settings, 'SYMBOLS', ['BTCUSDT', 'ETHUSDT', 'ADAUSDT'])
-    
-    tasks = []
-    total_routing_attempts = 0
-    
-    # Routing für alle entdeckten Exchanges mit ihren unterstützten Markets
-    for exchange in exchanges:
-        supported_markets = get_exchange_supported_markets(exchange)
-        
-        for symbol in symbols:
-            for market in supported_markets:
-                source_stream = f"{exchange}:trades:{market}:{symbol}"
-                target_stream = f"unified:trades:{market}:{symbol}"
-                
-                task = asyncio.create_task(route_trade_streams(source_stream, target_stream))
-                tasks.append(task)
-                total_routing_attempts += 1
-                
-                logger.info(f"✅ Started routing: {source_stream} -> {target_stream}")
-    
-    logger.info(f"🚀 Started {total_routing_attempts} routing tasks for {len(exchanges)} exchanges (auto-discovered markets)")
-    
-    try:
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("⏹️ Shutdown requested")
-    finally:
-        logger.info("🛑 Trade Router stopped")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-</file>
-
 <file path="backend/services/delete/unified_aggregator_entrypoint.py">
 import asyncio
 from ..adapter.unified_aggregator import run_unified_aggregator
@@ -37085,288 +37015,6 @@ async def load_user_credentials(user_id: str, exchange: str) -> Dict[str, str]:
 __all__ = [
     "load_user_credentials"
 ]
-</file>
-
-<file path="backend/services/domain/unified_config.py">
-"""
-🚀 UNIFIED CONFIG SYSTEM - Zentrale Konfiguration für alle 8 Exchanges  
-Ersetzt 2800+ Zeilen identische Duplikate mit 200 Zeilen zentralem System
-
-FLEXIBLES DESIGN: Funktioniert unabhängig von Exchange-Struktur
-- MEXC hat MexcEndpoints + MexcConfig (bleibt)
-- Binance hat BinanceEndpoints + BinanceConfig (bleibt)  
-- Alle haben RedisConfig + ClickHouseConfig + SystemConfig (wird unified)
-"""
-import os
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
-
-class MarketType(Enum):
-    SPOT = "spot"
-    USDTM = "usdtm"  # USDT-Margined Futures
-    COINM = "coinm"  # Coin-Margined Futures
-
-# ✅ UNIFIED REDIS CONFIG - 1x statt 8x identische RedisConfig Klassen
-@dataclass
-class UnifiedRedisConfig:
-    """Zentrale Redis-Konfiguration für alle Exchanges"""
-    host: str = os.getenv("REDIS_HOST", "localhost")
-    port: int = int(os.getenv("REDIS_PORT", "6380"))
-    password: Optional[str] = os.getenv("REDIS_PASSWORD", None)
-    use_tls: bool = os.getenv("REDIS_TLS", "false").lower() == "true"
-    pool_size: int = int(os.getenv("REDIS_POOL_SIZE", "20"))
-    stream_maxlen: int = int(os.getenv("REDIS_STREAM_MAXLEN", "50000"))
-    orderbook_ttl: int = int(os.getenv("REDIS_ORDERBOOK_TTL", "30"))
-    db: int = int(os.getenv("REDIS_DB", "0"))
-    max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "100"))
-    connection_timeout: int = int(os.getenv("REDIS_CONNECTION_TIMEOUT", "10"))
-    socket_keepalive: bool = os.getenv("REDIS_SOCKET_KEEPALIVE", "true").lower() == "true"
-    socket_keepalive_options: Dict[str, int] = field(default_factory=lambda: {})
-    retry_on_timeout: bool = True
-    decode_responses: bool = True
-    
-    def get_url(self) -> str:
-        """Redis Connection URL"""
-        auth = f":{self.password}@" if self.password else ""
-        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
-    
-    def get_connection_params(self) -> Dict[str, Any]:
-        """Redis Connection Parameter"""
-        return {
-            "host": self.host,
-            "port": self.port,
-            "password": self.password,
-            "db": self.db,
-            "max_connections": self.max_connections,
-            "socket_connect_timeout": self.connection_timeout,
-            "socket_keepalive": self.socket_keepalive,
-            "socket_keepalive_options": self.socket_keepalive_options,
-            "retry_on_timeout": self.retry_on_timeout,
-            "decode_responses": self.decode_responses
-        }
-
-# ✅ UNIFIED CLICKHOUSE CONFIG - 1x statt 8x identische ClickHouseConfig Klassen
-@dataclass 
-class UnifiedClickHouseConfig:
-    """Zentrale ClickHouse-Konfiguration für alle Exchanges"""
-    host: str = os.getenv("CLICKHOUSE_HOST", "localhost")
-    port: int = int(os.getenv("CLICKHOUSE_PORT", "8124"))
-    http_port: int = int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123"))
-    scheme: str = os.getenv("CLICKHOUSE_SCHEME", "http")  # http | https
-    ssl_verify: bool = os.getenv("CLICKHOUSE_SSL_VERIFY", "true").lower() == "true"
-    database: str = os.getenv("CLICKHOUSE_DATABASE", "trading")
-    username: str = os.getenv("CLICKHOUSE_USER", "default")
-    password: str = os.getenv("CLICKHOUSE_PASSWORD", "")
-    connect_timeout: int = int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "10"))
-    send_receive_timeout: int = int(os.getenv("CLICKHOUSE_SEND_RECEIVE_TIMEOUT", "30"))
-    max_retries: int = int(os.getenv("CLICKHOUSE_MAX_RETRIES", "3"))
-    retry_delay: float = float(os.getenv("CLICKHOUSE_RETRY_DELAY", "1.0"))
-    batch_size: int = int(os.getenv("CLICKHOUSE_BATCH_SIZE", "1000"))
-    unified_table: str = os.getenv("CLICKHOUSE_UNIFIED_TABLE", "candles_unified")
-    
-    def get_connection_params(self) -> Dict[str, Any]:
-        """ClickHouse Connection Parameter"""  
-        return {
-            "host": self.host,
-            "port": self.port,
-            "database": self.database,
-            "user": self.username,
-            "password": self.password,
-            "connect_timeout": self.connect_timeout,
-            "send_receive_timeout": self.send_receive_timeout,
-        }
-    
-    def get_http_url(self) -> str:
-        """ClickHouse HTTP URL"""
-        auth = f"{self.username}:{self.password}@" if self.password else f"{self.username}@"
-        return f"http://{auth}{self.host}:{self.http_port}/{self.database}"
-
-# ✅ UNIFIED SYSTEM CONFIG - 1x statt 8x identische SystemConfig Klassen
-@dataclass
-class UnifiedSystemConfig:
-    """Zentrale System-Konfiguration für alle Exchanges"""
-    symbols: List[str] = field(default_factory=lambda: [
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "SOLUSDT", 
-        "MATICUSDT", "AVAXUSDT", "ATOMUSDT", "NEARUSDT", "FTMUSDT"
-    ])
-    market_types: List[str] = field(default_factory=lambda: ["spot", "usdtm"])
-    min_volume_24h: float = float(os.getenv("MIN_VOLUME_24H", "1000000.0"))
-    base_max_symbols_per_market: int = int(os.getenv("MAX_SYMBOLS_PER_MARKET", "30"))
-    base_resolutions: List[int] = field(default_factory=lambda: [60, 300, 900])
-    deduplication_window: int = int(os.getenv("DEDUPLICATION_WINDOW", "3600"))
-    
-    # Historical target dates per symbol
-    historical_target_dates: Dict[str, datetime] = field(
-        default_factory=lambda: {
-            "BTCUSDT": datetime(2017, 1, 1, tzinfo=timezone.utc),
-            "ETHUSDT": datetime(2017, 8, 1, tzinfo=timezone.utc),
-            "BNBUSDT": datetime(2017, 7, 1, tzinfo=timezone.utc),
-            "ADAUSDT": datetime(2018, 4, 1, tzinfo=timezone.utc),
-            "DOTUSDT": datetime(2020, 8, 1, tzinfo=timezone.utc),
-            "SOLUSDT": datetime(2021, 8, 1, tzinfo=timezone.utc),
-        }
-    )
-    
-    # Trading-spezifische Einstellungen
-    enable_paper_trading: bool = os.getenv("ENABLE_PAPER_TRADING", "true").lower() == "true"
-    enable_live_trading: bool = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
-    default_precision: int = int(os.getenv("DEFAULT_PRECISION", "8"))
-    
-    # Performance-Einstellungen
-    worker_processes: int = int(os.getenv("WORKER_PROCESSES", "4"))
-    max_concurrent_requests: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
-
-    def get_effective_market_types(self, exchange_config) -> List[str]:
-        """Generische Methode für alle Exchange-Configs"""
-        base_markets = ["spot", "usdtm"]
-        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
-            return base_markets + ["coinm"]
-        return base_markets
-
-    def get_max_symbols_per_market(self, exchange_config) -> int:
-        """Generische Methode für alle Exchange-Configs"""
-        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
-            return 150
-        return self.base_max_symbols_per_market
-
-    def get_resolutions(self, exchange_config) -> List[int]:
-        """Generische Methode für alle Exchange-Configs"""
-        if hasattr(exchange_config, 'available_resolutions'):
-            return exchange_config.available_resolutions
-        return self.base_resolutions
-
-    def get_total_max_symbols(self, exchange_config) -> int:
-        """Generische Methode für alle Exchange-Configs"""
-        market_types = self.get_effective_market_types(exchange_config)
-        max_symbols = self.get_max_symbols_per_market(exchange_config)
-        return len(market_types) * max_symbols
-
-    def update_for_premium(self, exchange_config):
-        """Generische Methode für alle Exchange-Configs"""
-        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
-            if "coinm" not in self.market_types:
-                self.market_types.append("coinm")
-            additional_targets = {
-                "LINKUSDT": datetime(2019, 1, 1, tzinfo=timezone.utc),
-                "MATICUSDT": datetime(2019, 4, 1, tzinfo=timezone.utc),
-                "AVAXUSDT": datetime(2020, 9, 1, tzinfo=timezone.utc),
-            }
-            self.historical_target_dates.update(additional_targets)
-
-    def get_active_symbols_for_market(self, market_type: str, exchange_config) -> List[str]:
-        """Generische Methode für alle Exchange-Configs"""
-        all_symbols = self.symbols
-        max_symbols = self.get_max_symbols_per_market(exchange_config)
-        return all_symbols[:max_symbols]
-
-# ✅ TLS CONFIG - 1x statt 8x identische TLS_CONFIG
-TLS_CONFIG: Dict[str, Any] = {
-    "ssl": os.getenv("ENABLE_TLS", "true").lower() == "true"
-}
-
-# ✅ EXCHANGE_REGISTRY - Zentrale Metadaten für alle 8 Exchanges
-EXCHANGE_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "binance": {
-        "name": "Binance",
-        "display_name": "Binance",
-        "rest_base_url": "https://api.binance.com",
-        "futures_rest_base_url": "https://fapi.binance.com",
-        "ws_base_url": "wss://stream.binance.com:9443/ws",
-        "max_requests_per_second": 50,
-        "supports_1s_klines": True,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    },
-    "bitget": {
-        "name": "Bitget",
-        "display_name": "Bitget", 
-        "rest_base_url": "https://api.bitget.com",
-        "futures_rest_base_url": "https://api.bitget.com",
-        "ws_base_url": "wss://ws.bitget.com/spot/v1/stream",
-        "max_requests_per_second": 20,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    },
-    "bybit": {
-        "name": "Bybit",
-        "display_name": "Bybit", 
-        "rest_base_url": "https://api.bybit.com",
-        "futures_rest_base_url": "https://api.bybit.com",
-        "ws_base_url": "wss://stream.bybit.com/v5/public/spot",
-        "max_requests_per_second": 25,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    },
-    "coinbase": {
-        "name": "Coinbase", 
-        "display_name": "Coinbase Pro",
-        "rest_base_url": "https://api.exchange.coinbase.com",
-        "futures_rest_base_url": "https://api.exchange.coinbase.com",
-        "ws_base_url": "wss://ws-feed.exchange.coinbase.com",
-        "max_requests_per_second": 10,
-        "supports_1s_klines": False,
-        "supports_futures": False,
-        "markets": ["spot"]
-    },
-    "gateio": {
-        "name": "GateIO",
-        "display_name": "Gate.io",
-        "rest_base_url": "https://api.gateio.ws/api/v4",
-        "futures_rest_base_url": "https://api.gateio.ws/api/v4",
-        "ws_base_url": "wss://api.gateio.ws/ws/v4/",
-        "max_requests_per_second": 20,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    },
-    "htx": {
-        "name": "HTX",
-        "display_name": "HTX (Huobi)",
-        "rest_base_url": "https://api.huobi.pro", 
-        "futures_rest_base_url": "https://api.hbdm.com",
-        "ws_base_url": "wss://api.huobi.pro/ws",
-        "max_requests_per_second": 10,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    },
-    "mexc": {
-        "name": "MEXC",
-        "display_name": "MEXC",
-        "rest_base_url": "https://api.mexc.com",
-        "futures_rest_base_url": "https://contract.mexc.com",
-        "ws_base_url": "wss://wbs.mexc.com/ws", 
-        "max_requests_per_second": 15,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm"]
-    },
-    "okx": {
-        "name": "OKX", 
-        "display_name": "OKX",
-        "rest_base_url": "https://www.okx.com/api/v5",
-        "futures_rest_base_url": "https://www.okx.com/api/v5",
-        "ws_base_url": "wss://ws.okx.com:8443/ws/v5/public",
-        "max_requests_per_second": 30,
-        "supports_1s_klines": False,
-        "supports_futures": True,
-        "markets": ["spot", "usdtm", "coinm"]
-    }
-}
-
-# Global instances für alle Exchanges
-unified_redis_config = UnifiedRedisConfig()
-unified_clickhouse_config = UnifiedClickHouseConfig()
-unified_system_config = UnifiedSystemConfig()
-
-# Backward compatibility aliases
-redis_config = unified_redis_config
-clickhouse_config = unified_clickhouse_config
-system_config = unified_system_config
 </file>
 
 <file path="backend/services/domain/unified_symbol_registry.py">
@@ -124351,408 +123999,6 @@ HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
-<file path="backend/health/health_progress.py">
-# backend/health/progress_health.py
-
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
-
-import clickhouse_connect
-
-from backend.database.clickhouse.cl_config import CL_CONNECTION
-from backend.health.health_registry import health_registry
-
-logger = logging.getLogger(__name__)
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _parse_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return default
-
-
-def _parse_str(name: str, default: str) -> str:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    s = str(v).strip()
-    return s if s else default
-
-
-def _parse_until_date() -> datetime:
-    # Default: 2024-01-01 UTC (wie bei dir)
-    s = _parse_str("AUTO_BACKFILL_UNTIL_DATE", "2024-01-01")
-    try:
-        dt = datetime.strptime(s, "%Y-%m-%d")
-        return dt.replace(tzinfo=timezone.utc)
-    except Exception:
-        return datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-
-@dataclass(frozen=True)
-class TradeTable:
-    exchange: str
-    table: str  # full table name without DB prefix, e.g. "binance_trades"
-
-
-class ProgressHealthService:
-    """
-    Progress/Gaps Health Service
-
-    - Discovery: findet automatisch alle trading.*_trades MergeTree Tabellen
-    - Pro Tabelle: berechnet
-        - history_oldest_ts, history_newest_ts, history_progress_pct
-        - gaps im Scan-Fenster (Buckets), missing_count, completeness_pct
-    - Schreibt Ergebnisse in HealthRegistry als Komponenten:
-        - progress.{exchange}.{symbol}.{market}
-    """
-
-    def __init__(self):
-        self._running = False
-        self._task: Optional[asyncio.Task] = None
-
-        # Intervalle/Parameter via ENV
-        self.interval_seconds = _parse_int("PROGRESS_HEALTH_INTERVAL_SECONDS", 30)
-
-        # Gap-Scan Fenster (z.B. letzte 7 Tage)
-        self.gap_scan_days = _parse_int("GAP_SCAN_DAYS", 7)
-
-        # Bucket-Size in Sekunden (Standard: 60 = Minute)
-        self.gap_bucket_seconds = _parse_int("GAP_BUCKET_SECONDS", 60)
-
-        # Filter: nur diese Sources zählen (leer = alle)
-        self.source_filter = _parse_str("GAP_SOURCE_FILTER", "live,rest_backfill").strip()
-
-        # Backfill-Target
-        self.until_date = _parse_until_date()
-
-        # Optional: Market-Whitelist (z.B. "spot,futures"); leer = alle
-        self.market_filter = _parse_str("GAP_MARKET_FILTER", "").strip()
-
-        # Optional: Symbol-Whitelist (z.B. "BTCUSDT,ETHUSDT"); leer = alle
-        self.symbol_filter = _parse_str("GAP_SYMBOL_FILTER", "").strip()
-
-    def start(self) -> None:
-        if self._task and not self._task.done():
-            return
-        self._running = True
-        self._task = asyncio.create_task(self.run(), name="progress-health-service")
-        logger.info(
-            "ProgressHealthService started (interval=%ss, scan_days=%s, bucket=%ss)",
-            self.interval_seconds,
-            self.gap_scan_days,
-            self.gap_bucket_seconds,
-        )
-
-    def stop(self) -> None:
-        self._running = False
-        if self._task and not self._task.done():
-            self._task.cancel()
-
-    def _ch_client(self):
-        return clickhouse_connect.get_client(
-            host=CL_CONNECTION["host"],
-            port=CL_CONNECTION["port"],
-            username=CL_CONNECTION.get("username", "default"),
-            password=CL_CONNECTION.get("password", ""),
-            database=CL_CONNECTION.get("database", "default"),
-            connect_timeout=CL_CONNECTION.get("connect_timeout", 5),
-            send_receive_timeout=CL_CONNECTION.get("send_receive_timeout", 30),
-        )
-
-    async def run(self) -> None:
-        while self._running:
-            try:
-                await self._tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error("ProgressHealthService tick failed: %s", e, exc_info=True)
-
-            await asyncio.sleep(max(1, self.interval_seconds))
-
-    async def _tick(self) -> None:
-        tables = await asyncio.to_thread(self._discover_trade_tables)
-        if not tables:
-            return
-
-        # Pro Tabelle: pro Symbol+Market aggregieren.
-        for t in tables:
-            try:
-                rows = await asyncio.to_thread(self._discover_symbol_markets, t)
-            except Exception as e:
-                logger.warning("discover_symbol_markets failed for %s: %s", t.table, e)
-                continue
-
-            for (symbol, market) in rows:
-                if not self._passes_filters(symbol, market):
-                    continue
-
-                comp_name = f"{t.exchange}.{symbol}.{market}".lower()
-
-                # Register lane if missing
-                lane = health_registry.get_component_health("progress", comp_name)
-                if lane is None:
-                    lane = health_registry.register_component("progress", comp_name)
-
-                try:
-                    metrics = await asyncio.to_thread(self._compute_metrics, t, symbol, market)
-                    lane.record_success(metrics=metrics)
-                except Exception as e:
-                    lane.record_error(f"progress computation failed: {e}")
-
-    def _passes_filters(self, symbol: str, market: str) -> bool:
-        if self.market_filter:
-            allowed = {x.strip().lower() for x in self.market_filter.split(",") if x.strip()}
-            if market.lower() not in allowed:
-                return False
-        if self.symbol_filter:
-            allowed = {x.strip().upper() for x in self.symbol_filter.split(",") if x.strip()}
-            if symbol.upper() not in allowed:
-                return False
-        return True
-
-    def _discover_trade_tables(self) -> List[TradeTable]:
-        """
-        Auto-Discovery: trading.*_trades, MergeTree
-        exchange wird aus Tabellennamen abgeleitet: "<exchange>_trades"
-        """
-        client = self._ch_client()
-        q = """
-            SELECT name
-            FROM system.tables
-            WHERE database = 'trading'
-              AND name LIKE '%\\_trades'
-              AND engine LIKE '%MergeTree%'
-            ORDER BY name
-        """
-        res = client.query(q)
-        out: List[TradeTable] = []
-        for (name,) in res.result_rows:
-            # name: "binance_trades" -> exchange "binance"
-            if not isinstance(name, str):
-                continue
-            if not name.endswith("_trades"):
-                continue
-            ex = name[: -len("_trades")].strip().lower()
-            if not ex:
-                continue
-            out.append(TradeTable(exchange=ex, table=name))
-        return out
-
-    def _discover_symbol_markets(self, t: TradeTable) -> List[Tuple[str, str]]:
-        """
-        Finds distinct (symbol, market) pairs present in the table.
-        Assumes columns: symbol, market
-        """
-        client = self._ch_client()
-        q = f"""
-            SELECT DISTINCT symbol, market
-            FROM trading.{t.table}
-            WHERE symbol != '' AND market != ''
-            ORDER BY symbol, market
-        """
-        res = client.query(q)
-        pairs: List[Tuple[str, str]] = []
-        for row in res.result_rows:
-            if len(row) != 2:
-                continue
-            sym, mkt = row
-            if isinstance(sym, str) and isinstance(mkt, str) and sym and mkt:
-                pairs.append((sym.upper(), mkt.lower()))
-        return pairs
-
-    def _compute_metrics(self, t: TradeTable, symbol: str, market: str) -> Dict[str, object]:
-        """
-        Computes:
-        - oldest/newest timestamps for chosen sources (optional)
-        - history_progress_pct relative to until_date
-        - gap completeness in last N days using bucketization
-        """
-        now = _utc_now()
-        scan_from = now - timedelta(days=max(1, self.gap_scan_days))
-        bucket = max(1, self.gap_bucket_seconds)
-
-        sources = [s.strip() for s in self.source_filter.split(",") if s.strip()] if self.source_filter else []
-        source_clause, params = self._source_where_clause(sources)
-
-        # 1) Oldest/Newest for the chosen subset (sources)
-        oldest, newest, total = self._query_oldest_newest_count(t, symbol, market, source_clause, params)
-
-        # 2) History progress %
-        history_progress = self._calc_history_progress(oldest, now, self.until_date)
-
-        # 3) Gap completeness in scan window
-        missing_count, expected_count, completeness = self._gap_scan(
-            t=t,
-            symbol=symbol,
-            market=market,
-            scan_from=scan_from,
-            scan_to=now,
-            bucket_seconds=bucket,
-            source_clause=source_clause,
-            params=params,
-        )
-
-        return {
-            "exchange": t.exchange,
-            "table": t.table,
-            "symbol": symbol,
-            "market": market,
-            "source_filter": ",".join(sources) if sources else "ALL",
-            "until_date_utc": self.until_date.isoformat(),
-            "now_utc": now.isoformat(),
-            "history": {
-                "oldest_ts_utc": oldest.isoformat() if oldest else None,
-                "newest_ts_utc": newest.isoformat() if newest else None,
-                "row_count": int(total),
-                "progress_pct": round(history_progress, 4),
-            },
-            "gap_scan": {
-                "window_from_utc": scan_from.isoformat(),
-                "window_to_utc": now.isoformat(),
-                "bucket_seconds": bucket,
-                "expected_buckets": int(expected_count),
-                "missing_buckets": int(missing_count),
-                "completeness_pct": round(completeness, 4),
-            },
-        }
-
-    def _source_where_clause(self, sources: List[str]) -> Tuple[str, Dict[str, object]]:
-        """
-        Returns (sql_snippet, params_dict)
-        If sources empty: returns "", {}
-        Assumes column name: source
-        """
-        if not sources:
-            return "", {}
-        # clickhouse_connect parameterization: %(name)s
-        # Build IN list using tuple params is not supported in all versions -> build OR chain.
-        parts = []
-        params: Dict[str, object] = {}
-        for i, s in enumerate(sources):
-            key = f"src{i}"
-            parts.append(f"source = %({key})s")
-            params[key] = s
-        return " AND (" + " OR ".join(parts) + ")", params
-
-    def _query_oldest_newest_count(
-        self,
-        t: TradeTable,
-        symbol: str,
-        market: str,
-        source_clause: str,
-        source_params: Dict[str, object],
-    ) -> Tuple[Optional[datetime], Optional[datetime], int]:
-        client = self._ch_client()
-        q = f"""
-            SELECT
-              MIN(timestamp) AS oldest,
-              MAX(timestamp) AS newest,
-              count() AS cnt
-            FROM trading.{t.table}
-            WHERE symbol = %(symbol)s
-              AND market = %(market)s
-              {source_clause}
-        """
-        params = {"symbol": symbol, "market": market, **source_params}
-        res = client.query(q, parameters=params)
-        if not res.result_rows:
-            return None, None, 0
-        oldest, newest, cnt = res.result_rows[0]
-        return (
-            oldest if isinstance(oldest, datetime) else None,
-            newest if isinstance(newest, datetime) else None,
-            int(cnt) if cnt is not None else 0,
-        )
-
-    def _calc_history_progress(self, oldest: Optional[datetime], now: datetime, until_date: datetime) -> float:
-        """
-        Progress = covered / total = (now - oldest) / (now - until_date)
-        """
-        if oldest is None:
-            return 0.0
-        total = (now - until_date).total_seconds()
-        if total <= 0:
-            return 0.0
-        covered = (now - oldest).total_seconds()
-        if covered <= 0:
-            return 0.0
-        if covered >= total:
-            return 100.0
-        return (covered / total) * 100.0
-
-    def _gap_scan(
-        self,
-        t: TradeTable,
-        symbol: str,
-        market: str,
-        scan_from: datetime,
-        scan_to: datetime,
-        bucket_seconds: int,
-        source_clause: str,
-        source_params: Dict[str, object],
-    ) -> Tuple[int, int, float]:
-        """
-        Bucket-based gap scan in [scan_from, scan_to).
-        Expected buckets: floor((scan_to - scan_from)/bucket)
-        Present buckets: countDistinct(bucket_start)
-        Missing = expected - present
-
-        Assumes timestamp is DateTime64/DateTime.
-        """
-        expected = int((scan_to - scan_from).total_seconds() // bucket_seconds)
-        if expected <= 0:
-            return 0, 0, 100.0
-
-        client = self._ch_client()
-
-        # Use toStartOfInterval for bucketization
-        q = f"""
-            SELECT
-              countDistinct(toStartOfInterval(timestamp, INTERVAL {bucket_seconds} SECOND)) AS present_buckets
-            FROM trading.{t.table}
-            WHERE symbol = %(symbol)s
-              AND market = %(market)s
-              AND timestamp >= %(t_from)s
-              AND timestamp < %(t_to)s
-              {source_clause}
-        """
-        params = {
-            "symbol": symbol,
-            "market": market,
-            "t_from": scan_from,
-            "t_to": scan_to,
-            **source_params,
-        }
-        res = client.query(q, parameters=params)
-        present = 0
-        if res.result_rows and res.result_rows[0] and res.result_rows[0][0] is not None:
-            present = int(res.result_rows[0][0])
-
-        missing = max(0, expected - present)
-        completeness = (present / expected) * 100.0 if expected > 0 else 100.0
-        return missing, expected, completeness
-
-
-# Singleton instance
-progress_health_service = ProgressHealthService()
-</file>
-
 <file path="backend/services/adapter/stream_aggregator.py">
 import time
 import threading
@@ -124929,179 +124175,478 @@ class MultiResCandleAgg:
         return finished
 </file>
 
-<file path="backend/services/adapter/unified_exchange_service.py">
-# backend/services/exchange_services.py
+<file path="backend/services/adapter/unified_collector.py">
 """
-Exchange Services - Ausgelagert aus main.py
+✅ UNIFIED COLLECTOR SERVICE - Business Logic Service für alle Exchange Collectors
+Ersetzt die 8x fehlenden Exchange Collectors mit einem zentralen Service
 """
 
 import asyncio
 import logging
+from datetime import datetime
+from typing import Dict, List, Optional, Set
+from backend.websocket.ws_unified import universal_ws_service, start_websocket_service
+
+logger = logging.getLogger("unified-collector-service")
+
+class UnifiedCollectorService:
+    """
+    ✅ UNIFIED COLLECTOR SERVICE - Business Logic für alle Exchange Collectors
+    
+    Zentraler Service der alle Exchange Collector-Funktionen managed:
+    - Alle 8 Exchanges: Binance, GateIO, Bybit, OKX, MEXC, HTX, Coinbase, Bitget
+    - Nutzt WebSocket Service für technische WebSocket-Verwaltung
+    - Business Logic für Collector-Management
+    - Generische API für alle Exchanges
+    """
+    
+    def __init__(self, supported_exchanges=None, symbols=None, market_types=None):
+        # ✅ Generisch - nichts hardcoded
+        import os
+        self.exchanges = supported_exchanges or [
+            'binance', 'bitget', 'mexc', 'gateio', 'bybit', 'okx', 'htx', 'coinbase'
+        ]
+        self.symbols = symbols or [s.strip().upper() for s in os.getenv('TRADING_SYMBOLS', 'BTCUSDT').split(',') if s.strip()]
+        self.market_types = market_types or [m.strip().lower() for m in os.getenv('ENABLED_MARKET_TYPES', 'spot').split(',') if m.strip()]
+        
+        self.running = False
+        self.active_collectors: Dict[str, Dict] = {}  # key: "exchange:symbol:market"
+        
+    async def start(self):
+        """Startet den Unified Collector Service"""
+        if self.running:
+            logger.info("Unified Collector Service bereits gestartet")
+            return
+            
+        logger.info("🚀 Starting Unified Collector Service")
+        
+        # ✅ Nutzt ws_unified.py für WebSocket-Anteil
+        await start_websocket_service()
+        
+        self.running = True
+        logger.info("✅ Unified Collector Service started")
+    
+    async def start_all_collectors(self):
+        """
+        ✅ ENTERPRISE: PARALLEL Collector Startup
+        
+        Startet alle Collectors gleichzeitig mittels asyncio.gather()
+        - Generisch: Auto-Discovery über self.exchanges, self.symbols, self.market_types
+        - Resilient: Einzelne Failures crashen nicht das System
+        - Fast: 10-15x schneller als serieller Start
+        """
+        if not self.running:
+            await self.start()
+            
+        logger.info("🚀 Starting collectors PARALLEL for all exchanges...")
+        
+        # ✅ Sammle alle Start-Tasks (KEIN await hier!)
+        tasks = []
+        total_collectors = 0
+        
+        for exchange in self.exchanges:
+            for symbol in self.symbols:
+                for market_type in self.market_types:
+                    # ✅ Generisch: Prüfe über _should_skip_collector
+                    if self._should_skip_collector(exchange, market_type):
+                        continue
+                    
+                    # ✅ Task erstellen ohne zu awaiten
+                    task = self._start_exchange_collector_safe(
+                        exchange, symbol, market_type
+                    )
+                    tasks.append(task)
+                    total_collectors += 1
+        
+        logger.info(f"📊 Scheduling {total_collectors} collectors for parallel start...")
+        
+        # ✅ PARALLEL ausführen mit asyncio.gather()
+        # return_exceptions=True → Einzelne Failures crashen nicht alle
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # ✅ Ergebnisse auswerten
+        started_count = 0
+        failed_count = 0
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                failed_count += 1
+                logger.warning(f"⚠️ Collector {i+1}/{total_collectors} failed: {result}")
+            else:
+                started_count += 1
+        
+        # ✅ Performance Metrics loggen
+        success_rate = (started_count / total_collectors * 100) if total_collectors > 0 else 0
+        
+        logger.info(
+            f"✅ PARALLEL Collectors: COMPLETE "
+            f"({started_count} started, {failed_count} failed, "
+            f"{success_rate:.1f}% success rate)"
+        )
+        
+        # ✅ Health System Update
+        if hasattr(self, 'health_component'):
+            self.health_component.record_success({
+                "action": "collectors_started_parallel",
+                "total": total_collectors,
+                "started": started_count,
+                "failed": failed_count,
+                "success_rate": success_rate
+            })
+    
+    def _should_skip_collector(self, exchange: str, market_type: str) -> bool:
+        """
+        ✅ ENTERPRISE: Generische Skip-Logik
+        
+        Keine hardcoded If-Bedingungen, nutzt Exchange-Config
+        """
+        # ✅ Generisch: Prüfe ob Exchange market_type unterstützt
+        # Coinbase unterstützt keine Futures
+        if exchange == 'coinbase' and market_type in ['usdtm', 'coinm', 'usdcm']:
+            return True
+        
+        # Weitere generische Prüfungen können hier ergänzt werden
+        # z.B. via EXCHANGE_REGISTRY.get(exchange, {}).get("supported_markets")
+        
+        return False
+    
+    async def _start_exchange_collector_safe(
+        self, 
+        exchange: str, 
+        symbol: str, 
+        market_type: str
+    ) -> bool:
+        """
+        ✅ ENTERPRISE: Safe Wrapper für Collector Start
+        
+        Wrapped _start_exchange_collector mit Error Handling
+        - Einzelne Failures crashen nicht das System
+        - Detailed Logging für Debugging
+        - Returns bool statt raising Exception
+        """
+        collector_key = f"{exchange}:{symbol}:{market_type}"
+        
+        try:
+            await self._start_exchange_collector(exchange, symbol, market_type)
+            logger.debug(f"✅ Collector started: {collector_key}")
+            return True
+            
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Failed to start collector {collector_key}: {e}",
+                exc_info=False  # Keine full traceback in production
+            )
+            
+            # ✅ Health System Integration
+            if hasattr(self, 'health_component'):
+                self.health_component.record_error(
+                    f"Collector start failed: {collector_key}: {str(e)}"
+                )
+            
+            return False
+        
+    async def _start_exchange_collector(self, exchange: str, symbol: str, market: str, queue: asyncio.Queue = None):
+        """
+        Startet einzelnen Exchange Collector
+        ✅ Nutzt ws_unified.py für WebSocket-Anteil
+        """
+        collector_key = f"{exchange}:{symbol}:{market}"
+        
+        if collector_key in self.active_collectors:
+            logger.debug(f"Collector already active: {collector_key}")
+            return
+            
+        try:
+            # Coinbase Symbol-Format anpassen
+            ws_symbol = symbol
+            if exchange == 'coinbase':
+                ws_symbol = symbol.replace('USDT', '-USD')  # BTCUSDT → BTC-USD
+            
+            # ✅ Nutze WebSocket Service für WebSocket-Verbindung
+            lane_key = await universal_ws_service.start_exchange_websocket(
+                exchange=exchange,
+                symbol=ws_symbol,
+                market_type=market
+            )
+            
+            # Queue-Integration für lokale broadcast_task
+            if queue:
+                async def queue_handler(trade_data):
+                    await queue.put(trade_data)
+                logger.info(f"✅ Queue-Integration aktiviert für {collector_key}")
+            
+            # Speichere Collector Info
+            self.active_collectors[collector_key] = {
+                "exchange": exchange,
+                "symbol": symbol,
+                "ws_symbol": ws_symbol,
+                "market_type": market,
+                "lane_key": lane_key,
+                "started_at": datetime.now(),
+                "status": "active",
+                "queue_enabled": queue is not None
+            }
+            
+            logger.info(f"✅ Collector started: {collector_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start collector {collector_key}: {e}")
+            raise
+    
+    async def stop_exchange_collector(self, exchange: str, symbol: str, market_type: str):
+        """Stoppt einzelnen Exchange Collector"""
+        collector_key = f"{exchange}:{symbol}:{market_type}"
+        
+        if collector_key not in self.active_collectors:
+            logger.warning(f"Collector not active: {collector_key}")
+            return
+            
+        try:
+            collector_info = self.active_collectors[collector_key]
+            ws_symbol = collector_info["ws_symbol"]
+            
+            # ✅ Nutze WebSocket Service zum Stoppen
+            await universal_ws_service.stop_exchange_websocket(exchange, ws_symbol, market_type)
+            
+            # Aus aktiven Collectors entfernen
+            del self.active_collectors[collector_key]
+            
+            logger.info(f"✅ Collector stopped: {collector_key}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to stop collector {collector_key}: {e}")
+    
+    async def stop_all_collectors(self):
+        """Stoppt alle laufenden Collectors"""
+        logger.info("🛑 Stopping all collectors...")
+        
+        # Alle aktiven Collectors stoppen
+        active_collectors_copy = list(self.active_collectors.keys())
+        for collector_key in active_collectors_copy:
+            exchange, symbol, market_type = collector_key.split(":")
+            await self.stop_exchange_collector(exchange, symbol, market_type)
+        
+        # WebSocket Service stoppen
+        await universal_ws_service.stop()
+        
+        self.running = False
+        logger.info("✅ All collectors stopped")
+    
+    def get_service_status(self) -> Dict:
+        """Status des Unified Collector Service"""
+        # Hole WebSocket Service Status
+        ws_status = universal_ws_service.get_service_status()
+        
+        return {
+            "service": "unified_collector_service",
+            "running": self.running,
+            "total_collectors": len(self.active_collectors),
+            "active_exchanges": list(set(info["exchange"] for info in self.active_collectors.values())),
+            "websocket_service": ws_status,
+            "collectors": {
+                collector_key: {
+                    "exchange": info["exchange"],
+                    "symbol": info["symbol"],
+                    "market_type": info["market_type"],
+                    "status": info["status"],
+                    "started_at": info["started_at"].isoformat()
+                }
+                for collector_key, info in self.active_collectors.items()
+            },
+            "configuration": {
+                "supported_exchanges": self.exchanges,
+                "symbols": self.symbols,
+                "market_types": self.market_types
+            }
+        }
+    
+    def get_exchange_collectors(self, exchange: str) -> List[Dict]:
+        """Alle aktiven Collectors für eine Exchange"""
+        return [
+            {
+                "collector_key": collector_key,
+                "symbol": info["symbol"],
+                "market_type": info["market_type"],
+                "status": info["status"]
+            }
+            for collector_key, info in self.active_collectors.items()
+            if info["exchange"] == exchange
+        ]
+
+
+# ✅ SINGLETON INSTANCE - Ein Service für das ganze System
+unified_collector_service = UnifiedCollectorService()
+
+# ✅ SERVICE API - Einfache Funktionen für collector_starter.py
+async def start_unified_collector_service():
+    """Startet den Unified Collector Service"""
+    await unified_collector_service.start()
+
+async def stop_unified_collector_service():
+    """Stoppt den Unified Collector Service"""
+    await unified_collector_service.stop_all_collectors()
+
+async def start_all_exchange_collectors():
+    """Startet alle Exchange Collectors - API für collector_starter.py"""
+    await unified_collector_service.start_all_collectors()
+
+def get_unified_collector_status() -> Dict:
+    """Service Status - API für Health Checks"""
+    return unified_collector_service.get_service_status()
+
+def get_exchange_collector_status(exchange: str) -> List[Dict]:
+    """Exchange Collector Status - API für Exchange Health"""
+    return unified_collector_service.get_exchange_collectors(exchange)
+</file>
+
+<file path="backend/services/delete/trade_router_entrypoint.py">
+"""
+✅ MODERNIZED TRADE ROUTER ENTRYPOINT - Ohne Legacy Dependencies
+Enterprise Auto-Discovery statt hardcoded exchanges
+"""
+import asyncio
+import logging
 from pathlib import Path
-from backend.health import health_registry
+from backend.core.config import settings
+from backend.database.redis import unified_rs_service
 
 logger = logging.getLogger(__name__)
 
 def discover_exchanges():
-    """Auto-Discovery aller Exchanges aus backend/exchanges/ Verzeichnis"""
-    exchange_dir = Path(__file__).resolve().parents[2] / "exchanges"  # R2.1: CWD-unabhängig
-    return [dir.name for dir in exchange_dir.iterdir() 
-            if dir.is_dir() and dir.name not in ["__pycache__", "shared"]]
-
-def get_critical_symbols(exchange: str):
-    """Auto-Discovery der kritischen Symbols für eine Exchange"""
+    """✅ AUTO-DISCOVERY: Dynamische Exchange-Erkennung"""
     try:
-        from backend.services.domain.unified_symbol_registry import get_cached_symbols
-        symbols = get_cached_symbols(exchange)
-        if symbols and len(symbols) > 0:
-            popular_symbols = [s for s in symbols if 'USDT' in s][:5]
-            if popular_symbols:
-                return popular_symbols
+        exchange_dir = Path("backend/exchanges")
+        if not exchange_dir.exists():
+            logger.warning("Exchange directory not found, using fallback")
+            return []
+            
+        exchanges = [
+            dir.name for dir in exchange_dir.iterdir() 
+            if dir.is_dir() and dir.name not in ["__pycache__", "shared", "old"]
+        ]
+        
+        logger.info(f"✅ Auto-discovered {len(exchanges)} exchanges: {exchanges}")
+        return exchanges
+        
+    except Exception as e:
+        logger.error(f"Exchange discovery failed: {e}")
+        return []
+
+async def route_trade_streams(source_stream: str, target_stream: str):
+    """✅ MODERNE STREAM ROUTING - Ohne Legacy TradeRouter"""
+    logger.info(f"🔄 Routing: {source_stream} -> {target_stream}")
+    
+    try:
+        redis_client = await unified_rs_service.get_redis_client()
+        
+        # Consumer Group erstellen
+        try:
+            await redis_client.xgroup_create(source_stream, "trade_router", id="0", mkstream=True)
+        except Exception:
+            pass  # Group existiert bereits
+        
+        while True:
+            # Messages aus Source Stream lesen
+            messages = await redis_client.xreadgroup(
+                "trade_router", 
+                "router_consumer", 
+                {source_stream: ">"}, 
+                count=100, 
+                block=1000
+            )
+            
+            if not messages:
+                continue
+                
+            # Messages zu Target Stream weiterleiten
+            for stream, stream_messages in messages:
+                for msg_id, trade_data in stream_messages:
+                    try:
+                        # Trade zum Unified Stream hinzufügen
+                        await redis_client.xadd(target_stream, trade_data)
+                        
+                        # Message als verarbeitet markieren
+                        await redis_client.xack(source_stream, "trade_router", msg_id)
+                        
+                    except Exception as e:
+                        logger.error(f"Error routing trade {msg_id}: {e}")
+                        
+    except asyncio.CancelledError:
+        logger.info(f"Routing stopped: {source_stream} -> {target_stream}")
+    except Exception as e:
+        logger.error(f"Routing failed: {source_stream} -> {target_stream}: {e}")
+
+def discover_markets():
+    """✅ AUTO-DISCOVERY: Dynamische Market-Erkennung"""
+    try:
+        from backend.api.models.keys import Market
+        # Alle verfügbaren Market-Typen aus dem System
+        markets = [market.value for market in Market]
+        logger.info(f"✅ Auto-discovered {len(markets)} markets: {markets}")
+        return markets
     except ImportError:
-        pass
-    except Exception as e:
-        logger.warning(f"⚠️ Symbol-Registry lookup failed for {exchange}: {e}")
-    
-    return ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+        # Fallback wenn Models nicht verfügbar
+        logger.warning("Market models not found, using discovery fallback")
+        return []
 
-def get_critical_exchanges():
-    """Auto-Discovery der kritischen Exchanges aus Health Status"""
+def get_exchange_supported_markets(exchange: str):
+    """✅ AUTO-DISCOVERY: Exchange-spezifische Markets"""
     try:
-        healthy_exchanges = health_registry.get_healthy_components("exchange")
-        if healthy_exchanges and len(healthy_exchanges) >= 2:
-            return healthy_exchanges[:2]
+        # Versuche Exchange Config zu laden
+        config_module = f"backend.exchanges.{exchange}.config"
+        import importlib
+        module = importlib.import_module(config_module)
+        config = getattr(module, f"{exchange}_config", None)
+        
+        if config and hasattr(config, 'supported_markets'):
+            return config.supported_markets
     except Exception as e:
-        logger.warning(f"⚠️ Health-Registry lookup failed: {e}")
+        logger.debug(f"Could not load market config for {exchange}: {e}")
     
-    return ["binance", "gateio"]
+    # Fallback: Alle Markets außer für bekannte Einschränkungen
+    all_markets = discover_markets()
+    
+    # ✅ ALLE EXCHANGES GLEICHBERECHTIGT - keine Einschränkungen
+    return all_markets
 
-class ExchangeServiceFactory:
-    """Exchange Service Factory - Uses NEW WS Lane System"""
+async def main():
+    """✅ MODERNE MAIN - Vollständige Auto-Discovery ohne Hardcoding"""
+    logger.info("🚀 Starting Trade Router with Full Auto-Discovery")
     
-    _managers = {}
+    # ✅ AUTO-DISCOVERY für alles
+    exchanges = discover_exchanges()
+    import os
+    symbols = [s.strip().upper() for s in os.getenv('TRADING_SYMBOLS', 'BTCUSDT').split(',') if s.strip()]
     
-    @classmethod
-    def get_ws_manager(cls, exchange_name: str):
-        """NEW: Uses WS Lane System instead of legacy ws_managers"""
-        if exchange_name in cls._managers:
-            return cls._managers[exchange_name]
-            
-        try:
-            from backend.websocket import ws_manager
-            
-            class WebSocketManagerWrapper:
-                def __init__(self, exchange_name):
-                    self.exchange_name = exchange_name
-                    self.ws_manager = ws_manager
-                
-                async def start(self):
-                    """Start WebSocket für Exchange über Lane System"""
-                    try:
-                        critical_symbols = get_critical_symbols(self.exchange_name)
-                        for symbol in critical_symbols:
-                            try:
-                                await self.ws_manager.start_websocket_lane(
-                                    self.exchange_name, symbol, "spot"
-                                )
-                                logger.info(f"✅ Started WebSocket lane: {self.exchange_name}/{symbol}/spot")
-                            except Exception as e:
-                                logger.warning(f"⚠️ Failed to start lane {self.exchange_name}/{symbol}: {e}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to start WebSocket lanes for {self.exchange_name}: {e}")
-                        raise
-                
-                async def stop(self):
-                    """Stop WebSocket für Exchange"""
-                    try:
-                        critical_symbols = get_critical_symbols(self.exchange_name)
-                        for symbol in critical_symbols:
-                            try:
-                                self.ws_manager.stop_websocket_lane(
-                                    self.exchange_name, symbol, "spot"
-                                )
-                                logger.info(f"⏹️ Stopped WebSocket lane: {self.exchange_name}/{symbol}/spot")
-                            except Exception as e:
-                                logger.warning(f"⚠️ Failed to stop lane {self.exchange_name}/{symbol}: {e}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to stop WebSocket lanes for {self.exchange_name}: {e}")
-            
-            wrapper = WebSocketManagerWrapper(exchange_name)
-            cls._managers[exchange_name] = wrapper
-            
-            logger.info(f"✅ Created WS Lane wrapper for {exchange_name}")
-            return wrapper
-            
-        except ImportError as e:
-            logger.error(f"❌ Failed to import WS Lane System: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Failed to create WebSocket wrapper for {exchange_name}: {e}")
-            return None
-
-class ExchangeService:
-    """Exchange Service with Fault Isolation Pattern"""
+    tasks = []
+    total_routing_attempts = 0
     
-    def __init__(self, exchange_name):
-        self.exchange_name = exchange_name
-        self.health_lane = health_registry.register_component("exchange", exchange_name)
-        self.running = False
-        self.ws_manager = ExchangeServiceFactory.get_ws_manager(exchange_name)
+    # Routing für alle entdeckten Exchanges mit ihren unterstützten Markets
+    for exchange in exchanges:
+        supported_markets = get_exchange_supported_markets(exchange)
         
-    async def start(self):
-        """Start exchange service with fault isolation"""
-        try:
-            await self._connect_websockets()
-            self.health_lane.record_success({"status": "connected"})
-            self.running = True
-            logger.info(f"✅ {self.exchange_name} exchange service started")
-        except Exception as e:
-            self.health_lane.record_error(f"Connection failed: {e}")
-            asyncio.create_task(self._retry_connection())
-            logger.warning(f"⚠️  {self.exchange_name} exchange service failed: {e}")
+        for symbol in symbols:
+            for market in supported_markets:
+                source_stream = f"{exchange}:trades:{market}:{symbol}"
+                target_stream = f"unified:trades:{market}:{symbol}"
+                
+                task = asyncio.create_task(route_trade_streams(source_stream, target_stream))
+                tasks.append(task)
+                total_routing_attempts += 1
+                
+                logger.info(f"✅ Started routing: {source_stream} -> {target_stream}")
     
-    async def _connect_websockets(self):
-        """Connect to REAL WebSocket manager"""
-        if not self.ws_manager:
-            raise Exception(f"No WebSocket manager available for {self.exchange_name}")
-            
-        await self.ws_manager.start()
-        logger.info(f"🔗 {self.exchange_name} WebSocket manager connected")
-        
-    async def _retry_connection(self):
-        """Background retry - doesn't block system"""
-        while not self.running:
-            await asyncio.sleep(30)
-            try:
-                await self._connect_websockets()
-                self.health_lane.record_success({"status": "reconnected"})
-                self.running = True
-                logger.info(f"🔄 {self.exchange_name} exchange reconnected")
-                break
-            except Exception as e:
-                self.health_lane.record_error(f"Retry failed: {e}")
-                logger.warning(f"🔄 {self.exchange_name} retry failed: {e}")
+    logger.info(f"🚀 Started {total_routing_attempts} routing tasks for {len(exchanges)} exchanges (auto-discovered markets)")
     
-    async def stop(self):
-        """Stop exchange service gracefully"""
-        try:
-            if self.ws_manager and hasattr(self.ws_manager, 'stop'):
-                await self.ws_manager.stop()
-            self.running = False
-            self.health_lane.record_success({"status": "stopped"})
-            logger.info(f"🛑 {self.exchange_name} exchange service stopped")
-        except Exception as e:
-            self.health_lane.record_error(f"Stop failed: {e}")
-            logger.warning(f"⚠️  {self.exchange_name} stop failed: {e}")
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logger.info("⏹️ Shutdown requested")
+    finally:
+        logger.info("🛑 Trade Router stopped")
 
-def start_exchange_service(exchange_name: str):
-    """Start individual exchange service"""
-    exchange_service = ExchangeService(exchange_name)
-    asyncio.create_task(exchange_service.start())
-    return exchange_service
-
-def start_health_monitoring():
-    """Health monitoring runs independently"""
-    logger.info("🏥 Health monitoring active")
+if __name__ == "__main__":
+    asyncio.run(main())
 </file>
 
 <file path="backend/services/discovery/dis_orderbook.py">
@@ -125412,6 +124957,289 @@ def apply_exchange_limits(streams: Iterable[str], limit: int = 200) -> List[str]
         result.append(stream)
 
     return result
+</file>
+
+<file path="backend/services/domain/unified_config.py">
+"""
+🚀 UNIFIED CONFIG SYSTEM - Zentrale Konfiguration für alle 8 Exchanges  
+Ersetzt 2800+ Zeilen identische Duplikate mit 200 Zeilen zentralem System
+
+FLEXIBLES DESIGN: Funktioniert unabhängig von Exchange-Struktur
+- MEXC hat MexcEndpoints + MexcConfig (bleibt)
+- Binance hat BinanceEndpoints + BinanceConfig (bleibt)  
+- Alle haben RedisConfig + ClickHouseConfig + SystemConfig (wird unified)
+"""
+import os
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+
+class MarketType(Enum):
+    SPOT = "spot"
+    USDTM = "usdtm"  # USDT-Margined Futures
+    COINM = "coinm"  # Coin-Margined Futures
+
+# ✅ UNIFIED REDIS CONFIG - 1x statt 8x identische RedisConfig Klassen
+@dataclass
+class UnifiedRedisConfig:
+    """Zentrale Redis-Konfiguration für alle Exchanges"""
+    host: str = os.getenv("REDIS_HOST", "localhost")
+    port: int = int(os.getenv("REDIS_PORT", "6380"))
+    password: Optional[str] = os.getenv("REDIS_PASSWORD", None)
+    use_tls: bool = os.getenv("REDIS_TLS", "false").lower() == "true"
+    pool_size: int = int(os.getenv("REDIS_POOL_SIZE", "20"))
+    stream_maxlen: int = int(os.getenv("REDIS_STREAM_MAXLEN", "50000"))
+    orderbook_ttl: int = int(os.getenv("REDIS_ORDERBOOK_TTL", "30"))
+    db: int = int(os.getenv("REDIS_DB", "0"))
+    max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "100"))
+    connection_timeout: int = int(os.getenv("REDIS_CONNECTION_TIMEOUT", "10"))
+    socket_keepalive: bool = os.getenv("REDIS_SOCKET_KEEPALIVE", "true").lower() == "true"
+    socket_keepalive_options: Dict[str, int] = field(default_factory=lambda: {})
+    retry_on_timeout: bool = True
+    decode_responses: bool = True
+    
+    def get_url(self) -> str:
+        """Redis Connection URL"""
+        auth = f":{self.password}@" if self.password else ""
+        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
+    
+    def get_connection_params(self) -> Dict[str, Any]:
+        """Redis Connection Parameter"""
+        return {
+            "host": self.host,
+            "port": self.port,
+            "password": self.password,
+            "db": self.db,
+            "max_connections": self.max_connections,
+            "socket_connect_timeout": self.connection_timeout,
+            "socket_keepalive": self.socket_keepalive,
+            "socket_keepalive_options": self.socket_keepalive_options,
+            "retry_on_timeout": self.retry_on_timeout,
+            "decode_responses": self.decode_responses
+        }
+
+# ✅ UNIFIED CLICKHOUSE CONFIG - 1x statt 8x identische ClickHouseConfig Klassen
+@dataclass 
+class UnifiedClickHouseConfig:
+    """Zentrale ClickHouse-Konfiguration für alle Exchanges"""
+    host: str = os.getenv("CLICKHOUSE_HOST", "localhost")
+    port: int = int(os.getenv("CLICKHOUSE_PORT", "8124"))
+    http_port: int = int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123"))
+    scheme: str = os.getenv("CLICKHOUSE_SCHEME", "http")  # http | https
+    ssl_verify: bool = os.getenv("CLICKHOUSE_SSL_VERIFY", "true").lower() == "true"
+    database: str = os.getenv("CLICKHOUSE_DATABASE", "trading")
+    username: str = os.getenv("CLICKHOUSE_USER", "default")
+    password: str = os.getenv("CLICKHOUSE_PASSWORD", "")
+    connect_timeout: int = int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "10"))
+    send_receive_timeout: int = int(os.getenv("CLICKHOUSE_SEND_RECEIVE_TIMEOUT", "30"))
+    max_retries: int = int(os.getenv("CLICKHOUSE_MAX_RETRIES", "3"))
+    retry_delay: float = float(os.getenv("CLICKHOUSE_RETRY_DELAY", "1.0"))
+    batch_size: int = int(os.getenv("CLICKHOUSE_BATCH_SIZE", "1000"))
+    unified_table: str = os.getenv("CLICKHOUSE_UNIFIED_TABLE", "candles_unified")
+    
+    def get_connection_params(self) -> Dict[str, Any]:
+        """ClickHouse Connection Parameter"""  
+        return {
+            "host": self.host,
+            "port": self.port,
+            "database": self.database,
+            "user": self.username,
+            "password": self.password,
+            "connect_timeout": self.connect_timeout,
+            "send_receive_timeout": self.send_receive_timeout,
+        }
+    
+    def get_http_url(self) -> str:
+        """ClickHouse HTTP URL"""
+        auth = f"{self.username}:{self.password}@" if self.password else f"{self.username}@"
+        return f"http://{auth}{self.host}:{self.http_port}/{self.database}"
+
+# ✅ UNIFIED SYSTEM CONFIG - 1x statt 8x identische SystemConfig Klassen
+@dataclass
+class UnifiedSystemConfig:
+    """Zentrale System-Konfiguration für alle Exchanges"""
+    symbols: List[str] = field(default_factory=lambda: [
+        s.strip().upper() for s in os.getenv("TRADING_SYMBOLS", "BTCUSDT").split(",") if s.strip()
+    ])
+    market_types: List[str] = field(default_factory=lambda: [
+        m.strip().lower() for m in os.getenv("ENABLED_MARKET_TYPES", "spot").split(",") if m.strip()
+    ])
+    min_volume_24h: float = float(os.getenv("MIN_VOLUME_24H", "1000000.0"))
+    base_max_symbols_per_market: int = int(os.getenv("MAX_SYMBOLS_PER_MARKET", "30"))
+    base_resolutions: List[int] = field(default_factory=lambda: [60, 300, 900])
+    deduplication_window: int = int(os.getenv("DEDUPLICATION_WINDOW", "3600"))
+    
+    # Historical target dates per symbol
+    historical_target_dates: Dict[str, datetime] = field(
+        default_factory=lambda: {
+            "BTCUSDT": datetime(2017, 1, 1, tzinfo=timezone.utc),
+            "ETHUSDT": datetime(2017, 8, 1, tzinfo=timezone.utc),
+            "BNBUSDT": datetime(2017, 7, 1, tzinfo=timezone.utc),
+            "ADAUSDT": datetime(2018, 4, 1, tzinfo=timezone.utc),
+            "DOTUSDT": datetime(2020, 8, 1, tzinfo=timezone.utc),
+            "SOLUSDT": datetime(2021, 8, 1, tzinfo=timezone.utc),
+        }
+    )
+    
+    # Trading-spezifische Einstellungen
+    enable_paper_trading: bool = os.getenv("ENABLE_PAPER_TRADING", "true").lower() == "true"
+    enable_live_trading: bool = os.getenv("ENABLE_LIVE_TRADING", "false").lower() == "true"
+    default_precision: int = int(os.getenv("DEFAULT_PRECISION", "8"))
+    
+    # Performance-Einstellungen
+    worker_processes: int = int(os.getenv("WORKER_PROCESSES", "4"))
+    max_concurrent_requests: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
+
+    def get_effective_market_types(self, exchange_config) -> List[str]:
+        """Generische Methode für alle Exchange-Configs"""
+        base_markets = ["spot", "usdtm"]
+        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
+            return base_markets + ["coinm"]
+        return base_markets
+
+    def get_max_symbols_per_market(self, exchange_config) -> int:
+        """Generische Methode für alle Exchange-Configs"""
+        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
+            return 150
+        return self.base_max_symbols_per_market
+
+    def get_resolutions(self, exchange_config) -> List[int]:
+        """Generische Methode für alle Exchange-Configs"""
+        if hasattr(exchange_config, 'available_resolutions'):
+            return exchange_config.available_resolutions
+        return self.base_resolutions
+
+    def get_total_max_symbols(self, exchange_config) -> int:
+        """Generische Methode für alle Exchange-Configs"""
+        market_types = self.get_effective_market_types(exchange_config)
+        max_symbols = self.get_max_symbols_per_market(exchange_config)
+        return len(market_types) * max_symbols
+
+    def update_for_premium(self, exchange_config):
+        """Generische Methode für alle Exchange-Configs"""
+        if hasattr(exchange_config, 'is_premium') and exchange_config.is_premium:
+            if "coinm" not in self.market_types:
+                self.market_types.append("coinm")
+            additional_targets = {
+                "LINKUSDT": datetime(2019, 1, 1, tzinfo=timezone.utc),
+                "MATICUSDT": datetime(2019, 4, 1, tzinfo=timezone.utc),
+                "AVAXUSDT": datetime(2020, 9, 1, tzinfo=timezone.utc),
+            }
+            self.historical_target_dates.update(additional_targets)
+
+    def get_active_symbols_for_market(self, market_type: str, exchange_config) -> List[str]:
+        """Generische Methode für alle Exchange-Configs"""
+        all_symbols = self.symbols
+        max_symbols = self.get_max_symbols_per_market(exchange_config)
+        return all_symbols[:max_symbols]
+
+# ✅ TLS CONFIG - 1x statt 8x identische TLS_CONFIG
+TLS_CONFIG: Dict[str, Any] = {
+    "ssl": os.getenv("ENABLE_TLS", "true").lower() == "true"
+}
+
+# ✅ EXCHANGE_REGISTRY - Zentrale Metadaten für alle 8 Exchanges
+EXCHANGE_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "binance": {
+        "name": "Binance",
+        "display_name": "Binance",
+        "rest_base_url": "https://api.binance.com",
+        "futures_rest_base_url": "https://fapi.binance.com",
+        "ws_base_url": "wss://stream.binance.com:9443/ws",
+        "max_requests_per_second": 50,
+        "supports_1s_klines": True,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    },
+    "bitget": {
+        "name": "Bitget",
+        "display_name": "Bitget", 
+        "rest_base_url": "https://api.bitget.com",
+        "futures_rest_base_url": "https://api.bitget.com",
+        "ws_base_url": "wss://ws.bitget.com/spot/v1/stream",
+        "max_requests_per_second": 20,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    },
+    "bybit": {
+        "name": "Bybit",
+        "display_name": "Bybit", 
+        "rest_base_url": "https://api.bybit.com",
+        "futures_rest_base_url": "https://api.bybit.com",
+        "ws_base_url": "wss://stream.bybit.com/v5/public/spot",
+        "max_requests_per_second": 25,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    },
+    "coinbase": {
+        "name": "Coinbase", 
+        "display_name": "Coinbase Pro",
+        "rest_base_url": "https://api.exchange.coinbase.com",
+        "futures_rest_base_url": "https://api.exchange.coinbase.com",
+        "ws_base_url": "wss://ws-feed.exchange.coinbase.com",
+        "max_requests_per_second": 10,
+        "supports_1s_klines": False,
+        "supports_futures": False,
+        "markets": ["spot"]
+    },
+    "gateio": {
+        "name": "GateIO",
+        "display_name": "Gate.io",
+        "rest_base_url": "https://api.gateio.ws/api/v4",
+        "futures_rest_base_url": "https://api.gateio.ws/api/v4",
+        "ws_base_url": "wss://api.gateio.ws/ws/v4/",
+        "max_requests_per_second": 20,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    },
+    "htx": {
+        "name": "HTX",
+        "display_name": "HTX (Huobi)",
+        "rest_base_url": "https://api.huobi.pro", 
+        "futures_rest_base_url": "https://api.hbdm.com",
+        "ws_base_url": "wss://api.huobi.pro/ws",
+        "max_requests_per_second": 10,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    },
+    "mexc": {
+        "name": "MEXC",
+        "display_name": "MEXC",
+        "rest_base_url": "https://api.mexc.com",
+        "futures_rest_base_url": "https://contract.mexc.com",
+        "ws_base_url": "wss://wbs.mexc.com/ws", 
+        "max_requests_per_second": 15,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm"]
+    },
+    "okx": {
+        "name": "OKX", 
+        "display_name": "OKX",
+        "rest_base_url": "https://www.okx.com/api/v5",
+        "futures_rest_base_url": "https://www.okx.com/api/v5",
+        "ws_base_url": "wss://ws.okx.com:8443/ws/v5/public",
+        "max_requests_per_second": 30,
+        "supports_1s_klines": False,
+        "supports_futures": True,
+        "markets": ["spot", "usdtm", "coinm"]
+    }
+}
+
+# Global instances für alle Exchanges
+unified_redis_config = UnifiedRedisConfig()
+unified_clickhouse_config = UnifiedClickHouseConfig()
+unified_system_config = UnifiedSystemConfig()
+
+# Backward compatibility aliases
+redis_config = unified_redis_config
+clickhouse_config = unified_clickhouse_config
+system_config = unified_system_config
 </file>
 
 <file path="backend/services/usecases/gap_scan_service.py">
@@ -160690,6 +160518,182 @@ class MEXCOrderbookService:
         return None
 </file>
 
+<file path="backend/services/adapter/unified_exchange_service.py">
+# backend/services/exchange_services.py
+"""
+Exchange Services - Ausgelagert aus main.py
+"""
+
+import asyncio
+import logging
+from pathlib import Path
+from backend.health import health_registry
+
+logger = logging.getLogger(__name__)
+
+def discover_exchanges():
+    """Auto-Discovery aller Exchanges aus backend/exchanges/ Verzeichnis"""
+    exchange_dir = Path(__file__).resolve().parents[2] / "exchanges"  # R2.1: CWD-unabhängig
+    return [dir.name for dir in exchange_dir.iterdir() 
+            if dir.is_dir() and dir.name not in ["__pycache__", "shared"]]
+
+def get_critical_symbols(exchange: str):
+    """Auto-Discovery der kritischen Symbols für eine Exchange"""
+    try:
+        from backend.services.domain.unified_symbol_registry import get_cached_symbols
+        symbols = get_cached_symbols(exchange)
+        if symbols and len(symbols) > 0:
+            popular_symbols = [s for s in symbols if 'USDT' in s][:5]
+            if popular_symbols:
+                return popular_symbols
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Symbol-Registry lookup failed for {exchange}: {e}")
+    
+    import os
+    return [s.strip().upper() for s in os.getenv('TRADING_SYMBOLS', 'BTCUSDT').split(',') if s.strip()]
+
+def get_critical_exchanges():
+    """Auto-Discovery der kritischen Exchanges aus Health Status"""
+    try:
+        healthy_exchanges = health_registry.get_healthy_components("exchange")
+        if healthy_exchanges and len(healthy_exchanges) >= 2:
+            return healthy_exchanges[:2]
+    except Exception as e:
+        logger.warning(f"⚠️ Health-Registry lookup failed: {e}")
+    
+    return ["binance", "gateio"]
+
+class ExchangeServiceFactory:
+    """Exchange Service Factory - Uses NEW WS Lane System"""
+    
+    _managers = {}
+    
+    @classmethod
+    def get_ws_manager(cls, exchange_name: str):
+        """NEW: Uses WS Lane System instead of legacy ws_managers"""
+        if exchange_name in cls._managers:
+            return cls._managers[exchange_name]
+            
+        try:
+            from backend.websocket import ws_manager
+            
+            class WebSocketManagerWrapper:
+                def __init__(self, exchange_name):
+                    self.exchange_name = exchange_name
+                    self.ws_manager = ws_manager
+                
+                async def start(self):
+                    """Start WebSocket für Exchange über Lane System"""
+                    try:
+                        critical_symbols = get_critical_symbols(self.exchange_name)
+                        for symbol in critical_symbols:
+                            try:
+                                await self.ws_manager.start_websocket_lane(
+                                    self.exchange_name, symbol, "spot"
+                                )
+                                logger.info(f"✅ Started WebSocket lane: {self.exchange_name}/{symbol}/spot")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to start lane {self.exchange_name}/{symbol}: {e}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to start WebSocket lanes for {self.exchange_name}: {e}")
+                        raise
+                
+                async def stop(self):
+                    """Stop WebSocket für Exchange"""
+                    try:
+                        critical_symbols = get_critical_symbols(self.exchange_name)
+                        for symbol in critical_symbols:
+                            try:
+                                self.ws_manager.stop_websocket_lane(
+                                    self.exchange_name, symbol, "spot"
+                                )
+                                logger.info(f"⏹️ Stopped WebSocket lane: {self.exchange_name}/{symbol}/spot")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to stop lane {self.exchange_name}/{symbol}: {e}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to stop WebSocket lanes for {self.exchange_name}: {e}")
+            
+            wrapper = WebSocketManagerWrapper(exchange_name)
+            cls._managers[exchange_name] = wrapper
+            
+            logger.info(f"✅ Created WS Lane wrapper for {exchange_name}")
+            return wrapper
+            
+        except ImportError as e:
+            logger.error(f"❌ Failed to import WS Lane System: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to create WebSocket wrapper for {exchange_name}: {e}")
+            return None
+
+class ExchangeService:
+    """Exchange Service with Fault Isolation Pattern"""
+    
+    def __init__(self, exchange_name):
+        self.exchange_name = exchange_name
+        self.health_lane = health_registry.register_component("exchange", exchange_name)
+        self.running = False
+        self.ws_manager = ExchangeServiceFactory.get_ws_manager(exchange_name)
+        
+    async def start(self):
+        """Start exchange service with fault isolation"""
+        try:
+            await self._connect_websockets()
+            self.health_lane.record_success({"status": "connected"})
+            self.running = True
+            logger.info(f"✅ {self.exchange_name} exchange service started")
+        except Exception as e:
+            self.health_lane.record_error(f"Connection failed: {e}")
+            asyncio.create_task(self._retry_connection())
+            logger.warning(f"⚠️  {self.exchange_name} exchange service failed: {e}")
+    
+    async def _connect_websockets(self):
+        """Connect to REAL WebSocket manager"""
+        if not self.ws_manager:
+            raise Exception(f"No WebSocket manager available for {self.exchange_name}")
+            
+        await self.ws_manager.start()
+        logger.info(f"🔗 {self.exchange_name} WebSocket manager connected")
+        
+    async def _retry_connection(self):
+        """Background retry - doesn't block system"""
+        while not self.running:
+            await asyncio.sleep(30)
+            try:
+                await self._connect_websockets()
+                self.health_lane.record_success({"status": "reconnected"})
+                self.running = True
+                logger.info(f"🔄 {self.exchange_name} exchange reconnected")
+                break
+            except Exception as e:
+                self.health_lane.record_error(f"Retry failed: {e}")
+                logger.warning(f"🔄 {self.exchange_name} retry failed: {e}")
+    
+    async def stop(self):
+        """Stop exchange service gracefully"""
+        try:
+            if self.ws_manager and hasattr(self.ws_manager, 'stop'):
+                await self.ws_manager.stop()
+            self.running = False
+            self.health_lane.record_success({"status": "stopped"})
+            logger.info(f"🛑 {self.exchange_name} exchange service stopped")
+        except Exception as e:
+            self.health_lane.record_error(f"Stop failed: {e}")
+            logger.warning(f"⚠️  {self.exchange_name} stop failed: {e}")
+
+def start_exchange_service(exchange_name: str):
+    """Start individual exchange service"""
+    exchange_service = ExchangeService(exchange_name)
+    asyncio.create_task(exchange_service.start())
+    return exchange_service
+
+def start_health_monitoring():
+    """Health monitoring runs independently"""
+    logger.info("🏥 Health monitoring active")
+</file>
+
 <file path="backend/services/adapter/whale_detector.py">
 # backend/services/adapter/whale_detector.py
 import asyncio
@@ -162815,6 +162819,460 @@ class CandleAgg1s:
         }
 </file>
 
+<file path="backend/services/usecases/unified_historical.py">
+# /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Dict, List, Any, Optional, Callable
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
+from backend.database.clickhouse import unified_cl_service
+
+logger = logging.getLogger("unified-historical")
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class UnifiedHistoricalService:
+    """
+    ENTERPRISE UNIFIED HISTORICAL SERVICE (Trades-only, fully policy-driven)
+
+    Ziele:
+    - KEINE Candles im Backfill: nur Trades in trading.<exchange>_trades (SoT)
+    - deterministischer Cursor via to_date (EXKLUSIV)
+    - keine Datenverluste bei liquiden Märkten: Cursor bewegt sich anhand ältestem Trade (nicht stumpfer 1h-hop)
+    - keine Hardcodes: Fenster, Limits, Methoden-Namen komplett über ENV konfigurierbar
+    - Exchange-Adapter kapselt Param-Mapping (startTime/endTime bleiben Unified Contract)
+
+    ENV Policies (Defaults sind safe):
+    - HIST_WINDOW_SECONDS=3600
+    - HIST_PER_CALL_LIMIT=1000
+    - HIST_FLUSH_BATCH_SIZE=500
+    - HIST_FETCH_METHOD_SPOT=fetch_trades
+    - HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
+    - HIST_MAX_STAGNANT=3
+    - HIST_CURSOR_BACKOFF_MS=1
+    """
+
+    def __init__(self, exchange_name: str):
+        self.exchange_name = exchange_name.lower()
+        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
+
+        # Exchange-spezifische Komponenten (generisch geladen)
+        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
+        self.rate_limiter = WebSocketRateLimiter(
+            RateLimitConfig.from_env(self.exchange_name.upper())
+        )
+        self.exchange_config = self._load_exchange_config()
+
+        # Health-System Integration (optional)
+        self.health_lane = None
+        try:
+            from backend.health import health_registry
+            self.health_lane = health_registry.register_component(
+                "historical",
+                f"{self.exchange_name}_backfill"
+            )
+            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
+        except Exception as e:
+            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
+
+        # Policies (ENV)
+        self.window_ms = max(1, int(os.getenv("HIST_WINDOW_SECONDS", "3600"))) * 1000
+        self.per_call_limit = max(1, int(os.getenv("HIST_PER_CALL_LIMIT", "1000")))
+        self.batch_size = max(1, int(os.getenv("HIST_FLUSH_BATCH_SIZE", "500")))
+
+        self.fetch_method_spot = os.getenv("HIST_FETCH_METHOD_SPOT", "fetch_trades").strip()
+        self.fetch_method_futures = os.getenv("HIST_FETCH_METHOD_FUTURES", "fetch_futures_trades").strip()
+
+        self.max_stagnant = max(1, int(os.getenv("HIST_MAX_STAGNANT", "3")))
+        self.cursor_backoff_ms = max(1, int(os.getenv("HIST_CURSOR_BACKOFF_MS", "1")))
+
+    def _load_exchange_config(self):
+        try:
+            import importlib
+            config_module = f"backend.exchanges.{self.exchange_name}.config"
+            config_attr = f"{self.exchange_name}_config"
+            module = importlib.import_module(config_module)
+            return getattr(module, config_attr)
+        except Exception as e:
+            self.logger.warning(f"Could not load config for {self.exchange_name}: {e}")
+            return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.rest_api:
+            await self.rest_api.close()
+
+    def _resolve_fetch(self, market_type: str) -> Callable[..., Any]:
+        """
+        Enterprise dynamic method resolution.
+        - Prefer ENV-defined method name
+        - Fallbacks: fetch_trades / fetch_futures_trades
+        """
+        if market_type == "spot":
+            preferred = self.fetch_method_spot
+            fallbacks = [preferred, "fetch_trades", "fetch_spot_trades"]
+        else:
+            preferred = self.fetch_method_futures
+            fallbacks = [preferred, "fetch_futures_trades", "fetch_trades", "fetch_futures"]
+
+        for name in fallbacks:
+            fn = getattr(self.rest_api, name, None)
+            if callable(fn):
+                return fn
+
+        # If none found:
+        self._report_not_implemented(
+            f"{preferred} (fallbacks tried: {', '.join(fallbacks)})",
+            market_type,
+            "<symbol>"
+        )
+        raise AttributeError(f"No suitable trade fetch method for {self.exchange_name} market={market_type}")
+
+    async def history(
+        self,
+        symbol: str,
+        market_type: str,
+        end_date: datetime,
+        interval: str = "1m",
+        limit: int = 1000,
+        to_date: Optional[datetime] = None,
+    ) -> int:
+        """
+        Trades-only Backfill.
+
+        Zeitfenster:
+        - end_date: INKLUSIV lower bound
+        - to_date : EXKLUSIV upper bound (endTime = to_date_ms - 1)
+
+        Cursor-Update:
+        - t_end wird auf ältesten erhaltenen Trade gesetzt (minus 0..1ms via endTime-1)
+        - dadurch kein Datenverlust bei >per_call_limit Trades pro Fenster
+        """
+        # Normalize tz
+        end_date = _utc(end_date)
+        to_date = _utc(to_date) if to_date else datetime.now(timezone.utc)
+
+        until_ms = int(end_date.timestamp() * 1000)
+        t_end = int(to_date.timestamp() * 1000)  # cursor end (ms)
+
+        # Hard safety: if caller passes nonsense
+        if t_end <= until_ms:
+            return 0
+
+        # Effective limits (caller limit can be larger; API cap applies per call)
+        target_limit = max(1, int(limit))
+        call_limit = min(target_limit, self.per_call_limit)
+
+        # Init first window
+        t_start = max(t_end - self.window_ms, until_ms)
+
+        params = {
+            "symbol": symbol,
+            "limit": call_limit,
+            "startTime": t_start,   # inklusiv
+            "endTime": t_end - 1,   # exklusiv
+        }
+
+        self.logger.info(
+            f"📥 {self.exchange_name.upper()} TRADES BACKFILL | sym={symbol} mkt={market_type} "
+            f"range=[{datetime.fromtimestamp(until_ms/1000, tz=timezone.utc).isoformat()} .. "
+            f"{datetime.fromtimestamp(t_end/1000, tz=timezone.utc).isoformat()}) "
+            f"window_s={self.window_ms//1000} call_limit={call_limit} target_limit={target_limit}"
+        )
+
+        fetch_fn = self._resolve_fetch(market_type)
+
+        all_trades: List[Dict[str, Any]] = []
+        total_trades = 0
+        batch_count = 0
+
+        last_end: Optional[int] = None
+        stagnant = 0
+
+        while t_end > until_ms and total_trades < target_limit:
+            await self.rate_limiter.acquire()
+
+            # --- fetch ---
+            try:
+                response = await fetch_fn(**params)
+
+                if self.health_lane is not None:
+                    self.health_lane.record_success({
+                        "trades_fetched": len(response) if response else 0,
+                        "market": market_type,
+                        "symbol": symbol
+                    })
+
+            except Exception as e:
+                if self.health_lane is not None:
+                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
+                self.logger.error(f"API fetch failed for {self.exchange_name}: {e}", exc_info=True)
+
+                # Conservative fallback: step one window back
+                t_end = t_start
+                t_start = max(t_end - self.window_ms, until_ms)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1
+                continue
+
+            if not response:
+                # empty window: step one window back
+                t_end = t_start
+                t_start = max(t_end - self.window_ms, until_ms)
+                params["startTime"] = t_start
+                params["endTime"] = t_end - 1
+                continue
+
+            trades = response
+            all_trades.extend(trades)
+            total_trades += len(trades)
+
+            # flush
+            if len(all_trades) >= self.batch_size:
+                await self._store_batch(symbol, market_type, all_trades)
+                batch_count += 1
+                all_trades = []
+
+            # --- cursor update based on oldest trade returned ---
+            oldest_ms: Optional[int] = None
+            try:
+                oldest_ms = min(int(t["timestamp"]) for t in trades if "timestamp" in t)
+            except Exception:
+                oldest_ms = None
+
+            prev_end = t_end
+
+            if oldest_ms is None or oldest_ms <= 0:
+                # fallback: step one window back
+                t_end = t_start
+            else:
+                # move to oldest trade (we enforce exclusivity with endTime=t_end-1)
+                t_end = min(int(oldest_ms), prev_end)
+
+            # stagnation detect: if cursor doesn't move, force backoff
+            if last_end is not None and t_end >= last_end:
+                stagnant += 1
+            else:
+                stagnant = 0
+
+            last_end = t_end
+
+            if stagnant >= self.max_stagnant:
+                t_end = max(until_ms, t_end - self.cursor_backoff_ms)
+                stagnant = 0
+
+            # recompute window
+            t_start = max(t_end - self.window_ms, until_ms)
+
+            params["startTime"] = t_start
+            params["endTime"] = t_end - 1
+
+            # absolute safety: if no progress possible
+            if t_end == prev_end and t_end <= until_ms:
+                break
+
+        # store remaining
+        if all_trades:
+            await self._store_batch(symbol, market_type, all_trades)
+            batch_count += 1
+
+        self.logger.info(
+            f"✅ {self.exchange_name.upper()} TRADES BACKFILL DONE | sym={symbol} mkt={market_type} "
+            f"trades={total_trades} batches={batch_count}"
+        )
+        return total_trades
+
+    async def _store_batch(
+        self,
+        symbol: str,
+        market_type: str,
+        trades: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Store unified trades into ClickHouse.
+        - trade_id ist MATERIALIZED in ClickHouse => NICHT senden.
+        - source wird als rest_backfill gesetzt.
+        """
+        try:
+            tasks = []
+            for trade in trades:
+                try:
+                    trade_data = {
+                        "symbol": trade.get("symbol", symbol),
+                        "market": trade.get("market", market_type),
+                        "price": str(trade["price"]),
+                        "size": str(trade["size"]),
+                        "side": trade["side"],
+                        "timestamp": int(trade["timestamp"]),
+                        "source": "rest_backfill",
+                    }
+                    tasks.append(unified_cl_service.insert_trades(self.exchange_name, trade_data))
+                except Exception as trade_error:
+                    self.logger.warning(f"Trade transform failed for {self.exchange_name}: {trade_error}")
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                errors = sum(1 for r in results if isinstance(r, Exception))
+                if errors:
+                    self.logger.warning(f"💾 {self.exchange_name} batch stored with errors: {errors}/{len(tasks)}")
+
+        except Exception as e:
+            self.logger.error(f"❌ {self.exchange_name} batch storage failed: {str(e)}", exc_info=True)
+
+    async def get_available_intervals(self, symbol: str, market_type: str) -> Dict[str, Any]:
+        """
+        Trades-only System:
+        Intervalle sind Chart/Aggregation-Policy. Keine Candle-Endpoint Tests.
+        """
+        try:
+            if self.exchange_config and hasattr(self.exchange_config, "supported_intervals"):
+                standard_intervals = getattr(
+                    self.exchange_config,
+                    "supported_intervals",
+                    ["1m", "5m", "15m", "1h", "4h", "1d"],
+                )
+            else:
+                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+            standard_intervals = [
+                i["value"] if isinstance(i, dict) and "value" in i else i
+                for i in standard_intervals
+            ]
+
+            available_intervals = []
+            for iv in standard_intervals:
+                sec = self._interval_to_seconds(iv)
+                available_intervals.append({
+                    "interval": iv,
+                    "resolution_seconds": sec,
+                    "human_readable": self._seconds_to_human(sec),
+                    "supported": True,
+                })
+
+            return {
+                "exchange": self.exchange_name,
+                "symbol": symbol,
+                "market_type": market_type,
+                "available_intervals": available_intervals,
+                "total_count": len(available_intervals),
+                "account_type": "premium"
+                if self.exchange_config and getattr(self.exchange_config, "is_premium", False)
+                else "free",
+            }
+        except Exception as e:
+            self.logger.error(
+                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
+                exc_info=True,
+            )
+            return {"error": str(e)}
+
+    def _interval_to_seconds(self, interval: str) -> int:
+        interval_seconds = {
+            "1s": 1,
+            "1m": 60,
+            "3m": 180,
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "2h": 7200,
+            "4h": 14400,
+            "6h": 21600,
+            "8h": 28800,
+            "12h": 43200,
+            "1d": 86400,
+            "3d": 259200,
+            "1w": 604800,
+            "1M": 2592000,
+        }
+        return interval_seconds.get(interval, 60)
+
+    def _seconds_to_human(self, seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}min"
+        if seconds < 86400:
+            return f"{seconds // 3600}h"
+        if seconds < 604800:
+            return f"{seconds // 86400}d"
+        return f"{seconds // 604800}w"
+
+    def _report_not_implemented(self, method: str, market_type: str, symbol: str) -> None:
+        error_msg = (
+            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
+            f"Historical backfill not available for {symbol}. "
+            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
+        )
+
+        if self.health_lane:
+            self.health_lane.record_error(error_msg)
+
+        self.logger.warning(
+            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
+            f"{method} not implemented for {market_type}."
+        )
+
+
+# Factory functions (legacy compatibility)
+
+def get_binance_backfill():
+    return UnifiedHistoricalService("binance")
+
+
+def get_gateio_backfill():
+    return UnifiedHistoricalService("gateio")
+
+
+def get_bybit_backfill():
+    return UnifiedHistoricalService("bybit")
+
+
+def get_mexc_backfill():
+    return UnifiedHistoricalService("mexc")
+
+
+def get_bitget_backfill():
+    return UnifiedHistoricalService("bitget")
+
+
+def get_okx_backfill():
+    return UnifiedHistoricalService("okx")
+
+
+def get_htx_backfill():
+    return UnifiedHistoricalService("htx")
+
+
+def get_coinbase_backfill():
+    return UnifiedHistoricalService("coinbase")
+
+
+def get_available_backfill_services():
+    return {
+        "binance": get_binance_backfill,
+        "gateio": get_gateio_backfill,
+        "bybit": get_bybit_backfill,
+        "mexc": get_mexc_backfill,
+        "bitget": get_bitget_backfill,
+        "okx": get_okx_backfill,
+        "htx": get_htx_backfill,
+        "coinbase": get_coinbase_backfill,
+    }
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -163837,460 +164295,6 @@ class cl_manager:
 
 
 cl_manager_instance = cl_manager()
-</file>
-
-<file path="backend/services/usecases/unified_historical.py">
-# /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
-
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, Callable
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.websocket.ws_rate_limiters import WebSocketRateLimiter, RateLimitConfig
-from backend.database.clickhouse import unified_cl_service
-
-logger = logging.getLogger("unified-historical")
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class UnifiedHistoricalService:
-    """
-    ENTERPRISE UNIFIED HISTORICAL SERVICE (Trades-only, fully policy-driven)
-
-    Ziele:
-    - KEINE Candles im Backfill: nur Trades in trading.<exchange>_trades (SoT)
-    - deterministischer Cursor via to_date (EXKLUSIV)
-    - keine Datenverluste bei liquiden Märkten: Cursor bewegt sich anhand ältestem Trade (nicht stumpfer 1h-hop)
-    - keine Hardcodes: Fenster, Limits, Methoden-Namen komplett über ENV konfigurierbar
-    - Exchange-Adapter kapselt Param-Mapping (startTime/endTime bleiben Unified Contract)
-
-    ENV Policies (Defaults sind safe):
-    - HIST_WINDOW_SECONDS=3600
-    - HIST_PER_CALL_LIMIT=1000
-    - HIST_FLUSH_BATCH_SIZE=500
-    - HIST_FETCH_METHOD_SPOT=fetch_trades
-    - HIST_FETCH_METHOD_FUTURES=fetch_futures_trades
-    - HIST_MAX_STAGNANT=3
-    - HIST_CURSOR_BACKOFF_MS=1
-    """
-
-    def __init__(self, exchange_name: str):
-        self.exchange_name = exchange_name.lower()
-        self.logger = logging.getLogger(f"{self.exchange_name}-historical")
-
-        # Exchange-spezifische Komponenten (generisch geladen)
-        self.rest_api = ExchangeFactory.get_rest_api(self.exchange_name)
-        self.rate_limiter = WebSocketRateLimiter(
-            RateLimitConfig.from_env(self.exchange_name.upper())
-        )
-        self.exchange_config = self._load_exchange_config()
-
-        # Health-System Integration (optional)
-        self.health_lane = None
-        try:
-            from backend.health import health_registry
-            self.health_lane = health_registry.register_component(
-                "historical",
-                f"{self.exchange_name}_backfill"
-            )
-            self.logger.info(f"✅ Health monitoring enabled for {self.exchange_name} backfill")
-        except Exception as e:
-            self.logger.debug(f"Health system not available for {self.exchange_name}: {e}")
-
-        # Policies (ENV)
-        self.window_ms = max(1, int(os.getenv("HIST_WINDOW_SECONDS", "3600"))) * 1000
-        self.per_call_limit = max(1, int(os.getenv("HIST_PER_CALL_LIMIT", "1000")))
-        self.batch_size = max(1, int(os.getenv("HIST_FLUSH_BATCH_SIZE", "500")))
-
-        self.fetch_method_spot = os.getenv("HIST_FETCH_METHOD_SPOT", "fetch_trades").strip()
-        self.fetch_method_futures = os.getenv("HIST_FETCH_METHOD_FUTURES", "fetch_futures_trades").strip()
-
-        self.max_stagnant = max(1, int(os.getenv("HIST_MAX_STAGNANT", "3")))
-        self.cursor_backoff_ms = max(1, int(os.getenv("HIST_CURSOR_BACKOFF_MS", "1")))
-
-    def _load_exchange_config(self):
-        try:
-            import importlib
-            config_module = f"backend.exchanges.{self.exchange_name}.config"
-            config_attr = f"{self.exchange_name}_config"
-            module = importlib.import_module(config_module)
-            return getattr(module, config_attr)
-        except Exception as e:
-            self.logger.warning(f"Could not load config for {self.exchange_name}: {e}")
-            return None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self.rest_api:
-            await self.rest_api.close()
-
-    def _resolve_fetch(self, market_type: str) -> Callable[..., Any]:
-        """
-        Enterprise dynamic method resolution.
-        - Prefer ENV-defined method name
-        - Fallbacks: fetch_trades / fetch_futures_trades
-        """
-        if market_type == "spot":
-            preferred = self.fetch_method_spot
-            fallbacks = [preferred, "fetch_trades", "fetch_spot_trades"]
-        else:
-            preferred = self.fetch_method_futures
-            fallbacks = [preferred, "fetch_futures_trades", "fetch_trades", "fetch_futures"]
-
-        for name in fallbacks:
-            fn = getattr(self.rest_api, name, None)
-            if callable(fn):
-                return fn
-
-        # If none found:
-        self._report_not_implemented(
-            f"{preferred} (fallbacks tried: {', '.join(fallbacks)})",
-            market_type,
-            "<symbol>"
-        )
-        raise AttributeError(f"No suitable trade fetch method for {self.exchange_name} market={market_type}")
-
-    async def history(
-        self,
-        symbol: str,
-        market_type: str,
-        end_date: datetime,
-        interval: str = "1m",
-        limit: int = 1000,
-        to_date: Optional[datetime] = None,
-    ) -> int:
-        """
-        Trades-only Backfill.
-
-        Zeitfenster:
-        - end_date: INKLUSIV lower bound
-        - to_date : EXKLUSIV upper bound (endTime = to_date_ms - 1)
-
-        Cursor-Update:
-        - t_end wird auf ältesten erhaltenen Trade gesetzt (minus 0..1ms via endTime-1)
-        - dadurch kein Datenverlust bei >per_call_limit Trades pro Fenster
-        """
-        # Normalize tz
-        end_date = _utc(end_date)
-        to_date = _utc(to_date) if to_date else datetime.now(timezone.utc)
-
-        until_ms = int(end_date.timestamp() * 1000)
-        t_end = int(to_date.timestamp() * 1000)  # cursor end (ms)
-
-        # Hard safety: if caller passes nonsense
-        if t_end <= until_ms:
-            return 0
-
-        # Effective limits (caller limit can be larger; API cap applies per call)
-        target_limit = max(1, int(limit))
-        call_limit = min(target_limit, self.per_call_limit)
-
-        # Init first window
-        t_start = max(t_end - self.window_ms, until_ms)
-
-        params = {
-            "symbol": symbol,
-            "limit": call_limit,
-            "startTime": t_start,   # inklusiv
-            "endTime": t_end - 1,   # exklusiv
-        }
-
-        self.logger.info(
-            f"📥 {self.exchange_name.upper()} TRADES BACKFILL | sym={symbol} mkt={market_type} "
-            f"range=[{datetime.fromtimestamp(until_ms/1000, tz=timezone.utc).isoformat()} .. "
-            f"{datetime.fromtimestamp(t_end/1000, tz=timezone.utc).isoformat()}) "
-            f"window_s={self.window_ms//1000} call_limit={call_limit} target_limit={target_limit}"
-        )
-
-        fetch_fn = self._resolve_fetch(market_type)
-
-        all_trades: List[Dict[str, Any]] = []
-        total_trades = 0
-        batch_count = 0
-
-        last_end: Optional[int] = None
-        stagnant = 0
-
-        while t_end > until_ms and total_trades < target_limit:
-            await self.rate_limiter.acquire()
-
-            # --- fetch ---
-            try:
-                response = await fetch_fn(**params)
-
-                if self.health_lane is not None:
-                    self.health_lane.record_success({
-                        "trades_fetched": len(response) if response else 0,
-                        "market": market_type,
-                        "symbol": symbol
-                    })
-
-            except Exception as e:
-                if self.health_lane is not None:
-                    self.health_lane.record_error(f"API fetch failed: {str(e)}")
-                self.logger.error(f"API fetch failed for {self.exchange_name}: {e}", exc_info=True)
-
-                # Conservative fallback: step one window back
-                t_end = t_start
-                t_start = max(t_end - self.window_ms, until_ms)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1
-                continue
-
-            if not response:
-                # empty window: step one window back
-                t_end = t_start
-                t_start = max(t_end - self.window_ms, until_ms)
-                params["startTime"] = t_start
-                params["endTime"] = t_end - 1
-                continue
-
-            trades = response
-            all_trades.extend(trades)
-            total_trades += len(trades)
-
-            # flush
-            if len(all_trades) >= self.batch_size:
-                await self._store_batch(symbol, market_type, all_trades)
-                batch_count += 1
-                all_trades = []
-
-            # --- cursor update based on oldest trade returned ---
-            oldest_ms: Optional[int] = None
-            try:
-                oldest_ms = min(int(t["timestamp"]) for t in trades if "timestamp" in t)
-            except Exception:
-                oldest_ms = None
-
-            prev_end = t_end
-
-            if oldest_ms is None or oldest_ms <= 0:
-                # fallback: step one window back
-                t_end = t_start
-            else:
-                # move to oldest trade (we enforce exclusivity with endTime=t_end-1)
-                t_end = min(int(oldest_ms), prev_end)
-
-            # stagnation detect: if cursor doesn't move, force backoff
-            if last_end is not None and t_end >= last_end:
-                stagnant += 1
-            else:
-                stagnant = 0
-
-            last_end = t_end
-
-            if stagnant >= self.max_stagnant:
-                t_end = max(until_ms, t_end - self.cursor_backoff_ms)
-                stagnant = 0
-
-            # recompute window
-            t_start = max(t_end - self.window_ms, until_ms)
-
-            params["startTime"] = t_start
-            params["endTime"] = t_end - 1
-
-            # absolute safety: if no progress possible
-            if t_end == prev_end and t_end <= until_ms:
-                break
-
-        # store remaining
-        if all_trades:
-            await self._store_batch(symbol, market_type, all_trades)
-            batch_count += 1
-
-        self.logger.info(
-            f"✅ {self.exchange_name.upper()} TRADES BACKFILL DONE | sym={symbol} mkt={market_type} "
-            f"trades={total_trades} batches={batch_count}"
-        )
-        return total_trades
-
-    async def _store_batch(
-        self,
-        symbol: str,
-        market_type: str,
-        trades: List[Dict[str, Any]],
-    ) -> None:
-        """
-        Store unified trades into ClickHouse.
-        - trade_id ist MATERIALIZED in ClickHouse => NICHT senden.
-        - source wird als rest_backfill gesetzt.
-        """
-        try:
-            tasks = []
-            for trade in trades:
-                try:
-                    trade_data = {
-                        "symbol": trade.get("symbol", symbol),
-                        "market": trade.get("market", market_type),
-                        "price": str(trade["price"]),
-                        "size": str(trade["size"]),
-                        "side": trade["side"],
-                        "timestamp": int(trade["timestamp"]),
-                        "source": "rest_backfill",
-                    }
-                    tasks.append(unified_cl_service.insert_trades(self.exchange_name, trade_data))
-                except Exception as trade_error:
-                    self.logger.warning(f"Trade transform failed for {self.exchange_name}: {trade_error}")
-
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                errors = sum(1 for r in results if isinstance(r, Exception))
-                if errors:
-                    self.logger.warning(f"💾 {self.exchange_name} batch stored with errors: {errors}/{len(tasks)}")
-
-        except Exception as e:
-            self.logger.error(f"❌ {self.exchange_name} batch storage failed: {str(e)}", exc_info=True)
-
-    async def get_available_intervals(self, symbol: str, market_type: str) -> Dict[str, Any]:
-        """
-        Trades-only System:
-        Intervalle sind Chart/Aggregation-Policy. Keine Candle-Endpoint Tests.
-        """
-        try:
-            if self.exchange_config and hasattr(self.exchange_config, "supported_intervals"):
-                standard_intervals = getattr(
-                    self.exchange_config,
-                    "supported_intervals",
-                    ["1m", "5m", "15m", "1h", "4h", "1d"],
-                )
-            else:
-                standard_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
-
-            standard_intervals = [
-                i["value"] if isinstance(i, dict) and "value" in i else i
-                for i in standard_intervals
-            ]
-
-            available_intervals = []
-            for iv in standard_intervals:
-                sec = self._interval_to_seconds(iv)
-                available_intervals.append({
-                    "interval": iv,
-                    "resolution_seconds": sec,
-                    "human_readable": self._seconds_to_human(sec),
-                    "supported": True,
-                })
-
-            return {
-                "exchange": self.exchange_name,
-                "symbol": symbol,
-                "market_type": market_type,
-                "available_intervals": available_intervals,
-                "total_count": len(available_intervals),
-                "account_type": "premium"
-                if self.exchange_config and getattr(self.exchange_config, "is_premium", False)
-                else "free",
-            }
-        except Exception as e:
-            self.logger.error(
-                f"Failed to get available intervals for {symbol} on {self.exchange_name}: {e}",
-                exc_info=True,
-            )
-            return {"error": str(e)}
-
-    def _interval_to_seconds(self, interval: str) -> int:
-        interval_seconds = {
-            "1s": 1,
-            "1m": 60,
-            "3m": 180,
-            "5m": 300,
-            "15m": 900,
-            "30m": 1800,
-            "1h": 3600,
-            "2h": 7200,
-            "4h": 14400,
-            "6h": 21600,
-            "8h": 28800,
-            "12h": 43200,
-            "1d": 86400,
-            "3d": 259200,
-            "1w": 604800,
-            "1M": 2592000,
-        }
-        return interval_seconds.get(interval, 60)
-
-    def _seconds_to_human(self, seconds: int) -> str:
-        if seconds < 60:
-            return f"{seconds}s"
-        if seconds < 3600:
-            return f"{seconds // 60}min"
-        if seconds < 86400:
-            return f"{seconds // 3600}h"
-        if seconds < 604800:
-            return f"{seconds // 86400}d"
-        return f"{seconds // 604800}w"
-
-    def _report_not_implemented(self, method: str, market_type: str, symbol: str) -> None:
-        error_msg = (
-            f"⚠️ NOT IMPLEMENTED: {method} for {market_type} market on {self.exchange_name}. "
-            f"Historical backfill not available for {symbol}. "
-            f"Implement method in backend/exchanges/{self.exchange_name}/services/rest_api.py to enable backfill."
-        )
-
-        if self.health_lane:
-            self.health_lane.record_error(error_msg)
-
-        self.logger.warning(
-            f"⚠️ {self.exchange_name.upper()} HISTORICAL BACKFILL NOT AVAILABLE: "
-            f"{method} not implemented for {market_type}."
-        )
-
-
-# Factory functions (legacy compatibility)
-
-def get_binance_backfill():
-    return UnifiedHistoricalService("binance")
-
-
-def get_gateio_backfill():
-    return UnifiedHistoricalService("gateio")
-
-
-def get_bybit_backfill():
-    return UnifiedHistoricalService("bybit")
-
-
-def get_mexc_backfill():
-    return UnifiedHistoricalService("mexc")
-
-
-def get_bitget_backfill():
-    return UnifiedHistoricalService("bitget")
-
-
-def get_okx_backfill():
-    return UnifiedHistoricalService("okx")
-
-
-def get_htx_backfill():
-    return UnifiedHistoricalService("htx")
-
-
-def get_coinbase_backfill():
-    return UnifiedHistoricalService("coinbase")
-
-
-def get_available_backfill_services():
-    return {
-        "binance": get_binance_backfill,
-        "gateio": get_gateio_backfill,
-        "bybit": get_bybit_backfill,
-        "mexc": get_mexc_backfill,
-        "bitget": get_bitget_backfill,
-        "okx": get_okx_backfill,
-        "htx": get_htx_backfill,
-        "coinbase": get_coinbase_backfill,
-    }
 </file>
 
 <file path="frontend/src/contexts/TradingContext.tsx">
@@ -170064,262 +170068,6 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'COLLECTOR_SYMBOLS', 
-    'BTCUSDT,ETHUSDT,ADAUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
-</file>
-
 <file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
 import { useEffect, useMemo, useState } from "react";
 import { useWsLane } from "../../../services/ws/useWsLane";
@@ -170551,6 +170299,262 @@ createRoot(document.getElementById('root')!).render(
     </ThemeProvider>
   </StrictMode>,
 );
+</file>
+
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'TRADING_SYMBOLS', 
+    'BTCUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 <file path="backend/websocket/ws_manager.py">
@@ -173068,7 +173072,7 @@ class BackfillLoopService:
     async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
         table_name = f"{self.exchange}_trades"
         query = f"""
-            SELECT MIN(timestamp) AS oldest
+            SELECT minOrNull(timestamp) AS oldest
             FROM trading.{table_name}
             WHERE source = 'rest_backfill'
               AND symbol = %(symbol)s
@@ -173082,7 +173086,14 @@ class BackfillLoopService:
                 if not res.result_rows:
                     return None
                 v = res.result_rows[0][0]
-                return v if isinstance(v, datetime) else None
+                # ✅ FIX: minOrNull liefert NULL bei leerer Menge (statt 1970-01-01 Default)
+                # Zusätzliche Validierung als Sicherheit
+                if isinstance(v, datetime):
+                    if v.year < 2000:
+                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
+                        return None
+                    return v
+                return None
 
             oldest = await asyncio.to_thread(_run)
             return _utc(oldest) if oldest else None
