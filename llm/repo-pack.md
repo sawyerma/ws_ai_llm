@@ -14240,560 +14240,6 @@ async def get_clickhouse_stats():
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 </file>
 
-<file path="backend/database/clickhouse/cl_schema_migration.py">
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-
-# ✅ TASK 29: Schema Migration - SQL Schemas → cl_ Lane System
-from backend.database.clickhouse.cl_unified import unified_cl_service
-from backend.database.clickhouse.cl_config import CL_SCHEMAS, EXCHANGE_CL_CONFIGS
-
-logger = logging.getLogger("cl-schema-migration")
-
-class ClickHouseSchemaManager:
-    """
-    📊 CLICKHOUSE SCHEMA MIGRATION
-    
-    Migriert SQL Schemas von fragmentierten clickhouse/init.sql → cl_ Lane System
-    Vereinheitlicht Schema Management für alle 8 Exchanges über cl_ Lane System
-    """
-    
-    def __init__(self):
-        self.cl_service = unified_cl_service
-        self.initialized = False
-        self.migrated_schemas = {}
-        
-    async def initialize(self) -> bool:
-        """Initialisiere ClickHouse Schema Migration"""
-        try:
-            logger.info("📊 Initializing ClickHouse Schema Migration...")
-            
-            # 1. Validiere bestehende Schemas
-            await self._validate_existing_schemas()
-            
-            # 2. Erstelle unified cl_ Schemas
-            await self._create_unified_schemas()
-            
-            # 3. Migriere Legacy Schemas zu cl_ Lane System
-            await self._migrate_legacy_schemas()
-            
-            self.initialized = True
-            logger.info("✅ ClickHouse Schema Migration initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ ClickHouse Schema Migration initialization failed: {e}")
-            return False
-    
-    async def _validate_existing_schemas(self):
-        """Validiere bestehende ClickHouse Schemas"""
-        try:
-            logger.info("🔍 Validating existing ClickHouse schemas...")
-            
-            # Standard Exchanges und deren erwartete Tabellen
-            exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
-            expected_tables = ["trades", "bars", "orderbook"]
-            
-            validation_results = {}
-            
-            for exchange in exchanges:
-                exchange_validation = {
-                    "exchange": exchange,
-                    "tables_found": [],
-                    "tables_missing": [],
-                    "schema_valid": True
-                }
-                
-                for table_type in expected_tables:
-                    table_name = f"{exchange}_{table_type}"
-                    
-                    # Simuliere Schema-Check (kann später mit echten ClickHouse-Queries erweitert werden)
-                    table_exists = await self._check_table_exists(table_name)
-                    
-                    if table_exists:
-                        exchange_validation["tables_found"].append(table_name)
-                    else:
-                        exchange_validation["tables_missing"].append(table_name)
-                        exchange_validation["schema_valid"] = False
-                
-                validation_results[exchange] = exchange_validation
-                logger.info(f"✅ Schema validation for {exchange}: {len(exchange_validation['tables_found'])}/3 tables found")
-            
-            self.validation_results = validation_results
-            
-        except Exception as e:
-            logger.error(f"❌ Schema validation failed: {e}")
-            raise
-    
-    async def _check_table_exists(self, table_name: str) -> bool:
-        """Prüfe ob Tabelle existiert - ECHTER ClickHouse Check!"""
-        try:
-            from .cl_unified_manager import get_clickhouse_connection_pool
-            
-            pool = get_clickhouse_connection_pool()
-            client = pool.get_client()
-            
-            if not client:
-                logger.warning(f"ClickHouse client not available for table check: {table_name}")
-                return False
-            
-            # ECHTER Table Check
-            result = client.command(f"EXISTS TABLE {table_name}")
-            return bool(result)
-            
-        except Exception as e:
-            logger.warning(f"Table check failed for {table_name}: {e}")
-            return False
-    
-    async def _create_unified_schemas(self):
-        """Erstelle vereinheitlichte cl_ Schemas für alle Exchanges"""
-        try:
-            logger.info("🛠️ Creating unified cl_ schemas...")
-            
-            unified_schemas = {}
-            exchanges = list(EXCHANGE_CL_CONFIGS.keys())
-            
-            # 1. Trade Schemas für alle Exchanges
-            for exchange in exchanges:
-                trade_schema = self._generate_trade_schema(exchange)
-                candle_schema = self._generate_candle_schema(exchange) 
-                orderbook_schema = self._generate_orderbook_schema(exchange)
-                
-                unified_schemas[f"{exchange}_trades"] = trade_schema
-                unified_schemas[f"{exchange}_bars"] = candle_schema
-                unified_schemas[f"{exchange}_orderbook"] = orderbook_schema
-            
-            # 2. Unified Schemas (Exchange-übergreifend)
-            unified_schemas["all_trades"] = self._generate_unified_trade_schema()
-            unified_schemas["all_kline"] = self._generate_unified_kline_schema()
-            unified_schemas["user_coin_settings"] = self._generate_user_settings_schema()
-            unified_schemas["user_indicator_settings"] = self._generate_indicator_settings_schema()
-            
-            self.unified_schemas = unified_schemas
-            logger.info(f"✅ Created {len(unified_schemas)} unified cl_ schemas")
-            
-        except Exception as e:
-            logger.error(f"❌ Unified schema creation failed: {e}")
-            raise
-    
-    def _generate_trade_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Trade Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_trades",
-            "columns": [
-                "trade_id String",
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)", 
-                "price Float64",
-                "size Float64",
-                "side LowCardinality(String)",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "MergeTree()",
-            "order_by": "(symbol, market, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 365 DAY"  # 1 Jahr Retention
-            }
-        }
-    
-    def _generate_candle_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Candle/Bar Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_bars",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "resolution LowCardinality(String)",
-                "open Float64",
-                "high Float64", 
-                "low Float64",
-                "close Float64",
-                "volume Float64",
-                "trades UInt32",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(symbol, market, resolution, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 730 DAY"  # 2 Jahre Retention für OHLC
-            }
-        }
-    
-    def _generate_orderbook_schema(self, exchange: str) -> Dict[str, Any]:
-        """Generiere Orderbook Schema für Exchange"""
-        return {
-            "table_name": f"trading.{exchange}_orderbook",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "bids Array(Tuple(Float64, Float64))",
-                "asks Array(Tuple(Float64, Float64))",
-                "ts DateTime64(3)",
-                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(symbol, market, ts)",
-            "partition_by": "toYYYYMM(ts)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 30 DAY"  # 30 Tage Retention für Orderbook
-            }
-        }
-    
-    def _generate_unified_trade_schema(self) -> Dict[str, Any]:
-        """Generiere Unified Trade Schema (alle Exchanges)"""
-        return {
-            "table_name": "trading.all_trades",
-            "columns": [
-                "trade_id String",
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "exchange LowCardinality(String)",
-                "price Float64",
-                "size Float64",
-                "side LowCardinality(String)",
-                "ts DateTime64(3)"
-            ],
-            "engine": "MergeTree()",
-            "order_by": "(exchange, symbol, market, ts)",
-            "partition_by": "(toYYYYMM(ts), exchange)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 365 DAY"
-            }
-        }
-    
-    def _generate_unified_kline_schema(self) -> Dict[str, Any]:
-        """Generiere Unified KLINE Schema (alle Exchanges)"""
-        return {
-            "table_name": "trading.all_kline",
-            "columns": [
-                "symbol LowCardinality(String)",
-                "market LowCardinality(String)",
-                "exchange LowCardinality(String)",
-                "resolution LowCardinality(String)",
-                "open Float64",
-                "high Float64",
-                "low Float64", 
-                "close Float64",
-                "volume Float64",
-                "trades UInt32",
-                "ts DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(ts)",
-            "order_by": "(exchange, symbol, market, resolution, ts)",
-            "partition_by": "(toYYYYMM(ts), exchange)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "ts + INTERVAL 730 DAY"
-            }
-        }
-    
-    def _generate_user_settings_schema(self) -> Dict[str, Any]:
-        """Generiere User Settings Schema"""
-        return {
-            "table_name": "trading.user_coin_settings",
-            "columns": [
-                "user_id String",
-                "exchange LowCardinality(String)",
-                "symbol LowCardinality(String)",
-                "active Bool DEFAULT true",
-                "notifications_enabled Bool DEFAULT false",
-                "price_alerts Array(String)",
-                "volume_alerts Array(String)",
-                "settings String",  # JSON String
-                "created_at DateTime64(3)",
-                "updated_at DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(updated_at)",
-            "order_by": "(user_id, exchange, symbol)",
-            "partition_by": "toYYYYMM(created_at)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
-            }
-        }
-    
-    def _generate_indicator_settings_schema(self) -> Dict[str, Any]:
-        """Generiere Indicator Settings Schema"""
-        return {
-            "table_name": "trading.user_indicator_settings",
-            "columns": [
-                "user_id String",
-                "exchange LowCardinality(String)",
-                "symbol LowCardinality(String)",
-                "indicator_type LowCardinality(String)",
-                "indicator_name String",
-                "parameters String",  # JSON String
-                "timeframes Array(String)",
-                "enabled Bool DEFAULT true",
-                "alert_conditions Array(String)",
-                "created_at DateTime64(3)",
-                "updated_at DateTime64(3)"
-            ],
-            "engine": "ReplacingMergeTree(updated_at)",
-            "order_by": "(user_id, exchange, symbol, indicator_type)",
-            "partition_by": "toYYYYMM(created_at)",
-            "settings": {
-                "index_granularity": 8192,
-                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
-            }
-        }
-    
-    async def _migrate_legacy_schemas(self):
-        """Migriere Legacy Schemas zu cl_ Lane System"""
-        try:
-            logger.info("🔄 Migrating legacy schemas to cl_ Lane System...")
-            
-            migration_results = {}
-            
-            # Migriere alle Unified Schemas
-            for schema_name, schema_definition in self.unified_schemas.items():
-                try:
-                    migration_result = await self._apply_schema_migration(schema_name, schema_definition)
-                    migration_results[schema_name] = migration_result
-                    
-                    if migration_result["success"]:
-                        logger.info(f"✅ Schema migration successful: {schema_name}")
-                    else:
-                        logger.warning(f"⚠️ Schema migration partial: {schema_name} - {migration_result.get('message', 'Unknown issue')}")
-                        
-                except Exception as schema_error:
-                    migration_results[schema_name] = {
-                        "success": False,
-                        "error": str(schema_error)
-                    }
-                    logger.error(f"❌ Schema migration failed: {schema_name} - {schema_error}")
-            
-            self.migration_results = migration_results
-            
-            # Summary
-            successful_migrations = sum(1 for r in migration_results.values() if r.get("success", False))
-            total_migrations = len(migration_results)
-            
-            logger.info(f"🎯 Schema migration completed: {successful_migrations}/{total_migrations} schemas migrated successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Legacy schema migration failed: {e}")
-            raise
-    
-    async def _apply_schema_migration(self, schema_name: str, schema_definition: Dict[str, Any]) -> Dict[str, Any]:
-        """Wende einzelne Schema Migration an"""
-        try:
-            # TODO: Implementiere echte ClickHouse Schema-Anwendung
-            # Für jetzt simuliere erfolgreiche Migration
-            
-            migration_sql = self._generate_create_table_sql(schema_definition)
-            
-            # Simuliere ClickHouse-Operation
-            if hasattr(self.cl_service, 'execute_schema_migration'):
-                result = await self.cl_service.execute_schema_migration(migration_sql)
-                return {
-                    "success": True,
-                    "table_name": schema_definition["table_name"],
-                    "sql": migration_sql,
-                    "result": result
-                }
-            else:
-                # Fallback: Assume migration successful
-                return {
-                    "success": True,
-                    "table_name": schema_definition["table_name"],
-                    "sql": migration_sql,
-                    "message": "Migration simulated (cl_service not available)"
-                }
-                
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "table_name": schema_definition.get("table_name", "unknown")
-            }
-    
-    def _generate_create_table_sql(self, schema_definition: Dict[str, Any]) -> str:
-        """Generiere CREATE TABLE SQL aus Schema Definition"""
-        try:
-            table_name = schema_definition["table_name"]
-            columns = schema_definition["columns"]
-            engine = schema_definition["engine"]
-            order_by = schema_definition["order_by"]
-            partition_by = schema_definition.get("partition_by", "")
-            settings = schema_definition.get("settings", {})
-            
-            # CREATE TABLE SQL
-            sql_parts = [f"CREATE TABLE IF NOT EXISTS {table_name} ("]
-            sql_parts.append("    " + ",\n    ".join(columns))
-            sql_parts.append(f") ENGINE = {engine}")
-            
-            if order_by:
-                sql_parts.append(f"ORDER BY {order_by}")
-            
-            if partition_by:
-                sql_parts.append(f"PARTITION BY {partition_by}")
-            
-            if settings:
-                settings_str = ", ".join([f"{k} = {v}" if isinstance(v, (int, float)) else f"{k} = '{v}'" for k, v in settings.items()])
-                sql_parts.append(f"SETTINGS {settings_str}")
-            
-            return "\n".join(sql_parts) + ";"
-            
-        except Exception as e:
-            logger.error(f"SQL generation failed for schema: {e}")
-            return f"-- SQL generation failed: {str(e)}"
-    
-    # ✅ PUBLIC API METHODS
-    def get_schema_migration_summary(self) -> Dict[str, Any]:
-        """Hole Schema Migration Summary"""
-        try:
-            if not self.initialized:
-                return {"error": "Schema Migration not initialized"}
-            
-            # Sammle Migration Results
-            migration_summary = {
-                "initialized": self.initialized,
-                "total_schemas": len(self.unified_schemas) if hasattr(self, 'unified_schemas') else 0,
-                "successful_migrations": 0,
-                "failed_migrations": 0,
-                "schemas_by_category": {
-                    "exchange_specific": {},
-                    "unified": {},
-                    "user_settings": {}
-                },
-                "migration_results": getattr(self, 'migration_results', {}),
-                "validation_results": getattr(self, 'validation_results', {}),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Zähle erfolgreiche/fehlgeschlagene Migrationen
-            if hasattr(self, 'migration_results'):
-                for result in self.migration_results.values():
-                    if result.get("success", False):
-                        migration_summary["successful_migrations"] += 1
-                    else:
-                        migration_summary["failed_migrations"] += 1
-            
-            # Kategorisiere Schemas
-            if hasattr(self, 'unified_schemas'):
-                exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
-                
-                for schema_name in self.unified_schemas.keys():
-                    if any(ex in schema_name for ex in exchanges):
-                        if "_trades" in schema_name:
-                            category = "trades"
-                        elif "_bars" in schema_name:
-                            category = "candles"
-                        elif "_orderbook" in schema_name:
-                            category = "orderbook"
-                        else:
-                            category = "other"
-                        
-                        if category not in migration_summary["schemas_by_category"]["exchange_specific"]:
-                            migration_summary["schemas_by_category"]["exchange_specific"][category] = []
-                        migration_summary["schemas_by_category"]["exchange_specific"][category].append(schema_name)
-                        
-                    elif "all_" in schema_name or "user_" in schema_name:
-                        if "all_" in schema_name:
-                            category_type = "unified"
-                        else:
-                            category_type = "user_settings"
-                        
-                        if schema_name not in migration_summary["schemas_by_category"][category_type]:
-                            migration_summary["schemas_by_category"][category_type][schema_name] = True
-            
-            return migration_summary
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to get schema migration summary: {e}")
-            return {"error": str(e)}
-    
-    async def validate_migrated_schemas(self) -> Dict[str, Any]:
-        """Validiere migrierte Schemas"""
-        try:
-            logger.info("✅ Validating migrated schemas...")
-            
-            validation_results = {
-                "validation_passed": True,
-                "validated_schemas": 0,
-                "validation_errors": [],
-                "schema_validations": {}
-            }
-            
-            if hasattr(self, 'unified_schemas'):
-                for schema_name, schema_def in self.unified_schemas.items():
-                    try:
-                        # Validate Schema Definition
-                        schema_validation = await self._validate_schema_definition(schema_name, schema_def)
-                        validation_results["schema_validations"][schema_name] = schema_validation
-                        
-                        if schema_validation["valid"]:
-                            validation_results["validated_schemas"] += 1
-                        else:
-                            validation_results["validation_passed"] = False
-                            validation_results["validation_errors"].extend(schema_validation.get("errors", []))
-                            
-                    except Exception as validation_error:
-                        validation_results["validation_passed"] = False
-                        validation_results["validation_errors"].append(f"Schema {schema_name}: {str(validation_error)}")
-            
-            logger.info(f"🎯 Schema validation completed: {validation_results['validated_schemas']} schemas validated")
-            return validation_results
-            
-        except Exception as e:
-            logger.error(f"❌ Schema validation failed: {e}")
-            return {"validation_passed": False, "error": str(e)}
-    
-    async def _validate_schema_definition(self, schema_name: str, schema_def: Dict[str, Any]) -> Dict[str, Any]:
-        """Validiere einzelne Schema Definition"""
-        try:
-            validation_result = {
-                "valid": True,
-                "errors": [],
-                "warnings": []
-            }
-            
-            # Required Fields Check
-            required_fields = ["table_name", "columns", "engine", "order_by"]
-            for field in required_fields:
-                if field not in schema_def:
-                    validation_result["valid"] = False
-                    validation_result["errors"].append(f"Missing required field: {field}")
-            
-            # Columns Check
-            if "columns" in schema_def and isinstance(schema_def["columns"], list):
-                if len(schema_def["columns"]) == 0:
-                    validation_result["valid"] = False
-                    validation_result["errors"].append("No columns defined")
-            else:
-                validation_result["valid"] = False
-                validation_result["errors"].append("Columns must be a non-empty list")
-            
-            # Engine Check
-            if "engine" in schema_def:
-                engine = schema_def["engine"]
-                valid_engines = ["MergeTree()", "ReplacingMergeTree"]
-                if not any(valid_engine in engine for valid_engine in valid_engines):
-                    validation_result["warnings"].append(f"Unusual engine: {engine}")
-            
-            return validation_result
-            
-        except Exception as e:
-            return {
-                "valid": False,
-                "errors": [f"Validation error: {str(e)}"]
-            }
-
-# Global ClickHouse Schema Manager instance
-cl_schema_manager = ClickHouseSchemaManager()
-</file>
-
 <file path="backend/database/clickhouse/cl_unified.py">
 import asyncio
 import logging
@@ -37004,6 +36450,14 @@ if __name__ == "__main__":
     asyncio.run(main())
 </file>
 
+<file path="backend/services/delete/unified_aggregator_entrypoint.py">
+import asyncio
+from ..adapter.unified_aggregator import run_unified_aggregator
+
+if __name__ == "__main__":
+    asyncio.run(run_unified_aggregator())
+</file>
+
 <file path="backend/services/discovery/later/dis_whales.py">
 import logging
 from typing import Any, Dict, List, Optional
@@ -41645,6 +41099,426 @@ __version__ = "1.0.0"
 # This enables imports like: from backend.exchanges import ...
 </file>
 
+<file path="diag_py/deep_analysis.sh">
+#!/bin/bash
+
+# =============================================================================
+# DEEP SYSTEM ANALYSIS - Complete Data Flow Analysis
+# =============================================================================
+
+set +e  # Don't exit on errors
+
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+
+echo "=================================================="
+echo "🔬 DEEP SYSTEM ANALYSIS"
+echo "=================================================="
+ANALYSIS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+echo "Analysis Time: $ANALYSIS_TIME"
+echo "Time Zone: Europe/Berlin (UTC+1)"
+echo ""
+
+# =============================================================================
+# 1. CLICKHOUSE DATA FRESHNESS & GROWTH
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "1️⃣  CLICKHOUSE DATA FRESHNESS & GROWTH RATE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-10s | %-19s | %8s | %12s | %10s | %s\n" "Exchange" "Newest Trade" "Age(sec)" "Last 10min" "Rate/sec" "Status"
+echo "------------------------------------------------------------------------------------------------------------"
+
+for exchange in "${EXCHANGES[@]}"; do
+  # Get newest trade timestamp and calculate age in ClickHouse
+  NEWEST_INFO=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT max(timestamp) as newest, dateDiff('second', max(timestamp), now()) as age FROM trading.${exchange}_trades WHERE source = 'live_ws'" \
+    2>/dev/null || echo "1970-01-01 00:00:00	999999")
+  
+  NEWEST=$(echo "$NEWEST_INFO" | cut -f1)
+  AGE=$(echo "$NEWEST_INFO" | cut -f2)
+  
+  # Get count from last 10 minutes
+  COUNT_10MIN=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 10 MINUTE AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$COUNT_10MIN" =~ ^[0-9]+$ ]] || COUNT_10MIN=0
+  [[ "$AGE" =~ ^[0-9]+$ ]] || AGE=999999
+  
+  # Calculate rate
+  RATE=$(awk "BEGIN {printf \"%.2f\", $COUNT_10MIN / 600}")
+  
+  # Determine status (text-based, no emojis)
+  if [[ $AGE -lt 60 ]]; then
+    STATUS="LIVE"
+  elif [[ $AGE -lt 300 ]]; then
+    STATUS="RECENT"
+  elif [[ $AGE -lt 3600 ]]; then
+    STATUS="STALE"
+  else
+    STATUS="OLD"
+  fi
+  
+  if [[ -n "$NEWEST" ]] && [[ "$NEWEST" != "1970-01-01 00:00:00" ]]; then
+    printf "%-10s | %-19s | %8d | %12s | %10s | %s\n" "$exchange" "$NEWEST" $AGE "$(printf "%'d" $COUNT_10MIN)" "$RATE" "$STATUS"
+  else
+    printf "%-10s | %-19s | %8s | %12s | %10s | %s\n" "$exchange" "No data" "N/A" "0" "0.00" "NO_DATA"
+  fi
+done
+
+echo ""
+
+# =============================================================================
+# 2. SPOT VS FUTURES BREAKDOWN
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "2️⃣  SPOT VS FUTURES BREAKDOWN (ClickHouse)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-10s | %12s | %12s | %12s | %6s\n" "Exchange" "Spot" "Futures" "Total" "% Spot"
+echo "------------------------------------------------------------------------"
+
+TOTAL_SPOT=0
+TOTAL_FUTURES=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  SPOT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE market = 'spot' AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  
+  FUTURES=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE market IN ('usdtm', 'coinm', 'usdcm', 'futures') AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$SPOT" =~ ^[0-9]+$ ]] || SPOT=0
+  [[ "$FUTURES" =~ ^[0-9]+$ ]] || FUTURES=0
+  
+  TOTAL_SPOT=$((TOTAL_SPOT + SPOT))
+  TOTAL_FUTURES=$((TOTAL_FUTURES + FUTURES))
+  
+  EXCHANGE_TOTAL=$((SPOT + FUTURES))
+  if [[ $EXCHANGE_TOTAL -gt 0 ]]; then
+    PERCENT=$(awk "BEGIN {printf \"%.1f\", ($SPOT / $EXCHANGE_TOTAL) * 100}")
+  else
+    PERCENT="0.0"
+  fi
+  
+  printf "%-10s | %12s | %12s | %12s | %5s%%\n" "$exchange" "$(printf "%'d" $SPOT)" "$(printf "%'d" $FUTURES)" "$(printf "%'d" $EXCHANGE_TOTAL)" "$PERCENT"
+done
+
+echo "------------------------------------------------------------------------"
+GRAND_TOTAL=$((TOTAL_SPOT + TOTAL_FUTURES))
+if [[ $GRAND_TOTAL -gt 0 ]]; then
+  TOTAL_PERCENT=$(awk "BEGIN {printf \"%.1f\", ($TOTAL_SPOT / $GRAND_TOTAL) * 100}")
+else
+  TOTAL_PERCENT="0.0"
+fi
+
+printf "%-10s | %12s | %12s | %12s | %5s%%\n" "TOTAL" "$(printf "%'d" $TOTAL_SPOT)" "$(printf "%'d" $TOTAL_FUTURES)" "$(printf "%'d" $GRAND_TOTAL)" "$TOTAL_PERCENT"
+
+echo ""
+
+# =============================================================================
+# 3. REDIS STREAMS - INLINE STATUS
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "3️⃣  REDIS STREAMS - INLINE STATUS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-10s | %8s | %8s | %10s | %10s | %s\n" "Exchange" "# Spot" "# Futures" "Msg Spot" "Msg Fut" "Status"
+echo "--------------------------------------------------------------------------------------------"
+
+TOTAL_STREAMS_SPOT=0
+TOTAL_STREAMS_FUT=0
+TOTAL_MSGS_SPOT=0
+TOTAL_MSGS_FUT=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  # Count streams
+  NUM_SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | wc -l | tr -d ' ')
+  NUM_FUT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" "${exchange}:trades:coinm:*" "${exchange}:trades:usdcm:*" 2>/dev/null | wc -l | tr -d ' ')
+  
+  # Count messages
+  MSGS_SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | \
+    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
+    awk '{sum+=$1} END {print sum+0}')
+  
+  MSGS_FUT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" 2>/dev/null | \
+    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
+    awk '{sum+=$1} END {print sum+0}')
+  
+  [[ "$NUM_SPOT" =~ ^[0-9]+$ ]] || NUM_SPOT=0
+  [[ "$NUM_FUT" =~ ^[0-9]+$ ]] || NUM_FUT=0
+  [[ "$MSGS_SPOT" =~ ^[0-9]+$ ]] || MSGS_SPOT=0
+  [[ "$MSGS_FUT" =~ ^[0-9]+$ ]] || MSGS_FUT=0
+  
+  TOTAL_STREAMS_SPOT=$((TOTAL_STREAMS_SPOT + NUM_SPOT))
+  TOTAL_STREAMS_FUT=$((TOTAL_STREAMS_FUT + NUM_FUT))
+  TOTAL_MSGS_SPOT=$((TOTAL_MSGS_SPOT + MSGS_SPOT))
+  TOTAL_MSGS_FUT=$((TOTAL_MSGS_FUT + MSGS_FUT))
+  
+  TOTAL_MSGS=$((MSGS_SPOT + MSGS_FUT))
+  
+  if [[ $TOTAL_MSGS -gt 0 ]]; then
+    STATUS="ACTIVE"
+  else
+    STATUS="IDLE"
+  fi
+  
+  printf "%-10s | %8d | %8d | %10s | %10s | %s\n" "$exchange" $NUM_SPOT $NUM_FUT "$(printf "%'d" $MSGS_SPOT)" "$(printf "%'d" $MSGS_FUT)" "$STATUS"
+done
+
+echo "--------------------------------------------------------------------------------------------"
+printf "%-10s | %8d | %8d | %10s | %10s |\n" "TOTAL" $TOTAL_STREAMS_SPOT $TOTAL_STREAMS_FUT "$(printf "%'d" $TOTAL_MSGS_SPOT)" "$(printf "%'d" $TOTAL_MSGS_FUT)"
+
+echo ""
+
+# =============================================================================
+# 4. HOURLY DATA DISTRIBUTION (Today)
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "4️⃣  HOURLY DATA DISTRIBUTION (Today)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+echo "Last 24 Hours - Trades per Hour (All Exchanges Combined):"
+echo ""
+
+docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query "
+SELECT 
+  toHour(timestamp) as hour,
+  formatDateTime(timestamp, '%Y-%m-%d %H:00') as time_bucket,
+  count(*) as trades,
+  round(count(*) / 3600, 2) as trades_per_sec
+FROM (
+  SELECT timestamp FROM trading.binance_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.bitget_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.bybit_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.coinbase_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.gateio_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.mexc_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.okx_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+  UNION ALL SELECT timestamp FROM trading.htx_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
+)
+GROUP BY hour, time_bucket
+ORDER BY hour DESC
+LIMIT 24
+FORMAT PrettyCompact
+" 2>/dev/null || echo "Failed to query hourly data"
+
+echo ""
+
+# =============================================================================
+# 5. TODAY VS YESTERDAY COMPARISON
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "5️⃣  TODAY VS YESTERDAY COMPARISON"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-10s | %15s | %15s | %15s | %8s\n" "Exchange" "Today" "Yesterday" "Diff" "Change"
+echo "-------------------------------------------------------------------------------------"
+
+TOTAL_TODAY=0
+TOTAL_YESTERDAY=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  TODAY=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE toDate(timestamp) = today() AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  
+  YESTERDAY=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE toDate(timestamp) = yesterday() AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$TODAY" =~ ^[0-9]+$ ]] || TODAY=0
+  [[ "$YESTERDAY" =~ ^[0-9]+$ ]] || YESTERDAY=0
+  
+  TOTAL_TODAY=$((TOTAL_TODAY + TODAY))
+  TOTAL_YESTERDAY=$((TOTAL_YESTERDAY + YESTERDAY))
+  
+  DIFF=$((TODAY - YESTERDAY))
+  
+  if [[ $YESTERDAY -gt 0 ]]; then
+    CHANGE=$(awk "BEGIN {printf \"%.1f\", (($TODAY - $YESTERDAY) / $YESTERDAY) * 100}")
+    if (( $(echo "$CHANGE > 0" | bc -l) )); then
+      CHANGE_STR="+${CHANGE}%"
+    elif (( $(echo "$CHANGE < 0" | bc -l) )); then
+      CHANGE_STR="${CHANGE}%"
+    else
+      CHANGE_STR="0.0%"
+    fi
+  else
+    CHANGE_STR="NEW"
+  fi
+  
+  printf "%-10s | %15s | %15s | %15s | %s\n" "$exchange" "$(printf "%'d" $TODAY)" "$(printf "%'d" $YESTERDAY)" "$(printf "%'+d" $DIFF)" "$CHANGE_STR"
+done
+
+echo "-------------------------------------------------------------------------------------"
+TOTAL_DIFF=$((TOTAL_TODAY - TOTAL_YESTERDAY))
+if [[ $TOTAL_YESTERDAY -gt 0 ]]; then
+  TOTAL_CHANGE=$(awk "BEGIN {printf \"%.1f\", (($TOTAL_TODAY - $TOTAL_YESTERDAY) / $TOTAL_YESTERDAY) * 100}")
+else
+  TOTAL_CHANGE="N/A"
+fi
+
+printf "%-10s | %15s | %15s | %15s | %s\n" "TOTAL" "$(printf "%'d" $TOTAL_TODAY)" "$(printf "%'d" $TOTAL_YESTERDAY)" "$(printf "%'+d" $TOTAL_DIFF)" "$TOTAL_CHANGE%"
+
+echo ""
+
+# =============================================================================
+# 6. BACKFILL PROGRESS (API Query)
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "6️⃣  BACKFILL PROGRESS (API Integration)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Read backfill config from .env or defaults
+BACKFILL_COINS="${AUTO_BACKFILL_COINS:-binance:BTCUSDT}"
+BACKFILL_TARGET="${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01}"
+BACKFILL_INTERVAL="${AUTO_BACKFILL_INTERVAL:-1m}"
+
+echo "Configured Backfill Settings:"
+echo "  Coins: $BACKFILL_COINS"
+echo "  Target: $BACKFILL_TARGET"
+echo "  Interval: $BACKFILL_INTERVAL"
+echo ""
+
+# Parse coins and query each
+IFS=',' read -ra COIN_ARRAY <<< "$BACKFILL_COINS"
+
+for coin_pair in "${COIN_ARRAY[@]}"; do
+  IFS=':' read -r exchange symbol <<< "$coin_pair"
+  
+  echo "📊 $exchange:$symbol"
+  
+  # Query progress API
+  PROGRESS=$(curl -s --max-time 5 \
+    "http://localhost:8100/api/historical/backfill/progress?exchange=$exchange&symbol=$symbol&interval=$BACKFILL_INTERVAL&target_date=$BACKFILL_TARGET" \
+    2>/dev/null || echo '{}')
+  
+  # Check if API returned valid data (total_candles > 0)
+  TOTAL=$(echo "$PROGRESS" | jq -r '.total_candles // 0' 2>/dev/null)
+  
+  if [[ "$TOTAL" =~ ^[0-9]+$ ]] && [[ $TOTAL -gt 0 ]]; then
+    # API has valid data - use it
+    EXPECTED=$(echo "$PROGRESS" | jq -r '.expected_candles // 0')
+    PROGRESS_PCT=$(echo "$PROGRESS" | jq -r '.progress_percent // 0')
+    MISSING_DAYS=$(echo "$PROGRESS" | jq -r '.missing_days // 0')
+    OLDEST=$(echo "$PROGRESS" | jq -r '.oldest_candle_date // "N/A"')
+    NEWEST=$(echo "$PROGRESS" | jq -r '.newest_candle_date // "N/A"')
+    STATUS=$(echo "$PROGRESS" | jq -r '.status // "unknown"')
+    
+    echo "  Progress: $PROGRESS_PCT% ($TOTAL / $EXPECTED candles)"
+    echo "  Range: $OLDEST → $NEWEST"
+    echo "  Missing: $MISSING_DAYS days"
+    echo "  Status: $STATUS (API)"
+  else
+    # Fallback: Direct ClickHouse query (SAME AS monitor-system.sh)
+    BACKFILL_STATS=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query "
+      SELECT 
+        count(*) as total_backfill,
+        min(timestamp) as oldest,
+        max(timestamp) as newest,
+        dateDiff('day', min(timestamp), max(timestamp)) as days_covered
+      FROM trading.${exchange}_trades
+      WHERE source = 'rest_backfill' AND symbol = '$symbol'
+      FORMAT JSON
+    " 2>/dev/null || echo '{"data":[{"total_backfill":0,"oldest":"","newest":"","days_covered":0}]}')
+    
+    BF_TOTAL=$(echo "$BACKFILL_STATS" | jq -r '.data[0].total_backfill // 0' 2>/dev/null || echo 0)
+    BF_OLDEST=$(echo "$BACKFILL_STATS" | jq -r '.data[0].oldest // "N/A"' 2>/dev/null || echo "N/A")
+    BF_NEWEST=$(echo "$BACKFILL_STATS" | jq -r '.data[0].newest // "N/A"' 2>/dev/null || echo "N/A")
+    BF_DAYS=$(echo "$BACKFILL_STATS" | jq -r '.data[0].days_covered // 0' 2>/dev/null || echo 0)
+    
+    # Calculate progress
+    TARGET_DATE_TS=$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET" +%s 2>/dev/null || echo 0)
+    NOW_TS=$(date +%s)
+    TOTAL_DAYS=$(( (NOW_TS - TARGET_DATE_TS) / 86400 ))
+    
+    if [[ $TOTAL_DAYS -gt 0 ]] && [[ $BF_DAYS -gt 0 ]]; then
+      PROGRESS_PCT=$(awk "BEGIN {printf \"%.1f\", ($BF_DAYS / $TOTAL_DAYS) * 100}")
+    else
+      PROGRESS_PCT="0.0"
+    fi
+    
+    echo "  Progress: ${PROGRESS_PCT}% complete ($BF_DAYS/$TOTAL_DAYS days)"
+    echo "  Backfill Trades: $(printf "%'d" $BF_TOTAL)"
+    echo "  Range: $BF_OLDEST → $BF_NEWEST"
+    echo "  Status: API not available (using direct CH query)"
+  fi
+  
+  echo ""
+done
+
+# =============================================================================
+# 7. SYSTEM SUMMARY
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "7️⃣  SYSTEM SUMMARY"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+echo "📊 ClickHouse Database:"
+echo "   Total Live Trades: $(printf "%'d" $GRAND_TOTAL)"
+echo "   Spot: $(printf "%'d" $TOTAL_SPOT) ($TOTAL_PERCENT%)"
+echo "   Futures: $(printf "%'d" $TOTAL_FUTURES) ($((100 - ${TOTAL_PERCENT%.*}))%)"
+echo ""
+
+echo "📊 Redis Streams:"
+echo "   Total Streams: $((TOTAL_STREAMS_SPOT + TOTAL_STREAMS_FUT))"
+echo "   Spot Streams: $TOTAL_STREAMS_SPOT"
+echo "   Futures Streams: $TOTAL_STREAMS_FUT"
+echo "   Total Messages: $(printf "%'d" $((TOTAL_MSGS_SPOT + TOTAL_MSGS_FUT)))"
+echo ""
+
+echo "📈 Activity:"
+echo "   Today: $(printf "%'d" $TOTAL_TODAY) trades"
+echo "   Yesterday: $(printf "%'d" $TOTAL_YESTERDAY) trades"
+echo "   Change: $(printf "%'+d" $TOTAL_DIFF) ($TOTAL_CHANGE%)"
+echo ""
+
+echo "🎯 System Health:"
+# Count writing exchanges
+WRITING=0
+for exchange in "${EXCHANGES[@]}"; do
+  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source = 'live_ws'" \
+    2>/dev/null || echo 0)
+  [[ $COUNT -gt 0 ]] && WRITING=$((WRITING + 1))
+done
+
+echo "   Exchanges Writing: $WRITING/8"
+echo "   Exchanges Idle: $((8 - WRITING))/8"
+
+if [[ $WRITING -eq 8 ]]; then
+  echo "   Status: ALL_HEALTHY"
+elif [[ $WRITING -gt 0 ]]; then
+  echo "   Status: PARTIAL ($WRITING/8)"
+else
+  echo "   Status: FAILED"
+fi
+
+echo ""
+echo "=================================================="
+echo "DEEP ANALYSIS COMPLETE"
+echo "=================================================="
+echo "Analysis Duration: $(($(date +%s) - $(date -j -f "%Y-%m-%d %H:%M:%S" "$ANALYSIS_TIME" +%s 2>/dev/null || echo 0))) seconds"
+echo ""
+</file>
+
 <file path="diag_py/quick_ch_check.py">
 #!/usr/bin/env python3
 """
@@ -42030,6 +41904,277 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+</file>
+
+<file path="diag_py/verify_all_metrics.sh">
+#!/bin/bash
+
+# =============================================================================
+# COMPLETE METRICS VERIFICATION - Verify ALL Monitor Data
+# =============================================================================
+
+set +e  # Don't exit on errors
+
+EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
+
+echo "=================================================="
+echo "🔍 COMPLETE METRICS VERIFICATION"
+echo "=================================================="
+echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+echo ""
+
+# =============================================================================
+# 1. BACKEND HEALTH STATUS
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "1️⃣  BACKEND HEALTH STATUS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+HEALTH_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null)
+HEALTH_CODE=$?
+
+if [[ $HEALTH_CODE -eq 0 ]]; then
+  SYSTEM_STATUS=$(echo "$HEALTH_RESPONSE" | jq -r '.system_status // "unknown"' 2>/dev/null)
+  READY_BOOL=$(echo "$HEALTH_RESPONSE" | jq -r '.ready // false' 2>/dev/null)
+  HEALTHY=$(echo "$HEALTH_RESPONSE" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null)
+  TOTAL=$(echo "$HEALTH_RESPONSE" | jq -r '.summary.total_components // 0' 2>/dev/null)
+  
+  if [[ "$READY_BOOL" == "true" ]]; then
+    echo "✅ Backend Health: ONLINE"
+    echo "   System Status: $SYSTEM_STATUS"
+    echo "   Components: $HEALTHY/$TOTAL healthy"
+  else
+    echo "⚠️  Backend Health: DEGRADED"
+    echo "   System Status: $SYSTEM_STATUS"
+    echo "   Components: $HEALTHY/$TOTAL healthy"
+  fi
+else
+  echo "❌ Backend Health: OFFLINE"
+  echo "   Error: Backend not responding"
+fi
+
+echo ""
+
+# =============================================================================
+# 2. CLICKHOUSE LIVE TRADES (Last 5 Minutes) - ALL EXCHANGES
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "2️⃣  CLICKHOUSE LIVE TRADES (Last 5 Minutes)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-12s | %15s | %s\n" "Exchange" "Live Trades" "Status"
+echo "-----------------------------------------------------"
+
+TOTAL_LIVE=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
+  TOTAL_LIVE=$((TOTAL_LIVE + COUNT))
+  
+  if [[ $COUNT -gt 0 ]]; then
+    printf "✅ %-10s | %15s | Writing\n" "$exchange" "$(printf "%'d" $COUNT)"
+  else
+    printf "❌ %-10s | %15s | NOT Writing\n" "$exchange" "$(printf "%'d" $COUNT)"
+  fi
+done
+
+echo "-----------------------------------------------------"
+printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_LIVE)"
+echo ""
+
+# =============================================================================
+# 3. CLICKHOUSE HISTORICAL TRADES (ALL Live Trades) - ALL EXCHANGES
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "3️⃣  CLICKHOUSE HISTORICAL TRADES (All Live)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-12s | %15s | %s\n" "Exchange" "Historical" "Status"
+echo "-----------------------------------------------------"
+
+TOTAL_HIST=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source != 'rest_backfill'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
+  TOTAL_HIST=$((TOTAL_HIST + COUNT))
+  
+  if [[ $COUNT -gt 0 ]]; then
+    printf "✅ %-10s | %15s | Has Data\n" "$exchange" "$(printf "%'d" $COUNT)"
+  else
+    printf "⚠️  %-10s | %15s | No Data\n" "$exchange" "$(printf "%'d" $COUNT)"
+  fi
+done
+
+echo "-----------------------------------------------------"
+printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_HIST)"
+echo ""
+
+# =============================================================================
+# 4. CLICKHOUSE BACKFILL TRADES - ALL EXCHANGES
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "4️⃣  CLICKHOUSE BACKFILL TRADES"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-12s | %15s | %s\n" "Exchange" "Backfill" "Status"
+echo "-----------------------------------------------------"
+
+TOTAL_BACKFILL=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" \
+    2>/dev/null || echo 0)
+  
+  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
+  TOTAL_BACKFILL=$((TOTAL_BACKFILL + COUNT))
+  
+  if [[ $COUNT -gt 0 ]]; then
+    printf "✅ %-10s | %15s | Has Backfill\n" "$exchange" "$(printf "%'d" $COUNT)"
+  else
+    printf "○  %-10s | %15s | No Backfill\n" "$exchange" "$(printf "%'d" $COUNT)"
+  fi
+done
+
+echo "-----------------------------------------------------"
+printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_BACKFILL)"
+echo ""
+
+# =============================================================================
+# 5. REDIS STREAMS - ALL EXCHANGES
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "5️⃣  REDIS STREAMS (Realtime Buffer)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+printf "%-12s | %10s | %10s | %10s | %s\n" "Exchange" "Spot" "USDTM" "Total" "Status"
+echo "-------------------------------------------------------------------------"
+
+TOTAL_REDIS=0
+
+for exchange in "${EXCHANGES[@]}"; do
+  SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | \
+    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
+    awk '{sum+=$1} END {print sum}')
+  
+  USDTM=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" 2>/dev/null | \
+    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
+    awk '{sum+=$1} END {print sum}')
+  
+  [[ "$SPOT" =~ ^[0-9]+$ ]] || SPOT=0
+  [[ "$USDTM" =~ ^[0-9]+$ ]] || USDTM=0
+  
+  EXCHANGE_TOTAL=$((SPOT + USDTM))
+  TOTAL_REDIS=$((TOTAL_REDIS + EXCHANGE_TOTAL))
+  
+  if [[ $EXCHANGE_TOTAL -gt 0 ]]; then
+    printf "✅ %-10s | %10d | %10d | %10d | Active\n" "$exchange" $SPOT $USDTM $EXCHANGE_TOTAL
+  else
+    printf "❌ %-10s | %10d | %10d | %10d | Inactive\n" "$exchange" $SPOT $USDTM $EXCHANGE_TOTAL
+  fi
+done
+
+echo "-------------------------------------------------------------------------"
+printf "TOTAL          |            |            | %10d |\n" $TOTAL_REDIS
+echo ""
+
+# =============================================================================
+# 6. GW-API TEST - Sample Exchange
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "6️⃣  GW-API TEST (Sample: Binance)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+GW_RESPONSE=$(curl -s --max-time 3 "http://localhost:8100/gw/trades?symbol=BTCUSDT&exchange=binance&market=spot&limit=10" 2>/dev/null)
+GW_CODE=$?
+
+if [[ $GW_CODE -eq 0 ]]; then
+  GW_COUNT=$(echo "$GW_RESPONSE" | jq 'length' 2>/dev/null || echo 0)
+  
+  if [[ $GW_COUNT -gt 0 ]]; then
+    echo "✅ GW-API: Working"
+    echo "   Returned: $GW_COUNT trades"
+    echo "   Sample Trade:"
+    echo "$GW_RESPONSE" | jq '.[0]' 2>/dev/null || echo "   (Could not parse)"
+  else
+    echo "⚠️  GW-API: No Data"
+    echo "   Returned: 0 trades"
+  fi
+else
+  echo "❌ GW-API: Failed"
+  echo "   Error: API not responding"
+fi
+
+echo ""
+
+# =============================================================================
+# 7. SUMMARY & COMPARISON WITH MONITOR
+# =============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "7️⃣  SUMMARY & COMPARISON"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+GRAND_TOTAL=$((TOTAL_LIVE + TOTAL_HIST + TOTAL_BACKFILL))
+
+echo "📊 ClickHouse Totals:"
+echo "   Live Trades (5 min):  $(printf "%'d" $TOTAL_LIVE)"
+echo "   Historical Trades:    $(printf "%'d" $TOTAL_HIST)"
+echo "   Backfill Trades:      $(printf "%'d" $TOTAL_BACKFILL)"
+echo "   GRAND TOTAL:          $(printf "%'d" $GRAND_TOTAL)"
+echo ""
+
+echo "📊 Redis Totals:"
+echo "   Stream Messages:      $(printf "%'d" $TOTAL_REDIS)"
+echo ""
+
+# Count healthy exchanges
+HEALTHY_CH=0
+for exchange in "${EXCHANGES[@]}"; do
+  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
+    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" \
+    2>/dev/null || echo 0)
+  [[ $COUNT -gt 0 ]] && HEALTHY_CH=$((HEALTHY_CH + 1))
+done
+
+echo "📈 Exchange Status:"
+echo "   Exchanges Writing:    $HEALTHY_CH/8"
+echo "   Exchanges Idle:       $((8 - HEALTHY_CH))/8"
+echo ""
+
+if [[ $HEALTHY_CH -eq 8 ]]; then
+  echo "✅ SYSTEM STATUS: ALL EXCHANGES HEALTHY"
+elif [[ $HEALTHY_CH -gt 0 ]]; then
+  echo "⚠️  SYSTEM STATUS: PARTIAL ($HEALTHY_CH/8 exchanges writing)"
+else
+  echo "❌ SYSTEM STATUS: FAILED (No exchanges writing)"
+fi
+
+echo ""
+echo "=================================================="
+echo "✅ VERIFICATION COMPLETE"
+echo "=================================================="
 </file>
 
 <file path="frontend/lib/lightweight-charts.standalone.development.js">
@@ -122570,6 +122715,564 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
+<file path="backend/database/clickhouse/cl_schema_migration.py">
+import asyncio
+import logging
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+
+# ✅ TASK 29: Schema Migration - SQL Schemas → cl_ Lane System
+from backend.database.clickhouse.cl_unified import unified_cl_service
+from backend.database.clickhouse.cl_config import CL_SCHEMAS, EXCHANGE_CL_CONFIGS
+
+logger = logging.getLogger("cl-schema-migration")
+
+class ClickHouseSchemaManager:
+    """
+    📊 CLICKHOUSE SCHEMA MIGRATION
+    
+    Migriert SQL Schemas von fragmentierten clickhouse/init.sql → cl_ Lane System
+    Vereinheitlicht Schema Management für alle 8 Exchanges über cl_ Lane System
+    """
+    
+    def __init__(self):
+        self.cl_service = unified_cl_service
+        self.initialized = False
+        self.migrated_schemas = {}
+        
+    async def initialize(self) -> bool:
+        """Initialisiere ClickHouse Schema Migration"""
+        try:
+            logger.info("📊 Initializing ClickHouse Schema Migration...")
+            
+            # 1. Validiere bestehende Schemas
+            await self._validate_existing_schemas()
+            
+            # 2. Erstelle unified cl_ Schemas
+            await self._create_unified_schemas()
+            
+            # 3. Migriere Legacy Schemas zu cl_ Lane System
+            await self._migrate_legacy_schemas()
+            
+            self.initialized = True
+            logger.info("✅ ClickHouse Schema Migration initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ ClickHouse Schema Migration initialization failed: {e}")
+            return False
+    
+    async def _validate_existing_schemas(self):
+        """Validiere bestehende ClickHouse Schemas"""
+        try:
+            logger.info("🔍 Validating existing ClickHouse schemas...")
+            
+            # Standard Exchanges und deren erwartete Tabellen
+            exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
+            expected_tables = ["trades", "bars", "orderbook"]
+            
+            validation_results = {}
+            
+            for exchange in exchanges:
+                exchange_validation = {
+                    "exchange": exchange,
+                    "tables_found": [],
+                    "tables_missing": [],
+                    "schema_valid": True
+                }
+                
+                for table_type in expected_tables:
+                    table_name = f"{exchange}_{table_type}"
+                    
+                    # Simuliere Schema-Check (kann später mit echten ClickHouse-Queries erweitert werden)
+                    table_exists = await self._check_table_exists(table_name)
+                    
+                    if table_exists:
+                        exchange_validation["tables_found"].append(table_name)
+                    else:
+                        exchange_validation["tables_missing"].append(table_name)
+                        exchange_validation["schema_valid"] = False
+                
+                validation_results[exchange] = exchange_validation
+                logger.info(f"✅ Schema validation for {exchange}: {len(exchange_validation['tables_found'])}/3 tables found")
+            
+            self.validation_results = validation_results
+            
+        except Exception as e:
+            logger.error(f"❌ Schema validation failed: {e}")
+            raise
+    
+    async def _check_table_exists(self, table_name: str) -> bool:
+        """Prüfe ob Tabelle existiert - ECHTER ClickHouse Check!"""
+        try:
+            from .cl_unified_manager import get_clickhouse_connection_pool
+            
+            pool = get_clickhouse_connection_pool()
+            client = pool.get_client()
+            
+            if not client:
+                logger.warning(f"ClickHouse client not available for table check: {table_name}")
+                return False
+            
+            # ECHTER Table Check
+            result = client.command(f"EXISTS TABLE {table_name}")
+            return bool(result)
+            
+        except Exception as e:
+            logger.warning(f"Table check failed for {table_name}: {e}")
+            return False
+    
+    async def _create_unified_schemas(self):
+        """Erstelle vereinheitlichte cl_ Schemas für alle Exchanges"""
+        try:
+            logger.info("🛠️ Creating unified cl_ schemas...")
+            
+            unified_schemas = {}
+            exchanges = list(EXCHANGE_CL_CONFIGS.keys())
+            
+            # 1. Trade Schemas für alle Exchanges
+            for exchange in exchanges:
+                trade_schema = self._generate_trade_schema(exchange)
+                candle_schema = self._generate_candle_schema(exchange) 
+                orderbook_schema = self._generate_orderbook_schema(exchange)
+                
+                unified_schemas[f"{exchange}_trades"] = trade_schema
+                unified_schemas[f"{exchange}_bars"] = candle_schema
+                unified_schemas[f"{exchange}_orderbook"] = orderbook_schema
+            
+            # 2. Unified Schemas (Exchange-übergreifend)
+            unified_schemas["all_trades"] = self._generate_unified_trade_schema()
+            # ✅ FIX: Umbenennung all_kline → all_candles (konsistent mit neuer Namenskonvention)
+            unified_schemas["all_candles"] = self._generate_unified_candle_schema()
+            unified_schemas["user_coin_settings"] = self._generate_user_settings_schema()
+            unified_schemas["user_indicator_settings"] = self._generate_indicator_settings_schema()
+            
+            self.unified_schemas = unified_schemas
+            logger.info(f"✅ Created {len(unified_schemas)} unified cl_ schemas")
+            
+        except Exception as e:
+            logger.error(f"❌ Unified schema creation failed: {e}")
+            raise
+    
+    def _generate_trade_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Trade Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_trades",
+            "columns": [
+                "trade_id String",
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)", 
+                "price Float64",
+                "size Float64",
+                "side LowCardinality(String)",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "MergeTree()",
+            "order_by": "(symbol, market, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 365 DAY"  # 1 Jahr Retention
+            }
+        }
+    
+    def _generate_candle_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Candle/Bar Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_bars",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "resolution LowCardinality(String)",
+                "open Float64",
+                "high Float64", 
+                "low Float64",
+                "close Float64",
+                "volume Float64",
+                "trades UInt32",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(symbol, market, resolution, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 730 DAY"  # 2 Jahre Retention für OHLC
+            }
+        }
+    
+    def _generate_orderbook_schema(self, exchange: str) -> Dict[str, Any]:
+        """Generiere Orderbook Schema für Exchange"""
+        return {
+            "table_name": f"trading.{exchange}_orderbook",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "bids Array(Tuple(Float64, Float64))",
+                "asks Array(Tuple(Float64, Float64))",
+                "ts DateTime64(3)",
+                "exchange LowCardinality(String) DEFAULT '{}'".format(exchange)
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(symbol, market, ts)",
+            "partition_by": "toYYYYMM(ts)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 30 DAY"  # 30 Tage Retention für Orderbook
+            }
+        }
+    
+    def _generate_unified_trade_schema(self) -> Dict[str, Any]:
+        """Generiere Unified Trade Schema (alle Exchanges)"""
+        return {
+            "table_name": "trading.all_trades",
+            "columns": [
+                "trade_id String",
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "exchange LowCardinality(String)",
+                "price Float64",
+                "size Float64",
+                "side LowCardinality(String)",
+                "ts DateTime64(3)"
+            ],
+            "engine": "MergeTree()",
+            "order_by": "(exchange, symbol, market, ts)",
+            "partition_by": "(toYYYYMM(ts), exchange)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 365 DAY"
+            }
+        }
+    
+    def _generate_unified_candle_schema(self) -> Dict[str, Any]:
+        """
+        ✅ FIX: Umbenennung _generate_unified_kline_schema → _generate_unified_candle_schema
+        Generiere Unified CANDLE Schema (alle Exchanges)
+        """
+        return {
+            "table_name": "trading.all_candles",
+            "columns": [
+                "symbol LowCardinality(String)",
+                "market LowCardinality(String)",
+                "exchange LowCardinality(String)",
+                "resolution LowCardinality(String)",
+                "open Float64",
+                "high Float64",
+                "low Float64", 
+                "close Float64",
+                "volume Float64",
+                "trades UInt32",
+                "ts DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(ts)",
+            "order_by": "(exchange, symbol, market, resolution, ts)",
+            "partition_by": "(toYYYYMM(ts), exchange)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "ts + INTERVAL 730 DAY"
+            }
+        }
+    
+    def _generate_user_settings_schema(self) -> Dict[str, Any]:
+        """Generiere User Settings Schema"""
+        return {
+            "table_name": "trading.user_coin_settings",
+            "columns": [
+                "user_id String",
+                "exchange LowCardinality(String)",
+                "symbol LowCardinality(String)",
+                "active Bool DEFAULT true",
+                "notifications_enabled Bool DEFAULT false",
+                "price_alerts Array(String)",
+                "volume_alerts Array(String)",
+                "settings String",  # JSON String
+                "created_at DateTime64(3)",
+                "updated_at DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(updated_at)",
+            "order_by": "(user_id, exchange, symbol)",
+            "partition_by": "toYYYYMM(created_at)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
+            }
+        }
+    
+    def _generate_indicator_settings_schema(self) -> Dict[str, Any]:
+        """Generiere Indicator Settings Schema"""
+        return {
+            "table_name": "trading.user_indicator_settings",
+            "columns": [
+                "user_id String",
+                "exchange LowCardinality(String)",
+                "symbol LowCardinality(String)",
+                "indicator_type LowCardinality(String)",
+                "indicator_name String",
+                "parameters String",  # JSON String
+                "timeframes Array(String)",
+                "enabled Bool DEFAULT true",
+                "alert_conditions Array(String)",
+                "created_at DateTime64(3)",
+                "updated_at DateTime64(3)"
+            ],
+            "engine": "ReplacingMergeTree(updated_at)",
+            "order_by": "(user_id, exchange, symbol, indicator_type)",
+            "partition_by": "toYYYYMM(created_at)",
+            "settings": {
+                "index_granularity": 8192,
+                "ttl": "updated_at + INTERVAL 1095 DAY"  # 3 Jahre
+            }
+        }
+    
+    async def _migrate_legacy_schemas(self):
+        """Migriere Legacy Schemas zu cl_ Lane System"""
+        try:
+            logger.info("🔄 Migrating legacy schemas to cl_ Lane System...")
+            
+            migration_results = {}
+            
+            # Migriere alle Unified Schemas
+            for schema_name, schema_definition in self.unified_schemas.items():
+                try:
+                    migration_result = await self._apply_schema_migration(schema_name, schema_definition)
+                    migration_results[schema_name] = migration_result
+                    
+                    if migration_result["success"]:
+                        logger.info(f"✅ Schema migration successful: {schema_name}")
+                    else:
+                        logger.warning(f"⚠️ Schema migration partial: {schema_name} - {migration_result.get('message', 'Unknown issue')}")
+                        
+                except Exception as schema_error:
+                    migration_results[schema_name] = {
+                        "success": False,
+                        "error": str(schema_error)
+                    }
+                    logger.error(f"❌ Schema migration failed: {schema_name} - {schema_error}")
+            
+            self.migration_results = migration_results
+            
+            # Summary
+            successful_migrations = sum(1 for r in migration_results.values() if r.get("success", False))
+            total_migrations = len(migration_results)
+            
+            logger.info(f"🎯 Schema migration completed: {successful_migrations}/{total_migrations} schemas migrated successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Legacy schema migration failed: {e}")
+            raise
+    
+    async def _apply_schema_migration(self, schema_name: str, schema_definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Wende einzelne Schema Migration an"""
+        try:
+            # TODO: Implementiere echte ClickHouse Schema-Anwendung
+            # Für jetzt simuliere erfolgreiche Migration
+            
+            migration_sql = self._generate_create_table_sql(schema_definition)
+            
+            # Simuliere ClickHouse-Operation
+            if hasattr(self.cl_service, 'execute_schema_migration'):
+                result = await self.cl_service.execute_schema_migration(migration_sql)
+                return {
+                    "success": True,
+                    "table_name": schema_definition["table_name"],
+                    "sql": migration_sql,
+                    "result": result
+                }
+            else:
+                # Fallback: Assume migration successful
+                return {
+                    "success": True,
+                    "table_name": schema_definition["table_name"],
+                    "sql": migration_sql,
+                    "message": "Migration simulated (cl_service not available)"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "table_name": schema_definition.get("table_name", "unknown")
+            }
+    
+    def _generate_create_table_sql(self, schema_definition: Dict[str, Any]) -> str:
+        """Generiere CREATE TABLE SQL aus Schema Definition"""
+        try:
+            table_name = schema_definition["table_name"]
+            columns = schema_definition["columns"]
+            engine = schema_definition["engine"]
+            order_by = schema_definition["order_by"]
+            partition_by = schema_definition.get("partition_by", "")
+            settings = schema_definition.get("settings", {})
+            
+            # CREATE TABLE SQL
+            sql_parts = [f"CREATE TABLE IF NOT EXISTS {table_name} ("]
+            sql_parts.append("    " + ",\n    ".join(columns))
+            sql_parts.append(f") ENGINE = {engine}")
+            
+            if order_by:
+                sql_parts.append(f"ORDER BY {order_by}")
+            
+            if partition_by:
+                sql_parts.append(f"PARTITION BY {partition_by}")
+            
+            if settings:
+                settings_str = ", ".join([f"{k} = {v}" if isinstance(v, (int, float)) else f"{k} = '{v}'" for k, v in settings.items()])
+                sql_parts.append(f"SETTINGS {settings_str}")
+            
+            return "\n".join(sql_parts) + ";"
+            
+        except Exception as e:
+            logger.error(f"SQL generation failed for schema: {e}")
+            return f"-- SQL generation failed: {str(e)}"
+    
+    # ✅ PUBLIC API METHODS
+    def get_schema_migration_summary(self) -> Dict[str, Any]:
+        """Hole Schema Migration Summary"""
+        try:
+            if not self.initialized:
+                return {"error": "Schema Migration not initialized"}
+            
+            # Sammle Migration Results
+            migration_summary = {
+                "initialized": self.initialized,
+                "total_schemas": len(self.unified_schemas) if hasattr(self, 'unified_schemas') else 0,
+                "successful_migrations": 0,
+                "failed_migrations": 0,
+                "schemas_by_category": {
+                    "exchange_specific": {},
+                    "unified": {},
+                    "user_settings": {}
+                },
+                "migration_results": getattr(self, 'migration_results', {}),
+                "validation_results": getattr(self, 'validation_results', {}),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Zähle erfolgreiche/fehlgeschlagene Migrationen
+            if hasattr(self, 'migration_results'):
+                for result in self.migration_results.values():
+                    if result.get("success", False):
+                        migration_summary["successful_migrations"] += 1
+                    else:
+                        migration_summary["failed_migrations"] += 1
+            
+            # Kategorisiere Schemas
+            if hasattr(self, 'unified_schemas'):
+                exchanges = ["binance", "gateio", "bybit", "mexc", "bitget", "okx", "htx", "coinbase"]
+                
+                for schema_name in self.unified_schemas.keys():
+                    if any(ex in schema_name for ex in exchanges):
+                        if "_trades" in schema_name:
+                            category = "trades"
+                        elif "_bars" in schema_name:
+                            category = "candles"
+                        elif "_orderbook" in schema_name:
+                            category = "orderbook"
+                        else:
+                            category = "other"
+                        
+                        if category not in migration_summary["schemas_by_category"]["exchange_specific"]:
+                            migration_summary["schemas_by_category"]["exchange_specific"][category] = []
+                        migration_summary["schemas_by_category"]["exchange_specific"][category].append(schema_name)
+                        
+                    elif "all_" in schema_name or "user_" in schema_name:
+                        if "all_" in schema_name:
+                            category_type = "unified"
+                        else:
+                            category_type = "user_settings"
+                        
+                        if schema_name not in migration_summary["schemas_by_category"][category_type]:
+                            migration_summary["schemas_by_category"][category_type][schema_name] = True
+            
+            return migration_summary
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get schema migration summary: {e}")
+            return {"error": str(e)}
+    
+    async def validate_migrated_schemas(self) -> Dict[str, Any]:
+        """Validiere migrierte Schemas"""
+        try:
+            logger.info("✅ Validating migrated schemas...")
+            
+            validation_results = {
+                "validation_passed": True,
+                "validated_schemas": 0,
+                "validation_errors": [],
+                "schema_validations": {}
+            }
+            
+            if hasattr(self, 'unified_schemas'):
+                for schema_name, schema_def in self.unified_schemas.items():
+                    try:
+                        # Validate Schema Definition
+                        schema_validation = await self._validate_schema_definition(schema_name, schema_def)
+                        validation_results["schema_validations"][schema_name] = schema_validation
+                        
+                        if schema_validation["valid"]:
+                            validation_results["validated_schemas"] += 1
+                        else:
+                            validation_results["validation_passed"] = False
+                            validation_results["validation_errors"].extend(schema_validation.get("errors", []))
+                            
+                    except Exception as validation_error:
+                        validation_results["validation_passed"] = False
+                        validation_results["validation_errors"].append(f"Schema {schema_name}: {str(validation_error)}")
+            
+            logger.info(f"🎯 Schema validation completed: {validation_results['validated_schemas']} schemas validated")
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"❌ Schema validation failed: {e}")
+            return {"validation_passed": False, "error": str(e)}
+    
+    async def _validate_schema_definition(self, schema_name: str, schema_def: Dict[str, Any]) -> Dict[str, Any]:
+        """Validiere einzelne Schema Definition"""
+        try:
+            validation_result = {
+                "valid": True,
+                "errors": [],
+                "warnings": []
+            }
+            
+            # Required Fields Check
+            required_fields = ["table_name", "columns", "engine", "order_by"]
+            for field in required_fields:
+                if field not in schema_def:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append(f"Missing required field: {field}")
+            
+            # Columns Check
+            if "columns" in schema_def and isinstance(schema_def["columns"], list):
+                if len(schema_def["columns"]) == 0:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append("No columns defined")
+            else:
+                validation_result["valid"] = False
+                validation_result["errors"].append("Columns must be a non-empty list")
+            
+            # Engine Check
+            if "engine" in schema_def:
+                engine = schema_def["engine"]
+                valid_engines = ["MergeTree()", "ReplacingMergeTree"]
+                if not any(valid_engine in engine for valid_engine in valid_engines):
+                    validation_result["warnings"].append(f"Unusual engine: {engine}")
+            
+            return validation_result
+            
+        except Exception as e:
+            return {
+                "valid": False,
+                "errors": [f"Validation error: {str(e)}"]
+            }
+
+# Global ClickHouse Schema Manager instance
+cl_schema_manager = ClickHouseSchemaManager()
+</file>
+
 <file path="backend/database/clickhouse/cl_user_settings.py">
 import asyncio
 import logging
@@ -124401,14 +125104,6 @@ def start_health_monitoring():
     logger.info("🏥 Health monitoring active")
 </file>
 
-<file path="backend/services/delete/unified_aggregator_entrypoint.py">
-import asyncio
-from ..adapter.unified_aggregator import run_unified_aggregator
-
-if __name__ == "__main__":
-    asyncio.run(run_unified_aggregator())
-</file>
-
 <file path="backend/services/discovery/dis_orderbook.py">
 import logging
 from typing import Dict, Iterable, List, Optional, Union, Set  # R0.2: Union hinzugefügt
@@ -125808,697 +126503,6 @@ class Config:
 
 # Instanziiere globale Whale-Config
 config = Config()
-</file>
-
-<file path="diag_py/deep_analysis.sh">
-#!/bin/bash
-
-# =============================================================================
-# DEEP SYSTEM ANALYSIS - Complete Data Flow Analysis
-# =============================================================================
-
-set +e  # Don't exit on errors
-
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-
-echo "=================================================="
-echo "🔬 DEEP SYSTEM ANALYSIS"
-echo "=================================================="
-ANALYSIS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-echo "Analysis Time: $ANALYSIS_TIME"
-echo "Time Zone: Europe/Berlin (UTC+1)"
-echo ""
-
-# =============================================================================
-# 1. CLICKHOUSE DATA FRESHNESS & GROWTH
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "1️⃣  CLICKHOUSE DATA FRESHNESS & GROWTH RATE"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-10s | %-19s | %8s | %12s | %10s | %s\n" "Exchange" "Newest Trade" "Age(sec)" "Last 10min" "Rate/sec" "Status"
-echo "------------------------------------------------------------------------------------------------------------"
-
-for exchange in "${EXCHANGES[@]}"; do
-  # Get newest trade timestamp and calculate age in ClickHouse
-  NEWEST_INFO=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT max(timestamp) as newest, dateDiff('second', max(timestamp), now()) as age FROM trading.${exchange}_trades WHERE source = 'live_ws'" \
-    2>/dev/null || echo "1970-01-01 00:00:00	999999")
-  
-  NEWEST=$(echo "$NEWEST_INFO" | cut -f1)
-  AGE=$(echo "$NEWEST_INFO" | cut -f2)
-  
-  # Get count from last 10 minutes
-  COUNT_10MIN=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 10 MINUTE AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$COUNT_10MIN" =~ ^[0-9]+$ ]] || COUNT_10MIN=0
-  [[ "$AGE" =~ ^[0-9]+$ ]] || AGE=999999
-  
-  # Calculate rate
-  RATE=$(awk "BEGIN {printf \"%.2f\", $COUNT_10MIN / 600}")
-  
-  # Determine status (text-based, no emojis)
-  if [[ $AGE -lt 60 ]]; then
-    STATUS="LIVE"
-  elif [[ $AGE -lt 300 ]]; then
-    STATUS="RECENT"
-  elif [[ $AGE -lt 3600 ]]; then
-    STATUS="STALE"
-  else
-    STATUS="OLD"
-  fi
-  
-  if [[ -n "$NEWEST" ]] && [[ "$NEWEST" != "1970-01-01 00:00:00" ]]; then
-    printf "%-10s | %-19s | %8d | %12s | %10s | %s\n" "$exchange" "$NEWEST" $AGE "$(printf "%'d" $COUNT_10MIN)" "$RATE" "$STATUS"
-  else
-    printf "%-10s | %-19s | %8s | %12s | %10s | %s\n" "$exchange" "No data" "N/A" "0" "0.00" "NO_DATA"
-  fi
-done
-
-echo ""
-
-# =============================================================================
-# 2. SPOT VS FUTURES BREAKDOWN
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "2️⃣  SPOT VS FUTURES BREAKDOWN (ClickHouse)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-10s | %12s | %12s | %12s | %6s\n" "Exchange" "Spot" "Futures" "Total" "% Spot"
-echo "------------------------------------------------------------------------"
-
-TOTAL_SPOT=0
-TOTAL_FUTURES=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  SPOT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE market = 'spot' AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  
-  FUTURES=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE market IN ('usdtm', 'coinm', 'usdcm', 'futures') AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$SPOT" =~ ^[0-9]+$ ]] || SPOT=0
-  [[ "$FUTURES" =~ ^[0-9]+$ ]] || FUTURES=0
-  
-  TOTAL_SPOT=$((TOTAL_SPOT + SPOT))
-  TOTAL_FUTURES=$((TOTAL_FUTURES + FUTURES))
-  
-  EXCHANGE_TOTAL=$((SPOT + FUTURES))
-  if [[ $EXCHANGE_TOTAL -gt 0 ]]; then
-    PERCENT=$(awk "BEGIN {printf \"%.1f\", ($SPOT / $EXCHANGE_TOTAL) * 100}")
-  else
-    PERCENT="0.0"
-  fi
-  
-  printf "%-10s | %12s | %12s | %12s | %5s%%\n" "$exchange" "$(printf "%'d" $SPOT)" "$(printf "%'d" $FUTURES)" "$(printf "%'d" $EXCHANGE_TOTAL)" "$PERCENT"
-done
-
-echo "------------------------------------------------------------------------"
-GRAND_TOTAL=$((TOTAL_SPOT + TOTAL_FUTURES))
-if [[ $GRAND_TOTAL -gt 0 ]]; then
-  TOTAL_PERCENT=$(awk "BEGIN {printf \"%.1f\", ($TOTAL_SPOT / $GRAND_TOTAL) * 100}")
-else
-  TOTAL_PERCENT="0.0"
-fi
-
-printf "%-10s | %12s | %12s | %12s | %5s%%\n" "TOTAL" "$(printf "%'d" $TOTAL_SPOT)" "$(printf "%'d" $TOTAL_FUTURES)" "$(printf "%'d" $GRAND_TOTAL)" "$TOTAL_PERCENT"
-
-echo ""
-
-# =============================================================================
-# 3. REDIS STREAMS - INLINE STATUS
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "3️⃣  REDIS STREAMS - INLINE STATUS"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-10s | %8s | %8s | %10s | %10s | %s\n" "Exchange" "# Spot" "# Futures" "Msg Spot" "Msg Fut" "Status"
-echo "--------------------------------------------------------------------------------------------"
-
-TOTAL_STREAMS_SPOT=0
-TOTAL_STREAMS_FUT=0
-TOTAL_MSGS_SPOT=0
-TOTAL_MSGS_FUT=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  # Count streams
-  NUM_SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | wc -l | tr -d ' ')
-  NUM_FUT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" "${exchange}:trades:coinm:*" "${exchange}:trades:usdcm:*" 2>/dev/null | wc -l | tr -d ' ')
-  
-  # Count messages
-  MSGS_SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | \
-    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
-    awk '{sum+=$1} END {print sum+0}')
-  
-  MSGS_FUT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" 2>/dev/null | \
-    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
-    awk '{sum+=$1} END {print sum+0}')
-  
-  [[ "$NUM_SPOT" =~ ^[0-9]+$ ]] || NUM_SPOT=0
-  [[ "$NUM_FUT" =~ ^[0-9]+$ ]] || NUM_FUT=0
-  [[ "$MSGS_SPOT" =~ ^[0-9]+$ ]] || MSGS_SPOT=0
-  [[ "$MSGS_FUT" =~ ^[0-9]+$ ]] || MSGS_FUT=0
-  
-  TOTAL_STREAMS_SPOT=$((TOTAL_STREAMS_SPOT + NUM_SPOT))
-  TOTAL_STREAMS_FUT=$((TOTAL_STREAMS_FUT + NUM_FUT))
-  TOTAL_MSGS_SPOT=$((TOTAL_MSGS_SPOT + MSGS_SPOT))
-  TOTAL_MSGS_FUT=$((TOTAL_MSGS_FUT + MSGS_FUT))
-  
-  TOTAL_MSGS=$((MSGS_SPOT + MSGS_FUT))
-  
-  if [[ $TOTAL_MSGS -gt 0 ]]; then
-    STATUS="ACTIVE"
-  else
-    STATUS="IDLE"
-  fi
-  
-  printf "%-10s | %8d | %8d | %10s | %10s | %s\n" "$exchange" $NUM_SPOT $NUM_FUT "$(printf "%'d" $MSGS_SPOT)" "$(printf "%'d" $MSGS_FUT)" "$STATUS"
-done
-
-echo "--------------------------------------------------------------------------------------------"
-printf "%-10s | %8d | %8d | %10s | %10s |\n" "TOTAL" $TOTAL_STREAMS_SPOT $TOTAL_STREAMS_FUT "$(printf "%'d" $TOTAL_MSGS_SPOT)" "$(printf "%'d" $TOTAL_MSGS_FUT)"
-
-echo ""
-
-# =============================================================================
-# 4. HOURLY DATA DISTRIBUTION (Today)
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "4️⃣  HOURLY DATA DISTRIBUTION (Today)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-echo "Last 24 Hours - Trades per Hour (All Exchanges Combined):"
-echo ""
-
-docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query "
-SELECT 
-  toHour(timestamp) as hour,
-  formatDateTime(timestamp, '%Y-%m-%d %H:00') as time_bucket,
-  count(*) as trades,
-  round(count(*) / 3600, 2) as trades_per_sec
-FROM (
-  SELECT timestamp FROM trading.binance_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.bitget_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.bybit_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.coinbase_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.gateio_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.mexc_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.okx_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-  UNION ALL SELECT timestamp FROM trading.htx_trades WHERE source = 'live_ws' AND timestamp > now() - INTERVAL 24 HOUR
-)
-GROUP BY hour, time_bucket
-ORDER BY hour DESC
-LIMIT 24
-FORMAT PrettyCompact
-" 2>/dev/null || echo "Failed to query hourly data"
-
-echo ""
-
-# =============================================================================
-# 5. TODAY VS YESTERDAY COMPARISON
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "5️⃣  TODAY VS YESTERDAY COMPARISON"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-10s | %15s | %15s | %15s | %8s\n" "Exchange" "Today" "Yesterday" "Diff" "Change"
-echo "-------------------------------------------------------------------------------------"
-
-TOTAL_TODAY=0
-TOTAL_YESTERDAY=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  TODAY=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE toDate(timestamp) = today() AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  
-  YESTERDAY=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE toDate(timestamp) = yesterday() AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$TODAY" =~ ^[0-9]+$ ]] || TODAY=0
-  [[ "$YESTERDAY" =~ ^[0-9]+$ ]] || YESTERDAY=0
-  
-  TOTAL_TODAY=$((TOTAL_TODAY + TODAY))
-  TOTAL_YESTERDAY=$((TOTAL_YESTERDAY + YESTERDAY))
-  
-  DIFF=$((TODAY - YESTERDAY))
-  
-  if [[ $YESTERDAY -gt 0 ]]; then
-    CHANGE=$(awk "BEGIN {printf \"%.1f\", (($TODAY - $YESTERDAY) / $YESTERDAY) * 100}")
-    if (( $(echo "$CHANGE > 0" | bc -l) )); then
-      CHANGE_STR="+${CHANGE}%"
-    elif (( $(echo "$CHANGE < 0" | bc -l) )); then
-      CHANGE_STR="${CHANGE}%"
-    else
-      CHANGE_STR="0.0%"
-    fi
-  else
-    CHANGE_STR="NEW"
-  fi
-  
-  printf "%-10s | %15s | %15s | %15s | %s\n" "$exchange" "$(printf "%'d" $TODAY)" "$(printf "%'d" $YESTERDAY)" "$(printf "%'+d" $DIFF)" "$CHANGE_STR"
-done
-
-echo "-------------------------------------------------------------------------------------"
-TOTAL_DIFF=$((TOTAL_TODAY - TOTAL_YESTERDAY))
-if [[ $TOTAL_YESTERDAY -gt 0 ]]; then
-  TOTAL_CHANGE=$(awk "BEGIN {printf \"%.1f\", (($TOTAL_TODAY - $TOTAL_YESTERDAY) / $TOTAL_YESTERDAY) * 100}")
-else
-  TOTAL_CHANGE="N/A"
-fi
-
-printf "%-10s | %15s | %15s | %15s | %s\n" "TOTAL" "$(printf "%'d" $TOTAL_TODAY)" "$(printf "%'d" $TOTAL_YESTERDAY)" "$(printf "%'+d" $TOTAL_DIFF)" "$TOTAL_CHANGE%"
-
-echo ""
-
-# =============================================================================
-# 6. BACKFILL PROGRESS (API Query)
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "6️⃣  BACKFILL PROGRESS (API Integration)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-# Read backfill config from .env or defaults
-BACKFILL_COINS="${AUTO_BACKFILL_COINS:-binance:BTCUSDT}"
-BACKFILL_TARGET="${AUTO_BACKFILL_UNTIL_DATE:-2024-01-01}"
-BACKFILL_INTERVAL="${AUTO_BACKFILL_INTERVAL:-1m}"
-
-echo "Configured Backfill Settings:"
-echo "  Coins: $BACKFILL_COINS"
-echo "  Target: $BACKFILL_TARGET"
-echo "  Interval: $BACKFILL_INTERVAL"
-echo ""
-
-# Parse coins and query each
-IFS=',' read -ra COIN_ARRAY <<< "$BACKFILL_COINS"
-
-for coin_pair in "${COIN_ARRAY[@]}"; do
-  IFS=':' read -r exchange symbol <<< "$coin_pair"
-  
-  echo "📊 $exchange:$symbol"
-  
-  # Query progress API
-  PROGRESS=$(curl -s --max-time 5 \
-    "http://localhost:8100/api/historical/backfill/progress?exchange=$exchange&symbol=$symbol&interval=$BACKFILL_INTERVAL&target_date=$BACKFILL_TARGET" \
-    2>/dev/null || echo '{}')
-  
-  # Check if API returned valid data (total_candles > 0)
-  TOTAL=$(echo "$PROGRESS" | jq -r '.total_candles // 0' 2>/dev/null)
-  
-  if [[ "$TOTAL" =~ ^[0-9]+$ ]] && [[ $TOTAL -gt 0 ]]; then
-    # API has valid data - use it
-    EXPECTED=$(echo "$PROGRESS" | jq -r '.expected_candles // 0')
-    PROGRESS_PCT=$(echo "$PROGRESS" | jq -r '.progress_percent // 0')
-    MISSING_DAYS=$(echo "$PROGRESS" | jq -r '.missing_days // 0')
-    OLDEST=$(echo "$PROGRESS" | jq -r '.oldest_candle_date // "N/A"')
-    NEWEST=$(echo "$PROGRESS" | jq -r '.newest_candle_date // "N/A"')
-    STATUS=$(echo "$PROGRESS" | jq -r '.status // "unknown"')
-    
-    echo "  Progress: $PROGRESS_PCT% ($TOTAL / $EXPECTED candles)"
-    echo "  Range: $OLDEST → $NEWEST"
-    echo "  Missing: $MISSING_DAYS days"
-    echo "  Status: $STATUS (API)"
-  else
-    # Fallback: Direct ClickHouse query (SAME AS monitor-system.sh)
-    BACKFILL_STATS=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query "
-      SELECT 
-        count(*) as total_backfill,
-        min(timestamp) as oldest,
-        max(timestamp) as newest,
-        dateDiff('day', min(timestamp), max(timestamp)) as days_covered
-      FROM trading.${exchange}_trades
-      WHERE source = 'rest_backfill' AND symbol = '$symbol'
-      FORMAT JSON
-    " 2>/dev/null || echo '{"data":[{"total_backfill":0,"oldest":"","newest":"","days_covered":0}]}')
-    
-    BF_TOTAL=$(echo "$BACKFILL_STATS" | jq -r '.data[0].total_backfill // 0' 2>/dev/null || echo 0)
-    BF_OLDEST=$(echo "$BACKFILL_STATS" | jq -r '.data[0].oldest // "N/A"' 2>/dev/null || echo "N/A")
-    BF_NEWEST=$(echo "$BACKFILL_STATS" | jq -r '.data[0].newest // "N/A"' 2>/dev/null || echo "N/A")
-    BF_DAYS=$(echo "$BACKFILL_STATS" | jq -r '.data[0].days_covered // 0' 2>/dev/null || echo 0)
-    
-    # Calculate progress
-    TARGET_DATE_TS=$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET" +%s 2>/dev/null || echo 0)
-    NOW_TS=$(date +%s)
-    TOTAL_DAYS=$(( (NOW_TS - TARGET_DATE_TS) / 86400 ))
-    
-    if [[ $TOTAL_DAYS -gt 0 ]] && [[ $BF_DAYS -gt 0 ]]; then
-      PROGRESS_PCT=$(awk "BEGIN {printf \"%.1f\", ($BF_DAYS / $TOTAL_DAYS) * 100}")
-    else
-      PROGRESS_PCT="0.0"
-    fi
-    
-    echo "  Progress: ${PROGRESS_PCT}% complete ($BF_DAYS/$TOTAL_DAYS days)"
-    echo "  Backfill Trades: $(printf "%'d" $BF_TOTAL)"
-    echo "  Range: $BF_OLDEST → $BF_NEWEST"
-    echo "  Status: API not available (using direct CH query)"
-  fi
-  
-  echo ""
-done
-
-# =============================================================================
-# 7. SYSTEM SUMMARY
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "7️⃣  SYSTEM SUMMARY"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-echo "📊 ClickHouse Database:"
-echo "   Total Live Trades: $(printf "%'d" $GRAND_TOTAL)"
-echo "   Spot: $(printf "%'d" $TOTAL_SPOT) ($TOTAL_PERCENT%)"
-echo "   Futures: $(printf "%'d" $TOTAL_FUTURES) ($((100 - ${TOTAL_PERCENT%.*}))%)"
-echo ""
-
-echo "📊 Redis Streams:"
-echo "   Total Streams: $((TOTAL_STREAMS_SPOT + TOTAL_STREAMS_FUT))"
-echo "   Spot Streams: $TOTAL_STREAMS_SPOT"
-echo "   Futures Streams: $TOTAL_STREAMS_FUT"
-echo "   Total Messages: $(printf "%'d" $((TOTAL_MSGS_SPOT + TOTAL_MSGS_FUT)))"
-echo ""
-
-echo "📈 Activity:"
-echo "   Today: $(printf "%'d" $TOTAL_TODAY) trades"
-echo "   Yesterday: $(printf "%'d" $TOTAL_YESTERDAY) trades"
-echo "   Change: $(printf "%'+d" $TOTAL_DIFF) ($TOTAL_CHANGE%)"
-echo ""
-
-echo "🎯 System Health:"
-# Count writing exchanges
-WRITING=0
-for exchange in "${EXCHANGES[@]}"; do
-  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source = 'live_ws'" \
-    2>/dev/null || echo 0)
-  [[ $COUNT -gt 0 ]] && WRITING=$((WRITING + 1))
-done
-
-echo "   Exchanges Writing: $WRITING/8"
-echo "   Exchanges Idle: $((8 - WRITING))/8"
-
-if [[ $WRITING -eq 8 ]]; then
-  echo "   Status: ALL_HEALTHY"
-elif [[ $WRITING -gt 0 ]]; then
-  echo "   Status: PARTIAL ($WRITING/8)"
-else
-  echo "   Status: FAILED"
-fi
-
-echo ""
-echo "=================================================="
-echo "DEEP ANALYSIS COMPLETE"
-echo "=================================================="
-echo "Analysis Duration: $(($(date +%s) - $(date -j -f "%Y-%m-%d %H:%M:%S" "$ANALYSIS_TIME" +%s 2>/dev/null || echo 0))) seconds"
-echo ""
-</file>
-
-<file path="diag_py/verify_all_metrics.sh">
-#!/bin/bash
-
-# =============================================================================
-# COMPLETE METRICS VERIFICATION - Verify ALL Monitor Data
-# =============================================================================
-
-set +e  # Don't exit on errors
-
-EXCHANGES=("binance" "bitget" "mexc" "gateio" "bybit" "okx" "htx" "coinbase")
-
-echo "=================================================="
-echo "🔍 COMPLETE METRICS VERIFICATION"
-echo "=================================================="
-echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
-echo ""
-
-# =============================================================================
-# 1. BACKEND HEALTH STATUS
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "1️⃣  BACKEND HEALTH STATUS"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-HEALTH_RESPONSE=$(curl -sf --max-time 3 "http://localhost:8100/health/ready" 2>/dev/null)
-HEALTH_CODE=$?
-
-if [[ $HEALTH_CODE -eq 0 ]]; then
-  SYSTEM_STATUS=$(echo "$HEALTH_RESPONSE" | jq -r '.system_status // "unknown"' 2>/dev/null)
-  READY_BOOL=$(echo "$HEALTH_RESPONSE" | jq -r '.ready // false' 2>/dev/null)
-  HEALTHY=$(echo "$HEALTH_RESPONSE" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null)
-  TOTAL=$(echo "$HEALTH_RESPONSE" | jq -r '.summary.total_components // 0' 2>/dev/null)
-  
-  if [[ "$READY_BOOL" == "true" ]]; then
-    echo "✅ Backend Health: ONLINE"
-    echo "   System Status: $SYSTEM_STATUS"
-    echo "   Components: $HEALTHY/$TOTAL healthy"
-  else
-    echo "⚠️  Backend Health: DEGRADED"
-    echo "   System Status: $SYSTEM_STATUS"
-    echo "   Components: $HEALTHY/$TOTAL healthy"
-  fi
-else
-  echo "❌ Backend Health: OFFLINE"
-  echo "   Error: Backend not responding"
-fi
-
-echo ""
-
-# =============================================================================
-# 2. CLICKHOUSE LIVE TRADES (Last 5 Minutes) - ALL EXCHANGES
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "2️⃣  CLICKHOUSE LIVE TRADES (Last 5 Minutes)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-12s | %15s | %s\n" "Exchange" "Live Trades" "Status"
-echo "-----------------------------------------------------"
-
-TOTAL_LIVE=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
-  TOTAL_LIVE=$((TOTAL_LIVE + COUNT))
-  
-  if [[ $COUNT -gt 0 ]]; then
-    printf "✅ %-10s | %15s | Writing\n" "$exchange" "$(printf "%'d" $COUNT)"
-  else
-    printf "❌ %-10s | %15s | NOT Writing\n" "$exchange" "$(printf "%'d" $COUNT)"
-  fi
-done
-
-echo "-----------------------------------------------------"
-printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_LIVE)"
-echo ""
-
-# =============================================================================
-# 3. CLICKHOUSE HISTORICAL TRADES (ALL Live Trades) - ALL EXCHANGES
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "3️⃣  CLICKHOUSE HISTORICAL TRADES (All Live)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-12s | %15s | %s\n" "Exchange" "Historical" "Status"
-echo "-----------------------------------------------------"
-
-TOTAL_HIST=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source != 'rest_backfill'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
-  TOTAL_HIST=$((TOTAL_HIST + COUNT))
-  
-  if [[ $COUNT -gt 0 ]]; then
-    printf "✅ %-10s | %15s | Has Data\n" "$exchange" "$(printf "%'d" $COUNT)"
-  else
-    printf "⚠️  %-10s | %15s | No Data\n" "$exchange" "$(printf "%'d" $COUNT)"
-  fi
-done
-
-echo "-----------------------------------------------------"
-printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_HIST)"
-echo ""
-
-# =============================================================================
-# 4. CLICKHOUSE BACKFILL TRADES - ALL EXCHANGES
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "4️⃣  CLICKHOUSE BACKFILL TRADES"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-12s | %15s | %s\n" "Exchange" "Backfill" "Status"
-echo "-----------------------------------------------------"
-
-TOTAL_BACKFILL=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE source = 'rest_backfill'" \
-    2>/dev/null || echo 0)
-  
-  [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
-  TOTAL_BACKFILL=$((TOTAL_BACKFILL + COUNT))
-  
-  if [[ $COUNT -gt 0 ]]; then
-    printf "✅ %-10s | %15s | Has Backfill\n" "$exchange" "$(printf "%'d" $COUNT)"
-  else
-    printf "○  %-10s | %15s | No Backfill\n" "$exchange" "$(printf "%'d" $COUNT)"
-  fi
-done
-
-echo "-----------------------------------------------------"
-printf "TOTAL          | %15s |\n" "$(printf "%'d" $TOTAL_BACKFILL)"
-echo ""
-
-# =============================================================================
-# 5. REDIS STREAMS - ALL EXCHANGES
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "5️⃣  REDIS STREAMS (Realtime Buffer)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-printf "%-12s | %10s | %10s | %10s | %s\n" "Exchange" "Spot" "USDTM" "Total" "Status"
-echo "-------------------------------------------------------------------------"
-
-TOTAL_REDIS=0
-
-for exchange in "${EXCHANGES[@]}"; do
-  SPOT=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:spot:*" 2>/dev/null | \
-    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
-    awk '{sum+=$1} END {print sum}')
-  
-  USDTM=$(redis-cli -p 6380 --scan --pattern "${exchange}:trades:usdtm:*" 2>/dev/null | \
-    while read -r stream; do redis-cli -p 6380 XLEN "$stream" 2>/dev/null || echo 0; done | \
-    awk '{sum+=$1} END {print sum}')
-  
-  [[ "$SPOT" =~ ^[0-9]+$ ]] || SPOT=0
-  [[ "$USDTM" =~ ^[0-9]+$ ]] || USDTM=0
-  
-  EXCHANGE_TOTAL=$((SPOT + USDTM))
-  TOTAL_REDIS=$((TOTAL_REDIS + EXCHANGE_TOTAL))
-  
-  if [[ $EXCHANGE_TOTAL -gt 0 ]]; then
-    printf "✅ %-10s | %10d | %10d | %10d | Active\n" "$exchange" $SPOT $USDTM $EXCHANGE_TOTAL
-  else
-    printf "❌ %-10s | %10d | %10d | %10d | Inactive\n" "$exchange" $SPOT $USDTM $EXCHANGE_TOTAL
-  fi
-done
-
-echo "-------------------------------------------------------------------------"
-printf "TOTAL          |            |            | %10d |\n" $TOTAL_REDIS
-echo ""
-
-# =============================================================================
-# 6. GW-API TEST - Sample Exchange
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "6️⃣  GW-API TEST (Sample: Binance)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-GW_RESPONSE=$(curl -s --max-time 3 "http://localhost:8100/gw/trades?symbol=BTCUSDT&exchange=binance&market=spot&limit=10" 2>/dev/null)
-GW_CODE=$?
-
-if [[ $GW_CODE -eq 0 ]]; then
-  GW_COUNT=$(echo "$GW_RESPONSE" | jq 'length' 2>/dev/null || echo 0)
-  
-  if [[ $GW_COUNT -gt 0 ]]; then
-    echo "✅ GW-API: Working"
-    echo "   Returned: $GW_COUNT trades"
-    echo "   Sample Trade:"
-    echo "$GW_RESPONSE" | jq '.[0]' 2>/dev/null || echo "   (Could not parse)"
-  else
-    echo "⚠️  GW-API: No Data"
-    echo "   Returned: 0 trades"
-  fi
-else
-  echo "❌ GW-API: Failed"
-  echo "   Error: API not responding"
-fi
-
-echo ""
-
-# =============================================================================
-# 7. SUMMARY & COMPARISON WITH MONITOR
-# =============================================================================
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "7️⃣  SUMMARY & COMPARISON"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-GRAND_TOTAL=$((TOTAL_LIVE + TOTAL_HIST + TOTAL_BACKFILL))
-
-echo "📊 ClickHouse Totals:"
-echo "   Live Trades (5 min):  $(printf "%'d" $TOTAL_LIVE)"
-echo "   Historical Trades:    $(printf "%'d" $TOTAL_HIST)"
-echo "   Backfill Trades:      $(printf "%'d" $TOTAL_BACKFILL)"
-echo "   GRAND TOTAL:          $(printf "%'d" $GRAND_TOTAL)"
-echo ""
-
-echo "📊 Redis Totals:"
-echo "   Stream Messages:      $(printf "%'d" $TOTAL_REDIS)"
-echo ""
-
-# Count healthy exchanges
-HEALTHY_CH=0
-for exchange in "${EXCHANGES[@]}"; do
-  COUNT=$(docker exec 0_ws_ai-clickhouse-1 clickhouse-client --query \
-    "SELECT COUNT(*) FROM trading.${exchange}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'" \
-    2>/dev/null || echo 0)
-  [[ $COUNT -gt 0 ]] && HEALTHY_CH=$((HEALTHY_CH + 1))
-done
-
-echo "📈 Exchange Status:"
-echo "   Exchanges Writing:    $HEALTHY_CH/8"
-echo "   Exchanges Idle:       $((8 - HEALTHY_CH))/8"
-echo ""
-
-if [[ $HEALTHY_CH -eq 8 ]]; then
-  echo "✅ SYSTEM STATUS: ALL EXCHANGES HEALTHY"
-elif [[ $HEALTHY_CH -gt 0 ]]; then
-  echo "⚠️  SYSTEM STATUS: PARTIAL ($HEALTHY_CH/8 exchanges writing)"
-else
-  echo "❌ SYSTEM STATUS: FAILED (No exchanges writing)"
-fi
-
-echo ""
-echo "=================================================="
-echo "✅ VERIFICATION COMPLETE"
-echo "=================================================="
 </file>
 
 <file path="frontend/src/config/candleResolutions.ts">
@@ -159610,580 +159614,6 @@ async def get_candle_resolutions():
     }
 </file>
 
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import get_ohlc_from_ch
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await get_ohlc_from_ch(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        interval_seconds=interval_seconds,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
-</file>
-
 <file path="backend/database/clickhouse/__init__.py">
 # ClickHouse Lane System - Unified Export Module
 # Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
@@ -162376,6 +161806,580 @@ while true; do
 done
 </file>
 
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import unified_ohlc
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await unified_ohlc.get_candles(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        resolution=interval,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await unified_ohlc.get_candles(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        resolution=interval,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+</file>
+
 <file path="backend/database/clickhouse/cl_config.py">
 import os
 from typing import Any, Dict, Set
@@ -163833,635 +163837,6 @@ class cl_manager:
 
 
 cl_manager_instance = cl_manager()
-</file>
-
-<file path="backend/services/adapter/unified_aggregator.py">
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
-
-from redis import asyncio as aioredis
-from redis.exceptions import ConnectionError, ResponseError
-
-from backend.api.models.keys import Market
-from backend.database.clickhouse import (
-    cl_handlers_instance,
-    cl_manager_instance,
-    get_clickhouse_client,
-)
-from backend.services.adapter.candle_agg_1s import CandleAgg1s
-from backend.services.adapter.whale_detector import WhaleDetector
-from backend.services.discovery.dis_config import get_streams_per_exchange
-from backend.services.discovery.dis_trades import discover_trade_streams
-from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-
-# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
-from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
-
-logger = logging.getLogger("unified_aggregator")
-
-
-class UnifiedAggregator:
-    """
-    Zentraler Aggregator:
-    - konsumiert Redis-Streams (discover_trade_streams)
-    - queued Trades -> ClickHouse (cl_handlers_instance)
-    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
-    - Whale detection (optional insert into whale_events via cl_manager)
-    """
-
-    def __init__(self, redis_url: str):
-        self.redis_url = redis_url
-        self.r = None  # Redis client (set in run_unified_aggregator)
-        self.group = "unified_agg_group"
-        self.consumer = "unified_consumer"
-        self.running = True
-
-        # ClickHouse
-        self.ch_client = get_clickhouse_client()
-
-        # Whale Detection
-        self.whale_detector = WhaleDetector()
-        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
-
-        # 1s Candle Aggregation
-        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
-        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
-        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
-        self.last_candle_flush = time.time()
-        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
-
-        # Legacy multi-res aggregation (optional)
-        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
-        self.agg = MultiResCandleAgg() if self.enable_multires else None
-
-    # -----------------------------
-    # Normalization helpers
-    # -----------------------------
-
-    def _normalize_side(self, side: Any) -> str:
-        """
-        Normalize any exchange side variants -> 'buy'/'sell'
-        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
-        """
-        if side is None:
-            return "buy"
-        s = str(side).strip().lower()
-
-        if s in ("buy", "b", "bid", "1", "true", "t"):
-            return "buy"
-        if s in ("sell", "s", "ask", "2", "false", "f"):
-            return "sell"
-
-        # Some exchanges use uppercase or words; also handle common variants
-        if "buy" in s:
-            return "buy"
-        if "sell" in s:
-            return "sell"
-
-        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
-        return "buy"
-
-    def _ts_ms(self, timestamp: Any) -> int:
-        """
-        Robust timestamp -> milliseconds since epoch (int).
-        Uses CandleAgg1s parser for consistency.
-        """
-        return self.candle_agg.parse_timestamp(timestamp)
-
-    def _to_decimal(self, x: Any) -> Decimal:
-        return Decimal(str(x))
-
-    # -----------------------------
-    # Whale logic
-    # -----------------------------
-
-    async def process_whale_trade(self, trade_data: dict) -> None:
-        """
-        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
-        """
-        try:
-            symbol = trade_data.get("symbol")
-            price = trade_data.get("price")
-            size = trade_data.get("size")
-            if not symbol or price is None or size is None:
-                return
-
-            trade_value = self._to_decimal(price) * self._to_decimal(size)
-            threshold = await self.whale_detector.get_threshold(symbol)
-
-            if trade_value >= threshold:
-                if self.enable_whale_events:
-                    await self._store_whale_event(trade_data, trade_value, threshold)
-                else:
-                    logger.info(
-                        "[WHALE] %s %s value=%s threshold=%s",
-                        trade_data.get("exchange"),
-                        symbol,
-                        str(trade_value),
-                        str(threshold),
-                    )
-
-        except Exception:
-            logger.error("Unexpected error in process_whale_trade", exc_info=True)
-
-    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
-        """
-        Stores whale event as a ROW event (not aggregate states).
-        Requires cl_manager routing for operation_type='whale_events' to
-        table pattern: trading.{exchange}_whale_events
-        """
-        try:
-            exchange = str(trade.get("exchange", "")).lower().strip()
-            symbol = trade.get("symbol")
-            ts_ms = self._ts_ms(trade.get("timestamp"))
-
-            payload = {
-                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
-                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                "chain": "na",
-                "tx_hash": "na",
-                "from_addr": "na",
-                "to_addr": "na",
-                "token": None,
-                "symbol": symbol,
-                "amount": self._to_decimal(trade.get("size")),
-                "is_native": 0,
-                "amount_usd": self._to_decimal(trade_value),
-                "from_exchange": exchange,
-                "from_country": "na",
-                "from_city": "na",
-                "to_exchange": exchange,
-                "to_country": "na",
-                "to_city": "na",
-                "is_cross_border": 0,
-                "source": "live_ws",
-                "threshold_usd": self._to_decimal(threshold),
-                "coin_rank": 0,
-            }
-
-            ok = await cl_manager_instance.insert_data(
-                exchange=exchange,
-                operation_type="whale_events",
-                data=[payload],
-            )
-            if not ok:
-                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
-
-        except Exception:
-            logger.error("Failed to store whale_event", exc_info=True)
-
-    # -----------------------------
-    # Candle batching
-    # -----------------------------
-
-    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
-        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
-        """
-        return {
-            "symbol": candle["symbol"],
-            "market": candle["market"],
-            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            "o": candle["o"],
-            "h": candle["h"],
-            "l": candle["l"],
-            "c": candle["c"],
-            "v": candle["v"],
-            "qv": candle["qv"],
-            "n": candle["n"],
-            "src": candle.get("src", "agg"),
-            "ver": candle["ver"],
-        }
-
-    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
-        """
-        Flush candle batches to ClickHouse via cl_manager.
-        operation_type must map to: trading.{exchange}_candles_1s
-        """
-        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
-
-        for ex in exchanges_to_flush:
-            candles = self.candle_batch.get(ex, [])
-            if not candles:
-                continue
-
-            try:
-                ok = await cl_manager_instance.insert_data(
-                    exchange=ex,
-                    operation_type="candles",
-                    data=candles,
-                )
-                if ok:
-                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
-                    self.candle_batch[ex] = []
-                else:
-                    logger.warning("⚠️ Failed to flush candles for %s", ex)
-
-            except Exception:
-                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
-
-    async def _check_timer_flush(self) -> None:
-        """
-        Timer-based flush:
-        - finalize stale buckets
-        - flush all candle batches
-        """
-        now = time.time()
-        if now - self.last_candle_flush <= self.candle_flush_interval:
-            return
-
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-        finally:
-            self.last_candle_flush = now
-
-    # -----------------------------
-    # Trade queue
-    # -----------------------------
-
-    async def _queue_trade_for_clickhouse(
-        self,
-        exchange: str,
-        trade_id: str,
-        symbol: str,
-        market: str,
-        price: Any,
-        size: Any,
-        side: Any,
-        timestamp_ms: int,
-    ) -> None:
-        """
-        Queue one trade to ClickHouse handlers.
-        """
-        try:
-            labels = await get_symbol_labels(exchange, symbol, market)
-
-            trade_payload = {
-                "exchange": exchange,
-                "trade_id": trade_id,
-                "symbol": symbol,
-                "market": market,
-                "price": self._to_decimal(price),
-                "size": self._to_decimal(size),
-                "side": self._normalize_side(side),
-                "timestamp": int(timestamp_ms),  # ms
-                "asset_key": labels.get("asset_key"),
-                "instrument_uid": labels.get("instrument_uid"),
-            }
-
-            ok = await cl_handlers_instance.queue_message(
-                exchange=exchange,
-                message_type="trades",
-                data=trade_payload,
-            )
-            if not ok:
-                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
-            else:
-                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
-
-        except Exception:
-            logger.error("Error queuing trade for ClickHouse", exc_info=True)
-
-    # -----------------------------
-    # Main consume loop
-    # -----------------------------
-
-    async def consume_trades(self, streams: List[str]) -> None:
-        """
-        Consume trades from Redis Streams.
-
-        Expected stream key format:
-            <exchange>:trades:<market_type>:<symbol>
-        e.g. binance:trades:spot:BTCUSDT
-        """
-        if not streams:
-            logger.error("No streams provided to consume_trades")
-            return
-
-        # Initialize consumer groups only for existing streams
-        active_streams: List[str] = []
-        for stream_key in streams:
-            try:
-                exists = await self.r.exists(stream_key)
-                if not exists:
-                    logger.debug("Stream does not exist yet: %s", stream_key)
-                    continue
-
-                active_streams.append(stream_key)
-                try:
-                    await self.r.xgroup_create(stream_key, self.group, id="0", mkstream=True)
-                except ResponseError as e:
-                    if "BUSYGROUP" not in str(e):
-                        raise
-
-            except Exception:
-                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
-
-        if not active_streams:
-            logger.error("No active streams found - cannot consume")
-            return
-
-        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
-        streams = active_streams
-
-        while self.running:
-            try:
-                stream_dict = {s: ">" for s in streams}
-                messages = await self.r.xreadgroup(
-                    groupname=self.group,
-                    consumername=self.consumer,
-                    streams=stream_dict,
-                    count=200,
-                    block=5000,
-                )
-
-                if not messages:
-                    await self._check_timer_flush()
-                    continue
-
-                for stream_key, msgs in messages:
-                    for msg_id, data in msgs:
-                        try:
-                            raw = data.get("trade")
-                            if not raw:
-                                logger.warning("Missing 'trade' field in message %s", msg_id)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            trade = json.loads(raw)
-
-                            parts = stream_key.split(":", 3)
-                            if len(parts) != 4:
-                                logger.warning("Unexpected stream key format: %s", stream_key)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            exchange, _, market_type, symbol_from_key = parts
-                            exchange = exchange.lower().strip()
-
-                            trade_id = trade.get("trade_id") or trade.get("id") or ""
-                            price = trade.get("price")
-                            size = trade.get("size")
-                            side = trade.get("side")
-                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
-                            market = trade.get("market", market_type)
-
-                            symbol = trade.get("symbol") or symbol_from_key
-
-                            if not symbol or timestamp is None or price is None or size is None:
-                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
-                                await self.r.xack(stream_key, self.group, msg_id)
-                                continue
-
-                            # Normalize timestamp once (ms)
-                            ts_ms = self._ts_ms(timestamp)
-
-                            # Queue trade -> CH
-                            await self._queue_trade_for_clickhouse(
-                                exchange=exchange,
-                                trade_id=trade_id,
-                                symbol=symbol,
-                                market=market,
-                                price=price,
-                                size=size,
-                                side=side,
-                                timestamp_ms=ts_ms,
-                            )
-
-                            # 1s Candle aggregation (final candle on bucket switch)
-                            finished_candle = self.candle_agg.on_trade(
-                                exchange=exchange,
-                                symbol=symbol,
-                                market=market,
-                                timestamp=ts_ms,  # already normalized
-                                price=price,
-                                size=size,
-                            )
-
-                            if finished_candle:
-                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
-                                candle_for_insert = self._candle_row_from_agg(finished_candle)
-                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
-                                    await self._flush_candle_batch(ex)
-
-                            # Legacy multi-res aggregation (optional)
-                            if self.enable_multires and self.agg is not None:
-                                res_map = registry.list(exchange, symbol)
-                                if res_map:
-                                    _ = self.agg.on_trade(
-                                        exchange,
-                                        symbol,
-                                        market,
-                                        ts_ms,  # normalized
-                                        price,
-                                        size,
-                                        res_map,
-                                    )
-
-                            # Whale detection (optional)
-                            await self.process_whale_trade(
-                                {
-                                    "exchange": exchange,
-                                    "symbol": symbol,
-                                    "price": price,
-                                    "size": size,
-                                    "timestamp": ts_ms,
-                                    "trade_id": trade_id,
-                                }
-                            )
-
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                        except json.JSONDecodeError:
-                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-                        except Exception:
-                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
-                            await self.r.xack(stream_key, self.group, msg_id)
-
-                # Timer flush after each batch
-                await self._check_timer_flush()
-
-            except (ConnectionError, ResponseError) as e:
-                logger.error("Redis error in consume_trades: %s", str(e))
-                await asyncio.sleep(5)
-            except Exception:
-                logger.error("Unexpected error in consume_trades", exc_info=True)
-                await asyncio.sleep(1)
-
-    async def stop(self) -> None:
-        """
-        Stop aggregator cleanly + final flush.
-        """
-        self.running = False
-        logger.info("UnifiedAggregator stopping...")
-
-        # Final candle flush
-        try:
-            stale_candles = self.candle_agg.flush_stale()
-            for candle in stale_candles:
-                ex = (candle.get("exchange") or "").lower().strip()
-                if not ex:
-                    continue
-                candle_for_insert = self._candle_row_from_agg(candle)
-                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
-
-            await self._flush_candle_batch()
-            logger.info("✅ Final candle flush completed")
-        except Exception:
-            logger.warning("Error during final candle flush", exc_info=True)
-
-        if self.r is not None:
-            try:
-                await self.r.close()
-            except Exception:
-                logger.warning("Error closing Redis client", exc_info=True)
-
-
-async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
-    """
-    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
-    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
-
-    If exchange not enabled: return deterministic fallback without warnings.
-    """
-    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
-    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
-
-    if exchange.lower() not in enabled_exchanges:
-        return {
-            "asset_key": f"{exchange}/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
-        }
-
-    try:
-        market = Market.SPOT if market_type == "spot" else Market.USDTM
-        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
-
-        meta = next(
-            (
-                x
-                for x in catalog
-                if x.get("native_symbol", "").upper() == native_symbol.upper()
-            ),
-            None,
-        )
-
-        if meta:
-            return {
-                "asset_key": meta.get("asset_key"),
-                "instrument_uid": meta.get("instrument_uid"),
-            }
-
-        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
-        return {
-            "asset_key": f"UNKNOWN/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
-        }
-
-    except Exception:
-        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
-        return {
-            "asset_key": f"ERROR/{native_symbol}",
-            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
-        }
-
-
-async def run_unified_aggregator() -> None:
-    """
-    Entry point:
-    - initializes cl_manager + cl_handlers
-    - discovers streams dynamically
-    - runs consume loop
-    """
-    from backend.core.config import settings
-
-    aggregator = UnifiedAggregator(settings.REDIS_URL)
-    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
-
-    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
-
-    # ClickHouse lanes registration
-    logger.info("🔧 Initializing ClickHouse Manager...")
-    await cl_manager_instance.initialize()
-    logger.info("✅ ClickHouse Manager initialized with all lanes")
-
-    # ClickHouse workers
-    workers = int(os.getenv("CH_WORKERS", "3"))
-    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
-    await cl_handlers_instance.start_processing(num_workers=workers)
-    logger.info("✅ ClickHouse handlers started")
-
-    try:
-        while True:
-            try:
-                redis_conn = getattr(aggregator, "r", None)
-                if redis_conn is None:
-                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
-
-                per_exchange_limit = get_streams_per_exchange()
-
-                streams, active_symbols, existing_streams = await discover_trade_streams(
-                    redis_conn,
-                    per_exchange_limit=per_exchange_limit,
-                )
-
-                if not existing_streams:
-                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                if not streams:
-                    logger.warning(
-                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
-                        retry_interval,
-                    )
-                    await asyncio.sleep(retry_interval)
-                    continue
-
-                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
-                logger.info("📋 Active symbols from config: %s", active_symbols)
-                logger.info(
-                    "📊 Final stream count: %d (limit %d per exchange)",
-                    len(streams),
-                    per_exchange_limit,
-                )
-
-                await aggregator.consume_trades(streams)
-
-                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
-                await asyncio.sleep(retry_interval)
-
-            except asyncio.CancelledError:
-                logger.info("🛑 Unified Aggregator shutdown signal received")
-                await aggregator.stop()
-                break
-            except Exception:
-                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
-                await asyncio.sleep(retry_interval)
-    finally:
-        await aggregator.stop()
-        logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -167939,6 +167314,635 @@ echo "=================================================="
 echo ""
 
 exit $exit_code
+</file>
+
+<file path="backend/services/adapter/unified_aggregator.py">
+import asyncio
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
+
+from redis import asyncio as aioredis
+from redis.exceptions import ConnectionError, ResponseError
+
+from backend.api.models.keys import Market
+from backend.database.clickhouse import (
+    cl_handlers_instance,
+    cl_manager_instance,
+    get_clickhouse_client,
+)
+from backend.services.adapter.candle_agg_1s import CandleAgg1s
+from backend.services.adapter.whale_detector import WhaleDetector
+from backend.services.discovery.dis_config import get_streams_per_exchange
+from backend.services.discovery.dis_trades import discover_trade_streams
+from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+
+# Optional/legacy multi-res aggregation (kept for compatibility if your system still uses it)
+from backend.services.adapter.stream_aggregator import MultiResCandleAgg, registry
+
+logger = logging.getLogger("unified_aggregator")
+
+
+class UnifiedAggregator:
+    """
+    Zentraler Aggregator:
+    - konsumiert Redis-Streams (discover_trade_streams)
+    - queued Trades -> ClickHouse (cl_handlers_instance)
+    - 1s Candle Aggregation -> {exchange}_candles_1s (ReplacingMergeTree(ver))
+    - Whale detection (optional insert into whale_events via cl_manager)
+    """
+
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
+        self.r = None  # Redis client (set in run_unified_aggregator)
+        self.group = "unified_agg_group"
+        self.consumer = "unified_consumer"
+        self.running = True
+
+        # ClickHouse
+        self.ch_client = get_clickhouse_client()
+
+        # Whale Detection
+        self.whale_detector = WhaleDetector()
+        self.enable_whale_events = os.getenv("ENABLE_WHALE_EVENTS", "1") == "1"
+
+        # 1s Candle Aggregation
+        self.candle_agg = CandleAgg1s(stale_threshold_sec=1.5)
+        self.candle_batch: Dict[str, List[Dict[str, Any]]] = {}  # exchange -> candles
+        self.candle_batch_size = int(os.getenv("CANDLE_BATCH_SIZE", "5000"))
+        self.last_candle_flush = time.time()
+        self.candle_flush_interval = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "0.25"))
+
+        # Legacy multi-res aggregation (optional)
+        self.enable_multires = os.getenv("ENABLE_MULTIRES_AGG", "0") == "1"
+        self.agg = MultiResCandleAgg() if self.enable_multires else None
+
+    # -----------------------------
+    # Normalization helpers
+    # -----------------------------
+
+    def _normalize_side(self, side: Any) -> str:
+        """
+        Normalize any exchange side variants -> 'buy'/'sell'
+        Must match ClickHouse Enum8('buy'=1,'sell'=2) if used.
+        """
+        if side is None:
+            return "buy"
+        s = str(side).strip().lower()
+
+        if s in ("buy", "b", "bid", "1", "true", "t"):
+            return "buy"
+        if s in ("sell", "s", "ask", "2", "false", "f"):
+            return "sell"
+
+        # Some exchanges use uppercase or words; also handle common variants
+        if "buy" in s:
+            return "buy"
+        if "sell" in s:
+            return "sell"
+
+        # Fallback (avoid insert failures); you can switch to "return None" + skip if you prefer strictness
+        return "buy"
+
+    def _ts_ms(self, timestamp: Any) -> int:
+        """
+        Robust timestamp -> milliseconds since epoch (int).
+        Uses CandleAgg1s parser for consistency.
+        """
+        return self.candle_agg.parse_timestamp(timestamp)
+
+    def _to_decimal(self, x: Any) -> Decimal:
+        return Decimal(str(x))
+
+    # -----------------------------
+    # Whale logic
+    # -----------------------------
+
+    async def process_whale_trade(self, trade_data: dict) -> None:
+        """
+        Whale detection for one trade. If whale: optionally insert whale_event via cl_manager.
+        """
+        try:
+            symbol = trade_data.get("symbol")
+            price = trade_data.get("price")
+            size = trade_data.get("size")
+            if not symbol or price is None or size is None:
+                return
+
+            trade_value = self._to_decimal(price) * self._to_decimal(size)
+            threshold = await self.whale_detector.get_threshold(symbol)
+
+            if trade_value >= threshold:
+                if self.enable_whale_events:
+                    await self._store_whale_event(trade_data, trade_value, threshold)
+                else:
+                    logger.info(
+                        "[WHALE] %s %s value=%s threshold=%s",
+                        trade_data.get("exchange"),
+                        symbol,
+                        str(trade_value),
+                        str(threshold),
+                    )
+
+        except Exception:
+            logger.error("Unexpected error in process_whale_trade", exc_info=True)
+
+    async def _store_whale_event(self, trade: dict, trade_value: Decimal, threshold: Decimal) -> None:
+        """
+        Stores whale event as a ROW event (not aggregate states).
+        Requires cl_manager routing for operation_type='whale_events' to
+        table pattern: trading.{exchange}_whale_events
+        """
+        try:
+            exchange = str(trade.get("exchange", "")).lower().strip()
+            symbol = trade.get("symbol")
+            ts_ms = self._ts_ms(trade.get("timestamp"))
+
+            payload = {
+                "event_id": f"{exchange}:{symbol}:{ts_ms}:{trade.get('trade_id','')}",
+                "ts": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "chain": "na",
+                "tx_hash": "na",
+                "from_addr": "na",
+                "to_addr": "na",
+                "token": None,
+                "symbol": symbol,
+                "amount": self._to_decimal(trade.get("size")),
+                "is_native": 0,
+                "amount_usd": self._to_decimal(trade_value),
+                "from_exchange": exchange,
+                "from_country": "na",
+                "from_city": "na",
+                "to_exchange": exchange,
+                "to_country": "na",
+                "to_city": "na",
+                "is_cross_border": 0,
+                "source": "live_ws",
+                "threshold_usd": self._to_decimal(threshold),
+                "coin_rank": 0,
+            }
+
+            ok = await cl_manager_instance.insert_data(
+                exchange=exchange,
+                operation_type="whale_events",
+                data=[payload],
+            )
+            if not ok:
+                logger.warning("⚠️ Failed to insert whale_event for %s:%s", exchange, symbol)
+
+        except Exception:
+            logger.error("Failed to store whale_event", exc_info=True)
+
+    # -----------------------------
+    # Candle batching
+    # -----------------------------
+
+    def _candle_row_from_agg(self, candle: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Konvertiert CandleAgg1s-Output zu ClickHouse-Row-Format.
+        Entfernt 'exchange' Feld und formatiert Timestamp korrekt.
+        """
+        return {
+            "symbol": candle["symbol"],
+            "market": candle["market"],
+            "ts": datetime.fromtimestamp(candle["ts"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            "o": candle["o"],
+            "h": candle["h"],
+            "l": candle["l"],
+            "c": candle["c"],
+            "v": candle["v"],
+            "qv": candle["qv"],
+            "n": candle["n"],
+            "src": candle.get("src", "agg"),
+            "ver": candle["ver"],
+        }
+
+    async def _flush_candle_batch(self, exchange: Optional[str] = None) -> None:
+        """
+        Flush candle batches to ClickHouse via cl_manager.
+        operation_type must map to: trading.{exchange}_candles_1s
+        """
+        exchanges_to_flush = [exchange] if exchange else list(self.candle_batch.keys())
+
+        for ex in exchanges_to_flush:
+            candles = self.candle_batch.get(ex, [])
+            if not candles:
+                continue
+
+            try:
+                ok = await cl_manager_instance.insert_data(
+                    exchange=ex,
+                    operation_type="candles",
+                    data=candles,
+                )
+                if ok:
+                    logger.info("✅ Flushed %d candles for %s", len(candles), ex)
+                    self.candle_batch[ex] = []
+                else:
+                    logger.warning("⚠️ Failed to flush candles for %s", ex)
+
+            except Exception:
+                logger.error("❌ Error flushing candles for %s", ex, exc_info=True)
+
+    async def _check_timer_flush(self) -> None:
+        """
+        Timer-based flush:
+        - finalize stale buckets
+        - flush all candle batches
+        """
+        now = time.time()
+        if now - self.last_candle_flush <= self.candle_flush_interval:
+            return
+
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    logger.warning("Stale candle missing exchange field; skipping: %s", candle)
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+        finally:
+            self.last_candle_flush = now
+
+    # -----------------------------
+    # Trade queue
+    # -----------------------------
+
+    async def _queue_trade_for_clickhouse(
+        self,
+        exchange: str,
+        trade_id: str,
+        symbol: str,
+        market: str,
+        price: Any,
+        size: Any,
+        side: Any,
+        timestamp_ms: int,
+    ) -> None:
+        """
+        Queue one trade to ClickHouse handlers.
+        """
+        try:
+            labels = await get_symbol_labels(exchange, symbol, market)
+
+            trade_payload = {
+                "exchange": exchange,
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "market": market,
+                "price": self._to_decimal(price),
+                "size": self._to_decimal(size),
+                "side": self._normalize_side(side),
+                "timestamp": int(timestamp_ms),  # ms
+                "asset_key": labels.get("asset_key"),
+                "instrument_uid": labels.get("instrument_uid"),
+            }
+
+            ok = await cl_handlers_instance.queue_message(
+                exchange=exchange,
+                message_type="trades",
+                data=trade_payload,
+            )
+            if not ok:
+                logger.warning("Failed to queue trade for CH: %s:%s", exchange, symbol)
+            else:
+                logger.debug("✅ Queued trade %s:%s @ %s", exchange, symbol, str(price))
+
+        except Exception:
+            logger.error("Error queuing trade for ClickHouse", exc_info=True)
+
+    # -----------------------------
+    # Main consume loop
+    # -----------------------------
+
+    async def consume_trades(self, streams: List[str]) -> None:
+        """
+        Consume trades from Redis Streams.
+
+        Expected stream key format:
+            <exchange>:trades:<market_type>:<symbol>
+        e.g. binance:trades:spot:BTCUSDT
+        """
+        if not streams:
+            logger.error("No streams provided to consume_trades")
+            return
+
+        # Initialize consumer groups only for existing streams
+        active_streams: List[str] = []
+        for stream_key in streams:
+            try:
+                exists = await self.r.exists(stream_key)
+                if not exists:
+                    logger.debug("Stream does not exist yet: %s", stream_key)
+                    continue
+
+                active_streams.append(stream_key)
+                try:
+                    await self.r.xgroup_create(stream_key, self.group, id="$", mkstream=True)
+                except ResponseError as e:
+                    if "BUSYGROUP" not in str(e):
+                        raise
+
+            except Exception:
+                logger.warning("Stream check failed for %s", stream_key, exc_info=True)
+
+        if not active_streams:
+            logger.error("No active streams found - cannot consume")
+            return
+
+        logger.info("✅ Consumer groups initialized for %d/%d streams", len(active_streams), len(streams))
+        streams = active_streams
+
+        while self.running:
+            try:
+                stream_dict = {s: ">" for s in streams}
+                messages = await self.r.xreadgroup(
+                    groupname=self.group,
+                    consumername=self.consumer,
+                    streams=stream_dict,
+                    count=200,
+                    block=5000,
+                )
+
+                if not messages:
+                    await self._check_timer_flush()
+                    continue
+
+                for stream_key, msgs in messages:
+                    for msg_id, data in msgs:
+                        try:
+                            raw = data.get("trade")
+                            if not raw:
+                                logger.warning("Missing 'trade' field in message %s", msg_id)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            trade = json.loads(raw)
+
+                            parts = stream_key.split(":", 3)
+                            if len(parts) != 4:
+                                logger.warning("Unexpected stream key format: %s", stream_key)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            exchange, _, market_type, symbol_from_key = parts
+                            exchange = exchange.lower().strip()
+
+                            trade_id = trade.get("trade_id") or trade.get("id") or ""
+                            price = trade.get("price")
+                            size = trade.get("size")
+                            side = trade.get("side")
+                            timestamp = trade.get("timestamp") or trade.get("ts") or trade.get("time")
+                            market = trade.get("market", market_type)
+
+                            symbol = trade.get("symbol") or symbol_from_key
+
+                            if not symbol or timestamp is None or price is None or size is None:
+                                logger.warning("Incomplete trade data in %s: %s", stream_key, trade)
+                                await self.r.xack(stream_key, self.group, msg_id)
+                                continue
+
+                            # Normalize timestamp once (ms)
+                            ts_ms = self._ts_ms(timestamp)
+
+                            # Queue trade -> CH
+                            await self._queue_trade_for_clickhouse(
+                                exchange=exchange,
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                price=price,
+                                size=size,
+                                side=side,
+                                timestamp_ms=ts_ms,
+                            )
+
+                            # 1s Candle aggregation (final candle on bucket switch)
+                            finished_candle = self.candle_agg.on_trade(
+                                exchange=exchange,
+                                symbol=symbol,
+                                market=market,
+                                timestamp=ts_ms,  # already normalized
+                                price=price,
+                                size=size,
+                            )
+
+                            if finished_candle:
+                                ex = (finished_candle.get("exchange") or exchange).lower().strip()
+                                candle_for_insert = self._candle_row_from_agg(finished_candle)
+                                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+                                if len(self.candle_batch[ex]) >= self.candle_batch_size:
+                                    await self._flush_candle_batch(ex)
+
+                            # Legacy multi-res aggregation (optional)
+                            if self.enable_multires and self.agg is not None:
+                                res_map = registry.list(exchange, symbol)
+                                if res_map:
+                                    _ = self.agg.on_trade(
+                                        exchange,
+                                        symbol,
+                                        market,
+                                        ts_ms,  # normalized
+                                        price,
+                                        size,
+                                        res_map,
+                                    )
+
+                            # Whale detection (optional)
+                            await self.process_whale_trade(
+                                {
+                                    "exchange": exchange,
+                                    "symbol": symbol,
+                                    "price": price,
+                                    "size": size,
+                                    "timestamp": ts_ms,
+                                    "trade_id": trade_id,
+                                }
+                            )
+
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                        except json.JSONDecodeError:
+                            logger.error("JSON decode error for message %s", msg_id, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+                        except Exception:
+                            logger.error("Error processing message %s from %s", msg_id, stream_key, exc_info=True)
+                            await self.r.xack(stream_key, self.group, msg_id)
+
+                # Timer flush after each batch
+                await self._check_timer_flush()
+
+            except (ConnectionError, ResponseError) as e:
+                logger.error("Redis error in consume_trades: %s", str(e))
+                await asyncio.sleep(5)
+            except Exception:
+                logger.error("Unexpected error in consume_trades", exc_info=True)
+                await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        """
+        Stop aggregator cleanly + final flush.
+        """
+        self.running = False
+        logger.info("UnifiedAggregator stopping...")
+
+        # Final candle flush
+        try:
+            stale_candles = self.candle_agg.flush_stale()
+            for candle in stale_candles:
+                ex = (candle.get("exchange") or "").lower().strip()
+                if not ex:
+                    continue
+                candle_for_insert = self._candle_row_from_agg(candle)
+                self.candle_batch.setdefault(ex, []).append(candle_for_insert)
+
+            await self._flush_candle_batch()
+            logger.info("✅ Final candle flush completed")
+        except Exception:
+            logger.warning("Error during final candle flush", exc_info=True)
+
+        if self.r is not None:
+            try:
+                await self.r.close()
+            except Exception:
+                logger.warning("Error closing Redis client", exc_info=True)
+
+
+async def get_symbol_labels(exchange: str, native_symbol: str, market_type: str) -> dict:
+    """
+    Fetch labeling infos (asset_key, instrument_uid) from Unified Symbol Registry
+    only for exchanges enabled via ENV: SYMBOL_LABELS_EXCHANGES="binance,okx"
+
+    If exchange not enabled: return deterministic fallback without warnings.
+    """
+    enabled_str = os.getenv("SYMBOL_LABELS_EXCHANGES", "")
+    enabled_exchanges = [e.strip().lower() for e in enabled_str.split(",") if e.strip()]
+
+    if exchange.lower() not in enabled_exchanges:
+        return {
+            "asset_key": f"{exchange}/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}",
+        }
+
+    try:
+        market = Market.SPOT if market_type == "spot" else Market.USDTM
+        catalog = await SYMBOL_REGISTRY.catalog(exchange, market)
+
+        meta = next(
+            (
+                x
+                for x in catalog
+                if x.get("native_symbol", "").upper() == native_symbol.upper()
+            ),
+            None,
+        )
+
+        if meta:
+            return {
+                "asset_key": meta.get("asset_key"),
+                "instrument_uid": meta.get("instrument_uid"),
+            }
+
+        logger.warning("No labels found for %s:%s:%s", exchange, native_symbol, market_type)
+        return {
+            "asset_key": f"UNKNOWN/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:unknown",
+        }
+
+    except Exception:
+        logger.error("Error getting labels for %s:%s", exchange, native_symbol, exc_info=True)
+        return {
+            "asset_key": f"ERROR/{native_symbol}",
+            "instrument_uid": f"{exchange}:{market_type}:{native_symbol}:error",
+        }
+
+
+async def run_unified_aggregator() -> None:
+    """
+    Entry point:
+    - initializes cl_manager + cl_handlers
+    - discovers streams dynamically
+    - runs consume loop
+    """
+    from backend.core.config import settings
+
+    aggregator = UnifiedAggregator(settings.REDIS_URL)
+    aggregator.r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    retry_interval = int(os.getenv("UNIFIED_AGG_RETRY_SEC", "30"))
+
+    logger.info("🚀 Unified Aggregator starting (Stream Discovery System)")
+
+    # ClickHouse lanes registration
+    logger.info("🔧 Initializing ClickHouse Manager...")
+    await cl_manager_instance.initialize()
+    logger.info("✅ ClickHouse Manager initialized with all lanes")
+
+    # ClickHouse workers
+    workers = int(os.getenv("CH_WORKERS", "3"))
+    logger.info("🔧 Starting ClickHouse message handlers (%d workers)...", workers)
+    await cl_handlers_instance.start_processing(num_workers=workers)
+    logger.info("✅ ClickHouse handlers started")
+
+    try:
+        while True:
+            try:
+                redis_conn = getattr(aggregator, "r", None)
+                if redis_conn is None:
+                    raise RuntimeError("UnifiedAggregator has no Redis client 'r'")
+
+                per_exchange_limit = get_streams_per_exchange()
+
+                streams, active_symbols, existing_streams = await discover_trade_streams(
+                    redis_conn,
+                    per_exchange_limit=per_exchange_limit,
+                )
+
+                if not existing_streams:
+                    logger.warning("⏳ No trade streams found in Redis – retrying in %ds...", retry_interval)
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                if not streams:
+                    logger.warning(
+                        "⏳ Discovery returned 0 streams (after limits) – retrying in %ds...",
+                        retry_interval,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                logger.info("📡 Found %d existing trade streams in Redis", len(existing_streams))
+                logger.info("📋 Active symbols from config: %s", active_symbols)
+                logger.info(
+                    "📊 Final stream count: %d (limit %d per exchange)",
+                    len(streams),
+                    per_exchange_limit,
+                )
+
+                await aggregator.consume_trades(streams)
+
+                logger.warning("⏳ Trade consumer returned – retrying discovery in %ds...", retry_interval)
+                await asyncio.sleep(retry_interval)
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Unified Aggregator shutdown signal received")
+                await aggregator.stop()
+                break
+            except Exception:
+                logger.error("❌ Error in Unified Aggregator main loop – retrying in %ds...", retry_interval, exc_info=True)
+                await asyncio.sleep(retry_interval)
+    finally:
+        await aggregator.stop()
+        logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
 <file path="frontend/src/config/exchangeSupport.ts">
@@ -173720,7 +173724,11 @@ class UnifiedOHLC:
         return s, m
 
     def _cl_table(self, exchange: str) -> str:
-        # fixed DB name per your schema
+        """
+        ✅ FIX: Neue Schema-Konvention
+        Tabellen heißen jetzt: trading.{exchange}_candles_1s
+        (nicht mehr trading.{exchange}_kline)
+        """
         return f"trading.{exchange}_candles_1s"
 
     def _build_query(
