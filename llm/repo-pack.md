@@ -351,6 +351,7 @@ backend/
       cl_lanes.py
       cl_manager.py
       cl_message_handlers.py
+      cl_pressure.py
       cl_registry.py
       cl_router.py
       cl_schema_migration.py
@@ -528,6 +529,7 @@ backend/
       backfill_service.py
       gap_scan_service.py
       historical_candles_from_trades.py
+      historical_fetch_wrapper.py
       unified_historical.py
       unified_ohlc.py
     __init__.py
@@ -122233,6 +122235,69 @@ def register_optimization_routers(mapper: EndpointMapper) -> EndpointMapper:
     return mapper
 </file>
 
+<file path="backend/database/clickhouse/cl_pressure.py">
+# backend/database/clickhouse/cl_pressure.py
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from backend.database.clickhouse import get_clickhouse_client
+
+
+def _i(env: str, default: int) -> int:
+    v = os.getenv(env)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+@dataclass(frozen=True)
+class CLPressure:
+    parts: int
+    merges: int
+
+
+async def get_cl_pressure() -> CLPressure:
+    """
+    Cheap pressure signal for ClickHouse:
+      - active parts in trading DB
+      - active merges
+    """
+    ch = get_clickhouse_client()
+
+    q_parts = """
+    SELECT count()
+    FROM system.parts
+    WHERE database = 'trading' AND active = 1
+    """
+
+    q_merges = """
+    SELECT count()
+    FROM system.merges
+    """
+
+    parts_rows = await ch.execute(q_parts, {})
+    merges_rows = await ch.execute(q_merges, {})
+
+    parts = int(parts_rows[0][0]) if parts_rows else 0
+    merges = int(merges_rows[0][0]) if merges_rows else 0
+    return CLPressure(parts=parts, merges=merges)
+
+
+def cl_should_throttle(p: CLPressure) -> bool:
+    """
+    ENV-tunable thresholds.
+    If CH is under pressure, backfill max_qps will be reduced to protect live ingestion.
+    """
+    max_parts = _i("CL_PRESSURE_MAX_PARTS", 5000)
+    max_merges = _i("CL_PRESSURE_MAX_MERGES", 25)
+    return (p.parts >= max_parts) or (p.merges >= max_merges)
+</file>
+
 <file path="backend/database/clickhouse/cl_schema_migration.py">
 import asyncio
 import logging
@@ -125712,6 +125777,47 @@ class HistoricalCandlesFromTrades:
 
 
 hist_candles = HistoricalCandlesFromTrades()
+</file>
+
+<file path="backend/services/usecases/historical_fetch_wrapper.py">
+# backend/services/usecases/historical_fetch_wrapper.py
+from __future__ import annotations
+
+from backend.common.backfill_speed import speed, retry_after_seconds
+from backend.common.ch_pressure import get_pressure, should_throttle
+
+
+async def call_backfill_rest(exchange: str, oldest_backfill_ts, call_coro_factory):
+    """
+    Exchange-agnostic wrapper:
+      - phase scaling (burst/cruise) adjusts limiter.max_qps
+      - ClickHouse pressure guard reduces max_qps further if needed
+      - AIMD adapts to 429
+    """
+    ex = exchange.strip().lower()
+    lim = speed.limiter(ex)
+
+    # Phase: burst vs cruise
+    await speed.apply_phase_max_qps(ex, oldest_backfill_ts)
+
+    # CH pressure: if too hot => halve max_qps (repeatedly okay; limiter will clamp)
+    p = await get_pressure()
+    if should_throttle(p):
+        snap = await lim.get_snapshot()
+        await lim.set_max_qps(max(0.5, snap["max_qps"] * 0.5))
+
+    await lim.acquire()
+    try:
+        res = await call_coro_factory()
+        await lim.on_success()
+        return res
+    except Exception as e:
+        msg = str(e).lower()
+        if "429" in msg or "too many requests" in msg or "rate limit" in msg:
+            await lim.on_ratelimit(retry_after_seconds(ex))
+        raise
+    finally:
+        lim.release()
 </file>
 
 <file path="backend/websocket/ws_config.py">
@@ -159825,6 +159931,580 @@ async def get_candle_resolutions():
     }
 </file>
 
+<file path="backend/api/routers/ro_historical.py">
+# backend/api/routers/ro_historical.py
+"""
+ro_historical.py – Unified Historical & Backfill Router
+
+ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
+
+Ziele:
+- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
+- Dynamische Exchange-Discovery via ExchangeFactory
+- Futures + Spot Support (market_type Parameter überall vorbereitbar)
+- Decimal-safe JSON Handling
+- Unix-Millisekunden Timestamps (konsistent mit System)
+- Cache-Control Headers für Performance
+"""
+
+import asyncio
+import json
+import logging
+import time
+from decimal import Decimal
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
+from fastapi.responses import Response
+
+from backend.services.adapter.exchange_factory import ExchangeFactory
+from backend.core.utils.parse_resolution import parse_resolution
+from backend.services.usecases.unified_ohlc import unified_ohlc
+from backend.services.usecases.backfill_service import BackfillService
+from backend.api.dependencies.client import get_client_id
+
+logger = logging.getLogger("ro-historical")
+
+# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
+# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
+# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
+# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
+router = APIRouter(tags=["historical"])
+
+# ============================================================
+# DECIMAL / JSON HANDLING
+# ============================================================
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """Custom JSON encoder für Decimal-Support."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
+def dumps_with_decimals(obj: Any) -> str:
+    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
+    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_response_with_decimals(
+    content: Any,
+    headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    """FastAPI Response mit Decimal-safe JSON body."""
+    json_content = dumps_with_decimals(content)
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers=headers or {},
+    )
+
+
+# ============================================================
+# AUTO-DISCOVERY - SUPPORTED EXCHANGES
+# ============================================================
+
+
+def get_supported_exchanges() -> List[str]:
+    """
+    Auto-Discovery statt hardcoded Liste.
+    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
+    """
+    try:
+        return ExchangeFactory.get_available_exchanges() or []
+    except Exception as e:
+        logger.error(f"Failed to get available exchanges: {e}")
+        return []
+
+
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+
+# ==================================
+# TASK TRACKING (Backfill-Tasks)
+# ==================================
+
+exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_exchange_supported(exchange: str) -> str:
+    """
+    Dynamische Validierung – keine hardcoded Liste.
+    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
+    """
+    ex = exchange.lower()
+    available = get_supported_exchanges()
+
+    if ex not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
+        )
+    return ex
+
+
+# ============================================================
+# OHLC / HISTORY (ClickHouse)
+# ============================================================
+
+
+@router.get("/ohlc/{exchange}/{symbol}")
+async def get_ohlc_with_path(
+    exchange: str,
+    symbol: str,
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen (Rolling Window)",
+    ),
+):
+    """
+    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
+    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
+    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
+    ex = exchange.lower()
+
+    candles = await unified_ohlc.get_candles(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        resolution=interval,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+@router.get("/ohlc")
+async def get_ohlc_with_query(
+    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
+    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
+    interval: str = Query(
+        "1m",
+        description="Auflösung im Format '2s', '1m', '4h', etc.",
+    ),
+    market_type: str = Query(
+        "spot",
+        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
+    ),
+    start: Optional[int] = Query(
+        None,
+        description="Startzeitstempel in Millisekunden (Unix ms)",
+    ),
+    end: Optional[int] = Query(
+        None,
+        description="Endzeitstempel in Millisekunden (Unix ms)",
+    ),
+    limit: int = Query(
+        500,
+        ge=1,
+        le=5000,
+        description="Anzahl der Kerzen",
+    ),
+):
+    """
+    OHLC via Query-Parameter (Frontend-kompatible Variante).
+    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
+    """
+    try:
+        interval_seconds, _ = parse_resolution(interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ex = exchange.lower()
+
+    candles = await unified_ohlc.get_candles(
+        exchange=ex,
+        symbol=symbol,
+        market=market_type,
+        resolution=interval,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+    return json_response_with_decimals(
+        content=candles,
+        headers={
+            "Cache-Control": "public, max-age=5",
+            "Vary": "Accept, Authorization",
+        },
+    )
+
+
+# ====================================================
+# HISTORICAL BACKFILL – UnifiedHistoricalService
+# ====================================================
+
+
+@router.post("/backfill/start")
+async def start_exchange_historical_backfill(
+    exchange: str = Body(
+        ...,
+        embed=True,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    symbol: str = Body(..., embed=True),
+    market: str = Body(
+        "spot",
+        embed=True,
+        description="Market type: spot|futures|usdtm|coinm",
+    ),
+    until_date: str = Body(
+        "2020-01-01",
+        embed=True,
+        description="End-Datum im Format YYYY-MM-DD",
+    ),
+    interval: str = Body(
+        "1m",
+        embed=True,
+        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
+    ),
+    data_type: str = Body(
+        "candles",
+        embed=True,
+        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
+    ),
+):
+    """
+    Startet einen Historical-Backfill für einen Exchange.
+    - Generisch via ExchangeFactory
+    - Spot + Futures Support (market-Parameter wird durchgereicht)
+    - Unix-Millisekunden Timestamps für Task-Metadaten
+    """
+    ex = _ensure_exchange_supported(exchange)
+    sym = symbol.upper()
+    
+    logger.info(
+        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
+        f"{interval} until {until_date}"
+    )
+
+    try:
+        end_date = datetime.fromisoformat(until_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
+        )
+
+    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
+    service = BackfillService(ex)
+
+    # Unix-Millisekunden Timestamp
+    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
+
+    async def backfill_task():
+        try:
+            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
+            
+            # ✅ DELEGATE to Service Layer
+            result = await service.start_backfill(
+                symbol=sym,
+                market=market,
+                until_date=end_date,
+                interval=interval,
+                limit=5000
+            )
+
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": int(time.time() * 1000),
+                    "candles_processed": result,
+                }
+            )
+            logger.info(
+                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
+                exc_info=True,
+            )
+            exchange_backfill_tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "failed_at": int(time.time() * 1000),
+                }
+            )
+
+    exchange_backfill_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "exchange": ex,
+        "symbol": symbol,
+        "market": market,
+        "until_date": until_date,
+        "interval": interval,
+        "data_type": data_type,
+        "started_at": int(time.time() * 1000),
+        "estimated_duration": "calculating...",
+        "progress": 0,
+    }
+
+    asyncio.create_task(backfill_task())
+
+    return json_response_with_decimals(
+        content=exchange_backfill_tasks[task_id],
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/backfill/status")
+async def get_exchange_backfill_status(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: Exchange filtern",
+    ),
+    task_id: Optional[str] = Query(
+        None,
+        description="Optional: spezifische Task-ID",
+    ),
+):
+    """
+    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
+    Optional filterbar nach Exchange oder Task-ID.
+    """
+    if task_id:
+        task = exchange_backfill_tasks.get(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found",
+            )
+        if exchange and task["exchange"] != exchange.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {task_id} not found for exchange {exchange}",
+            )
+        return json_response_with_decimals(
+            content=task,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    tasks = list(exchange_backfill_tasks.values())
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        tasks = [t for t in tasks if t["exchange"] == ex]
+
+    active_tasks = [t for t in tasks if t["status"] == "running"]
+    completed_tasks = [t for t in tasks if t["status"] == "completed"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+
+    return json_response_with_decimals(
+        content={
+            "exchange": exchange.lower() if exchange else None,
+            "active_tasks": len(active_tasks),
+            "completed_tasks": len(completed_tasks),
+            "failed_tasks": len(failed_tasks),
+            "tasks": {
+                "active": active_tasks[-5:],
+                "completed": completed_tasks[-5:],
+                "failed": failed_tasks[-5:],
+            },
+            "total_tasks": len(tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/config/{exchange}")
+async def get_exchange_historical_config(
+    exchange: str = Path(
+        ...,
+        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
+    ),
+    user_id: Optional[str] = Depends(get_client_id),
+):
+    """
+    Exchange-spezifische Historical-Konfiguration:
+    - Lädt Metadaten dynamisch via REST-API
+    - Keine hardcoded EXCHANGE_CONFIGS
+    """
+    ex = _ensure_exchange_supported(exchange)
+
+    try:
+        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
+        if not api:
+            raise HTTPException(status_code=503, detail=f"{ex} API not available")
+
+        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
+
+        return json_response_with_decimals(
+            content={
+                "exchange": ex,
+                "markets_available": len(markets),
+                "supports_spot": any(m.get("spot") for m in markets),
+                "supports_futures": any(
+                    m.get("future") or m.get("swap") for m in markets
+                ),
+                "timestamp": int(time.time() * 1000),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+
+@router.post("/backfill/stop")
+async def stop_exchange_backfill(
+    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
+):
+    """
+    Markiert einen laufenden Backfill-Task als gestoppt.
+    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
+    """
+    task = exchange_backfill_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found",
+        )
+
+    if task["status"] != "running":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not running (status: {task['status']})",
+        )
+
+    task.update(
+        {
+            "status": "stopped",
+            "stopped_at": int(time.time() * 1000),
+        }
+    )
+
+    logger.info(f"🛑 Stopped backfill task {task_id}")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Backfill task {task_id} stopped",
+            "task": task,
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/backfill/tasks")
+async def clear_completed_tasks(
+    exchange: Optional[str] = Query(
+        None,
+        description="Optional: nur Tasks eines Exchanges bereinigen",
+    ),
+):
+    """
+    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
+    Laufende Tasks bleiben erhalten.
+    Optional filterbar nach Exchange.
+    """
+    global exchange_backfill_tasks
+
+    if exchange:
+        ex = _ensure_exchange_supported(exchange)
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running" and v["exchange"] == ex
+        }
+        total_for_ex = len(
+            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
+        )
+        cleared_count = total_for_ex - len(active_tasks)
+
+        exchange_backfill_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["exchange"] != ex or v["status"] == "running"
+        }
+        exchange_backfill_tasks.update(active_tasks)
+    else:
+        active_tasks = {
+            k: v
+            for k, v in exchange_backfill_tasks.items()
+            if v["status"] == "running"
+        }
+        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
+        exchange_backfill_tasks = active_tasks
+
+    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
+
+    return json_response_with_decimals(
+        content={
+            "message": f"Cleared {cleared_count} completed tasks",
+            "remaining_active_tasks": len(exchange_backfill_tasks),
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ==========================================
+# SUPPORTED EXCHANGES ENDPOINT
+# ==========================================
+
+
+@router.get("/exchanges")
+async def get_supported_historical_exchanges():
+    """
+    Liste aller unterstützten Exchanges (auto-discovered).
+    Dient als Meta-Endpoint für UI/Monitoring.
+    """
+    exs = get_supported_exchanges()
+    return json_response_with_decimals(
+        content={
+            "supported_exchanges": exs,
+            "count": len(exs),
+            "auto_discovery": True,
+            "timestamp": int(time.time() * 1000),
+        },
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+</file>
+
 <file path="backend/database/clickhouse/__init__.py">
 # ClickHouse Lane System - Unified Export Module
 # Zentrale Exports für alle cl_ Komponenten für alle 8 Exchanges
@@ -162191,580 +162871,6 @@ while true; do
   echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
   sleep "$REFRESH_INTERVAL"
 done
-</file>
-
-<file path="backend/api/routers/ro_historical.py">
-# backend/api/routers/ro_historical.py
-"""
-ro_historical.py – Unified Historical & Backfill Router
-
-ENTERPRISE VERSION - Vollständig generisch, keine Hardcodings!
-
-Ziele:
-- Generischer Backfill für ALLE Exchanges über UnifiedHistoricalService
-- Dynamische Exchange-Discovery via ExchangeFactory
-- Futures + Spot Support (market_type Parameter überall vorbereitbar)
-- Decimal-safe JSON Handling
-- Unix-Millisekunden Timestamps (konsistent mit System)
-- Cache-Control Headers für Performance
-"""
-
-import asyncio
-import json
-import logging
-import time
-from decimal import Decimal
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from fastapi import APIRouter, Body, HTTPException, Path, Query, Depends
-from fastapi.responses import Response
-
-from backend.services.adapter.exchange_factory import ExchangeFactory
-from backend.core.utils.parse_resolution import parse_resolution
-from backend.services.usecases.unified_ohlc import unified_ohlc
-from backend.services.usecases.backfill_service import BackfillService
-from backend.api.dependencies.client import get_client_id
-
-logger = logging.getLogger("ro-historical")
-
-# ✅ FIX: KEIN Prefix hier, da router_registry.py bereits "/api/historical" setzt
-# FastAPI kombiniert: registry_prefix + router_prefix + endpoint_path
-# Vorher: /api/historical + /historical + /backfill/start = /api/historical/historical/backfill/start ❌
-# Jetzt:  /api/historical + "" + /backfill/start = /api/historical/backfill/start ✅
-router = APIRouter(tags=["historical"])
-
-# ============================================================
-# DECIMAL / JSON HANDLING
-# ============================================================
-
-
-class DecimalEncoder(json.JSONEncoder):
-    """Custom JSON encoder für Decimal-Support."""
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super().default(obj)
-
-
-def dumps_with_decimals(obj: Any) -> str:
-    """JSON-dump mit Decimal-Support und kompakten Separatoren."""
-    return json.dumps(obj, cls=DecimalEncoder, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_response_with_decimals(
-    content: Any,
-    headers: Optional[Dict[str, str]] = None,
-) -> Response:
-    """FastAPI Response mit Decimal-safe JSON body."""
-    json_content = dumps_with_decimals(content)
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers=headers or {},
-    )
-
-
-# ============================================================
-# AUTO-DISCOVERY - SUPPORTED EXCHANGES
-# ============================================================
-
-
-def get_supported_exchanges() -> List[str]:
-    """
-    Auto-Discovery statt hardcoded Liste.
-    Liefert alle verfügbaren Exchanges aus ExchangeFactory.
-    """
-    try:
-        return ExchangeFactory.get_available_exchanges() or []
-    except Exception as e:
-        logger.error(f"Failed to get available exchanges: {e}")
-        return []
-
-
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-
-# ==================================
-# TASK TRACKING (Backfill-Tasks)
-# ==================================
-
-exchange_backfill_tasks: Dict[str, Dict[str, Any]] = {}
-
-
-def _ensure_exchange_supported(exchange: str) -> str:
-    """
-    Dynamische Validierung – keine hardcoded Liste.
-    Prüft, ob Exchange in ExchangeFactory verfügbar ist.
-    """
-    ex = exchange.lower()
-    available = get_supported_exchanges()
-
-    if ex not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported exchange: {exchange}. Supported: {available}",
-        )
-    return ex
-
-
-# ============================================================
-# OHLC / HISTORY (ClickHouse)
-# ============================================================
-
-
-@router.get("/ohlc/{exchange}/{symbol}")
-async def get_ohlc_with_path(
-    exchange: str,
-    symbol: str,
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen (Rolling Window)",
-    ),
-):
-    """
-    Direkter OHLC-Endpoint via ClickHouse (Pfad-Variante).
-    Aggregation läuft über get_ohlc_from_ch (trades → Candles).
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Exchange-String wird im ClickHouse-Table verwendet, daher hier
-    # keine harte Validierung erzwingen, sondern nur konsistent in lowercase nutzen.
-    ex = exchange.lower()
-
-    candles = await unified_ohlc.get_candles(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        resolution=interval,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-@router.get("/ohlc")
-async def get_ohlc_with_query(
-    symbol: str = Query(..., description="Trading Symbol (z. B. BTCUSDT)"),
-    exchange: str = Query(..., description="Exchange (z. B. binance, bitget)"),
-    interval: str = Query(
-        "1m",
-        description="Auflösung im Format '2s', '1m', '4h', etc.",
-    ),
-    market_type: str = Query(
-        "spot",
-        description="Markttyp: spot|futures|usdtm|coinm (noch nicht in Aggregation verwendet).",
-    ),
-    start: Optional[int] = Query(
-        None,
-        description="Startzeitstempel in Millisekunden (Unix ms)",
-    ),
-    end: Optional[int] = Query(
-        None,
-        description="Endzeitstempel in Millisekunden (Unix ms)",
-    ),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=5000,
-        description="Anzahl der Kerzen",
-    ),
-):
-    """
-    OHLC via Query-Parameter (Frontend-kompatible Variante).
-    Funktional identisch zu /historical/ohlc/{exchange}/{symbol}.
-    """
-    try:
-        interval_seconds, _ = parse_resolution(interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    ex = exchange.lower()
-
-    candles = await unified_ohlc.get_candles(
-        exchange=ex,
-        symbol=symbol,
-        market=market_type,
-        resolution=interval,
-        start=start,
-        end=end,
-        limit=limit,
-    )
-
-    return json_response_with_decimals(
-        content=candles,
-        headers={
-            "Cache-Control": "public, max-age=5",
-            "Vary": "Accept, Authorization",
-        },
-    )
-
-
-# ====================================================
-# HISTORICAL BACKFILL – UnifiedHistoricalService
-# ====================================================
-
-
-@router.post("/backfill/start")
-async def start_exchange_historical_backfill(
-    exchange: str = Body(
-        ...,
-        embed=True,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    symbol: str = Body(..., embed=True),
-    market: str = Body(
-        "spot",
-        embed=True,
-        description="Market type: spot|futures|usdtm|coinm",
-    ),
-    until_date: str = Body(
-        "2020-01-01",
-        embed=True,
-        description="End-Datum im Format YYYY-MM-DD",
-    ),
-    interval: str = Body(
-        "1m",
-        embed=True,
-        description="Exchange-Intervall (1m, 5m, 1h, etc.)",
-    ),
-    data_type: str = Body(
-        "candles",
-        embed=True,
-        description="Datentyp: candles|trades|orderbook (aktuell primär candles)",
-    ),
-):
-    """
-    Startet einen Historical-Backfill für einen Exchange.
-    - Generisch via ExchangeFactory
-    - Spot + Futures Support (market-Parameter wird durchgereicht)
-    - Unix-Millisekunden Timestamps für Task-Metadaten
-    """
-    ex = _ensure_exchange_supported(exchange)
-    sym = symbol.upper()
-    
-    logger.info(
-        f"🚀 HTTP Backfill Request: {ex.upper()} {sym} {market} "
-        f"{interval} until {until_date}"
-    )
-
-    try:
-        end_date = datetime.fromisoformat(until_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {until_date}. Use YYYY-MM-DD",
-        )
-
-    # ✅ ENTERPRISE: Service Layer Instanz (kein HTTP, kein Direct UnifiedHistoricalService)
-    service = BackfillService(ex)
-
-    # Unix-Millisekunden Timestamp
-    task_id = f"{ex}_{sym}_{market}_{int(time.time() * 1000)}"
-
-    async def backfill_task():
-        try:
-            logger.info(f"📊 Starting HTTP backfill task {task_id} via BackfillService")
-            
-            # ✅ DELEGATE to Service Layer
-            result = await service.start_backfill(
-                symbol=sym,
-                market=market,
-                until_date=end_date,
-                interval=interval,
-                limit=5000
-            )
-
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "completed",
-                    "result": result,
-                    "completed_at": int(time.time() * 1000),
-                    "candles_processed": result,
-                }
-            )
-            logger.info(
-                f"✅ HTTP backfill task {task_id} completed: {result} candles ({ex.upper()} {sym})"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"❌ HTTP backfill task {task_id} failed: {str(e)}",
-                exc_info=True,
-            )
-            exchange_backfill_tasks[task_id].update(
-                {
-                    "status": "failed",
-                    "error": str(e),
-                    "failed_at": int(time.time() * 1000),
-                }
-            )
-
-    exchange_backfill_tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "exchange": ex,
-        "symbol": symbol,
-        "market": market,
-        "until_date": until_date,
-        "interval": interval,
-        "data_type": data_type,
-        "started_at": int(time.time() * 1000),
-        "estimated_duration": "calculating...",
-        "progress": 0,
-    }
-
-    asyncio.create_task(backfill_task())
-
-    return json_response_with_decimals(
-        content=exchange_backfill_tasks[task_id],
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/backfill/status")
-async def get_exchange_backfill_status(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: Exchange filtern",
-    ),
-    task_id: Optional[str] = Query(
-        None,
-        description="Optional: spezifische Task-ID",
-    ),
-):
-    """
-    Status-Endpoint für alle laufenden/abgeschlossenen Backfill-Tasks.
-    Optional filterbar nach Exchange oder Task-ID.
-    """
-    if task_id:
-        task = exchange_backfill_tasks.get(task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found",
-            )
-        if exchange and task["exchange"] != exchange.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task {task_id} not found for exchange {exchange}",
-            )
-        return json_response_with_decimals(
-            content=task,
-            headers={"Cache-Control": "no-cache"},
-        )
-
-    tasks = list(exchange_backfill_tasks.values())
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        tasks = [t for t in tasks if t["exchange"] == ex]
-
-    active_tasks = [t for t in tasks if t["status"] == "running"]
-    completed_tasks = [t for t in tasks if t["status"] == "completed"]
-    failed_tasks = [t for t in tasks if t["status"] == "failed"]
-
-    return json_response_with_decimals(
-        content={
-            "exchange": exchange.lower() if exchange else None,
-            "active_tasks": len(active_tasks),
-            "completed_tasks": len(completed_tasks),
-            "failed_tasks": len(failed_tasks),
-            "tasks": {
-                "active": active_tasks[-5:],
-                "completed": completed_tasks[-5:],
-                "failed": failed_tasks[-5:],
-            },
-            "total_tasks": len(tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.get("/config/{exchange}")
-async def get_exchange_historical_config(
-    exchange: str = Path(
-        ...,
-        description=f"Exchange name. Supported: {', '.join(SUPPORTED_EXCHANGES)}",
-    ),
-    user_id: Optional[str] = Depends(get_client_id),
-):
-    """
-    Exchange-spezifische Historical-Konfiguration:
-    - Lädt Metadaten dynamisch via REST-API
-    - Keine hardcoded EXCHANGE_CONFIGS
-    """
-    ex = _ensure_exchange_supported(exchange)
-
-    try:
-        api = ExchangeFactory.get_rest_api(ex, user_id=user_id)
-        if not api:
-            raise HTTPException(status_code=503, detail=f"{ex} API not available")
-
-        markets = await api.fetch_markets() if hasattr(api, "fetch_markets") else []
-
-        return json_response_with_decimals(
-            content={
-                "exchange": ex,
-                "markets_available": len(markets),
-                "supports_spot": any(m.get("spot") for m in markets),
-                "supports_futures": any(
-                    m.get("future") or m.get("swap") for m in markets
-                ),
-                "timestamp": int(time.time() * 1000),
-            },
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get config for {ex}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
-
-
-@router.post("/backfill/stop")
-async def stop_exchange_backfill(
-    task_id: str = Body(..., embed=True, description="Task-ID des Backfill-Jobs"),
-):
-    """
-    Markiert einen laufenden Backfill-Task als gestoppt.
-    UnifiedHistoricalService kann über Statusverwaltung darauf reagieren.
-    """
-    task = exchange_backfill_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found",
-        )
-
-    if task["status"] != "running":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {task_id} is not running (status: {task['status']})",
-        )
-
-    task.update(
-        {
-            "status": "stopped",
-            "stopped_at": int(time.time() * 1000),
-        }
-    )
-
-    logger.info(f"🛑 Stopped backfill task {task_id}")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Backfill task {task_id} stopped",
-            "task": task,
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@router.delete("/backfill/tasks")
-async def clear_completed_tasks(
-    exchange: Optional[str] = Query(
-        None,
-        description="Optional: nur Tasks eines Exchanges bereinigen",
-    ),
-):
-    """
-    Löscht abgeschlossene/fehlgeschlagene Backfill-Tasks.
-    Laufende Tasks bleiben erhalten.
-    Optional filterbar nach Exchange.
-    """
-    global exchange_backfill_tasks
-
-    if exchange:
-        ex = _ensure_exchange_supported(exchange)
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running" and v["exchange"] == ex
-        }
-        total_for_ex = len(
-            [v for v in exchange_backfill_tasks.values() if v["exchange"] == ex]
-        )
-        cleared_count = total_for_ex - len(active_tasks)
-
-        exchange_backfill_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["exchange"] != ex or v["status"] == "running"
-        }
-        exchange_backfill_tasks.update(active_tasks)
-    else:
-        active_tasks = {
-            k: v
-            for k, v in exchange_backfill_tasks.items()
-            if v["status"] == "running"
-        }
-        cleared_count = len(exchange_backfill_tasks) - len(active_tasks)
-        exchange_backfill_tasks = active_tasks
-
-    logger.info(f"🧹 Cleared {cleared_count} completed tasks")
-
-    return json_response_with_decimals(
-        content={
-            "message": f"Cleared {cleared_count} completed tasks",
-            "remaining_active_tasks": len(exchange_backfill_tasks),
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-# ==========================================
-# SUPPORTED EXCHANGES ENDPOINT
-# ==========================================
-
-
-@router.get("/exchanges")
-async def get_supported_historical_exchanges():
-    """
-    Liste aller unterstützten Exchanges (auto-discovered).
-    Dient als Meta-Endpoint für UI/Monitoring.
-    """
-    exs = get_supported_exchanges()
-    return json_response_with_decimals(
-        content={
-            "supported_exchanges": exs,
-            "count": len(exs),
-            "auto_discovery": True,
-            "timestamp": int(time.time() * 1000),
-        },
-        headers={"Cache-Control": "public, max-age=60"},
-    )
 </file>
 
 <file path="backend/database/clickhouse/cl_config.py">
@@ -170483,239 +170589,6 @@ CREATE TABLE IF NOT EXISTS trading.all_whale (
 -- ========================================
 </file>
 
-<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
-import { useEffect, useMemo, useState } from "react";
-import { useWsLane } from "../../../services/ws/useWsLane";
-import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
-
-/**
- * ENTERPRISE POLICY:
- * - limit counts ONLY real candles (OHLC)
- * - gaps are visualized via Whitespace bars (time-only)
- * - NO synthetic OHLC is ever generated ("kein Interpolieren")
- * - fully ENV driven (no hardcoded behavior)
- */
-
-function envInt(key: string, def: number, min: number, max: number): number {
-  const raw = (import.meta as any).env?.[key];
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  const x = Math.floor(n);
-  if (x < min) return min;
-  if (x > max) return max;
-  return x;
-}
-
-// default real-candle limit from ENV (0 = unlimited)
-const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
-
-// max whitespace points inserted per single gap
-const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
-
-function intervalToSec(interval: string | undefined): number {
-  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
-  if (!m || !m[1] || !m[2]) return 60;
-  const n = parseInt(m[1], 10);
-  const u = m[2];
-  if (!Number.isFinite(n) || n <= 0) return 60;
-
-  if (u === "s") return n;
-  if (u === "m") return n * 60;
-  if (u === "h") return n * 3600;
-  if (u === "d") return n * 86400;
-  if (u === "w") return n * 604800;
-  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
-  if (u === "M") return n * 2592000;
-
-  return 60;
-}
-
-function isFiniteNum(x: any): x is number {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function isRealBar(b: any): b is CandleBar {
-  return (
-    isFiniteNum(b?.time) &&
-    isFiniteNum(b?.open) &&
-    isFiniteNum(b?.high) &&
-    isFiniteNum(b?.low) &&
-    isFiniteNum(b?.close)
-  );
-}
-
-/**
- * Inserts Whitespace points between REAL points to visualize missing buckets.
- * Never generates OHLC -> no interpolation.
- *
- * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
- */
-function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
-  if (sortedReal.length <= 1) return sortedReal;
-  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
-
-  const stepMs = stepSec * 1000;
-  const out: CandleData[] = [];
-
-  for (let i = 0; i < sortedReal.length; i++) {
-    const cur = sortedReal[i];
-    if (!cur) continue;
-    out.push(cur);
-
-    const nxt = sortedReal[i + 1];
-    if (!nxt) break;
-
-    const dtMs = nxt.time - cur.time;
-    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
-
-    const missingBars = Math.floor(dtMs / stepMs) - 1;
-    if (missingBars <= 0) continue;
-
-    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
-    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
-
-    for (let k = 1; k <= missingBars; k += stride) {
-      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
-    }
-  }
-
-  return out;
-}
-
-/**
- * Applies real-candle limit (N), WITHOUT counting whitespace.
- * Returns last N real candles, then injects whitespace gaps inside that window.
- */
-function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
-  if (realSorted.length === 0) return [];
-
-  let windowReal = realSorted;
-  if (maxReal > 0 && realSorted.length > maxReal) {
-    windowReal = realSorted.slice(realSorted.length - maxReal);
-  }
-
-  return injectWhitespaceGaps(windowReal, stepSec);
-}
-
-export function useChartView(
-  symbol: string,
-  market: string,
-  exchange: string,
-  interval: string,
-  limit?: number
-) {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
-  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
-
-  const maxReal = useMemo(() => {
-    const n = Number(limit);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return ENV_MAX_REAL;
-  }, [limit]);
-
-  const chartData = useMemo<CandleData[]>(() => {
-    const hist = historical ?? [];
-    const live = candles ?? [];
-    if (hist.length === 0 && live.length === 0) return [];
-
-    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
-    const map = new Map<number, CandleBar>();
-
-    const push = (c: any) => {
-      const tSec = Number(c?.t);
-      if (!Number.isFinite(tSec) || tSec <= 0) return;
-
-      const timeMs = Math.floor(tSec) * 1000;
-
-      const bar: CandleBar = {
-        time: timeMs,
-        open: Number(c?.o),
-        high: Number(c?.h),
-        low: Number(c?.l),
-        close: Number(c?.c),
-        volume: Number(c?.v),
-      };
-
-      if (!isRealBar(bar)) return;
-      map.set(timeMs, bar);
-    };
-
-    for (const c of hist) push(c);
-    for (const c of live) push(c);
-
-    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
-
-    // ✅ limit counts ONLY real candles
-    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
-  }, [historical, candles, stepSec, maxReal]);
-
-  const meta = useMemo(() => {
-    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
-    const whitespaceCount = chartData.length - realCount;
-    return {
-      status,
-      interval,
-      stepSec,
-      historicalCount: historical?.length ?? 0,
-      liveCount: candles?.length ?? 0,
-      totalCount: chartData.length,
-      realCount,
-      whitespaceCount,
-      maxRealCandles: maxReal,
-      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
-    };
-  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
-
-  useEffect(() => {
-    if (status === "OPEN") {
-      if (chartData.length > 0) {
-        setLoading(false);
-        setError(null);
-      } else {
-        setLoading(true);
-      }
-      return;
-    }
-    if (status === "ERROR") {
-      setLoading(false);
-      setError(new Error("WebSocket connection failed"));
-      return;
-    }
-    setLoading(true);
-  }, [status, chartData.length]);
-
-  return {
-    chartData,
-    loading,
-    error,
-    meta,
-    fillBlock,
-  };
-}
-</file>
-
-<file path="frontend/src/main.tsx">
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import ThemeProvider from './shared/ui/theme-provider';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <App />
-      </BrowserRouter>
-    </ThemeProvider>
-  </StrictMode>,
-);
-</file>
-
 <file path="backend/services/adapter/collector_starter.py">
 """
 ✅ ENTERPRISE: Konfigurierbare Collector Settings
@@ -170970,6 +170843,239 @@ async def start_auto_backfill_gap_loop():
             logger.info(f"✅ LOOP started: {exchange}:{symbol}")
         except Exception as e:
             logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
+<file path="frontend/src/pages/TradingPage/hooks/useChartView.ts">
+import { useEffect, useMemo, useState } from "react";
+import { useWsLane } from "../../../services/ws/useWsLane";
+import type { CandleData, CandleBar } from "../../../shared/components/CandleChart/types";
+
+/**
+ * ENTERPRISE POLICY:
+ * - limit counts ONLY real candles (OHLC)
+ * - gaps are visualized via Whitespace bars (time-only)
+ * - NO synthetic OHLC is ever generated ("kein Interpolieren")
+ * - fully ENV driven (no hardcoded behavior)
+ */
+
+function envInt(key: string, def: number, min: number, max: number): number {
+  const raw = (import.meta as any).env?.[key];
+  const n = Number(raw ?? def);
+  if (!Number.isFinite(n)) return def;
+  const x = Math.floor(n);
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+
+// default real-candle limit from ENV (0 = unlimited)
+const ENV_MAX_REAL = envInt("VITE_CHART_MAX_REAL_CANDLES", 2000, 0, 200000);
+
+// max whitespace points inserted per single gap
+const GAP_WHITESPACE_MAX_PER_GAP = envInt("VITE_CHART_GAP_WHITESPACE_MAX_PER_GAP", 2000, 0, 200000);
+
+function intervalToSec(interval: string | undefined): number {
+  const m = /^(\d+)(s|m|h|d|w|M)$/.exec((interval ?? "").trim());
+  if (!m || !m[1] || !m[2]) return 60;
+  const n = parseInt(m[1], 10);
+  const u = m[2];
+  if (!Number.isFinite(n) || n <= 0) return 60;
+
+  if (u === "s") return n;
+  if (u === "m") return n * 60;
+  if (u === "h") return n * 3600;
+  if (u === "d") return n * 86400;
+  if (u === "w") return n * 604800;
+  // "M" = 30d buckets (calendar-month exactness must come from backend policy)
+  if (u === "M") return n * 2592000;
+
+  return 60;
+}
+
+function isFiniteNum(x: any): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isRealBar(b: any): b is CandleBar {
+  return (
+    isFiniteNum(b?.time) &&
+    isFiniteNum(b?.open) &&
+    isFiniteNum(b?.high) &&
+    isFiniteNum(b?.low) &&
+    isFiniteNum(b?.close)
+  );
+}
+
+/**
+ * Inserts Whitespace points between REAL points to visualize missing buckets.
+ * Never generates OHLC -> no interpolation.
+ *
+ * For huge gaps, whitespace insertion is downsampled (stride) to prevent memory blowup.
+ */
+function injectWhitespaceGaps(sortedReal: CandleBar[], stepSec: number): CandleData[] {
+  if (sortedReal.length <= 1) return sortedReal;
+  if (!Number.isFinite(stepSec) || stepSec <= 0) return sortedReal;
+
+  const stepMs = stepSec * 1000;
+  const out: CandleData[] = [];
+
+  for (let i = 0; i < sortedReal.length; i++) {
+    const cur = sortedReal[i];
+    if (!cur) continue;
+    out.push(cur);
+
+    const nxt = sortedReal[i + 1];
+    if (!nxt) break;
+
+    const dtMs = nxt.time - cur.time;
+    if (!Number.isFinite(dtMs) || dtMs <= stepMs) continue;
+
+    const missingBars = Math.floor(dtMs / stepMs) - 1;
+    if (missingBars <= 0) continue;
+
+    const maxW = GAP_WHITESPACE_MAX_PER_GAP;
+    const stride = maxW > 0 ? Math.ceil(missingBars / maxW) : missingBars + 1;
+
+    for (let k = 1; k <= missingBars; k += stride) {
+      out.push({ time: cur.time + k * stepMs }); // ✅ whitespace only
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies real-candle limit (N), WITHOUT counting whitespace.
+ * Returns last N real candles, then injects whitespace gaps inside that window.
+ */
+function limitRealAndBuildWithGaps(realSorted: CandleBar[], stepSec: number, maxReal: number): CandleData[] {
+  if (realSorted.length === 0) return [];
+
+  let windowReal = realSorted;
+  if (maxReal > 0 && realSorted.length > maxReal) {
+    windowReal = realSorted.slice(realSorted.length - maxReal);
+  }
+
+  return injectWhitespaceGaps(windowReal, stepSec);
+}
+
+export function useChartView(
+  symbol: string,
+  market: string,
+  exchange: string,
+  interval: string,
+  limit?: number
+) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const { historical, candles, status, fillBlock } = useWsLane(exchange, symbol, market, interval);
+  const stepSec = useMemo(() => intervalToSec(interval), [interval]);
+
+  const maxReal = useMemo(() => {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return ENV_MAX_REAL;
+  }, [limit]);
+
+  const chartData = useMemo<CandleData[]>(() => {
+    const hist = historical ?? [];
+    const live = candles ?? [];
+    if (hist.length === 0 && live.length === 0) return [];
+
+    // Merge by candle bucket time (seconds -> ms). live overwrites hist for same bucket.
+    const map = new Map<number, CandleBar>();
+
+    const push = (c: any) => {
+      const tSec = Number(c?.t);
+      if (!Number.isFinite(tSec) || tSec <= 0) return;
+
+      const timeMs = Math.floor(tSec) * 1000;
+
+      const bar: CandleBar = {
+        time: timeMs,
+        open: Number(c?.o),
+        high: Number(c?.h),
+        low: Number(c?.l),
+        close: Number(c?.c),
+        volume: Number(c?.v),
+      };
+
+      if (!isRealBar(bar)) return;
+      map.set(timeMs, bar);
+    };
+
+    for (const c of hist) push(c);
+    for (const c of live) push(c);
+
+    const realSorted = Array.from(map.values()).sort((a, b) => a.time - b.time);
+
+    // ✅ limit counts ONLY real candles
+    return limitRealAndBuildWithGaps(realSorted, stepSec, maxReal);
+  }, [historical, candles, stepSec, maxReal]);
+
+  const meta = useMemo(() => {
+    const realCount = chartData.reduce((acc, p) => acc + (isRealBar(p) ? 1 : 0), 0);
+    const whitespaceCount = chartData.length - realCount;
+    return {
+      status,
+      interval,
+      stepSec,
+      historicalCount: historical?.length ?? 0,
+      liveCount: candles?.length ?? 0,
+      totalCount: chartData.length,
+      realCount,
+      whitespaceCount,
+      maxRealCandles: maxReal,
+      gapWhitespaceMaxPerGap: GAP_WHITESPACE_MAX_PER_GAP,
+    };
+  }, [chartData, status, interval, stepSec, historical, candles, maxReal]);
+
+  useEffect(() => {
+    if (status === "OPEN") {
+      if (chartData.length > 0) {
+        setLoading(false);
+        setError(null);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+    if (status === "ERROR") {
+      setLoading(false);
+      setError(new Error("WebSocket connection failed"));
+      return;
+    }
+    setLoading(true);
+  }, [status, chartData.length]);
+
+  return {
+    chartData,
+    loading,
+    error,
+    meta,
+    fillBlock,
+  };
+}
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import ThemeProvider from './shared/ui/theme-provider';
+import './index.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
+  </StrictMode>,
+);
 </file>
 
 <file path="backend/websocket/ws_manager.py">
@@ -171800,376 +171906,6 @@ export class WebSocketPool {
 }
 </file>
 
-<file path="backend/websocket/ws_router.py">
-import asyncio
-import logging
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-
-from fastapi import APIRouter, WebSocket
-from starlette.websockets import WebSocketDisconnect
-
-from backend.core.config import settings
-
-# IMPORTANT: use distinct names (no shadowing)
-from .ws_manager import ws_manager as lane_ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-logger = logging.getLogger("ws_router")
-
-
-def _norm_exchange(x: str) -> str:
-    return (x or "").strip().lower()
-
-
-def _norm_symbol(x: str) -> str:
-    return (x or "").strip().upper()
-
-
-def _norm_market(x: str) -> str:
-    return ((x or "spot").strip().lower()) or "spot"
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    # exchange:lower, market:lower, symbol:upper
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-def _safe_int(x: str, default: int) -> int:
-    try:
-        return int(x)
-    except Exception:
-        return default
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    # normalize first
-    exchange = _norm_exchange(exchange)
-    symbol = _norm_symbol(symbol)
-    market = _norm_market(market)
-
-    ch = _channel(exchange, symbol, market)
-    candle_push_task: Optional[asyncio.Task] = None
-
-    await websocket.accept()
-
-    try:
-        # start managers
-        await frontend_ws_manager.start()
-        await lane_ws_manager.start_websocket_lane(exchange, symbol, market)
-
-        # connect to frontend ws manager (already accepted)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.now(timezone.utc).isoformat(),
-            "limits": {
-                "maxTrades": getattr(settings, "ws_max_trades", 0),
-                "maxCandles": getattr(settings, "ws_max_candles", 0),
-            },
-            "capabilities": {
-                "historical": True,
-                "subscribe_candles": True,
-                "symbols": True,
-            }
-        })
-
-        while True:
-            msg = await websocket.receive_text()
-            msg = (msg or "").strip()
-
-            if not msg:
-                continue
-
-            # ping/pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-
-            # HISTORICAL: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = (parts[1] if len(parts) > 1 else "1m").strip() or "1m"
-                limit = _safe_int(parts[2], 500) if len(parts) > 2 else 500
-
-                try:
-                    from backend.services.usecases.unified_ohlc import unified_ohlc
-
-                    candles = await unified_ohlc.get_candles(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        resolution=interval_str,
-                        limit=limit,
-                    )
-
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market,
-                        "interval": interval_str,
-                        "candles": candles,
-                        "count": len(candles),
-                    })
-                except Exception as e:
-                    logger.error(
-                        "[WS Historical Error] %s/%s/%s interval=%s: %s",
-                        exchange, symbol, market, interval_str, str(e),
-                        exc_info=True
-                    )
-                    await websocket.send_json({"type": "error", "message": f"Historical request failed: {str(e)}"})
-                continue
-
-            # SUBSCRIBE: "subscribe:1m" (starts push loop)
-            if msg.startswith("subscribe:"):
-                interval_str = msg.split(":", 1)[1].strip() if ":" in msg else "1m"
-                interval_str = interval_str or "1m"
-
-                # stop old task
-                if candle_push_task and not candle_push_task.done():
-                    candle_push_task.cancel()
-                    try:
-                        await candle_push_task
-                    except asyncio.CancelledError:
-                        pass
-
-                candle_push_task = asyncio.create_task(
-                    _candle_push_loop(
-                        websocket=websocket,
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        interval=interval_str,
-                    )
-                )
-
-                await websocket.send_json({
-                    "type": "subscribe_confirmed",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "interval": interval_str,
-                })
-                continue
-
-            # UNSUBSCRIBE
-            if msg == "unsubscribe":
-                if candle_push_task and not candle_push_task.done():
-                    candle_push_task.cancel()
-                    try:
-                        await candle_push_task
-                    except asyncio.CancelledError:
-                        pass
-                candle_push_task = None
-
-                await websocket.send_json({
-                    "type": "unsubscribe_confirmed",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                })
-                continue
-
-            # SYMBOLS
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    if market == "spot":
-                        market_enum = Market.SPOT
-                    else:
-                        market_enum = Market.USDTM
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    symbols: List[str] = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": market,
-                        "symbols": symbols,
-                        "count": len(symbols),
-                    })
-                except Exception as e:
-                    logger.error("[WS Symbols Error] %s: %s", exchange, str(e), exc_info=True)
-                    await websocket.send_json({"type": "error", "message": f"Symbols request failed: {str(e)}"})
-                continue
-
-            # unknown command
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Unknown command: {msg}",
-            })
-
-    except WebSocketDisconnect:
-        logger.info("[WS Disconnect] %s", ch)
-    except Exception as e:
-        logger.error("[WS Error] %s: %s", ch, str(e), exc_info=True)
-
-    finally:
-        # cancel push task
-        if candle_push_task and not candle_push_task.done():
-            candle_push_task.cancel()
-            try:
-                await candle_push_task
-            except asyncio.CancelledError:
-                pass
-
-        # disconnect frontend manager
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # stop lane if no more connections on this channel
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                lane_ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-
-
-async def _candle_push_loop(
-    websocket: WebSocket,
-    exchange: str,
-    symbol: str,
-    market: str,
-    interval: str,
-):
-    """
-    Pushes candles to the client by polling ClickHouse via unified_ohlc.
-
-    IMPORTANT FIXES vs your draft:
-    - fetch a window (limit=N) and emit ALL new candles since last_ts
-      to avoid candle-loss during bursts / catch-up
-    - robust poll interval
-    """
-    from backend.services.usecases.unified_ohlc import unified_ohlc
-
-    poll_interval = float(getattr(settings, "ws_candle_push_interval", 1.0) or 1.0)
-
-    # window size: at least 3 (to handle boundary changes), configurable
-    window = int(getattr(settings, "ws_candle_push_window", 8) or 8)
-    window = max(3, min(window, 200))
-
-    last_sent_ts: Optional[int] = None
-
-    logger.info("[Candle Push] start ch=%s interval=%s poll=%ss window=%d", _channel(exchange, symbol, market), interval, poll_interval, window)
-
-    try:
-        while True:
-            try:
-                candles = await unified_ohlc.get_candles(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    resolution=interval,
-                    limit=window,
-                )
-
-                if candles:
-                    # candles are chronological
-                    if last_sent_ts is None:
-                        # send only the latest candle initially (avoid dumping history)
-                        last = candles[-1]
-                        await websocket.send_json({
-                            "type": "candle",
-                            "exchange": exchange,
-                            "symbol": symbol,
-                            "market": market,
-                            "interval": interval,
-                            "data": last,
-                        })
-                        last_sent_ts = last.get("ts")
-                    else:
-                        # send all candles with ts > last_sent_ts
-                        new = [c for c in candles if (c.get("ts") is not None and c["ts"] > last_sent_ts)]
-                        for c in new:
-                            await websocket.send_json({
-                                "type": "candle",
-                                "exchange": exchange,
-                                "symbol": symbol,
-                                "market": market,
-                                "interval": interval,
-                                "data": c,
-                            })
-                            last_sent_ts = c["ts"]
-
-            except WebSocketDisconnect:
-                raise
-            except Exception as e:
-                logger.error("[Candle Push Error] %s/%s/%s interval=%s: %s", exchange, symbol, market, interval, str(e), exc_info=True)
-
-            await asyncio.sleep(poll_interval)
-
-    except asyncio.CancelledError:
-        logger.info("[Candle Push] cancel ch=%s interval=%s", _channel(exchange, symbol, market), interval)
-        raise
-</file>
-
-<file path="frontend/src/App.tsx">
-// frontend/src/App.tsx
-
-import React from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import { TradingProvider } from "./contexts/TradingContext";
-import { AppLayout } from "./shared/layout/AppLayout";
-
-// Falls du Seiten bereits hast: hier importieren.
-// Wenn nicht: die Platzhalter unten lassen (keine Styling-Änderungen erzwingen).
-import TradingPage from "./pages/TradingPage/TradingPage";
-import CoinMonitor from "./pages/CoinMonitor/CoinMonitor";
-
-function Placeholder({ title }: { title: string }) {
-  return <div className="p-4 text-sm">{title}</div>;
-}
-
-export default function App() {
-  return (
-    <TradingProvider>
-      <Routes>
-        <Route element={<AppLayout />}>
-          {/* EXISTIERENDE */}
-          <Route path="/market" element={<TradingPage />} />
-          <Route path="/monitor/btcusdt" element={<CoinMonitor />} />
-
-          {/* NAV-ZIELE (wenn echte Pages später kommen, nur element austauschen) */}
-          <Route path="/trading-bot" element={<Placeholder title="Trading Bot" />} />
-          <Route path="/quantum" element={<Placeholder title="Quantum" />} />
-          <Route path="/ml" element={<Placeholder title="ML" />} />
-          <Route path="/database" element={<Placeholder title="Database" />} />
-          <Route path="/whales" element={<Placeholder title="Whales" />} />
-          <Route path="/news" element={<Placeholder title="News" />} />
-          <Route path="/api" element={<Placeholder title="API" />} />
-          <Route path="/settings" element={<Placeholder title="Settings" />} />
-
-          {/* Default */}
-          <Route path="/" element={<Navigate to="/market" replace />} />
-          <Route path="*" element={<Navigate to="/market" replace />} />
-        </Route>
-      </Routes>
-    </TradingProvider>
-  );
-}
-</file>
-
 <file path="backend/core/main.py">
 # backend/core/main.py
 """
@@ -172746,6 +172482,376 @@ def start():
 
 if __name__ == "__main__":
     start()
+</file>
+
+<file path="backend/websocket/ws_router.py">
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+
+from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
+
+from backend.core.config import settings
+
+# IMPORTANT: use distinct names (no shadowing)
+from .ws_manager import ws_manager as lane_ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+logger = logging.getLogger("ws_router")
+
+
+def _norm_exchange(x: str) -> str:
+    return (x or "").strip().lower()
+
+
+def _norm_symbol(x: str) -> str:
+    return (x or "").strip().upper()
+
+
+def _norm_market(x: str) -> str:
+    return ((x or "spot").strip().lower()) or "spot"
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    # exchange:lower, market:lower, symbol:upper
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+def _safe_int(x: str, default: int) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    # normalize first
+    exchange = _norm_exchange(exchange)
+    symbol = _norm_symbol(symbol)
+    market = _norm_market(market)
+
+    ch = _channel(exchange, symbol, market)
+    candle_push_task: Optional[asyncio.Task] = None
+
+    await websocket.accept()
+
+    try:
+        # start managers
+        await frontend_ws_manager.start()
+        await lane_ws_manager.start_websocket_lane(exchange, symbol, market)
+
+        # connect to frontend ws manager (already accepted)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.now(timezone.utc).isoformat(),
+            "limits": {
+                "maxTrades": getattr(settings, "ws_max_trades", 0),
+                "maxCandles": getattr(settings, "ws_max_candles", 0),
+            },
+            "capabilities": {
+                "historical": True,
+                "subscribe_candles": True,
+                "symbols": True,
+            }
+        })
+
+        while True:
+            msg = await websocket.receive_text()
+            msg = (msg or "").strip()
+
+            if not msg:
+                continue
+
+            # ping/pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+
+            # HISTORICAL: "historical:1m:500"
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = (parts[1] if len(parts) > 1 else "1m").strip() or "1m"
+                limit = _safe_int(parts[2], 500) if len(parts) > 2 else 500
+
+                try:
+                    from backend.services.usecases.unified_ohlc import unified_ohlc
+
+                    candles = await unified_ohlc.get_candles(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        resolution=interval_str,
+                        limit=limit,
+                    )
+
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market,
+                        "interval": interval_str,
+                        "candles": candles,
+                        "count": len(candles),
+                    })
+                except Exception as e:
+                    logger.error(
+                        "[WS Historical Error] %s/%s/%s interval=%s: %s",
+                        exchange, symbol, market, interval_str, str(e),
+                        exc_info=True
+                    )
+                    await websocket.send_json({"type": "error", "message": f"Historical request failed: {str(e)}"})
+                continue
+
+            # SUBSCRIBE: "subscribe:1m" (starts push loop)
+            if msg.startswith("subscribe:"):
+                interval_str = msg.split(":", 1)[1].strip() if ":" in msg else "1m"
+                interval_str = interval_str or "1m"
+
+                # stop old task
+                if candle_push_task and not candle_push_task.done():
+                    candle_push_task.cancel()
+                    try:
+                        await candle_push_task
+                    except asyncio.CancelledError:
+                        pass
+
+                candle_push_task = asyncio.create_task(
+                    _candle_push_loop(
+                        websocket=websocket,
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        interval=interval_str,
+                    )
+                )
+
+                await websocket.send_json({
+                    "type": "subscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "interval": interval_str,
+                })
+                continue
+
+            # UNSUBSCRIBE
+            if msg == "unsubscribe":
+                if candle_push_task and not candle_push_task.done():
+                    candle_push_task.cancel()
+                    try:
+                        await candle_push_task
+                    except asyncio.CancelledError:
+                        pass
+                candle_push_task = None
+
+                await websocket.send_json({
+                    "type": "unsubscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                })
+                continue
+
+            # SYMBOLS
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    if market == "spot":
+                        market_enum = Market.SPOT
+                    else:
+                        market_enum = Market.USDTM
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    symbols: List[str] = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": market,
+                        "symbols": symbols,
+                        "count": len(symbols),
+                    })
+                except Exception as e:
+                    logger.error("[WS Symbols Error] %s: %s", exchange, str(e), exc_info=True)
+                    await websocket.send_json({"type": "error", "message": f"Symbols request failed: {str(e)}"})
+                continue
+
+            # unknown command
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Unknown command: {msg}",
+            })
+
+    except WebSocketDisconnect:
+        logger.info("[WS Disconnect] %s", ch)
+    except Exception as e:
+        logger.error("[WS Error] %s: %s", ch, str(e), exc_info=True)
+
+    finally:
+        # cancel push task
+        if candle_push_task and not candle_push_task.done():
+            candle_push_task.cancel()
+            try:
+                await candle_push_task
+            except asyncio.CancelledError:
+                pass
+
+        # disconnect frontend manager
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # stop lane if no more connections on this channel
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                lane_ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+
+
+async def _candle_push_loop(
+    websocket: WebSocket,
+    exchange: str,
+    symbol: str,
+    market: str,
+    interval: str,
+):
+    """
+    Pushes candles to the client by polling ClickHouse via unified_ohlc.
+
+    IMPORTANT FIXES vs your draft:
+    - fetch a window (limit=N) and emit ALL new candles since last_ts
+      to avoid candle-loss during bursts / catch-up
+    - robust poll interval
+    """
+    from backend.services.usecases.unified_ohlc import unified_ohlc
+
+    poll_interval = float(getattr(settings, "ws_candle_push_interval", 1.0) or 1.0)
+
+    # window size: at least 3 (to handle boundary changes), configurable
+    window = int(getattr(settings, "ws_candle_push_window", 8) or 8)
+    window = max(3, min(window, 200))
+
+    last_sent_ts: Optional[int] = None
+
+    logger.info("[Candle Push] start ch=%s interval=%s poll=%ss window=%d", _channel(exchange, symbol, market), interval, poll_interval, window)
+
+    try:
+        while True:
+            try:
+                candles = await unified_ohlc.get_candles(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    resolution=interval,
+                    limit=window,
+                )
+
+                if candles:
+                    # candles are chronological
+                    if last_sent_ts is None:
+                        # send only the latest candle initially (avoid dumping history)
+                        last = candles[-1]
+                        await websocket.send_json({
+                            "type": "candle",
+                            "exchange": exchange,
+                            "symbol": symbol,
+                            "market": market,
+                            "interval": interval,
+                            "data": last,
+                        })
+                        last_sent_ts = last.get("ts")
+                    else:
+                        # send all candles with ts > last_sent_ts
+                        new = [c for c in candles if (c.get("ts") is not None and c["ts"] > last_sent_ts)]
+                        for c in new:
+                            await websocket.send_json({
+                                "type": "candle",
+                                "exchange": exchange,
+                                "symbol": symbol,
+                                "market": market,
+                                "interval": interval,
+                                "data": c,
+                            })
+                            last_sent_ts = c["ts"]
+
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                logger.error("[Candle Push Error] %s/%s/%s interval=%s: %s", exchange, symbol, market, interval, str(e), exc_info=True)
+
+            await asyncio.sleep(poll_interval)
+
+    except asyncio.CancelledError:
+        logger.info("[Candle Push] cancel ch=%s interval=%s", _channel(exchange, symbol, market), interval)
+        raise
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+
+import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { TradingProvider } from "./contexts/TradingContext";
+import { AppLayout } from "./shared/layout/AppLayout";
+
+// Falls du Seiten bereits hast: hier importieren.
+// Wenn nicht: die Platzhalter unten lassen (keine Styling-Änderungen erzwingen).
+import TradingPage from "./pages/TradingPage/TradingPage";
+import CoinMonitor from "./pages/CoinMonitor/CoinMonitor";
+
+function Placeholder({ title }: { title: string }) {
+  return <div className="p-4 text-sm">{title}</div>;
+}
+
+export default function App() {
+  return (
+    <TradingProvider>
+      <Routes>
+        <Route element={<AppLayout />}>
+          {/* EXISTIERENDE */}
+          <Route path="/market" element={<TradingPage />} />
+          <Route path="/monitor/btcusdt" element={<CoinMonitor />} />
+
+          {/* NAV-ZIELE (wenn echte Pages später kommen, nur element austauschen) */}
+          <Route path="/trading-bot" element={<Placeholder title="Trading Bot" />} />
+          <Route path="/quantum" element={<Placeholder title="Quantum" />} />
+          <Route path="/ml" element={<Placeholder title="ML" />} />
+          <Route path="/database" element={<Placeholder title="Database" />} />
+          <Route path="/whales" element={<Placeholder title="Whales" />} />
+          <Route path="/news" element={<Placeholder title="News" />} />
+          <Route path="/api" element={<Placeholder title="API" />} />
+          <Route path="/settings" element={<Placeholder title="Settings" />} />
+
+          {/* Default */}
+          <Route path="/" element={<Navigate to="/market" replace />} />
+          <Route path="*" element={<Navigate to="/market" replace />} />
+        </Route>
+      </Routes>
+    </TradingProvider>
+  );
+}
 </file>
 
 <file path="backend/websocket/ws_frontend_handler.py">
