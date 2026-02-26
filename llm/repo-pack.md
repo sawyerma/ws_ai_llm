@@ -492,6 +492,8 @@ backend/
     telegram/
       telegram.py
       tier_notifications.py
+  scripts/
+    repair_backfill_candles.py
   services/
     adapter/
       __init__.py
@@ -525,6 +527,7 @@ backend/
       backfill_loop_service.py
       backfill_service.py
       gap_scan_service.py
+      historical_candles_from_trades.py
       unified_historical.py
       unified_ohlc.py
     __init__.py
@@ -629,6 +632,7 @@ frontend/
           chartThemes.ts
           index.ts
           LoadingBlockOverlay.tsx
+          tradingViewScroll.ts
           types.ts
           useCandleChart.ts
         PriceDisplay.tsx
@@ -26889,140 +26893,6 @@ class HealthRegistry:
 
 # Global instance
 health_registry = HealthRegistry()
-</file>
-
-<file path="backend/health/health_router.py">
-from fastapi import APIRouter, Response, HTTPException
-from datetime import datetime
-import json
-from .health_registry import health_registry
-
-# ✅ FIX: Removed prefix here since main.py already adds prefix="/health"
-# This prevents double prefix bug (/health/health/ready)
-health_router = APIRouter(tags=["health"])
-
-@health_router.get("/")
-async def health_overview():
-    """Basic Health Check - Immer 200 solange Service läuft"""
-    return {
-        "status": "alive", 
-        "service": "trading-system",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@health_router.get("/ready")
-async def readiness_check():
-    """Kubernetes Readiness Probe - 200 wenn ready, 503 wenn nicht"""
-    system_health = health_registry.get_system_health()
-    
-    if system_health["ready"]:
-        return Response(
-            content=json.dumps(system_health),
-            status_code=200,
-            media_type="application/json"
-        )
-    else:
-        return Response(
-            content=json.dumps(system_health),
-            status_code=503,  # Service Unavailable
-            media_type="application/json"
-        )
-
-@health_router.get("/live")
-async def liveness_check():
-    """Kubernetes Liveness Probe - Immer 200 solange Process läuft"""
-    return Response(
-        content=json.dumps({"status": "alive", "timestamp": datetime.now().isoformat()}),
-        status_code=200,
-        media_type="application/json"
-    )
-
-@health_router.get("/detailed")
-async def detailed_health():
-    """
-    ✅ PHASE 3: Detaillierte Health-Information mit Exchange-fokussiertem JSON Format (README Implementation)
-    """
-    system_health = health_registry.get_system_health()
-    resilient_ready, resilient_message = health_registry.get_system_readiness_resilient()
-    
-    # ✅ Extract exchange information for README JSON format
-    exchange_status = {
-        "healthy": [],
-        "warming_up": [], 
-        "failed": [],
-        "offline": []
-    }
-    
-    # Categorize exchanges by health status
-    if system_health.get("components_by_type", {}).get("exchange"):
-        for exchange_data in system_health["components_by_type"]["exchange"]:
-            exchange_name = exchange_data.get("component_name", "unknown")
-            effective_status = exchange_data.get("effective_status", "unknown").lower()
-            
-            if effective_status == "healthy":
-                exchange_status["healthy"].append(exchange_name)
-            elif effective_status in ["degraded", "stale"]:
-                exchange_status["warming_up"].append(exchange_name)
-            elif effective_status in ["failed", "error"]:
-                exchange_status["failed"].append(exchange_name)
-            else:
-                exchange_status["offline"].append(exchange_name)
-    
-    # ✅ PHASE 3: README-compliant JSON format
-    return {
-        "system_status": system_health.get("system_status", "unknown"),
-        "ready": resilient_ready,  # ⭐ Always true - system runs regardless (README requirement)
-        "exchange_status": exchange_status,
-        "message": resilient_message or f"{len(exchange_status['healthy'])}/{len(exchange_status['healthy']) + len(exchange_status['warming_up']) + len(exchange_status['failed']) + len(exchange_status['offline'])} exchanges operational",
-        "timestamp": datetime.now().isoformat(),
-        "startup_mode": "resilient",
-        "detailed_components": system_health  # Full health data for debugging
-    }
-
-@health_router.get("/ready/resilient")
-async def readiness_check_resilient():
-    """✅ PHASE 3: Resilient readiness - immer 200, zeigt aber detailed status (README Implementation)"""
-    system_health = health_registry.get_system_health()
-    resilient_ready, message = health_registry._calculate_system_readiness_resilient()
-    
-    # ⭐ ALWAYS 200 - system läuft immer, status ist nur informativ
-    return {
-        **system_health,
-        "resilient_ready": resilient_ready,
-        "resilient_message": message,
-        "startup_mode": "graceful"
-    }
-
-@health_router.get("/components")
-async def all_components():
-    return {
-        "components": [lane.get_health() for lane in health_registry.get_all_lanes()],
-        "timestamp": datetime.now().isoformat()
-    }
-
-@health_router.get("/components/{component_type}")
-async def components_by_type(component_type: str):
-    return health_registry.get_health_by_type(component_type)
-
-@health_router.get("/components/{component_type}/{component_name}")
-async def specific_component(component_type: str, component_name: str):
-    health = health_registry.get_component_health(component_type, component_name)
-    if not health:
-        raise HTTPException(status_code=404, detail=f"Component {component_type}.{component_name} not found")
-    return health.get_health()
-
-@health_router.get("/critical")
-async def critical_components_health():
-    """Health Status nur für kritische Komponenten"""
-    all_lanes = health_registry.get_all_lanes()
-    critical_health = [lane.get_health() for lane in all_lanes if lane.critical]
-    
-    return {
-        "critical_components": critical_health,
-        "total_critical": len(critical_health),
-        "healthy_critical": sum(1 for h in critical_health if h["effective_status"] == "healthy"),
-        "timestamp": datetime.now().isoformat()
-    }
 </file>
 
 <file path="backend/indicators/calculators/alma_calculator.py">
@@ -123999,6 +123869,266 @@ HEALTH_THRESHOLDS: Dict[str, Any] = {
 }
 </file>
 
+<file path="backend/health/health_router.py">
+from fastapi import APIRouter, Response, HTTPException
+from datetime import datetime
+import json
+from .health_registry import health_registry
+
+# ✅ FIX: Removed prefix here since main.py already adds prefix="/health"
+# This prevents double prefix bug (/health/health/ready)
+health_router = APIRouter(tags=["health"])
+
+@health_router.get("/")
+async def health_overview():
+    """Basic Health Check - Immer 200 solange Service läuft"""
+    return {
+        "status": "alive", 
+        "service": "trading-system",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@health_router.get("/ready")
+async def readiness_check():
+    """Kubernetes Readiness Probe - 200 wenn ready, 503 wenn nicht"""
+    system_health = health_registry.get_system_health()
+    
+    if system_health["ready"]:
+        return Response(
+            content=json.dumps(system_health),
+            status_code=200,
+            media_type="application/json"
+        )
+    else:
+        return Response(
+            content=json.dumps(system_health),
+            status_code=503,  # Service Unavailable
+            media_type="application/json"
+        )
+
+@health_router.get("/live")
+async def liveness_check():
+    """Kubernetes Liveness Probe - Immer 200 solange Process läuft"""
+    return Response(
+        content=json.dumps({"status": "alive", "timestamp": datetime.now().isoformat()}),
+        status_code=200,
+        media_type="application/json"
+    )
+
+@health_router.get("/detailed")
+async def detailed_health():
+    """
+    ✅ PHASE 3: Detaillierte Health-Information mit Exchange-fokussiertem JSON Format (README Implementation)
+    """
+    system_health = health_registry.get_system_health()
+    resilient_ready, resilient_message = health_registry.get_system_readiness_resilient()
+    
+    # ✅ Extract exchange information for README JSON format
+    exchange_status = {
+        "healthy": [],
+        "warming_up": [], 
+        "failed": [],
+        "offline": []
+    }
+    
+    # Categorize exchanges by health status
+    if system_health.get("components_by_type", {}).get("exchange"):
+        for exchange_data in system_health["components_by_type"]["exchange"]:
+            exchange_name = exchange_data.get("component_name", "unknown")
+            effective_status = exchange_data.get("effective_status", "unknown").lower()
+            
+            if effective_status == "healthy":
+                exchange_status["healthy"].append(exchange_name)
+            elif effective_status in ["degraded", "stale"]:
+                exchange_status["warming_up"].append(exchange_name)
+            elif effective_status in ["failed", "error"]:
+                exchange_status["failed"].append(exchange_name)
+            else:
+                exchange_status["offline"].append(exchange_name)
+    
+    # ✅ PHASE 3: README-compliant JSON format
+    return {
+        "system_status": system_health.get("system_status", "unknown"),
+        "ready": resilient_ready,  # ⭐ Always true - system runs regardless (README requirement)
+        "exchange_status": exchange_status,
+        "message": resilient_message or f"{len(exchange_status['healthy'])}/{len(exchange_status['healthy']) + len(exchange_status['warming_up']) + len(exchange_status['failed']) + len(exchange_status['offline'])} exchanges operational",
+        "timestamp": datetime.now().isoformat(),
+        "startup_mode": "resilient",
+        "detailed_components": system_health  # Full health data for debugging
+    }
+
+@health_router.get("/ready/resilient")
+async def readiness_check_resilient():
+    """✅ PHASE 3: Resilient readiness - immer 200, zeigt aber detailed status (README Implementation)"""
+    system_health = health_registry.get_system_health()
+    resilient_ready, message = health_registry._calculate_system_readiness_resilient()
+    
+    # ⭐ ALWAYS 200 - system läuft immer, status ist nur informativ
+    return {
+        **system_health,
+        "resilient_ready": resilient_ready,
+        "resilient_message": message,
+        "startup_mode": "graceful"
+    }
+
+@health_router.get("/components")
+async def all_components():
+    return {
+        "components": [lane.get_health() for lane in health_registry.get_all_lanes()],
+        "timestamp": datetime.now().isoformat()
+    }
+
+@health_router.get("/components/{component_type}")
+async def components_by_type(component_type: str):
+    return health_registry.get_health_by_type(component_type)
+
+@health_router.get("/components/{component_type}/{component_name}")
+async def specific_component(component_type: str, component_name: str):
+    health = health_registry.get_component_health(component_type, component_name)
+    if not health:
+        raise HTTPException(status_code=404, detail=f"Component {component_type}.{component_name} not found")
+    return health.get_health()
+
+@health_router.get("/critical")
+async def critical_components_health():
+    """Health Status nur für kritische Komponenten"""
+    all_lanes = health_registry.get_all_lanes()
+    critical_health = [lane.get_health() for lane in all_lanes if lane.critical]
+    
+    return {
+        "critical_components": critical_health,
+        "total_critical": len(critical_health),
+        "healthy_critical": sum(1 for h in critical_health if h["effective_status"] == "healthy"),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@health_router.get("/candles/coverage")
+async def candles_coverage():
+    """
+    Candle-Coverage pro Exchange/Symbol/Market/Source.
+    Dynamisch über ENABLED_EXCHANGES (ENV), fallback: nur binance.
+    """
+    from backend.database.clickhouse import get_clickhouse_client
+    import os
+
+    ch = get_clickhouse_client()
+
+    ex_raw = os.getenv("ENABLED_EXCHANGES", "binance").strip()
+    exchanges = [e.strip().lower() for e in ex_raw.split(",") if e.strip()]
+    if not exchanges:
+        exchanges = ["binance"]
+
+    out = []
+    for ex in exchanges:
+        table = f"trading.{ex}_candles_1s"
+        q = f"""
+        SELECT
+            %(exchange)s AS exchange,
+            symbol,
+            market,
+            src,
+            count() AS candle_count,
+            min(ts) AS oldest,
+            max(ts) AS newest,
+            dateDiff('second', min(ts), max(ts)) AS span_sec
+        FROM {table}
+        GROUP BY symbol, market, src
+        """
+        try:
+            rows = await ch.execute(q, {"exchange": ex})
+            for r in rows:
+                out.append({
+                    "exchange": r[0],
+                    "symbol": r[1],
+                    "market": r[2],
+                    "src": r[3],
+                    "candle_count": int(r[4]),
+                    "oldest": r[5].isoformat() if r[5] else None,
+                    "newest": r[6].isoformat() if r[6] else None,
+                    "span_sec": int(r[7]) if r[7] is not None else 0,
+                })
+        except Exception as e:
+            # Exchange table might not exist yet
+            pass
+
+    return {"rows": out, "total": len(out)}
+</file>
+
+<file path="backend/scripts/repair_backfill_candles.py">
+# backend/scripts/repair_backfill_candles.py
+
+import asyncio
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import List, Tuple
+
+from backend.database.clickhouse import get_clickhouse_client
+from backend.services.usecases.historical_candles_from_trades import hist_candles
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s – %(message)s")
+logger = logging.getLogger("repair-backfill-candles")
+
+
+async def _get_backfill_ranges(exchange: str) -> List[Tuple[str, str, datetime, datetime]]:
+    """
+    Returns list of (symbol, market, oldest, newest) for source='rest_backfill'
+    """
+    ch = get_clickhouse_client()
+    table = f"trading.{exchange}_trades"
+
+    q = f"""
+    SELECT
+        symbol,
+        market,
+        min(timestamp) AS oldest,
+        max(timestamp) AS newest
+    FROM {table}
+    WHERE source = 'rest_backfill'
+      AND timestamp > toDateTime64('2000-01-01 00:00:00.000', 3, 'UTC')
+    GROUP BY symbol, market
+    """
+
+    rows = await ch.execute(q, {})
+    out = []
+    for sym, mkt, oldest, newest in rows:
+        if isinstance(oldest, datetime) and isinstance(newest, datetime):
+            out.append((sym, mkt, oldest, newest))
+    return out
+
+
+async def run(exchange: str = "binance") -> None:
+    exchange = exchange.strip().lower()
+    ranges = await _get_backfill_ranges(exchange)
+
+    if not ranges:
+        logger.info("No rest_backfill trades found for exchange=%s", exchange)
+        return
+
+    logger.info("Found %d backfill ranges for exchange=%s", len(ranges), exchange)
+
+    for sym, mkt, oldest, newest in ranges:
+        # small guard
+        start_dt = oldest.astimezone(timezone.utc) - timedelta(seconds=2)
+        end_dt = newest.astimezone(timezone.utc) + timedelta(seconds=2)
+
+        logger.info("Rebuilding candles | %s %s %s [%s..%s]", exchange, sym, mkt, start_dt, end_dt)
+        await hist_candles.build_1s_window(
+            exchange=exchange,
+            symbol=sym,
+            market=mkt,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            source="rest_backfill",
+        )
+
+    logger.info("Repair done.")
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
+</file>
+
 <file path="backend/services/adapter/stream_aggregator.py">
 import time
 import threading
@@ -125459,6 +125589,129 @@ class GapScanService:
         gaps.append(GapWindow(start=cur_start, end=cur_end + step))
 
         return gaps[: self.max_windows]
+</file>
+
+<file path="backend/services/usecases/historical_candles_from_trades.py">
+# backend/services/usecases/historical_candles_from_trades.py
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict
+
+from backend.database.clickhouse import get_clickhouse_client
+
+logger = logging.getLogger("hist-candles")
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _fmt_dt64(dt: datetime) -> str:
+    # DateTime64(3,'UTC') kompatibel
+    return _utc(dt).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+class HistoricalCandlesFromTrades:
+    """
+    Build/Repair 1s candles from trades for a bounded time window.
+
+    Source: trading.{exchange}_trades
+      columns: symbol, market, price, size, side, timestamp(DateTime64 UTC), source
+
+    Target: trading.{exchange}_candles_1s (ReplacingMergeTree(ver))
+      columns: symbol, market, ts, o,h,l,c,v,qv,n,src,ver
+
+    Idempotenz:
+      - Mehrfaches Ausführen ist ok.
+      - ReplacingMergeTree(ver) behält die Zeile mit maximalem ver je (symbol, market, ts).
+
+    Priorität:
+      - Backfill schreibt ver niedrig (ts_ms*1000 + 1)
+      - Live-Agg schreibt ver hoch (ts_ms*1000 + 1000 + counter) => gewinnt immer
+    """
+
+    def __init__(self) -> None:
+        self.ch = get_clickhouse_client()
+
+    async def build_1s_window(
+        self,
+        exchange: str,
+        symbol: str,
+        market: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        source: str = "rest_backfill",
+    ) -> None:
+        ex = (exchange or "").strip().lower()
+        sym = (symbol or "").strip().upper()
+        mkt = (market or "spot").strip().lower()
+
+        start_dt = _utc(start_dt)
+        end_dt = _utc(end_dt)
+        if end_dt <= start_dt:
+            return
+
+        trades_table = f"trading.{ex}_trades"
+        candles_table = f"trading.{ex}_candles_1s"
+
+        # Bucket pro Sekunde:
+        # ts = floor(timestamp_ms/1000)*1000 -> DateTime64(3,'UTC')
+        #
+        # OHLC:
+        # o = argMin(price, timestamp)
+        # c = argMax(price, timestamp)
+        #
+        # qv: sum(price*size) -> Decimal(76,38)
+        #
+        # ver:
+        #  backfill: ts_ms*1000 + 1 (niedrig)
+        #
+        query = f"""
+        INSERT INTO {candles_table}
+            (symbol, market, ts, o, h, l, c, v, qv, n, src, ver)
+        SELECT
+            %(symbol)s AS symbol,
+            %(market)s AS market,
+            fromUnixTimestamp64Milli(intDiv(toUnixTimestamp64Milli(timestamp), 1000) * 1000) AS ts,
+            argMin(price, timestamp) AS o,
+            max(price) AS h,
+            min(price) AS l,
+            argMax(price, timestamp) AS c,
+            sum(size) AS v,
+            CAST(sum(price * size), 'Decimal(76,38)') AS qv,
+            toUInt32(count()) AS n,
+            %(src)s AS src,
+            (toUInt64(toUnixTimestamp64Milli(ts)) * 1000) + 1 AS ver
+        FROM {trades_table}
+        WHERE symbol = %(symbol)s
+          AND market = %(market)s
+          AND source = %(src)s
+          AND timestamp >= toDateTime64(%(start_ts)s, 3, 'UTC')
+          AND timestamp <= toDateTime64(%(end_ts)s, 3, 'UTC')
+        GROUP BY ts
+        """
+
+        params: Dict[str, Any] = {
+            "symbol": sym,
+            "market": mkt,
+            "src": source,
+            "start_ts": _fmt_dt64(start_dt),
+            "end_ts": _fmt_dt64(end_dt),
+        }
+
+        logger.info(
+            "Rebuild candles_1s from trades | ex=%s sym=%s mkt=%s src=%s window=[%s..%s]",
+            ex, sym, mkt, source, params["start_ts"], params["end_ts"]
+        )
+
+        # ClickHouse wrapper: INSERT -> returns []
+        await self.ch.execute(query, params)
+
+
+hist_candles = HistoricalCandlesFromTrades()
 </file>
 
 <file path="backend/websocket/ws_config.py">
@@ -127776,6 +128029,136 @@ export { default as CandleChart } from './CandleChart';
 export { useCandleChart } from './useCandleChart';
 export * from './types';
 export * from './chartThemes';
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/tradingViewScroll.ts">
+// frontend/src/shared/components/CandleChart/tradingViewScroll.ts
+
+/**
+ * TradingView-like Scroll Behavior for lightweight-charts
+ * ========================================================
+ * 
+ * Features:
+ * - Unbegrenzt nach rechts scrollen (Whitespace/Zukunft)
+ * - Live-Updates nur wenn User am rechten Rand ist
+ * - Freies Drag/Scroll ohne "Zurückspringen"
+ * 
+ * Usage:
+ * ```ts
+ * const scrollBehavior = bindTradingViewScrollBehavior(chart);
+ * 
+ * // Nach jedem series.update():
+ * scrollBehavior.maybeAutoScrollToRealTime();
+ * ```
+ */
+
+const MIN_RIGHT_OFFSET = 0;          // 0 = exakt am rechten Rand
+const MAX_RIGHT_OFFSET = 5000;       // Schutz gegen insane values (praktisch unbegrenzt)
+const AUTO_SCROLL_EPS = 0.5;         // "nahe am rechten Rand" Toleranz
+
+export interface TradingViewScrollBehavior {
+  /**
+   * Call this after every series.update() to auto-scroll if user is at right edge
+   */
+  maybeAutoScrollToRealTime: () => void;
+  
+  /**
+   * Force enable/disable auto-scroll
+   */
+  setAutoScroll: (enabled: boolean) => void;
+  
+  /**
+   * Get current auto-scroll state
+   */
+  isAutoScrollEnabled: () => boolean;
+  
+  /**
+   * Cleanup subscriptions
+   */
+  destroy: () => void;
+}
+
+/**
+ * Bind TradingView-like scroll behavior to a lightweight-charts instance
+ */
+export function bindTradingViewScrollBehavior(chart: any): TradingViewScrollBehavior {
+  let autoScroll = true;
+  let unsubscribe: (() => void) | null = null;
+
+  /**
+   * Map scrollPosition -> rightOffset
+   * scrollPosition(): 0 = right edge, negative = user scrolled to the right (future space)
+   */
+  function updateRightOffsetFromScroll() {
+    try {
+      const sp = chart.timeScale().scrollPosition();
+      const futureBars = Math.max(MIN_RIGHT_OFFSET, Math.min(MAX_RIGHT_OFFSET, Math.round(-sp)));
+      chart.applyOptions({ timeScale: { rightOffset: futureBars } });
+    } catch (e) {
+      console.warn('[TradingViewScroll] updateRightOffsetFromScroll failed:', e);
+    }
+  }
+
+  /**
+   * Determine if user is at right edge (then auto-follow live)
+   */
+  function updateAutoScrollFlag() {
+    try {
+      const sp = chart.timeScale().scrollPosition();
+      autoScroll = sp >= -AUTO_SCROLL_EPS;
+    } catch (e) {
+      console.warn('[TradingViewScroll] updateAutoScrollFlag failed:', e);
+    }
+  }
+
+  /**
+   * Handle visible range changes (drag/scroll/zoom)
+   */
+  function onVisibleRangeChange() {
+    updateRightOffsetFromScroll();
+    updateAutoScrollFlag();
+  }
+
+  // Subscribe to visible range changes
+  try {
+    unsubscribe = chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+    
+    // Initialize
+    updateRightOffsetFromScroll();
+    updateAutoScrollFlag();
+  } catch (e) {
+    console.error('[TradingViewScroll] Failed to bind scroll behavior:', e);
+  }
+
+  return {
+    maybeAutoScrollToRealTime: () => {
+      if (autoScroll) {
+        try {
+          chart.timeScale().scrollToRealTime();
+        } catch (e) {
+          console.warn('[TradingViewScroll] scrollToRealTime failed:', e);
+        }
+      }
+    },
+
+    setAutoScroll: (enabled: boolean) => {
+      autoScroll = enabled;
+    },
+
+    isAutoScrollEnabled: () => autoScroll,
+
+    destroy: () => {
+      if (unsubscribe) {
+        try {
+          unsubscribe();
+        } catch (e) {
+          console.warn('[TradingViewScroll] unsubscribe failed:', e);
+        }
+        unsubscribe = null;
+      }
+    },
+  };
+}
 </file>
 
 <file path="frontend/src/shared/components/PriceDisplay.tsx">
@@ -162633,199 +163016,13 @@ def cl_config_summary() -> Dict[str, Any]:
     }
 </file>
 
-<file path="backend/services/adapter/candle_agg_1s.py">
-# backend/services/adapter/candle_agg_1s.py
-import time
-import logging
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
-from datetime import datetime, timezone
-from typing import Dict, Tuple, Optional, Any
-
-logger = logging.getLogger("candle_agg_1s")
-
-_Q38 = Decimal("1e-38")  # scale=38
-_MAX_76_38 = Decimal("9" * 38 + "." + "9" * 38)  # 10^38 - 10^-38
-
-
-class CandleAgg1s:
-    """
-    1-Sekunden Candle-Aggregator:
-    - Robust Timestamp parsing -> epoch ms
-    - 1s buckets, finalize on bucket switch
-    - flush_stale for stale buckets
-    - qv deterministic scale=38 (Decimal(76,38) safe)
-    - ver strictly increasing per (exchange,symbol,market,ts)
-    """
-
-    def __init__(self, stale_threshold_sec: float = 1.5):
-        self.buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-        self.stale_threshold = float(stale_threshold_sec)
-
-        # per (exchange, symbol, market, bucket_ts_ms)
-        self._ver_counter: Dict[Tuple[str, str, str, int], int] = {}
-
-        # prune to prevent unbounded growth
-        self._ver_prune_every = 2000
-        self._ver_prune_calls = 0
-        self._ver_prune_keep_ms = 5 * 60 * 1000  # 5 minutes
-
-    def parse_timestamp(self, ts: Any) -> int:
-        if isinstance(ts, int):
-            return ts if ts > 1_000_000_000_000 else ts * 1000
-        if isinstance(ts, float):
-            return int(ts * 1000) if ts < 1_000_000_000_000 else int(ts)
-        if isinstance(ts, str):
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
-        if isinstance(ts, datetime):
-            dt = ts
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
-        raise ValueError(f"Unsupported timestamp type: {type(ts)}")
-
-    def _q38(self, x: Decimal) -> Decimal:
-        """
-        Deterministisch + robust:
-        - localcontext prec=90 verhindert quantize InvalidOperation durch zu kleinen Context
-        - ROUND_HALF_UP
-        - clamp in Decimal(76,38) range
-        """
-        try:
-            with localcontext() as ctx:
-                ctx.prec = 90
-                ctx.rounding = ROUND_HALF_UP
-                y = x.quantize(_Q38)  # uses ctx.rounding
-        except (InvalidOperation, ValueError):
-            y = Decimal("0").quantize(_Q38, rounding=ROUND_HALF_UP)
-
-        if y > _MAX_76_38:
-            return _MAX_76_38
-        if y < -_MAX_76_38:
-            return -_MAX_76_38
-        return y
-
-    def _next_ver(self, exchange: str, symbol: str, market: str, bucket_ts_ms: int) -> int:
-        k = (exchange, symbol, market, bucket_ts_ms)
-        c = self._ver_counter.get(k, 0) + 1
-        self._ver_counter[k] = c
-        return bucket_ts_ms * 1000 + c
-
-    def _prune_ver_counter(self, now_ms: int) -> None:
-        cutoff = now_ms - self._ver_prune_keep_ms
-        for k in list(self._ver_counter.keys()):
-            if k[3] < cutoff:
-                self._ver_counter.pop(k, None)
-
-    def on_trade(
-        self,
-        exchange: str,
-        symbol: str,
-        market: str,
-        timestamp: Any,
-        price: Any,
-        size: Any,
-    ) -> Optional[Dict[str, Any]]:
-        try:
-            exchange = (exchange or "").lower().strip()
-            symbol = (symbol or "").upper().strip()
-            market = (market or "spot").lower().strip()
-
-            ts_ms = self.parse_timestamp(timestamp)
-            bucket_ts = (ts_ms // 1000) * 1000
-
-            price_dec = Decimal(str(price))
-            size_dec = Decimal(str(size))
-
-            key = (exchange, symbol, market)
-            current = self.buckets.get(key)
-
-            finished = None
-            if current and current["ts"] != bucket_ts:
-                finished = self._finalize_candle(current)
-                current = None
-
-            if not current:
-                qv = self._q38(price_dec * size_dec)
-                self.buckets[key] = {
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "ts": bucket_ts,
-                    "o": price_dec,
-                    "h": price_dec,
-                    "l": price_dec,
-                    "c": price_dec,
-                    "v": size_dec,
-                    "qv": qv,
-                    "n": 1,
-                    "last_update": time.time(),
-                }
-            else:
-                current["c"] = price_dec
-                current["h"] = max(current["h"], price_dec)
-                current["l"] = min(current["l"], price_dec)
-                current["v"] += size_dec
-                current["qv"] = self._q38(current["qv"] + (price_dec * size_dec))
-                current["n"] += 1
-                current["last_update"] = time.time()
-
-            # periodic prune
-            self._ver_prune_calls += 1
-            if self._ver_prune_calls >= self._ver_prune_every:
-                self._ver_prune_calls = 0
-                self._prune_ver_counter(ts_ms)
-
-            return finished
-
-        except Exception as e:
-            logger.error("Error in on_trade: %s", str(e), exc_info=True)
-            return None
-
-    def flush_stale(self) -> list:
-        now = time.time()
-        finished = []
-        for key in list(self.buckets.keys()):
-            bucket = self.buckets[key]
-            if now - bucket["last_update"] > self.stale_threshold:
-                finished.append(self._finalize_candle(bucket))
-                del self.buckets[key]
-        return finished
-
-    def _finalize_candle(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
-        ex = bucket["exchange"]
-        sym = bucket["symbol"]
-        mkt = bucket["market"]
-        ts = bucket["ts"]
-
-        ver = self._next_ver(ex, sym, mkt, ts)
-
-        return {
-            "exchange": ex,
-            "symbol": sym,
-            "market": mkt,
-            "ts": ts,
-            "o": bucket["o"],
-            "h": bucket["h"],
-            "l": bucket["l"],
-            "c": bucket["c"],
-            "v": bucket["v"],
-            "qv": bucket["qv"],
-            "n": bucket["n"],
-            "src": "agg",
-            "ver": ver,
-        }
-</file>
-
 <file path="backend/services/usecases/unified_historical.py">
 # /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/backend/services/usecases/unified_historical.py
 
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Callable
 
 from backend.services.adapter.exchange_factory import ExchangeFactory
@@ -163104,18 +163301,24 @@ class UnifiedHistoricalService:
         Store unified trades into ClickHouse.
         - trade_id ist MATERIALIZED in ClickHouse => NICHT senden.
         - source wird als rest_backfill gesetzt.
+        - ✅ NEU: Nach Insert → candles_1s aus Trades erzeugen (bounded window).
         """
         try:
             tasks = []
+            ts_list: List[int] = []
+
             for trade in trades:
                 try:
+                    ts_ms = int(trade["timestamp"])
+                    ts_list.append(ts_ms)
+
                     trade_data = {
                         "symbol": trade.get("symbol", symbol),
                         "market": trade.get("market", market_type),
                         "price": str(trade["price"]),
                         "size": str(trade["size"]),
                         "side": trade["side"],
-                        "timestamp": int(trade["timestamp"]),
+                        "timestamp": ts_ms,
                         "source": "rest_backfill",
                     }
                     tasks.append(unified_cl_service.insert_trades(self.exchange_name, trade_data))
@@ -163127,6 +163330,28 @@ class UnifiedHistoricalService:
                 errors = sum(1 for r in results if isinstance(r, Exception))
                 if errors:
                     self.logger.warning(f"💾 {self.exchange_name} batch stored with errors: {errors}/{len(tasks)}")
+
+            # ✅ NEW: Build candles_1s for this batch window (idempotent)
+            if ts_list:
+                try:
+                    from backend.services.usecases.historical_candles_from_trades import hist_candles
+
+                    min_ms = min(ts_list)
+                    max_ms = max(ts_list)
+
+                    start_dt = datetime.fromtimestamp(min_ms / 1000.0, tz=timezone.utc) - timedelta(seconds=2)
+                    end_dt = datetime.fromtimestamp(max_ms / 1000.0, tz=timezone.utc) + timedelta(seconds=2)
+
+                    await hist_candles.build_1s_window(
+                        exchange=self.exchange_name,
+                        symbol=symbol,
+                        market=market_type,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        source="rest_backfill",
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Historical candles rebuild failed: {e}", exc_info=True)
 
         except Exception as e:
             self.logger.error(f"❌ {self.exchange_name} batch storage failed: {str(e)}", exc_info=True)
@@ -164295,6 +164520,196 @@ class cl_manager:
 
 
 cl_manager_instance = cl_manager()
+</file>
+
+<file path="backend/services/adapter/candle_agg_1s.py">
+# backend/services/adapter/candle_agg_1s.py
+import time
+import logging
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
+from datetime import datetime, timezone
+from typing import Dict, Tuple, Optional, Any
+
+logger = logging.getLogger("candle_agg_1s")
+
+_Q38 = Decimal("1e-38")  # scale=38
+_MAX_76_38 = Decimal("9" * 38 + "." + "9" * 38)  # 10^38 - 10^-38
+
+
+class CandleAgg1s:
+    """
+    1-Sekunden Candle-Aggregator:
+    - Robust Timestamp parsing -> epoch ms
+    - 1s buckets, finalize on bucket switch
+    - flush_stale for stale buckets
+    - qv deterministic scale=38 (Decimal(76,38) safe)
+    - ver strictly increasing per (exchange,symbol,market,ts)
+    """
+
+    def __init__(self, stale_threshold_sec: float = 1.5):
+        self.buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self.stale_threshold = float(stale_threshold_sec)
+
+        # per (exchange, symbol, market, bucket_ts_ms)
+        self._ver_counter: Dict[Tuple[str, str, str, int], int] = {}
+
+        # prune to prevent unbounded growth
+        self._ver_prune_every = 2000
+        self._ver_prune_calls = 0
+        self._ver_prune_keep_ms = 5 * 60 * 1000  # 5 minutes
+
+    def parse_timestamp(self, ts: Any) -> int:
+        if isinstance(ts, int):
+            return ts if ts > 1_000_000_000_000 else ts * 1000
+        if isinstance(ts, float):
+            return int(ts * 1000) if ts < 1_000_000_000_000 else int(ts)
+        if isinstance(ts, str):
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        if isinstance(ts, datetime):
+            dt = ts
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        raise ValueError(f"Unsupported timestamp type: {type(ts)}")
+
+    def _q38(self, x: Decimal) -> Decimal:
+        """
+        Deterministisch + robust:
+        - localcontext prec=90 verhindert quantize InvalidOperation durch zu kleinen Context
+        - ROUND_HALF_UP
+        - clamp in Decimal(76,38) range
+        """
+        try:
+            with localcontext() as ctx:
+                ctx.prec = 90
+                ctx.rounding = ROUND_HALF_UP
+                y = x.quantize(_Q38)  # uses ctx.rounding
+        except (InvalidOperation, ValueError):
+            y = Decimal("0").quantize(_Q38, rounding=ROUND_HALF_UP)
+
+        if y > _MAX_76_38:
+            return _MAX_76_38
+        if y < -_MAX_76_38:
+            return -_MAX_76_38
+        return y
+
+    def _next_ver(self, exchange: str, symbol: str, market: str, bucket_ts_ms: int) -> int:
+        k = (exchange, symbol, market, bucket_ts_ms)
+        c = self._ver_counter.get(k, 0) + 1
+        self._ver_counter[k] = c
+
+        # ✅ PRIORITY:
+        # - Backfill: ts_ms*1000 + 1  (siehe historical_candles_from_trades.py)
+        # - Live agg: ts_ms*1000 + 1000 + c  => gewinnt immer
+        return bucket_ts_ms * 1000 + 1000 + c
+
+    def _prune_ver_counter(self, now_ms: int) -> None:
+        cutoff = now_ms - self._ver_prune_keep_ms
+        for k in list(self._ver_counter.keys()):
+            if k[3] < cutoff:
+                self._ver_counter.pop(k, None)
+
+    def on_trade(
+        self,
+        exchange: str,
+        symbol: str,
+        market: str,
+        timestamp: Any,
+        price: Any,
+        size: Any,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            exchange = (exchange or "").lower().strip()
+            symbol = (symbol or "").upper().strip()
+            market = (market or "spot").lower().strip()
+
+            ts_ms = self.parse_timestamp(timestamp)
+            bucket_ts = (ts_ms // 1000) * 1000
+
+            price_dec = Decimal(str(price))
+            size_dec = Decimal(str(size))
+
+            key = (exchange, symbol, market)
+            current = self.buckets.get(key)
+
+            finished = None
+            if current and current["ts"] != bucket_ts:
+                finished = self._finalize_candle(current)
+                current = None
+
+            if not current:
+                qv = self._q38(price_dec * size_dec)
+                self.buckets[key] = {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "ts": bucket_ts,
+                    "o": price_dec,
+                    "h": price_dec,
+                    "l": price_dec,
+                    "c": price_dec,
+                    "v": size_dec,
+                    "qv": qv,
+                    "n": 1,
+                    "last_update": time.time(),
+                }
+            else:
+                current["c"] = price_dec
+                current["h"] = max(current["h"], price_dec)
+                current["l"] = min(current["l"], price_dec)
+                current["v"] += size_dec
+                current["qv"] = self._q38(current["qv"] + (price_dec * size_dec))
+                current["n"] += 1
+                current["last_update"] = time.time()
+
+            # periodic prune
+            self._ver_prune_calls += 1
+            if self._ver_prune_calls >= self._ver_prune_every:
+                self._ver_prune_calls = 0
+                self._prune_ver_counter(ts_ms)
+
+            return finished
+
+        except Exception as e:
+            logger.error("Error in on_trade: %s", str(e), exc_info=True)
+            return None
+
+    def flush_stale(self) -> list:
+        now = time.time()
+        finished = []
+        for key in list(self.buckets.keys()):
+            bucket = self.buckets[key]
+            if now - bucket["last_update"] > self.stale_threshold:
+                finished.append(self._finalize_candle(bucket))
+                del self.buckets[key]
+        return finished
+
+    def _finalize_candle(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
+        ex = bucket["exchange"]
+        sym = bucket["symbol"]
+        mkt = bucket["market"]
+        ts = bucket["ts"]
+
+        ver = self._next_ver(ex, sym, mkt, ts)
+
+        return {
+            "exchange": ex,
+            "symbol": sym,
+            "market": mkt,
+            "ts": ts,
+            "o": bucket["o"],
+            "h": bucket["h"],
+            "l": bucket["l"],
+            "c": bucket["c"],
+            "v": bucket["v"],
+            "qv": bucket["qv"],
+            "n": bucket["n"],
+            "src": "agg",
+            "ver": ver,
+        }
 </file>
 
 <file path="frontend/src/contexts/TradingContext.tsx">
@@ -172773,166 +173188,6 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
-// frontend/src/shared/components/CandleChart/useCandleChart.ts
-import { useEffect, useMemo, useRef, useState } from "react";
-import type React from "react";
-import { useTheme } from "../../ui/theme-provider";
-import { getChartTheme, getSeriesTheme } from "./chartThemes";
-import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
-import type { CandleData } from "./types";
-import { createCandleChartAdapter, isRealPoint } from "./chartAdapter";
-
-interface UseCandleChartOptions {
-  interval: string;
-  containerRef: React.RefObject<HTMLDivElement>;
-}
-
-interface UseCandleChartReturn {
-  chartInstance: React.MutableRefObject<any>;
-  seriesInstance: React.MutableRefObject<any>;
-  isChartReady: boolean;
-
-  /**
-   * Backward compatible:
-   * - You can keep calling setChartData(mergedSeries)
-   * - Adapter will choose setData vs update automatically.
-   */
-  setChartData: (data: CandleData[]) => void;
-
-  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
-}
-
-const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
-
-function isRealCandle(d: CandleData): d is CandleData & {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-} {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
-  const { actualTheme } = useTheme();
-  const chartInstance = useRef<any>(null);
-  const seriesInstance = useRef<any>(null);
-  const [isChartReady, setIsChartReady] = useState(false);
-  const initialRangeSetRef = useRef(false);
-
-  const isDark = actualTheme === "dark";
-  const chartTheme = useMemo(() => getChartTheme(isDark, interval), [isDark, interval]);
-  const seriesTheme = useMemo(() => getSeriesTheme(isDark), [isDark]);
-
-  const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
-
-  // adapter instance per chart generation
-  const adapterRef = useRef<ReturnType<typeof createCandleChartAdapter> | null>(null);
-
-  useEffect(() => {
-    if (safeChart) {
-      chartInstance.current = safeChart.chart;
-      seriesInstance.current = safeChart.series;
-      adapterRef.current = createCandleChartAdapter(safeChart);
-      setIsChartReady(true);
-
-      const themeObserver = new MutationObserver(() => {
-        if (safeChart.chart && safeChart.series) {
-          const isDarkNow = document.documentElement.classList.contains("dark");
-          const newChartTheme = getChartTheme(isDarkNow, interval);
-          const newSeriesTheme = getSeriesTheme(isDarkNow);
-          try {
-            safeChart.chart.applyOptions(newChartTheme);
-            safeChart.series.applyOptions(newSeriesTheme);
-          } catch (e) {
-            console.warn("[useCandleChart] Theme update failed:", e);
-          }
-        }
-      });
-
-      themeObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-
-      const container = containerRef.current;
-      let resizeObserver: ResizeObserver | null = null;
-      if (container) {
-        resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && safeChart.chart) {
-            const { width, height } = entries[0].contentRect;
-            safeChart.safeApplyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-      }
-
-      return () => {
-        themeObserver.disconnect();
-        resizeObserver?.disconnect();
-        adapterRef.current = null;
-      };
-    } else {
-      setIsChartReady(false);
-      adapterRef.current = null;
-    }
-  }, [safeChart, interval, containerRef]);
-
-  const setChartData = (data: CandleData[]) => {
-    if (!isChartReady || !safeChart) return;
-    if (!data || data.length === 0) return;
-
-    const adapter = adapterRef.current;
-    if (!adapter) return;
-
-    // ✅ Key behavior: auto choose setData vs update()
-    adapter.apply(data);
-  };
-
-  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
-    if (!isChartReady || !chartInstance.current) return;
-    if (!data || data.length === 0) return;
-    if (initialRangeSetRef.current) return;
-
-    const real = data.filter(isRealCandle);
-    if (real.length === 0) return;
-
-    const lastIndex = real.length - 1;
-    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
-
-    const firstCandle = real[firstIndex];
-    const lastCandle = real[lastIndex];
-    if (!firstCandle || !lastCandle) return;
-
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
-
-    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
-      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
-      initialRangeSetRef.current = true;
-    }
-  };
-
-  return {
-    chartInstance,
-    seriesInstance,
-    isChartReady,
-    setChartData,
-    setInitialVisibleRangeOnce,
-  };
-}
-</file>
-
 <file path="backend/services/usecases/backfill_loop_service.py">
 from __future__ import annotations
 
@@ -173221,6 +173476,187 @@ class BackfillLoopService:
         finally:
             self._running = False
             logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
+// frontend/src/shared/components/CandleChart/useCandleChart.ts
+import { useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { useTheme } from "../../ui/theme-provider";
+import { getChartTheme, getSeriesTheme } from "./chartThemes";
+import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+import { createCandleChartAdapter, isRealPoint } from "./chartAdapter";
+import { bindTradingViewScrollBehavior, type TradingViewScrollBehavior } from "./tradingViewScroll";
+
+interface UseCandleChartOptions {
+  interval: string;
+  containerRef: React.RefObject<HTMLDivElement>;
+}
+
+interface UseCandleChartReturn {
+  chartInstance: React.MutableRefObject<any>;
+  seriesInstance: React.MutableRefObject<any>;
+  isChartReady: boolean;
+
+  /**
+   * Backward compatible:
+   * - You can keep calling setChartData(mergedSeries)
+   * - Adapter will choose setData vs update automatically.
+   */
+  setChartData: (data: CandleData[]) => void;
+
+  setInitialVisibleRangeOnce: (data: CandleData[]) => void;
+}
+
+const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
+
+function isRealCandle(d: CandleData): d is CandleData & {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+} {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+export function useCandleChart({
+  interval,
+  containerRef,
+}: UseCandleChartOptions): UseCandleChartReturn {
+  const { actualTheme } = useTheme();
+  const chartInstance = useRef<any>(null);
+  const seriesInstance = useRef<any>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const initialRangeSetRef = useRef(false);
+
+  const isDark = actualTheme === "dark";
+  const chartTheme = useMemo(() => getChartTheme(isDark, interval), [isDark, interval]);
+  const seriesTheme = useMemo(() => getSeriesTheme(isDark), [isDark]);
+
+  const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
+
+  // adapter instance per chart generation
+  const adapterRef = useRef<ReturnType<typeof createCandleChartAdapter> | null>(null);
+  
+  // ✅ TradingView-like scroll behavior
+  const scrollBehaviorRef = useRef<TradingViewScrollBehavior | null>(null);
+
+  useEffect(() => {
+    if (safeChart) {
+      chartInstance.current = safeChart.chart;
+      seriesInstance.current = safeChart.series;
+      adapterRef.current = createCandleChartAdapter(safeChart);
+      
+      // ✅ Bind TradingView-like scroll behavior
+      scrollBehaviorRef.current = bindTradingViewScrollBehavior(safeChart.chart);
+      
+      setIsChartReady(true);
+
+      const themeObserver = new MutationObserver(() => {
+        if (safeChart.chart && safeChart.series) {
+          const isDarkNow = document.documentElement.classList.contains("dark");
+          const newChartTheme = getChartTheme(isDarkNow, interval);
+          const newSeriesTheme = getSeriesTheme(isDarkNow);
+          try {
+            safeChart.chart.applyOptions(newChartTheme);
+            safeChart.series.applyOptions(newSeriesTheme);
+          } catch (e) {
+            console.warn("[useCandleChart] Theme update failed:", e);
+          }
+        }
+      });
+
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+
+      const container = containerRef.current;
+      let resizeObserver: ResizeObserver | null = null;
+      if (container) {
+        resizeObserver = new ResizeObserver((entries) => {
+          if (entries[0] && safeChart.chart) {
+            const { width, height } = entries[0].contentRect;
+            safeChart.safeApplyOptions({ width, height });
+          }
+        });
+        resizeObserver.observe(container);
+      }
+
+      return () => {
+        themeObserver.disconnect();
+        resizeObserver?.disconnect();
+        
+        // ✅ Cleanup scroll behavior
+        if (scrollBehaviorRef.current) {
+          scrollBehaviorRef.current.destroy();
+          scrollBehaviorRef.current = null;
+        }
+        
+        adapterRef.current = null;
+      };
+    } else {
+      setIsChartReady(false);
+      adapterRef.current = null;
+      scrollBehaviorRef.current = null;
+    }
+  }, [safeChart, interval, containerRef]);
+
+  const setChartData = (data: CandleData[]) => {
+    if (!isChartReady || !safeChart) return;
+    if (!data || data.length === 0) return;
+
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+
+    // ✅ Key behavior: auto choose setData vs update()
+    adapter.apply(data);
+    
+    // ✅ TradingView-like: only auto-scroll if user is at right edge
+    if (scrollBehaviorRef.current) {
+      scrollBehaviorRef.current.maybeAutoScrollToRealTime();
+    }
+  };
+
+  const setInitialVisibleRangeOnce = (data: CandleData[]) => {
+    if (!isChartReady || !chartInstance.current) return;
+    if (!data || data.length === 0) return;
+    if (initialRangeSetRef.current) return;
+
+    const real = data.filter(isRealCandle);
+    if (real.length === 0) return;
+
+    const lastIndex = real.length - 1;
+    const firstIndex = Math.max(0, lastIndex - INITIAL_VISIBLE + 1);
+
+    const firstCandle = real[firstIndex];
+    const lastCandle = real[lastIndex];
+    if (!firstCandle || !lastCandle) return;
+
+    const fromSec = Math.floor(firstCandle.time / 1000);
+    const toSec = Math.floor(lastCandle.time / 1000);
+
+    if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
+      chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      initialRangeSetRef.current = true;
+    }
+  };
+
+  return {
+    chartInstance,
+    seriesInstance,
+    isChartReady,
+    setChartData,
+    setInitialVisibleRangeOnce,
+  };
+}
 </file>
 
 <file path="frontend/src/services/ws/useWsLane.ts">
