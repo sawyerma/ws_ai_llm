@@ -158105,96 +158105,6 @@ Wenn Backend NICHT in Docker läuft (z.B. `python -m uvicorn backend.core.main:a
 **FIX:** `.env` als Volume mounten ODER `env_file: .env` in `docker-compose.yml` hinzufügen
 </file>
 
-<file path="docker-compose.yml">
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:${REDIS_PORT}"
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8124:${CLICKHOUSE_PORT}" # HTTP
-      - "${CLICKHOUSE_TCP_PORT}:${CLICKHOUSE_TCP_PORT}" # Native
-    environment:
-      CLICKHOUSE_DB: trading
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    volumes:
-      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - clickhouse-data:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    env_file:
-      - .env
-    build: .
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
-    environment:
-      - ENVIRONMENT=docker
-      - REDIS_URL=redis://redis:${REDIS_PORT}
-      - REDIS_HOST=redis               # ✅ FIX: Für bitget/config.py
-      - REDIS_PORT=${REDIS_PORT}                # ✅ FIX: Für bitget/config.py
-      - CLICKHOUSE_HOST=clickhouse     # Hostname für den nativen Client
-      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
-      - CLICKHOUSE_USER=admin
-      - CLICKHOUSE_PASSWORD=admin
-    volumes:
-      - ./backend:/app/backend         # 🚀 HOT RELOAD: Backend code changes ohne rebuild
-      - ./diag_py:/app/diag_py         # ✅ Mount diag_py for Enterprise Diagnostics
-      - ./logs:/app/logs               # ✅ Mount logs directory
-      - ./data/user_settings:/app/data/user_settings  # 🚀 ENTERPRISE: User Settings JSON Backups
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  trade-router:
-    build: .
-    command: python -m backend.services.adapter.trade_router_entrypoint
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-    depends_on:
-      - redis
-
-  unified-aggregator:
-    build: .
-    command: sh -c "sleep 15 && python -c 'import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())'"
-    environment:
-      REDIS_URL: redis://redis:${REDIS_PORT}
-      CLICKHOUSE_HOST: "clickhouse"
-      SYMBOL_LABELS_EXCHANGES: ""  # Comma-separated: "binance,okx" oder leer für keine
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-volumes:
-  clickhouse-data:
-  redis-data:
-</file>
-
 <file path="Dockerfile">
 FROM python:3.11-slim
 
@@ -162246,189 +162156,6 @@ export function resetMarketTypeConfig() {
 }
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/chartAdapter.ts">
-// frontend/src/shared/components/CandleChart/chartAdapter.ts
-import type { SafeCandleChartApi } from "../../../hooks/useSafeCandleChart";
-import type { CandleData } from "./types";
-
-export type LWCandle = {
-  time: number; // seconds
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-};
-
-function isRealCandle(d: CandleData): d is CandleData & {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-} {
-  return (
-    (d as any).open !== undefined &&
-    Number.isFinite((d as any).open) &&
-    Number.isFinite((d as any).high) &&
-    Number.isFinite((d as any).low) &&
-    Number.isFinite((d as any).close)
-  );
-}
-
-function toSecMaybe(msOrSec: unknown): number {
-  const n = Number(msOrSec);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
-  return Math.floor(n); // already sec
-}
-
-/**
- * CandlestickSeries: ONLY real OHLC.
- * Whitespace/gaps must NOT be passed to candlestick series.
- */
-function toLwCandles(data: CandleData[]): LWCandle[] {
-  const out: LWCandle[] = [];
-
-  for (const d of data || []) {
-    if (!isRealCandle(d)) continue;
-
-    const tSec = toSecMaybe((d as any).time);
-    if (!tSec) continue;
-
-    const open = Number((d as any).open);
-    const high = Number((d as any).high);
-    const low = Number((d as any).low);
-    const close = Number((d as any).close);
-
-    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
-      continue;
-    }
-
-    out.push({ time: tSec, open, high, low, close });
-  }
-
-  // sort
-  out.sort((a, b) => a.time - b.time);
-
-  // dedup by time (keep last)
-  const dedup: LWCandle[] = [];
-  let lastTime = -1;
-
-  for (let i = 0; i < out.length; i++) {
-    const p = out[i];
-    if (!p) continue;
-
-    if (p.time !== lastTime) {
-      dedup.push(p);
-      lastTime = p.time;
-    } else {
-      const lastIdx = dedup.length - 1;
-      if (lastIdx >= 0) dedup[lastIdx] = p;
-    }
-  }
-
-  return dedup;
-}
-
-export function isRealPoint(p: unknown): p is LWCandle {
-  const x = p as any;
-  return (
-    x &&
-    typeof x.time === "number" &&
-    Number.isFinite(x.time) &&
-    Number.isFinite(x.open) &&
-    Number.isFinite(x.high) &&
-    Number.isFinite(x.low) &&
-    Number.isFinite(x.close)
-  );
-}
-
-export function createCandleChartAdapter(safeChart: SafeCandleChartApi) {
-  let lastGen = safeChart.generation;
-  let initialized = false;
-  let lastAppliedTime: number | null = null;
-
-  function resetState() {
-    initialized = false;
-    lastAppliedTime = null;
-    lastGen = safeChart.generation;
-  }
-
-  function ensureGen() {
-    if (safeChart.generation !== lastGen) resetState();
-  }
-
-  function setAll(data: CandleData[]) {
-    ensureGen();
-    const points = toLwCandles(data);
-    if (points.length === 0) return;
-
-    safeChart.safeSetData(points as any);
-
-    initialized = true;
-
-    const last = points[points.length - 1];
-    if (last) lastAppliedTime = last.time;
-    else lastAppliedTime = null;
-  }
-
-  function apply(data: CandleData[]) {
-    ensureGen();
-    const points = toLwCandles(data);
-    if (points.length === 0) return;
-
-    const last = points[points.length - 1];
-    if (!last) return;
-
-    const newLast = last.time;
-
-    if (!initialized || lastAppliedTime === null) {
-      safeChart.safeSetData(points as any);
-      initialized = true;
-      lastAppliedTime = newLast;
-      return;
-    }
-
-    const prevLast = lastAppliedTime;
-
-    // backwards => full reset
-    if (newLast < prevLast) {
-      safeChart.safeSetData(points as any);
-      lastAppliedTime = newLast;
-      return;
-    }
-
-    // same last timestamp => update last candle
-    if (newLast === prevLast) {
-      safeChart.safeUpdate(last as any);
-      return;
-    }
-
-    // find first index with time > prevLast
-    let firstNewIdx = points.length;
-    for (let i = points.length - 1; i >= 0; i--) {
-      const p = points[i];
-      if (!p) continue;
-
-      if (p.time <= prevLast) {
-        firstNewIdx = i + 1;
-        break;
-      }
-      if (i === 0) firstNewIdx = 0;
-    }
-
-    for (let i = firstNewIdx; i < points.length; i++) {
-      const p = points[i];
-      if (!p) continue;
-      safeChart.safeUpdate(p as any);
-    }
-
-    lastAppliedTime = newLast;
-  }
-
-  return { setAll, apply, resetState };
-}
-</file>
-
 <file path="frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx">
 // frontend/src/shared/components/CandleChart/LoadingBlockOverlay.tsx
 import React, { useEffect, useMemo, useState } from "react";
@@ -162571,6 +162298,93 @@ interface ImportMeta {
   },
   "include": ["src"]
 }
+</file>
+
+<file path="docker-compose.yml">
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: trading
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend/database/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query=SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    environment:
+      ENVIRONMENT: docker
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    volumes:
+      - ./backend:/app/backend
+      - ./diag_py:/app/diag_py
+      - ./logs:/app/logs
+      - ./data/user_settings:/app/data/user_settings
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8100}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  trade-router:
+    build: .
+    env_file:
+      - .env
+    command: python -m backend.services.adapter.trade_router_entrypoint
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  unified-aggregator:
+    build: .
+    env_file:
+      - .env
+    command: sh -c "sleep 15 && python -c \"import asyncio; from backend.services.adapter.unified_aggregator import run_unified_aggregator; asyncio.run(run_unified_aggregator())\""
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+      SYMBOL_LABELS_EXCHANGES: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
 </file>
 
 <file path="monitor-system.sh">
@@ -163292,6 +163106,262 @@ def cl_config_summary() -> Dict[str, Any]:
     }
 </file>
 
+<file path="backend/services/adapter/collector_starter.py">
+"""
+✅ ENTERPRISE: Konfigurierbare Collector Settings
+Keine hardcoded Values, alles über Config/Env Vars steuerbar
+"""
+import os
+import asyncio
+import logging
+from typing import Dict, List
+from .unified_collector import (
+    start_unified_collector_service,
+    stop_unified_collector_service,
+    start_all_exchange_collectors,
+    get_unified_collector_status
+)
+
+logger = logging.getLogger(__name__)
+
+# ✅ Generisch: Auto-Discovery über ExchangeFactory
+def get_supported_exchanges() -> List[str]:
+    """Auto-Discovery statt hardcoded Liste"""
+    from backend.services.adapter.exchange_factory import ExchangeFactory
+    return ExchangeFactory.get_available_exchanges()
+
+# ✅ Konfigurierbar: Symbols aus Env Var oder Default
+FRONTEND_COINS = os.getenv(
+    'TRADING_SYMBOLS', 
+    'BTCUSDT'
+).split(',')
+
+# ✅ Konfigurierbar: Market Types aus Env Var oder Default
+MARKET_TYPES = os.getenv(
+    'COLLECTOR_MARKETS',
+    'spot,usdtm'
+).split(',')
+
+# ✅ Konfigurierbar: Performance Tuning
+PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
+BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
+MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
+
+# ✅ Konfigurierbar: Timeouts & Retries
+COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
+COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
+AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
+
+# ✅ Generisch: Auto-Discovery Exchanges
+SUPPORTED_EXCHANGES = get_supported_exchanges()
+
+logger.info(
+    f"📊 Collector Configuration: "
+    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
+    f"{len(FRONTEND_COINS)} symbols, "
+    f"{len(MARKET_TYPES)} markets, "
+    f"parallel={PARALLEL_EXECUTION}, "
+    f"background={BACKGROUND_START}"
+)
+
+async def start_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
+    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
+    """
+    try:
+        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
+        
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
+        await start_unified_collector_service()
+        
+        # ✅ Starte alle Exchange Collectors über Unified Service
+        await start_all_exchange_collectors()
+        
+        # Status prüfen
+        status = get_unified_collector_status()
+        total_collectors = status.get("total_collectors", 0)
+        active_exchanges = len(status.get("active_exchanges", []))
+        
+        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
+        
+        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
+        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
+        # Lösung: Background Task startet NACH dem Startup
+        asyncio.create_task(start_auto_backfill_gap_loop())
+        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
+        
+        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
+        logger.info("ℹ️  Health Monitoring: ACTIVE")
+        
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
+        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
+        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
+
+# ✅ LEGACY FUNCTIONS REMOVED
+# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
+# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
+# sind nicht mehr nötig da der Unified Service das alles zentral managed
+
+async def stop_all_collectors():
+    """
+    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
+    Stoppt alle laufenden WebSocket Collectors über zentralen Service
+    """
+    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
+    
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
+        await stop_unified_collector_service()
+        
+        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
+        
+    except Exception as e:
+        logger.error(f"❌ Error stopping collectors: {e}")
+
+def get_collector_status():
+    """
+    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
+    Gibt den Status aller aktiven Collectors über zentralen Service zurück
+    """
+    try:
+        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
+        return get_unified_collector_status()
+    except Exception as e:
+        logger.error(f"❌ Error getting collector status: {e}")
+        return {
+            "error": "Failed to get collector status",
+            "service": "unified_collector_service",
+            "running": False,
+            "total_collectors": 0
+        }
+
+
+async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
+    """
+    Deterministischer Ready-Check:
+    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
+    """
+    import asyncio
+    from backend.database.clickhouse import unified_cl_service
+
+    start = asyncio.get_event_loop().time()
+    last_err = None
+
+    while True:
+        try:
+            # ✅ FIX: Ensure unified_cl_service is initialized
+            if not unified_cl_service.is_initialized:
+                await unified_cl_service.initialize()
+            
+            pool = await unified_cl_service.get_clickhouse_client()
+            if pool is not None:
+                # ✅ FIX: Ensure pool is initialized
+                if not pool.is_initialized:
+                    await pool.initialize()
+                
+                # ✅ FIX: pool.get_client() holt echten Client
+                def _ping():
+                    client = pool.get_client()
+                    if client is None:
+                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
+                    result = client.command("SELECT 1")
+                    return result
+                
+                await asyncio.to_thread(_ping)
+                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
+                return
+        except Exception as e:
+            last_err = e
+
+        if (asyncio.get_event_loop().time() - start) > timeout_s:
+            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
+
+        await asyncio.sleep(0.25)
+
+
+async def start_auto_backfill_gap_loop():
+    """
+    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
+    
+    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
+    - Kontinuierlicher Backfill bis UNTIL_DATE
+    - Gap-Detection NOW→Past via Expected-Buckets
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus ClickHouse)
+    
+    ENV Vars:
+        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
+        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
+        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
+        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
+        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
+        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
+        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
+        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
+        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
+    """
+    from backend.services.usecases.backfill_loop_service import BackfillLoopService
+    from datetime import datetime
+    
+    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
+    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
+    try:
+        await _wait_clickhouse_ready(timeout_s=ready_timeout)
+    except Exception as e:
+        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
+        return
+    
+    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
+    if enabled != '1':
+        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
+        return
+
+    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
+    if not coins_str:
+        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
+        return
+
+    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
+    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
+
+    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
+    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
+
+    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
+    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
+    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
+
+    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
+
+    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
+    logger.info(
+        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
+        f"market={market} batch={batch_size} pause={pause_seconds}s "
+        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
+    )
+
+    for pair in pairs:
+        try:
+            exchange, symbol = pair.split(':', 1)
+            svc = BackfillLoopService(
+                exchange=exchange,
+                symbol=symbol,
+                until_date=until_date,
+                market=market,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                gap_scan_days=gap_scan_days,
+                gap_bucket_seconds=gap_bucket_seconds,
+                gap_sources_csv=gap_source_filter,
+            )
+            asyncio.create_task(svc.run())
+            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
+        except Exception as e:
+            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
+</file>
+
 <file path="frontend/src/pages/TradingPage/components/TimeButtons.tsx">
 import { useState, useEffect } from "react";
 import { getAllIntervals, getDefaultSelectedIntervals } from "@/config/candleResolutions";
@@ -163523,6 +163593,194 @@ const TimeButtons = ({ onIntervalChange, onIndicatorSelect }: TimeButtonsProps) 
 };
 
 export default TimeButtons;
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/chartAdapter.ts">
+// frontend/src/shared/components/CandleChart/chartAdapter.ts
+import type { SafeCandleChartApi } from "../../../hooks/useSafeCandleChart";
+import type { CandleData } from "./types";
+
+/**
+ * Lightweight-Charts CandlestickSeries accepts:
+ * - CandlestickData (OHLC)
+ * - WhitespaceData ({ time })
+ *
+ * We MUST pass whitespace points through to visualize missing buckets.
+ */
+export type LWCandle =
+  | { time: number; open: number; high: number; low: number; close: number }
+  | { time: number };
+
+function isRealCandle(d: CandleData): d is CandleData & {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+} {
+  return (
+    (d as any).open !== undefined &&
+    Number.isFinite((d as any).open) &&
+    Number.isFinite((d as any).high) &&
+    Number.isFinite((d as any).low) &&
+    Number.isFinite((d as any).close)
+  );
+}
+
+function toSecMaybe(msOrSec: unknown): number {
+  const n = Number(msOrSec);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n >= 1e12) return Math.floor(n / 1000); // ms -> sec
+  return Math.floor(n); // already sec
+}
+
+/**
+ * Convert CandleData[] to Lightweight-Charts union:
+ * - real OHLC candles
+ * - whitespace points (time only)
+ */
+function toLwCandles(data: CandleData[]): LWCandle[] {
+  const out: LWCandle[] = [];
+
+  for (const d of data || []) {
+    const tSec = toSecMaybe((d as any).time);
+    if (!tSec) continue;
+
+    if (!isRealCandle(d)) {
+      // ✅ Pass whitespace through (no synthetic OHLC)
+      out.push({ time: tSec });
+      continue;
+    }
+
+    const open = Number((d as any).open);
+    const high = Number((d as any).high);
+    const low = Number((d as any).low);
+    const close = Number((d as any).close);
+
+    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+      continue;
+    }
+
+    out.push({ time: tSec, open, high, low, close });
+  }
+
+  // sort
+  out.sort((a, b) => a.time - b.time);
+
+  // dedup by time (keep last). If last is real OHLC it overwrites whitespace.
+  const dedup: LWCandle[] = [];
+  let lastTime = -1;
+
+  for (let i = 0; i < out.length; i++) {
+    const p = out[i];
+    if (!p) continue;
+
+    if (p.time !== lastTime) {
+      dedup.push(p);
+      lastTime = p.time;
+    } else {
+      const lastIdx = dedup.length - 1;
+      if (lastIdx >= 0) dedup[lastIdx] = p;
+    }
+  }
+
+  return dedup;
+}
+
+export function isRealPoint(p: unknown): p is Exclude<LWCandle, { time: number }> {
+  const x = p as any;
+  return (
+    x &&
+    typeof x.time === "number" &&
+    Number.isFinite(x.time) &&
+    Number.isFinite(x.open) &&
+    Number.isFinite(x.high) &&
+    Number.isFinite(x.low) &&
+    Number.isFinite(x.close)
+  );
+}
+
+export function createCandleChartAdapter(safeChart: SafeCandleChartApi) {
+  let lastGen = safeChart.generation;
+  let initialized = false;
+  let lastAppliedTime: number | null = null;
+
+  function resetState() {
+    initialized = false;
+    lastAppliedTime = null;
+    lastGen = safeChart.generation;
+  }
+
+  function ensureGen() {
+    if (safeChart.generation !== lastGen) resetState();
+  }
+
+  function setAll(data: CandleData[]) {
+    ensureGen();
+    const points = toLwCandles(data);
+    if (points.length === 0) return;
+
+    safeChart.safeSetData(points as any);
+    initialized = true;
+
+    const last = points[points.length - 1];
+    lastAppliedTime = last ? last.time : null;
+  }
+
+  function apply(data: CandleData[]) {
+    ensureGen();
+    const points = toLwCandles(data);
+    if (points.length === 0) return;
+
+    const last = points[points.length - 1];
+    if (!last) return;
+
+    const newLast = last.time;
+
+    if (!initialized || lastAppliedTime === null) {
+      safeChart.safeSetData(points as any);
+      initialized = true;
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    const prevLast = lastAppliedTime;
+
+    if (newLast < prevLast) {
+      safeChart.safeSetData(points as any);
+      lastAppliedTime = newLast;
+      return;
+    }
+
+    if (newLast === prevLast) {
+      // Update last item (can be real or whitespace)
+      safeChart.safeUpdate(last as any);
+      return;
+    }
+
+    // find first index with time > prevLast
+    let firstNewIdx = points.length;
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      if (!p) continue;
+
+      if (p.time <= prevLast) {
+        firstNewIdx = i + 1;
+        break;
+      }
+      if (i === 0) firstNewIdx = 0;
+    }
+
+    for (let i = firstNewIdx; i < points.length; i++) {
+      const p = points[i];
+      if (!p) continue;
+      safeChart.safeUpdate(p as any);
+    }
+
+    lastAppliedTime = newLast;
+  }
+
+  return { setAll, apply, resetState };
+}
 </file>
 
 <file path="frontend/src/shared/components/CandleChart/chartThemes.ts">
@@ -164504,262 +164762,6 @@ class CandleAgg1s:
             "src": "agg",
             "ver": ver,
         }
-</file>
-
-<file path="backend/services/adapter/collector_starter.py">
-"""
-✅ ENTERPRISE: Konfigurierbare Collector Settings
-Keine hardcoded Values, alles über Config/Env Vars steuerbar
-"""
-import os
-import asyncio
-import logging
-from typing import Dict, List
-from .unified_collector import (
-    start_unified_collector_service,
-    stop_unified_collector_service,
-    start_all_exchange_collectors,
-    get_unified_collector_status
-)
-
-logger = logging.getLogger(__name__)
-
-# ✅ Generisch: Auto-Discovery über ExchangeFactory
-def get_supported_exchanges() -> List[str]:
-    """Auto-Discovery statt hardcoded Liste"""
-    from backend.services.adapter.exchange_factory import ExchangeFactory
-    return ExchangeFactory.get_available_exchanges()
-
-# ✅ Konfigurierbar: Symbols aus Env Var oder Default
-FRONTEND_COINS = os.getenv(
-    'TRADING_SYMBOLS', 
-    'BTCUSDT'
-).split(',')
-
-# ✅ Konfigurierbar: Market Types aus Env Var oder Default
-MARKET_TYPES = os.getenv(
-    'COLLECTOR_MARKETS',
-    'spot,usdtm'
-).split(',')
-
-# ✅ Konfigurierbar: Performance Tuning
-PARALLEL_EXECUTION = os.getenv('COLLECTOR_PARALLEL', '1') == '1'
-BACKGROUND_START = os.getenv('COLLECTOR_BACKGROUND', '1') == '1'
-MAX_CONCURRENT_COLLECTORS = int(os.getenv('COLLECTOR_MAX_CONCURRENT', '48'))
-
-# ✅ Konfigurierbar: Timeouts & Retries
-COLLECTOR_CONNECT_TIMEOUT = int(os.getenv('COLLECTOR_CONNECT_TIMEOUT', '10'))
-COLLECTOR_MAX_RETRIES = int(os.getenv('COLLECTOR_MAX_RETRIES', '3'))
-AUTO_BACKFILL_TIMEOUT = int(os.getenv('AUTO_BACKFILL_TIMEOUT', '30'))  # ✅ Timeout für Backfill API Calls
-
-# ✅ Generisch: Auto-Discovery Exchanges
-SUPPORTED_EXCHANGES = get_supported_exchanges()
-
-logger.info(
-    f"📊 Collector Configuration: "
-    f"{len(SUPPORTED_EXCHANGES)} exchanges, "
-    f"{len(FRONTEND_COINS)} symbols, "
-    f"{len(MARKET_TYPES)} markets, "
-    f"parallel={PARALLEL_EXECUTION}, "
-    f"background={BACKGROUND_START}"
-)
-
-async def start_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR STARTUP - Nutzt Unified Collector Service
-    Startet alle WebSocket Collectors über zentralen Service - KEIN IMPORT CRASH MEHR!
-    """
-    try:
-        logger.info("🚀 Starting WebSocket Collectors via Unified Collector Service...")
-        
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service
-        await start_unified_collector_service()
-        
-        # ✅ Starte alle Exchange Collectors über Unified Service
-        await start_all_exchange_collectors()
-        
-        # Status prüfen
-        status = get_unified_collector_status()
-        total_collectors = status.get("total_collectors", 0)
-        active_exchanges = len(status.get("active_exchanges", []))
-        
-        logger.info(f"✅ Unified Collector Service: STARTED ({total_collectors} collectors, {active_exchanges} exchanges)")
-        
-        # ✅ FIX: Auto-Backfill als Background Task (nicht blockierend während Startup!)
-        # Problem: Health Check läuft im selben Prozess → kann nicht /health/ready erreichen während Startup läuft
-        # Lösung: Background Task startet NACH dem Startup
-        asyncio.create_task(start_auto_backfill_gap_loop())
-        logger.info("🔄 Auto-Backfill GAP-LOOP: scheduled as background task")
-        
-        logger.info("ℹ️  WebSocket Lane System: ACTIVE")
-        logger.info("ℹ️  Health Monitoring: ACTIVE")
-        
-    except Exception as e:
-        logger.error(f"❌ CRITICAL: Unified Collector startup failed: {e}")
-        # ⭐ DON'T CRASH THE SYSTEM - log but continue (graceful degradation)
-        logger.warning("⚠️  System continues despite collector startup issues (graceful degradation)")
-
-# ✅ LEGACY FUNCTIONS REMOVED
-# Alle exchange-spezifischen Funktionen wurden durch Unified Collector Service ersetzt
-# start_exchange_collector_isolated(), retry_exchange_collector(), start_exchange_collector()
-# sind nicht mehr nötig da der Unified Service das alles zentral managed
-
-async def stop_all_collectors():
-    """
-    ✅ UNIFIED COLLECTOR SHUTDOWN - Nutzt Unified Collector Service
-    Stoppt alle laufenden WebSocket Collectors über zentralen Service
-    """
-    logger.info("🛑 Stopping all WebSocket Collectors via Unified Collector Service...")
-    
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service zum Stoppen
-        await stop_unified_collector_service()
-        
-        logger.info("✅ All WebSocket Collectors stopped via Unified Service")
-        
-    except Exception as e:
-        logger.error(f"❌ Error stopping collectors: {e}")
-
-def get_collector_status():
-    """
-    ✅ UNIFIED COLLECTOR STATUS - Nutzt Unified Collector Service
-    Gibt den Status aller aktiven Collectors über zentralen Service zurück
-    """
-    try:
-        # ✅ UNIFIED APPROACH: Nutze zentralen Collector Service für Status
-        return get_unified_collector_status()
-    except Exception as e:
-        logger.error(f"❌ Error getting collector status: {e}")
-        return {
-            "error": "Failed to get collector status",
-            "service": "unified_collector_service",
-            "running": False,
-            "total_collectors": 0
-        }
-
-
-async def _wait_clickhouse_ready(timeout_s: int = 90) -> None:
-    """
-    Deterministischer Ready-Check:
-    READY = unified_cl_service initialisiert UND pool.get_client() funktioniert UND SELECT 1 ok.
-    """
-    import asyncio
-    from backend.database.clickhouse import unified_cl_service
-
-    start = asyncio.get_event_loop().time()
-    last_err = None
-
-    while True:
-        try:
-            # ✅ FIX: Ensure unified_cl_service is initialized
-            if not unified_cl_service.is_initialized:
-                await unified_cl_service.initialize()
-            
-            pool = await unified_cl_service.get_clickhouse_client()
-            if pool is not None:
-                # ✅ FIX: Ensure pool is initialized
-                if not pool.is_initialized:
-                    await pool.initialize()
-                
-                # ✅ FIX: pool.get_client() holt echten Client
-                def _ping():
-                    client = pool.get_client()
-                    if client is None:
-                        raise RuntimeError("pool.get_client() returned None (pool not initialized)")
-                    result = client.command("SELECT 1")
-                    return result
-                
-                await asyncio.to_thread(_ping)
-                logger.info("✅ ClickHouse READY via unified_cl_service (SELECT 1 ok)")
-                return
-        except Exception as e:
-            last_err = e
-
-        if (asyncio.get_event_loop().time() - start) > timeout_s:
-            raise RuntimeError(f"ClickHouse not ready after {timeout_s}s timeout (last_err={last_err})")
-
-        await asyncio.sleep(0.25)
-
-
-async def start_auto_backfill_gap_loop():
-    """
-    🔄 AUTO-BACKFILL GAP-LOOP - ENTERPRISE LOOP SYSTEM
-    
-    ✅ NEU: BackfillLoopService (Loop-basiert, Gap-Filling)
-    - Kontinuierlicher Backfill bis UNTIL_DATE
-    - Gap-Detection NOW→Past via Expected-Buckets
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus ClickHouse)
-    
-    ENV Vars:
-        AUTO_BACKFILL_ENABLED: 0=disabled, 1=enabled
-        AUTO_BACKFILL_COINS: "exchange:symbol,exchange:symbol,..."
-        AUTO_BACKFILL_UNTIL_DATE: "YYYY-MM-DD"
-        AUTO_BACKFILL_MARKET: "spot", "usdtm", "coinm"
-        BACKFILL_BATCH_SIZE: Batch-Größe (default: 5000)
-        BACKFILL_PAUSE_SECONDS: Pause zwischen Batches (default: 2)
-        GAP_SCAN_DAYS: Gap-Scan-Fenster in Tagen (default: 7)
-        GAP_BUCKET_SECONDS: Bucket-Größe für Gap-Detection (default: 60)
-        GAP_SOURCE_FILTER: Quellen für Gap-Scan (default: "live,rest_backfill")
-    """
-    from backend.services.usecases.backfill_loop_service import BackfillLoopService
-    from datetime import datetime
-    
-    # ✅ ENTERPRISE: Wait for ClickHouse shared pool to be ready
-    ready_timeout = int(os.getenv("BACKFILL_READY_TIMEOUT", "90"))
-    try:
-        await _wait_clickhouse_ready(timeout_s=ready_timeout)
-    except Exception as e:
-        logger.error(f"❌ ClickHouse not ready, BackfillLoopService aborted: {e}")
-        return
-    
-    enabled = os.getenv('AUTO_BACKFILL_ENABLED', '0').strip()
-    if enabled != '1':
-        logger.info("🔕 Auto-Backfill GAP-LOOP disabled (AUTO_BACKFILL_ENABLED != '1')")
-        return
-
-    coins_str = os.getenv('AUTO_BACKFILL_COINS', '').strip()
-    if not coins_str:
-        logger.warning("⚠️ AUTO_BACKFILL_ENABLED=1 but AUTO_BACKFILL_COINS empty")
-        return
-
-    until_date_str = os.getenv('AUTO_BACKFILL_UNTIL_DATE', '2024-01-01').strip()
-    market = os.getenv('AUTO_BACKFILL_MARKET', 'spot').strip()
-
-    batch_size = int(os.getenv('BACKFILL_BATCH_SIZE', '5000').strip() or '5000')
-    pause_seconds = int(os.getenv('BACKFILL_PAUSE_SECONDS', '2').strip() or '2')
-
-    gap_scan_days = int(os.getenv('GAP_SCAN_DAYS', '7').strip() or '7')
-    gap_bucket_seconds = int(os.getenv('GAP_BUCKET_SECONDS', '60').strip() or '60')
-    gap_source_filter = os.getenv('GAP_SOURCE_FILTER', 'live,rest_backfill').strip() or 'live,rest_backfill'
-
-    until_date = datetime.strptime(until_date_str, '%Y-%m-%d')
-
-    pairs = [c.strip() for c in coins_str.split(',') if c.strip()]
-    logger.info(
-        f"🔄 Auto-Backfill GAP-LOOP | coins={len(pairs)} until={until_date_str} "
-        f"market={market} batch={batch_size} pause={pause_seconds}s "
-        f"gap_days={gap_scan_days} bucket={gap_bucket_seconds}s sources={gap_source_filter}"
-    )
-
-    for pair in pairs:
-        try:
-            exchange, symbol = pair.split(':', 1)
-            svc = BackfillLoopService(
-                exchange=exchange,
-                symbol=symbol,
-                until_date=until_date,
-                market=market,
-                batch_size=batch_size,
-                pause_seconds=pause_seconds,
-                gap_scan_days=gap_scan_days,
-                gap_bucket_seconds=gap_bucket_seconds,
-                gap_sources_csv=gap_source_filter,
-            )
-            asyncio.create_task(svc.run())
-            logger.info(f"✅ LOOP started: {exchange}:{symbol}")
-        except Exception as e:
-            logger.error(f"❌ LOOP start failed for '{pair}': {e}", exc_info=True)
 </file>
 
 <file path="backend/services/usecases/unified_historical.py">
@@ -173056,6 +173058,256 @@ export default function App() {
 }
 </file>
 
+<file path="backend/services/usecases/backfill_loop_service.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from backend.services.usecases.unified_historical import UnifiedHistoricalService
+from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
+
+logger = logging.getLogger(__name__)
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class BackfillLoopService:
+    """
+    Enterprise Backfill LOOP
+
+    Eigenschaften:
+    - ClickHouse als Single Source of Truth (oldest_ts)
+    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
+    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus CH)
+    - Keine Hardcodes (Exchange/Symbol per ENV)
+    """
+
+    def __init__(
+        self,
+        exchange: str,
+        symbol: str,
+        until_date: datetime,
+        market: str = "spot",
+        batch_size: int = 5000,
+        pause_seconds: int = 2,
+        gap_scan_days: int = 7,
+        gap_bucket_seconds: int = 60,
+        gap_sources_csv: str = "live_ws,rest_backfill",
+    ):
+        self.exchange = exchange.strip().lower()
+        self.symbol = symbol.strip().upper()
+        self.until_date = _utc(until_date)
+        self.market = market.strip().lower()
+
+        self.batch_size = int(batch_size)
+        self.pause_seconds = int(pause_seconds)
+
+        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
+        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
+
+        env_sources = os.getenv("GAP_SOURCE_FILTER")
+        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
+
+        self._historical = UnifiedHistoricalService(self.exchange)
+
+        self._running = False
+        self._total_trades = 0
+        self._batch_count = 0
+
+        self._global_oldest_ts: Optional[datetime] = None
+
+        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
+        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
+        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
+        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _pause_for_exchange(self) -> int:
+        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
+        v = os.getenv(env_key)
+        if v:
+            try:
+                return max(0, int(v))
+            except Exception:
+                pass
+        try:
+            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
+        except Exception:
+            return self.pause_seconds
+
+    def _get_ch_client_sync(self):
+        """
+        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+        """
+        from backend.database.clickhouse import unified_cl_service
+        import asyncio as _asyncio
+
+        try:
+            if hasattr(unified_cl_service, "get_client_sync"):
+                return unified_cl_service.get_client_sync()
+
+            loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(loop)
+            try:
+                if not unified_cl_service.is_initialized:
+                    loop.run_until_complete(unified_cl_service.initialize())
+
+                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
+                if pool is None:
+                    raise RuntimeError("unified_cl_service returned None pool")
+
+                if not pool.is_initialized:
+                    loop.run_until_complete(pool.initialize())
+
+                client = pool.get_client()
+                if client is None:
+                    raise RuntimeError("pool.get_client() returned None")
+                return client
+            finally:
+                loop.close()
+        except Exception as e:
+            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
+
+    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
+        table_name = f"{self.exchange}_trades"
+        query = f"""
+            SELECT minOrNull(timestamp) AS oldest
+            FROM trading.{table_name}
+            WHERE source = 'rest_backfill'
+              AND symbol = %(symbol)s
+              AND market = %(market)s
+        """
+
+        try:
+            def _run():
+                client = self._get_ch_client_sync()
+                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
+                if not res.result_rows:
+                    return None
+                v = res.result_rows[0][0]
+                if isinstance(v, datetime):
+                    if v.year < 2000:
+                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
+                        return None
+                    return v
+                return None
+
+            oldest = await asyncio.to_thread(_run)
+            return _utc(oldest) if oldest else None
+        except Exception as e:
+            logger.error(
+                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
+                exc_info=True,
+            )
+            return None
+
+    async def _find_gaps(self) -> List[GapWindow]:
+        scanner = GapScanService(
+            exchange=self.exchange,
+            symbol=self.symbol,
+            market=self.market,
+            gap_scan_days=self.gap_scan_days,
+            gap_bucket_seconds=self.gap_bucket_seconds,
+            gap_sources=self.gap_sources,
+            fine_scan_minutes=self._fine_scan_minutes,
+            fine_bucket_seconds=self._fine_bucket_seconds,
+            max_missing_buckets=self._max_missing_buckets,
+            max_windows=self._max_windows,
+        )
+        return await scanner.scan()
+
+    async def run(self) -> None:
+        self._running = True
+        self._total_trades = 0
+        self._batch_count = 0
+
+        logger.info(
+            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
+            f"market={self.market} until={self.until_date.date().isoformat()} "
+            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
+            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
+            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
+            f"sources={','.join(self.gap_sources)}"
+        )
+
+        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
+        if self._global_oldest_ts:
+            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
+
+        try:
+            while self._running:
+                gaps = await self._find_gaps()
+
+                if gaps:
+                    g = gaps[0]
+                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=g.start,
+                        to_date=g.end,
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+                else:
+                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
+                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
+                        break
+
+                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=self.until_date,
+                        to_date=cursor_to,
+                        interval="1m",
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+
+                if trades_loaded <= 0:
+                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
+                    await asyncio.sleep(self._pause_for_exchange())
+                    continue
+
+                self._total_trades += trades_loaded
+                self._batch_count += 1
+
+                batch_oldest = await self._get_oldest_backfill_timestamp()
+                if batch_oldest is not None:
+                    if self._global_oldest_ts is None:
+                        self._global_oldest_ts = batch_oldest
+                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
+                    elif batch_oldest < self._global_oldest_ts:
+                        self._global_oldest_ts = batch_oldest
+                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
+
+                await asyncio.sleep(self._pause_for_exchange())
+
+        except asyncio.CancelledError:
+            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
+        finally:
+            self._running = False
+            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
 <file path="backend/websocket/ws_frontend_handler.py">
 """
 Frontend WebSocket broadcasting (client fan-out) – FINAL.
@@ -173494,256 +173746,6 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
         "server_iso": datetime.utcnow().isoformat(),
     }
     await ws_manager.broadcast_to_channel(channel, msg)
-</file>
-
-<file path="backend/services/usecases/backfill_loop_service.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional
-
-from backend.services.usecases.unified_historical import UnifiedHistoricalService
-from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
-
-logger = logging.getLogger(__name__)
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class BackfillLoopService:
-    """
-    Enterprise Backfill LOOP
-
-    Eigenschaften:
-    - ClickHouse als Single Source of Truth (oldest_ts)
-    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
-    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus CH)
-    - Keine Hardcodes (Exchange/Symbol per ENV)
-    """
-
-    def __init__(
-        self,
-        exchange: str,
-        symbol: str,
-        until_date: datetime,
-        market: str = "spot",
-        batch_size: int = 5000,
-        pause_seconds: int = 2,
-        gap_scan_days: int = 7,
-        gap_bucket_seconds: int = 60,
-        gap_sources_csv: str = "live_ws,rest_backfill",
-    ):
-        self.exchange = exchange.strip().lower()
-        self.symbol = symbol.strip().upper()
-        self.until_date = _utc(until_date)
-        self.market = market.strip().lower()
-
-        self.batch_size = int(batch_size)
-        self.pause_seconds = int(pause_seconds)
-
-        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
-        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
-
-        env_sources = os.getenv("GAP_SOURCE_FILTER")
-        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
-
-        self._historical = UnifiedHistoricalService(self.exchange)
-
-        self._running = False
-        self._total_trades = 0
-        self._batch_count = 0
-
-        self._global_oldest_ts: Optional[datetime] = None
-
-        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
-        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
-        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
-        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _pause_for_exchange(self) -> int:
-        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-        v = os.getenv(env_key)
-        if v:
-            try:
-                return max(0, int(v))
-            except Exception:
-                pass
-        try:
-            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
-        except Exception:
-            return self.pause_seconds
-
-    def _get_ch_client_sync(self):
-        """
-        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-        """
-        from backend.database.clickhouse import unified_cl_service
-        import asyncio as _asyncio
-
-        try:
-            if hasattr(unified_cl_service, "get_client_sync"):
-                return unified_cl_service.get_client_sync()
-
-            loop = _asyncio.new_event_loop()
-            _asyncio.set_event_loop(loop)
-            try:
-                if not unified_cl_service.is_initialized:
-                    loop.run_until_complete(unified_cl_service.initialize())
-
-                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
-                if pool is None:
-                    raise RuntimeError("unified_cl_service returned None pool")
-
-                if not pool.is_initialized:
-                    loop.run_until_complete(pool.initialize())
-
-                client = pool.get_client()
-                if client is None:
-                    raise RuntimeError("pool.get_client() returned None")
-                return client
-            finally:
-                loop.close()
-        except Exception as e:
-            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
-
-    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-        table_name = f"{self.exchange}_trades"
-        query = f"""
-            SELECT minOrNull(timestamp) AS oldest
-            FROM trading.{table_name}
-            WHERE source = 'rest_backfill'
-              AND symbol = %(symbol)s
-              AND market = %(market)s
-        """
-
-        try:
-            def _run():
-                client = self._get_ch_client_sync()
-                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
-                if not res.result_rows:
-                    return None
-                v = res.result_rows[0][0]
-                if isinstance(v, datetime):
-                    if v.year < 2000:
-                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
-                        return None
-                    return v
-                return None
-
-            oldest = await asyncio.to_thread(_run)
-            return _utc(oldest) if oldest else None
-        except Exception as e:
-            logger.error(
-                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
-                exc_info=True,
-            )
-            return None
-
-    async def _find_gaps(self) -> List[GapWindow]:
-        scanner = GapScanService(
-            exchange=self.exchange,
-            symbol=self.symbol,
-            market=self.market,
-            gap_scan_days=self.gap_scan_days,
-            gap_bucket_seconds=self.gap_bucket_seconds,
-            gap_sources=self.gap_sources,
-            fine_scan_minutes=self._fine_scan_minutes,
-            fine_bucket_seconds=self._fine_bucket_seconds,
-            max_missing_buckets=self._max_missing_buckets,
-            max_windows=self._max_windows,
-        )
-        return await scanner.scan()
-
-    async def run(self) -> None:
-        self._running = True
-        self._total_trades = 0
-        self._batch_count = 0
-
-        logger.info(
-            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
-            f"market={self.market} until={self.until_date.date().isoformat()} "
-            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
-            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
-            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
-            f"sources={','.join(self.gap_sources)}"
-        )
-
-        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-        if self._global_oldest_ts:
-            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
-
-        try:
-            while self._running:
-                gaps = await self._find_gaps()
-
-                if gaps:
-                    g = gaps[0]
-                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=g.start,
-                        to_date=g.end,
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-                else:
-                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
-                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
-                        break
-
-                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=self.until_date,
-                        to_date=cursor_to,
-                        interval="1m",
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-
-                if trades_loaded <= 0:
-                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
-                    await asyncio.sleep(self._pause_for_exchange())
-                    continue
-
-                self._total_trades += trades_loaded
-                self._batch_count += 1
-
-                batch_oldest = await self._get_oldest_backfill_timestamp()
-                if batch_oldest is not None:
-                    if self._global_oldest_ts is None:
-                        self._global_oldest_ts = batch_oldest
-                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
-                    elif batch_oldest < self._global_oldest_ts:
-                        self._global_oldest_ts = batch_oldest
-                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
-
-                await asyncio.sleep(self._pause_for_exchange())
-
-        except asyncio.CancelledError:
-            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
-        finally:
-            self._running = False
-            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
 </file>
 
 <file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
