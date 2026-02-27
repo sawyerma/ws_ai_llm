@@ -730,6 +730,7 @@ package.json
 PFAD_ANALYSE_BACKFILL_KOMPLETT.md
 PROBLEM_DIAGNOSE.md
 pyproject.toml
+RANGE_LOAD_STRATEGIE.md
 requirements.txt
 start-health.sh
 start-system.sh
@@ -737,6 +738,7 @@ stop-system.sh
 table_test.sh
 TEST_LLM_UPDATE.md
 update-llm-pack.sh
+WS_PAGING_IMPLEMENTATION.md
 ws_test.html
 </directory_structure>
 
@@ -69302,6 +69304,476 @@ __author__ = "Trading System Team"
 
 <file path=".deps_installed">
 
+</file>
+
+<file path="monitor-system.sh">
+#!/usr/bin/env bash
+# =============================================================================
+# CONTINUOUS SYSTEM MONITOR (READABLE EDITION)
+# - compact snapshot table (no wrap)
+# - per-exchange details with bars and sizes
+# - backfill progress table + per-pair bars in details
+# =============================================================================
+
+set +e
+
+# ---- REQUIREMENTS (Bash >= 5) ----
+if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
+  echo "ERROR: Bash >= 5 required."
+  echo "Install:  brew install bash"
+  echo "Run:      /opt/homebrew/bin/bash ./monitor.sh   (Apple Silicon)"
+  exit 1
+fi
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+REFRESH_INTERVAL="${REFRESH_INTERVAL:-10}"
+
+GW_URL="${GW_URL:-http://localhost:8100}"
+GW_TIMEOUT_S="${GW_TIMEOUT_S:-3}"
+
+REDIS_PORT="${REDIS_PORT:-6380}"
+
+CH_CONT="${CH_CONT:-0_ws_ai-clickhouse-1}"
+BE_CONT="${BE_CONT:-0_ws_ai-backend-1}"
+
+BACKFILL_TARGET_DATE="${AUTO_BACKFILL_UNTIL_DATE:-${BACKFILL_TARGET_DATE:-2024-01-01}}"
+
+# Display
+OUTPUT_MODE="${OUTPUT_MODE:-compact}"   # compact | wide
+DETAIL_TOP_EX="${DETAIL_TOP_EX:-8}"    # how many exchanges show details
+DETAIL_TOP_PAIRS="${DETAIL_TOP_PAIRS:-15}"  # how many backfill pairs show details
+SHOW_GAP="${SHOW_GAP:-0}"              # 1=show (expensive), 0=hide
+
+# Bars scaling references
+REDIS_RATE_MAX="${REDIS_RATE_MAX:-20000}"     # msgs/s => 100%
+BF_RATE_MAX="${BF_RATE_MAX:-200000}"          # rows/refresh => 100%
+CH_SIZE_MAX_GB="${CH_SIZE_MAX_GB:-200}"       # GB => 100%
+
+# Gap
+GAP_SCAN_DAYS="${GAP_SCAN_DAYS:-7}"
+GAP_BUCKET_SECONDS="${GAP_BUCKET_SECONDS:-60}"
+GAP_SOURCE_FILTER="${GAP_SOURCE_FILTER:-live,rest_backfill}"
+GAP_MAX_PAIRS="${GAP_MAX_PAIRS:-20}"
+
+MAX_HISTORY="${MAX_HISTORY:-5}"
+
+mkdir -p logs/monitor
+
+# -----------------------------
+# UTILS
+# -----------------------------
+with_timeout() {
+  local s="$1"; shift
+  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
+  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
+  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
+  fi
+}
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+tcols() {
+  local c
+  c="$(tput cols 2>/dev/null || echo 120)"
+  is_uint "$c" || c=120
+  [[ "$c" -lt 80 ]] && c=80
+  echo "$c"
+}
+
+# clamp 0..100 float
+clamp_pct() {
+  awk -v p="$1" 'BEGIN{if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
+}
+
+pct_of() { # value max -> 0..100
+  awk -v v="$1" -v m="$2" 'BEGIN{if(m<=0)m=1; p=(v/m)*100; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
+}
+
+bar() { # pct width
+  local pct="${1:-0}" w="${2:-16}"
+  pct="$(clamp_pct "$pct")"
+  local filled
+  filled="$(awk -v p="$pct" -v w="$w" 'BEGIN{f=int((p/100)*w); if(f<0)f=0; if(f>w)f=w; print f}')"
+  local empty=$((w - filled))
+  printf "["
+  if (( filled > 0 )); then printf "%0.s█" $(seq 1 "$filled" 2>/dev/null); fi
+  if (( empty  > 0 )); then printf "%0.s░" $(seq 1 "$empty"  2>/dev/null); fi
+  printf "]"
+}
+
+fmt_gb() { awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024/1024}'; }
+fmt_mb() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1024/1024}'; }
+
+short() { # short "text" maxlen
+  local s="$1" m="$2"
+  [[ "${#s}" -le "$m" ]] && { printf "%s" "$s"; return; }
+  printf "%s…" "${s:0:$((m-1))}"
+}
+
+ch_query() {
+  docker exec "$CH_CONT" clickhouse-client --query "$1" 2>/dev/null
+}
+
+# Redis sum XLEN for streams matching pattern
+sum_xlen_pattern() {
+  local pattern="$1"
+  local cursor=0 total=0
+  while :; do
+    local scan_result
+    scan_result="$(redis-cli -p "$REDIS_PORT" --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
+    [[ -z "$scan_result" ]] && { echo "$total"; return; }
+    local new_cursor="" first=true
+    while IFS= read -r line; do
+      if [[ "$first" == "true" ]]; then new_cursor="$line"; first=false
+      else
+        [[ -z "$line" ]] && continue
+        local l
+        l="$(redis-cli -p "$REDIS_PORT" XLEN "$line" 2>/dev/null || echo 0)"
+        is_uint "$l" || l=0
+        total=$((total + l))
+      fi
+    done <<< "$scan_result"
+    cursor="$new_cursor"
+    [[ "$cursor" == "0" ]] && break
+  done
+  echo "$total"
+}
+
+# Discover exchanges from CH trading.*_trades
+discover_exchanges() {
+  ch_query "
+    SELECT replaceOne(name,'_trades','')
+    FROM system.tables
+    WHERE database='trading' AND name LIKE '%\\_trades'
+    ORDER BY 1
+    FORMAT TSV
+  " | sed '/^$/d'
+}
+
+# ✅ ENTERPRISE FIX: Build UNION query mit DIREKTER Progress-Berechnung (keine String-Manipulation!)
+build_union_backfill_pairs_query() {
+  local tables
+  tables="$(ch_query "
+    SELECT name
+    FROM system.tables
+    WHERE database='trading' AND name LIKE '%\\_trades'
+    ORDER BY name
+    FORMAT TSV
+  " | sed '/^$/d')"
+  [[ -z "$tables" ]] && { echo ""; return; }
+
+  local q=""
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    local ex="${t%_trades}"
+    [[ -n "$q" ]] && q+=" UNION ALL "
+    q+="
+      SELECT
+        '${ex}' AS exchange,
+        symbol,
+        market,
+        countIf(source='rest_backfill') AS bf_rows,
+        minIf(timestamp, source='rest_backfill') AS bf_oldest,
+        maxIf(timestamp, source='rest_backfill') AS bf_newest,
+        dateDiff('day', minIf(timestamp, source='rest_backfill'), maxIf(timestamp, source='rest_backfill')) AS covered_days,
+        round(100.0 * covered_days / ${TOTAL_DAYS}, 1) AS progress_pct
+      FROM trading.${t}
+      GROUP BY symbol, market
+      HAVING bf_rows > 0
+    "
+  done <<< "$tables"
+
+  cat <<EOF
+SELECT exchange, symbol, market, bf_rows, bf_oldest, bf_newest, covered_days, progress_pct
+FROM (${q})
+ORDER BY exchange, bf_rows DESC
+FORMAT TSV
+EOF
+}
+
+discover_backfill_pairs() {
+  local uq
+  uq="$(build_union_backfill_pairs_query)"
+  [[ -z "$uq" ]] && return
+  ch_query "$uq"
+}
+
+# -----------------------------
+# STATE
+# -----------------------------
+declare -A LAST_REDIS_TOTAL=()
+declare -A LAST_REDIS_TS=()
+declare -A LAST_BF_ROWS=()
+
+BACKFILL_HISTORY=()
+
+# Progress time base
+TARGET_TS="$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET_DATE" +%s 2>/dev/null || echo 0)"
+NOW_TS="$(date +%s)"
+TOTAL_DAYS=0
+if is_uint "$TARGET_TS" && [[ "$TARGET_TS" -gt 0 ]]; then
+  TOTAL_DAYS=$(( (NOW_TS - TARGET_TS) / 86400 ))
+  [[ $TOTAL_DAYS -gt 0 ]] || TOTAL_DAYS=0
+fi
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+ITER=0
+while true; do
+  ITER=$((ITER + 1))
+  TS_FULL="$(date "+%Y-%m-%d %H:%M:%S")"
+  NOW="$(date +%s)"
+  COLS="$(tcols)"
+
+  # dynamic bar width for details only
+  # keep it stable: 12..28
+  BARW=$(( (COLS - 60) / 6 ))
+  [[ $BARW -lt 12 ]] && BARW=12
+  [[ $BARW -gt 28 ]] && BARW=28
+
+  # backend/CH/redis status
+  HEALTH_READY="$(curl -sf --max-time 2 "${GW_URL}/health/ready" 2>/dev/null)"
+  HEALTH_CODE=$?
+  backend_icon="❌"; backend_txt="offline"; comp_txt="N/A"
+  if [[ $HEALTH_CODE -eq 0 ]]; then
+    SYSTEM_STATUS="$(echo "$HEALTH_READY" | jq -r '.system_status // "unknown"' 2>/dev/null || echo unknown)"
+    READY_BOOL="$(echo "$HEALTH_READY" | jq -r '.ready // false' 2>/dev/null || echo false)"
+    HEALTHY="$(echo "$HEALTH_READY" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo 0)"
+    TOTAL="$(echo "$HEALTH_READY" | jq -r '.summary.total_components // 0' 2>/dev/null || echo 0)"
+    comp_txt="${HEALTHY}/${TOTAL}"
+    if [[ "$READY_BOOL" == "true" && "$SYSTEM_STATUS" == "healthy" ]]; then backend_icon="✅"; backend_txt="healthy"
+    elif [[ "$READY_BOOL" == "true" ]]; then backend_icon="⚠️"; backend_txt="$SYSTEM_STATUS"
+    else backend_icon="❌"; backend_txt="$SYSTEM_STATUS"
+    fi
+  fi
+
+  ch_ping="$(ch_query "SELECT 1" | tr -d '\r\n')"
+  ch_icon=$([[ "$ch_ping" == "1" ]] && echo "✅" || echo "❌")
+
+  redis_ping="$(redis-cli -p "$REDIS_PORT" ping 2>/dev/null | tr -d '\r\n')"
+  redis_icon=$([[ "$redis_ping" == "PONG" ]] && echo "✅" || echo "❌")
+
+  clear
+  echo "=================================================="
+  echo "📊 CONTINUOUS SYSTEM MONITOR | Iteration #${ITER} | ${TS_FULL} | cols=${COLS}"
+  echo "Refresh: ${REFRESH_INTERVAL}s | Backend: ${backend_icon} ${backend_txt} (${comp_txt}) | CH: ${ch_icon} | Redis: ${redis_icon}"
+  echo "=================================================="
+  echo
+
+  # --- exchanges ---
+  mapfile -t EXS < <(discover_exchanges)
+  if [[ "${#EXS[@]}" -eq 0 ]]; then
+    EXS=(binance bitget mexc gateio bybit okx htx coinbase)
+  fi
+
+  # 1) COMPACT PIPELINE TABLE (no bars)
+  echo "1️⃣ PIPELINE (compact, no wrap)"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "%-9s | %6s | %7s | %5s | %4s | %4s | %8s | %8s | %7s | %s\n" \
+    "Exchange" "Redis" "R/s" "GW" "Lat" "WS" "CH5m" "SizeMB" "Status" "Note"
+  echo "--------------------------------------------------------------------------------------------------------------"
+
+  h=0; p=0; f=0
+  shown_ex=0
+
+  # We also keep details data for top exchanges
+  DETAILS_EX=()
+
+  for ex in "${EXS[@]}"; do
+    # redis totals
+    rs="$(sum_xlen_pattern "${ex}:trades:spot:*" 2>/dev/null || echo 0)"
+    ru="$(sum_xlen_pattern "${ex}:trades:usdtm:*" 2>/dev/null || echo 0)"
+    rc="$(sum_xlen_pattern "${ex}:trades:coinm:*" 2>/dev/null || echo 0)"
+    rd="$(sum_xlen_pattern "${ex}:trades:usdcm:*" 2>/dev/null || echo 0)"
+    is_uint "$rs" || rs=0; is_uint "$ru" || ru=0; is_uint "$rc" || rc=0; is_uint "$rd" || rd=0
+    rtotal=$((rs+ru+rc+rd))
+
+    # redis rate
+    last_total="${LAST_REDIS_TOTAL[$ex]:-}"
+    last_ts="${LAST_REDIS_TS[$ex]:-}"
+    rrate=0
+    if [[ -n "$last_total" && -n "$last_ts" ]]; then
+      dt=$((NOW - last_ts)); [[ $dt -gt 0 ]] || dt=1
+      dmsg=$((rtotal - last_total)); [[ $dmsg -ge 0 ]] || dmsg=0
+      rrate=$((dmsg / dt))
+    fi
+    LAST_REDIS_TOTAL["$ex"]="$rtotal"
+    LAST_REDIS_TS["$ex"]="$NOW"
+
+    # GW sample
+    test_symbol="BTCUSDT"; [[ "$ex" == "coinbase" ]] && test_symbol="BTC-USD"
+    api_resp="$(
+      with_timeout "$GW_TIMEOUT_S" curl -s --max-time "$GW_TIMEOUT_S" -w "\n%{time_total}" \
+        "${GW_URL}/gw/trades?symbol=${test_symbol}&exchange=${ex}&market=spot&limit=10" \
+      || echo -e "[]\n0"
+    )"
+    api_n="$(echo "$api_resp" | sed '$d' | jq 'length' 2>/dev/null || echo 0)"
+    api_lat="$(echo "$api_resp" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)"
+    is_uint "$api_n" || api_n=0; is_uint "$api_lat" || api_lat=0
+
+    gw=$([[ $api_n -gt 0 ]] && echo "✓" || echo "✗")
+    ws=$([[ $rtotal -gt 0 ]] && echo "✓" || echo "✗")
+
+    # CH live 5m
+    ch5="$(ch_query "SELECT count() FROM trading.${ex}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'")"
+    is_uint "$ch5" || ch5=0
+
+    # size compressed bytes -> MB
+    sb="$(ch_query "SELECT ifNull(sum(data_compressed_bytes),0) FROM system.parts WHERE active=1 AND database='trading' AND table='${ex}_trades'")"
+    is_uint "$sb" || sb=0
+    smb="$(fmt_mb "$sb")"
+
+    status="FAILED"
+    if (( rtotal > 0 && api_n > 0 && ch5 > 0 )); then status="HEALTHY"
+    elif (( rtotal > 0 || api_n > 0 || ch5 > 0 )); then status="PARTIAL"
+    fi
+
+    case "$status" in
+      HEALTHY) ((h++)) ;;
+      PARTIAL) ((p++)) ;;
+      *)       ((f++)) ;;
+    esac
+
+    note=""
+    [[ "$ex" == "coinbase" ]] && note="sym=${test_symbol}"
+    printf "%-9s | %6d | %7d | %5s | %4d | %4s | %8d | %8s | %7s | %s\n" \
+      "$ex" "$rtotal" "$rrate" "$gw" "$api_lat" "$ws" "$ch5" "$smb" "$status" "$note"
+
+    # collect top exchanges for details (just first N, deterministic)
+    if (( shown_ex < DETAIL_TOP_EX )); then
+      DETAILS_EX+=("$ex:$test_symbol:$rtotal:$rrate:$ch5:$sb:$api_lat:$api_n")
+      shown_ex=$((shown_ex+1))
+    fi
+  done
+
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "Summary: HEALTHY=%d | PARTIAL=%d | FAILED=%d\n" "$h" "$p" "$f"
+  echo
+
+  # 1b) DETAILS per exchange (bars here, no wrap because fewer columns)
+  echo "1️⃣b EXCHANGE DETAILS (bars + sizes, top ${DETAIL_TOP_EX})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  for line in "${DETAILS_EX[@]}"; do
+    IFS=':' read -r ex sym rtotal rrate ch5 sb api_lat api_n <<< "$line"
+    size_gb="$(fmt_gb "$sb")"
+    sz_pct="$(pct_of "$size_gb" "$CH_SIZE_MAX_GB")"
+    rr_pct="$(pct_of "$rrate" "$REDIS_RATE_MAX")"
+    echo "• ${ex}  (test=${sym})"
+    printf "  RedisRate  %s %6d/s   RedisTotal=%d\n" "$(bar "$rr_pct" "$BARW")" "$rrate" "$rtotal"
+    printf "  CH-Size    %s %6sGB   (compressed)\n"  "$(bar "$sz_pct" "$BARW")" "$size_gb"
+    printf "  CH(5m)=%d   GW: %s  Lat=%dms  API10=%d\n" "$ch5" "$([[ $api_n -gt 0 ]] && echo ✓ || echo ✗)" "$api_lat" "$api_n"
+    echo
+  done
+
+  # 2) BACKFILL PROGRESS (compact table + details bars)
+  echo "2️⃣ BACKFILL (compact)"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
+    "Pair" "Rows" "ΔRows" "Oldest" "Newest" "State"
+  echo "--------------------------------------------------------------------------------------------------------------"
+
+  pairs_tsv="$(discover_backfill_pairs)"
+  shown_pairs=0
+  DETAILS_PAIRS=()
+
+  # ✅ ENTERPRISE FIX: Query liefert jetzt covered_days + progress_pct direkt!
+  while IFS=$'\t' read -r ex sym mk bf_rows bf_oldest bf_newest bf_days prog; do
+    [[ -z "$ex" || -z "$sym" || -z "$mk" ]] && continue
+    is_uint "$bf_rows" || bf_rows=0
+    is_uint "$bf_days" || bf_days=0
+
+    key="${ex}:${sym}:${mk}"
+    last="${LAST_BF_ROWS[$key]:-}"
+    delta=0
+    if [[ -n "$last" ]]; then
+      delta=$((bf_rows - last)); [[ $delta -ge 0 ]] || delta=0
+    fi
+    LAST_BF_ROWS["$key"]="$bf_rows"
+
+    # prog kommt jetzt direkt aus ClickHouse!
+    prog="$(clamp_pct "${prog:-0.0}")"
+
+    state="🔄 RUNNING"
+    if (( TOTAL_DAYS > 0 && bf_days >= TOTAL_DAYS )); then state="✅ COMPLETE"; fi
+
+    # shorten timestamps to keep compact
+    o="$(short "${bf_oldest:-N/A}" 19)"
+    n="$(short "${bf_newest:-N/A}" 19)"
+
+    printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
+      "${ex}:${sym}:${mk}" \
+      "$(printf "%'d" "$bf_rows")" \
+      "+$(printf "%'d" "$delta")" \
+      "$o" "$n" "$state"
+
+    if (( shown_pairs < DETAIL_TOP_PAIRS )); then
+      DETAILS_PAIRS+=("${ex}:${sym}:${mk}:${bf_rows}:${delta}:${bf_days}:${prog}:${bf_oldest}:${bf_newest}")
+      shown_pairs=$((shown_pairs+1))
+    fi
+  done <<< "$pairs_tsv"
+
+  if (( shown_pairs == 0 )); then
+    echo "(no active backfill pairs found)"
+  fi
+
+  echo "--------------------------------------------------------------------------------------------------------------"
+  echo "Notes: progress uses covered_days(backfill oldest→newest) / total_days(now→target=${BACKFILL_TARGET_DATE})."
+  echo
+
+  echo "2️⃣b BACKFILL DETAILS (bars, top ${DETAIL_TOP_PAIRS})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  for pl in "${DETAILS_PAIRS[@]}"; do
+    IFS=':' read -r ex sym mk bf_rows delta bf_days prog bf_oldest bf_newest <<< "$pl"
+    dr_pct="$(pct_of "$delta" "$BF_RATE_MAX")"
+    echo "• ${ex}:${sym}:${mk}"
+    printf "  Progress   %s  %5.1f%%  (%dd/%dd)\n" "$(bar "$prog" "$BARW")" "$prog" "$bf_days" "$TOTAL_DAYS"
+    printf "  Speed      %s  +%d rows/refresh\n" "$(bar "$dr_pct" "$BARW")" "$delta"
+    printf "  Rows=%'d  Oldest=%s  Newest=%s\n" "$bf_rows" "$(short "${bf_oldest:-N/A}" 28)" "$(short "${bf_newest:-N/A}" 28)"
+    echo
+  done
+
+  # 3) Optional GAP section (default OFF)
+  if [[ "$SHOW_GAP" == "1" ]]; then
+    echo "3️⃣ GAP COMPLETENESS (expensive) - disabled by default unless SHOW_GAP=1"
+    echo
+  fi
+
+  # 4) Backfill loop history (dedup + keep last N)
+  echo "4️⃣ BACKFILL LOOP ACTIVITY (history, last ${MAX_HISTORY})"
+  echo "--------------------------------------------------------------------------------------------------------------"
+  latest_logs="$(docker logs "$BE_CONT" 2>&1 | grep -E '(\[BACKFILL_METRIC\]|BACKFILL GAP-LOOP|GAP PRIO|BATCH|TARGET REACHED|loaded<=0)' | tail -n 5 2>/dev/null)"
+  if [[ -n "$latest_logs" ]]; then
+    while IFS= read -r ln; do
+      [[ -z "$ln" ]] && continue
+      # dedup: do not append same line twice in a row
+      last_idx=$(( ${#BACKFILL_HISTORY[@]} - 1 ))
+      if (( last_idx >= 0 )) && [[ "${BACKFILL_HISTORY[$last_idx]}" == *"$ln" ]]; then
+        continue
+      fi
+      BACKFILL_HISTORY+=("[$(date +%H:%M:%S)] $ln")
+      if (( ${#BACKFILL_HISTORY[@]} > MAX_HISTORY )); then
+        BACKFILL_HISTORY=("${BACKFILL_HISTORY[@]:1}")
+      fi
+    done <<< "$latest_logs"
+  fi
+
+  if (( ${#BACKFILL_HISTORY[@]} > 0 )); then
+    for e in "${BACKFILL_HISTORY[@]}"; do echo "$e"; done
+  else
+    echo "(no backfill activity detected yet)"
+  fi
+  echo "--------------------------------------------------------------------------------------------------------------"
+  echo
+  echo "=================================================="
+  echo "Next refresh in ${REFRESH_INTERVAL}s... (Ctrl+C to stop)"
+  echo "=================================================="
+
+  echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
+  sleep "$REFRESH_INTERVAL"
+done
 </file>
 
 <file path="PFAD_ANALYSE_BACKFILL_KOMPLETT.md">
@@ -159900,476 +160372,6 @@ Sie ist:
 **Ohne diese Datei funktioniert das gesamte Pre-Aggregation System NICHT!**
 </file>
 
-<file path="monitor-system.sh">
-#!/usr/bin/env bash
-# =============================================================================
-# CONTINUOUS SYSTEM MONITOR (READABLE EDITION)
-# - compact snapshot table (no wrap)
-# - per-exchange details with bars and sizes
-# - backfill progress table + per-pair bars in details
-# =============================================================================
-
-set +e
-
-# ---- REQUIREMENTS (Bash >= 5) ----
-if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
-  echo "ERROR: Bash >= 5 required."
-  echo "Install:  brew install bash"
-  echo "Run:      /opt/homebrew/bin/bash ./monitor.sh   (Apple Silicon)"
-  exit 1
-fi
-
-# -----------------------------
-# CONFIG
-# -----------------------------
-REFRESH_INTERVAL="${REFRESH_INTERVAL:-10}"
-
-GW_URL="${GW_URL:-http://localhost:8100}"
-GW_TIMEOUT_S="${GW_TIMEOUT_S:-3}"
-
-REDIS_PORT="${REDIS_PORT:-6380}"
-
-CH_CONT="${CH_CONT:-0_ws_ai-clickhouse-1}"
-BE_CONT="${BE_CONT:-0_ws_ai-backend-1}"
-
-BACKFILL_TARGET_DATE="${AUTO_BACKFILL_UNTIL_DATE:-${BACKFILL_TARGET_DATE:-2024-01-01}}"
-
-# Display
-OUTPUT_MODE="${OUTPUT_MODE:-compact}"   # compact | wide
-DETAIL_TOP_EX="${DETAIL_TOP_EX:-8}"    # how many exchanges show details
-DETAIL_TOP_PAIRS="${DETAIL_TOP_PAIRS:-15}"  # how many backfill pairs show details
-SHOW_GAP="${SHOW_GAP:-0}"              # 1=show (expensive), 0=hide
-
-# Bars scaling references
-REDIS_RATE_MAX="${REDIS_RATE_MAX:-20000}"     # msgs/s => 100%
-BF_RATE_MAX="${BF_RATE_MAX:-200000}"          # rows/refresh => 100%
-CH_SIZE_MAX_GB="${CH_SIZE_MAX_GB:-200}"       # GB => 100%
-
-# Gap
-GAP_SCAN_DAYS="${GAP_SCAN_DAYS:-7}"
-GAP_BUCKET_SECONDS="${GAP_BUCKET_SECONDS:-60}"
-GAP_SOURCE_FILTER="${GAP_SOURCE_FILTER:-live,rest_backfill}"
-GAP_MAX_PAIRS="${GAP_MAX_PAIRS:-20}"
-
-MAX_HISTORY="${MAX_HISTORY:-5}"
-
-mkdir -p logs/monitor
-
-# -----------------------------
-# UTILS
-# -----------------------------
-with_timeout() {
-  local s="$1"; shift
-  if command -v timeout >/dev/null; then timeout "$s" "$@" 2>/dev/null
-  elif command -v gtimeout >/dev/null; then gtimeout "$s" "$@" 2>/dev/null
-  else perl -e 'alarm shift; exec @ARGV' "$s" "$@" 2>/dev/null
-  fi
-}
-
-is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
-
-tcols() {
-  local c
-  c="$(tput cols 2>/dev/null || echo 120)"
-  is_uint "$c" || c=120
-  [[ "$c" -lt 80 ]] && c=80
-  echo "$c"
-}
-
-# clamp 0..100 float
-clamp_pct() {
-  awk -v p="$1" 'BEGIN{if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
-}
-
-pct_of() { # value max -> 0..100
-  awk -v v="$1" -v m="$2" 'BEGIN{if(m<=0)m=1; p=(v/m)*100; if(p<0)p=0; if(p>100)p=100; printf "%.1f", p}'
-}
-
-bar() { # pct width
-  local pct="${1:-0}" w="${2:-16}"
-  pct="$(clamp_pct "$pct")"
-  local filled
-  filled="$(awk -v p="$pct" -v w="$w" 'BEGIN{f=int((p/100)*w); if(f<0)f=0; if(f>w)f=w; print f}')"
-  local empty=$((w - filled))
-  printf "["
-  if (( filled > 0 )); then printf "%0.s█" $(seq 1 "$filled" 2>/dev/null); fi
-  if (( empty  > 0 )); then printf "%0.s░" $(seq 1 "$empty"  2>/dev/null); fi
-  printf "]"
-}
-
-fmt_gb() { awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024/1024}'; }
-fmt_mb() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1024/1024}'; }
-
-short() { # short "text" maxlen
-  local s="$1" m="$2"
-  [[ "${#s}" -le "$m" ]] && { printf "%s" "$s"; return; }
-  printf "%s…" "${s:0:$((m-1))}"
-}
-
-ch_query() {
-  docker exec "$CH_CONT" clickhouse-client --query "$1" 2>/dev/null
-}
-
-# Redis sum XLEN for streams matching pattern
-sum_xlen_pattern() {
-  local pattern="$1"
-  local cursor=0 total=0
-  while :; do
-    local scan_result
-    scan_result="$(redis-cli -p "$REDIS_PORT" --raw scan "$cursor" match "$pattern" count 1000 2>/dev/null || echo "0")"
-    [[ -z "$scan_result" ]] && { echo "$total"; return; }
-    local new_cursor="" first=true
-    while IFS= read -r line; do
-      if [[ "$first" == "true" ]]; then new_cursor="$line"; first=false
-      else
-        [[ -z "$line" ]] && continue
-        local l
-        l="$(redis-cli -p "$REDIS_PORT" XLEN "$line" 2>/dev/null || echo 0)"
-        is_uint "$l" || l=0
-        total=$((total + l))
-      fi
-    done <<< "$scan_result"
-    cursor="$new_cursor"
-    [[ "$cursor" == "0" ]] && break
-  done
-  echo "$total"
-}
-
-# Discover exchanges from CH trading.*_trades
-discover_exchanges() {
-  ch_query "
-    SELECT replaceOne(name,'_trades','')
-    FROM system.tables
-    WHERE database='trading' AND name LIKE '%\\_trades'
-    ORDER BY 1
-    FORMAT TSV
-  " | sed '/^$/d'
-}
-
-# ✅ ENTERPRISE FIX: Build UNION query mit DIREKTER Progress-Berechnung (keine String-Manipulation!)
-build_union_backfill_pairs_query() {
-  local tables
-  tables="$(ch_query "
-    SELECT name
-    FROM system.tables
-    WHERE database='trading' AND name LIKE '%\\_trades'
-    ORDER BY name
-    FORMAT TSV
-  " | sed '/^$/d')"
-  [[ -z "$tables" ]] && { echo ""; return; }
-
-  local q=""
-  while IFS= read -r t; do
-    [[ -z "$t" ]] && continue
-    local ex="${t%_trades}"
-    [[ -n "$q" ]] && q+=" UNION ALL "
-    q+="
-      SELECT
-        '${ex}' AS exchange,
-        symbol,
-        market,
-        countIf(source='rest_backfill') AS bf_rows,
-        minIf(timestamp, source='rest_backfill') AS bf_oldest,
-        maxIf(timestamp, source='rest_backfill') AS bf_newest,
-        dateDiff('day', minIf(timestamp, source='rest_backfill'), maxIf(timestamp, source='rest_backfill')) AS covered_days,
-        round(100.0 * covered_days / ${TOTAL_DAYS}, 1) AS progress_pct
-      FROM trading.${t}
-      GROUP BY symbol, market
-      HAVING bf_rows > 0
-    "
-  done <<< "$tables"
-
-  cat <<EOF
-SELECT exchange, symbol, market, bf_rows, bf_oldest, bf_newest, covered_days, progress_pct
-FROM (${q})
-ORDER BY exchange, bf_rows DESC
-FORMAT TSV
-EOF
-}
-
-discover_backfill_pairs() {
-  local uq
-  uq="$(build_union_backfill_pairs_query)"
-  [[ -z "$uq" ]] && return
-  ch_query "$uq"
-}
-
-# -----------------------------
-# STATE
-# -----------------------------
-declare -A LAST_REDIS_TOTAL=()
-declare -A LAST_REDIS_TS=()
-declare -A LAST_BF_ROWS=()
-
-BACKFILL_HISTORY=()
-
-# Progress time base
-TARGET_TS="$(date -j -f "%Y-%m-%d" "$BACKFILL_TARGET_DATE" +%s 2>/dev/null || echo 0)"
-NOW_TS="$(date +%s)"
-TOTAL_DAYS=0
-if is_uint "$TARGET_TS" && [[ "$TARGET_TS" -gt 0 ]]; then
-  TOTAL_DAYS=$(( (NOW_TS - TARGET_TS) / 86400 ))
-  [[ $TOTAL_DAYS -gt 0 ]] || TOTAL_DAYS=0
-fi
-
-# -----------------------------
-# MAIN LOOP
-# -----------------------------
-ITER=0
-while true; do
-  ITER=$((ITER + 1))
-  TS_FULL="$(date "+%Y-%m-%d %H:%M:%S")"
-  NOW="$(date +%s)"
-  COLS="$(tcols)"
-
-  # dynamic bar width for details only
-  # keep it stable: 12..28
-  BARW=$(( (COLS - 60) / 6 ))
-  [[ $BARW -lt 12 ]] && BARW=12
-  [[ $BARW -gt 28 ]] && BARW=28
-
-  # backend/CH/redis status
-  HEALTH_READY="$(curl -sf --max-time 2 "${GW_URL}/health/ready" 2>/dev/null)"
-  HEALTH_CODE=$?
-  backend_icon="❌"; backend_txt="offline"; comp_txt="N/A"
-  if [[ $HEALTH_CODE -eq 0 ]]; then
-    SYSTEM_STATUS="$(echo "$HEALTH_READY" | jq -r '.system_status // "unknown"' 2>/dev/null || echo unknown)"
-    READY_BOOL="$(echo "$HEALTH_READY" | jq -r '.ready // false' 2>/dev/null || echo false)"
-    HEALTHY="$(echo "$HEALTH_READY" | jq -r '.summary.effective_status_breakdown.healthy // 0' 2>/dev/null || echo 0)"
-    TOTAL="$(echo "$HEALTH_READY" | jq -r '.summary.total_components // 0' 2>/dev/null || echo 0)"
-    comp_txt="${HEALTHY}/${TOTAL}"
-    if [[ "$READY_BOOL" == "true" && "$SYSTEM_STATUS" == "healthy" ]]; then backend_icon="✅"; backend_txt="healthy"
-    elif [[ "$READY_BOOL" == "true" ]]; then backend_icon="⚠️"; backend_txt="$SYSTEM_STATUS"
-    else backend_icon="❌"; backend_txt="$SYSTEM_STATUS"
-    fi
-  fi
-
-  ch_ping="$(ch_query "SELECT 1" | tr -d '\r\n')"
-  ch_icon=$([[ "$ch_ping" == "1" ]] && echo "✅" || echo "❌")
-
-  redis_ping="$(redis-cli -p "$REDIS_PORT" ping 2>/dev/null | tr -d '\r\n')"
-  redis_icon=$([[ "$redis_ping" == "PONG" ]] && echo "✅" || echo "❌")
-
-  clear
-  echo "=================================================="
-  echo "📊 CONTINUOUS SYSTEM MONITOR | Iteration #${ITER} | ${TS_FULL} | cols=${COLS}"
-  echo "Refresh: ${REFRESH_INTERVAL}s | Backend: ${backend_icon} ${backend_txt} (${comp_txt}) | CH: ${ch_icon} | Redis: ${redis_icon}"
-  echo "=================================================="
-  echo
-
-  # --- exchanges ---
-  mapfile -t EXS < <(discover_exchanges)
-  if [[ "${#EXS[@]}" -eq 0 ]]; then
-    EXS=(binance bitget mexc gateio bybit okx htx coinbase)
-  fi
-
-  # 1) COMPACT PIPELINE TABLE (no bars)
-  echo "1️⃣ PIPELINE (compact, no wrap)"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "%-9s | %6s | %7s | %5s | %4s | %4s | %8s | %8s | %7s | %s\n" \
-    "Exchange" "Redis" "R/s" "GW" "Lat" "WS" "CH5m" "SizeMB" "Status" "Note"
-  echo "--------------------------------------------------------------------------------------------------------------"
-
-  h=0; p=0; f=0
-  shown_ex=0
-
-  # We also keep details data for top exchanges
-  DETAILS_EX=()
-
-  for ex in "${EXS[@]}"; do
-    # redis totals
-    rs="$(sum_xlen_pattern "${ex}:trades:spot:*" 2>/dev/null || echo 0)"
-    ru="$(sum_xlen_pattern "${ex}:trades:usdtm:*" 2>/dev/null || echo 0)"
-    rc="$(sum_xlen_pattern "${ex}:trades:coinm:*" 2>/dev/null || echo 0)"
-    rd="$(sum_xlen_pattern "${ex}:trades:usdcm:*" 2>/dev/null || echo 0)"
-    is_uint "$rs" || rs=0; is_uint "$ru" || ru=0; is_uint "$rc" || rc=0; is_uint "$rd" || rd=0
-    rtotal=$((rs+ru+rc+rd))
-
-    # redis rate
-    last_total="${LAST_REDIS_TOTAL[$ex]:-}"
-    last_ts="${LAST_REDIS_TS[$ex]:-}"
-    rrate=0
-    if [[ -n "$last_total" && -n "$last_ts" ]]; then
-      dt=$((NOW - last_ts)); [[ $dt -gt 0 ]] || dt=1
-      dmsg=$((rtotal - last_total)); [[ $dmsg -ge 0 ]] || dmsg=0
-      rrate=$((dmsg / dt))
-    fi
-    LAST_REDIS_TOTAL["$ex"]="$rtotal"
-    LAST_REDIS_TS["$ex"]="$NOW"
-
-    # GW sample
-    test_symbol="BTCUSDT"; [[ "$ex" == "coinbase" ]] && test_symbol="BTC-USD"
-    api_resp="$(
-      with_timeout "$GW_TIMEOUT_S" curl -s --max-time "$GW_TIMEOUT_S" -w "\n%{time_total}" \
-        "${GW_URL}/gw/trades?symbol=${test_symbol}&exchange=${ex}&market=spot&limit=10" \
-      || echo -e "[]\n0"
-    )"
-    api_n="$(echo "$api_resp" | sed '$d' | jq 'length' 2>/dev/null || echo 0)"
-    api_lat="$(echo "$api_resp" | tail -n 1 | awk '{printf "%.0f", $1*1000}' 2>/dev/null)"
-    is_uint "$api_n" || api_n=0; is_uint "$api_lat" || api_lat=0
-
-    gw=$([[ $api_n -gt 0 ]] && echo "✓" || echo "✗")
-    ws=$([[ $rtotal -gt 0 ]] && echo "✓" || echo "✗")
-
-    # CH live 5m
-    ch5="$(ch_query "SELECT count() FROM trading.${ex}_trades WHERE timestamp > now() - INTERVAL 5 MINUTE AND source != 'rest_backfill'")"
-    is_uint "$ch5" || ch5=0
-
-    # size compressed bytes -> MB
-    sb="$(ch_query "SELECT ifNull(sum(data_compressed_bytes),0) FROM system.parts WHERE active=1 AND database='trading' AND table='${ex}_trades'")"
-    is_uint "$sb" || sb=0
-    smb="$(fmt_mb "$sb")"
-
-    status="FAILED"
-    if (( rtotal > 0 && api_n > 0 && ch5 > 0 )); then status="HEALTHY"
-    elif (( rtotal > 0 || api_n > 0 || ch5 > 0 )); then status="PARTIAL"
-    fi
-
-    case "$status" in
-      HEALTHY) ((h++)) ;;
-      PARTIAL) ((p++)) ;;
-      *)       ((f++)) ;;
-    esac
-
-    note=""
-    [[ "$ex" == "coinbase" ]] && note="sym=${test_symbol}"
-    printf "%-9s | %6d | %7d | %5s | %4d | %4s | %8d | %8s | %7s | %s\n" \
-      "$ex" "$rtotal" "$rrate" "$gw" "$api_lat" "$ws" "$ch5" "$smb" "$status" "$note"
-
-    # collect top exchanges for details (just first N, deterministic)
-    if (( shown_ex < DETAIL_TOP_EX )); then
-      DETAILS_EX+=("$ex:$test_symbol:$rtotal:$rrate:$ch5:$sb:$api_lat:$api_n")
-      shown_ex=$((shown_ex+1))
-    fi
-  done
-
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "Summary: HEALTHY=%d | PARTIAL=%d | FAILED=%d\n" "$h" "$p" "$f"
-  echo
-
-  # 1b) DETAILS per exchange (bars here, no wrap because fewer columns)
-  echo "1️⃣b EXCHANGE DETAILS (bars + sizes, top ${DETAIL_TOP_EX})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  for line in "${DETAILS_EX[@]}"; do
-    IFS=':' read -r ex sym rtotal rrate ch5 sb api_lat api_n <<< "$line"
-    size_gb="$(fmt_gb "$sb")"
-    sz_pct="$(pct_of "$size_gb" "$CH_SIZE_MAX_GB")"
-    rr_pct="$(pct_of "$rrate" "$REDIS_RATE_MAX")"
-    echo "• ${ex}  (test=${sym})"
-    printf "  RedisRate  %s %6d/s   RedisTotal=%d\n" "$(bar "$rr_pct" "$BARW")" "$rrate" "$rtotal"
-    printf "  CH-Size    %s %6sGB   (compressed)\n"  "$(bar "$sz_pct" "$BARW")" "$size_gb"
-    printf "  CH(5m)=%d   GW: %s  Lat=%dms  API10=%d\n" "$ch5" "$([[ $api_n -gt 0 ]] && echo ✓ || echo ✗)" "$api_lat" "$api_n"
-    echo
-  done
-
-  # 2) BACKFILL PROGRESS (compact table + details bars)
-  echo "2️⃣ BACKFILL (compact)"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
-    "Pair" "Rows" "ΔRows" "Oldest" "Newest" "State"
-  echo "--------------------------------------------------------------------------------------------------------------"
-
-  pairs_tsv="$(discover_backfill_pairs)"
-  shown_pairs=0
-  DETAILS_PAIRS=()
-
-  # ✅ ENTERPRISE FIX: Query liefert jetzt covered_days + progress_pct direkt!
-  while IFS=$'\t' read -r ex sym mk bf_rows bf_oldest bf_newest bf_days prog; do
-    [[ -z "$ex" || -z "$sym" || -z "$mk" ]] && continue
-    is_uint "$bf_rows" || bf_rows=0
-    is_uint "$bf_days" || bf_days=0
-
-    key="${ex}:${sym}:${mk}"
-    last="${LAST_BF_ROWS[$key]:-}"
-    delta=0
-    if [[ -n "$last" ]]; then
-      delta=$((bf_rows - last)); [[ $delta -ge 0 ]] || delta=0
-    fi
-    LAST_BF_ROWS["$key"]="$bf_rows"
-
-    # prog kommt jetzt direkt aus ClickHouse!
-    prog="$(clamp_pct "${prog:-0.0}")"
-
-    state="🔄 RUNNING"
-    if (( TOTAL_DAYS > 0 && bf_days >= TOTAL_DAYS )); then state="✅ COMPLETE"; fi
-
-    # shorten timestamps to keep compact
-    o="$(short "${bf_oldest:-N/A}" 19)"
-    n="$(short "${bf_newest:-N/A}" 19)"
-
-    printf "%-22s | %12s | %12s | %-19s | %-19s | %s\n" \
-      "${ex}:${sym}:${mk}" \
-      "$(printf "%'d" "$bf_rows")" \
-      "+$(printf "%'d" "$delta")" \
-      "$o" "$n" "$state"
-
-    if (( shown_pairs < DETAIL_TOP_PAIRS )); then
-      DETAILS_PAIRS+=("${ex}:${sym}:${mk}:${bf_rows}:${delta}:${bf_days}:${prog}:${bf_oldest}:${bf_newest}")
-      shown_pairs=$((shown_pairs+1))
-    fi
-  done <<< "$pairs_tsv"
-
-  if (( shown_pairs == 0 )); then
-    echo "(no active backfill pairs found)"
-  fi
-
-  echo "--------------------------------------------------------------------------------------------------------------"
-  echo "Notes: progress uses covered_days(backfill oldest→newest) / total_days(now→target=${BACKFILL_TARGET_DATE})."
-  echo
-
-  echo "2️⃣b BACKFILL DETAILS (bars, top ${DETAIL_TOP_PAIRS})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  for pl in "${DETAILS_PAIRS[@]}"; do
-    IFS=':' read -r ex sym mk bf_rows delta bf_days prog bf_oldest bf_newest <<< "$pl"
-    dr_pct="$(pct_of "$delta" "$BF_RATE_MAX")"
-    echo "• ${ex}:${sym}:${mk}"
-    printf "  Progress   %s  %5.1f%%  (%dd/%dd)\n" "$(bar "$prog" "$BARW")" "$prog" "$bf_days" "$TOTAL_DAYS"
-    printf "  Speed      %s  +%d rows/refresh\n" "$(bar "$dr_pct" "$BARW")" "$delta"
-    printf "  Rows=%'d  Oldest=%s  Newest=%s\n" "$bf_rows" "$(short "${bf_oldest:-N/A}" 28)" "$(short "${bf_newest:-N/A}" 28)"
-    echo
-  done
-
-  # 3) Optional GAP section (default OFF)
-  if [[ "$SHOW_GAP" == "1" ]]; then
-    echo "3️⃣ GAP COMPLETENESS (expensive) - disabled by default unless SHOW_GAP=1"
-    echo
-  fi
-
-  # 4) Backfill loop history (dedup + keep last N)
-  echo "4️⃣ BACKFILL LOOP ACTIVITY (history, last ${MAX_HISTORY})"
-  echo "--------------------------------------------------------------------------------------------------------------"
-  latest_logs="$(docker logs "$BE_CONT" 2>&1 | grep -E '(\[BACKFILL_METRIC\]|BACKFILL GAP-LOOP|GAP PRIO|BATCH|TARGET REACHED|loaded<=0)' | tail -n 5 2>/dev/null)"
-  if [[ -n "$latest_logs" ]]; then
-    while IFS= read -r ln; do
-      [[ -z "$ln" ]] && continue
-      # dedup: do not append same line twice in a row
-      last_idx=$(( ${#BACKFILL_HISTORY[@]} - 1 ))
-      if (( last_idx >= 0 )) && [[ "${BACKFILL_HISTORY[$last_idx]}" == *"$ln" ]]; then
-        continue
-      fi
-      BACKFILL_HISTORY+=("[$(date +%H:%M:%S)] $ln")
-      if (( ${#BACKFILL_HISTORY[@]} > MAX_HISTORY )); then
-        BACKFILL_HISTORY=("${BACKFILL_HISTORY[@]:1}")
-      fi
-    done <<< "$latest_logs"
-  fi
-
-  if (( ${#BACKFILL_HISTORY[@]} > 0 )); then
-    for e in "${BACKFILL_HISTORY[@]}"; do echo "$e"; done
-  else
-    echo "(no backfill activity detected yet)"
-  fi
-  echo "--------------------------------------------------------------------------------------------------------------"
-  echo
-  echo "=================================================="
-  echo "Next refresh in ${REFRESH_INTERVAL}s... (Ctrl+C to stop)"
-  echo "=================================================="
-
-  echo "${TS_FULL} Backend=${backend_txt} CH=${ch_ping:-0} Redis=${redis_ping:-ERR}" >> logs/monitor/system_monitor.log
-  sleep "$REFRESH_INTERVAL"
-done
-</file>
-
 <file path="package.json">
 {
   "devDependencies": {
@@ -160465,6 +160467,146 @@ Sie existieren bereits und sind separate Probleme:
 **Die Code-Änderung ist korrekt und notwendig für Pre-Aggregation!**
 </file>
 
+<file path="RANGE_LOAD_STRATEGIE.md">
+# Range-Load Strategie für OHLC Endpoints
+
+## Problem
+
+Wenn Frontend "90 Tage bei 1d Auflösung" anzeigen will, aber nur `limit=6` sendet, bekommt es nur 6 Candles zurück.
+
+**Root Cause:** Backend liefert nur `limit` Buckets, wenn keine explizite `start/end` Range übergeben wird.
+
+---
+
+## ✅ Lösung: Frontend-gesteuerte Range
+
+### **Profi-Regel (wie TradingView)**
+
+- **Range kommt vom UI**, nicht aus dem Backend geraten
+- Backend bekommt: `start_ms` + `end_ms` (Unix ms) **oder** ein explizites `limit`, das zur gewünschten Range passt
+
+---
+
+## 📐 Formeln für Frontend
+
+### **1) Initial Load (z.B. "90 Tage bei 1d")**
+
+```typescript
+const end_ms = Date.now();
+const start_ms = end_ms - (90 * 24 * 60 * 60 * 1000); // 90 Tage zurück
+const limit = 100; // Safety buffer (mehr als 90, falls Gaps)
+
+// REST Request
+fetch(`/api/historical/ohlc/binance/BTCUSDT?interval=1d&start=${start_ms}&end=${end_ms}&limit=${limit}`)
+
+// WS Request
+ws.send(`historical:1d:${limit}:${end_ms}`)
+```
+
+### **2) Paging nach links (Historical "rückwärts laden")**
+
+```typescript
+// Frontend merkt sich ältesten Timestamp der bereits geladenen Daten
+const oldest_ts_ms = candles[0].ts; // z.B. 1772139600000
+
+// Nächster Chunk: end_ms = oldest_ts_ms (exklusiv!)
+const chunk_size = 90; // z.B. 90 weitere Tage
+const end_ms = oldest_ts_ms;
+const start_ms = end_ms - (90 * 24 * 60 * 60 * 1000);
+
+// REST Request
+fetch(`/api/historical/ohlc/binance/BTCUSDT?interval=1d&start=${start_ms}&end=${end_ms}&limit=${chunk_size}`)
+```
+
+**Wichtig:** `end_ms` ist jetzt **exklusiv** (Fix #1 in `unified_ohlc.py`), daher keine Duplikate am Rand.
+
+---
+
+## 🔧 Backend-Änderungen (bereits implementiert)
+
+### **Fix #1: `end_ts` exklusiv**
+
+**Datei:** `backend/services/usecases/unified_ohlc.py`
+
+```python
+if end_dt:
+    # exklusiv = sauberes Paging (keine Doppel-Candle am Rand)
+    where.append("ts < toDateTime64(%(end_ts)s, 3, 'UTC')")
+    params["end_ts"] = _format_ch_dt(end_dt)
+```
+
+**Vorher:** `ts <= end_ts` (inklusiv) → Duplikate bei Paging
+**Jetzt:** `ts < end_ts` (exklusiv) → sauberes Paging
+
+---
+
+## 📊 Beispiele für verschiedene Auflösungen
+
+| Auflösung | Zeitraum | Limit | Berechnung |
+|-----------|----------|-------|------------|
+| `1s` | 10 Stunden | 36000 | `10 * 60 * 60` |
+| `1m` | 24 Stunden | 1440 | `24 * 60` |
+| `5m` | 7 Tage | 2016 | `7 * 24 * 60 / 5` |
+| `1h` | 30 Tage | 720 | `30 * 24` |
+| `1d` | 90 Tage | 90 | `90` |
+
+**Safety Buffer:** Immer `limit` etwas höher setzen (z.B. +10%), falls Gaps in den Daten existieren.
+
+---
+
+## 🚀 WS-Protokoll Erweiterung (optional)
+
+### **Aktuell:**
+```
+historical:<interval>:<limit>
+```
+
+### **Empfohlen:**
+```
+historical:<interval>:<limit>:<end_ms>
+```
+
+**Backend-Seite (ws_router.py):**
+```python
+if msg.startswith("historical:"):
+    parts = msg.split(":")
+    interval_str = parts[1] if len(parts) > 1 else "1m"
+    limit = _safe_int(parts[2], 500) if len(parts) > 2 else 500
+    end_ms = _safe_int(parts[3], None) if len(parts) > 3 else None  # NEU
+    
+    candles = await unified_ohlc.get_candles(
+        exchange=exchange,
+        symbol=symbol,
+        market=market,
+        resolution=interval_str,
+        end=end_ms,  # NEU: für Paging
+        limit=limit,
+    )
+```
+
+---
+
+## ✅ Zusammenfassung
+
+1. **Frontend berechnet Range** (`start_ms`, `end_ms`) basierend auf gewünschtem Zeitraum
+2. **Backend nutzt exklusives `end_ts`** (Fix #1) für sauberes Paging
+3. **Paging nach links:** `end_ms = oldest_ts_ms` vom letzten Chunk
+4. **Keine Backend-Änderung nötig** für Range-Load (nur Frontend-Logik)
+
+---
+
+## 🔗 Verwandte Fixes
+
+- **Fix #1:** `end_ts` exklusiv (✅ implementiert in `unified_ohlc.py`)
+- **Fix #2:** ClickHouse Verifikation (Winner-per-second via `argMax(*, ver)`)
+- **Block 3:** Backfill-Candles Merge via `ver` (✅ implementiert)
+
+---
+
+**Erstellt:** 2026-02-27
+**Status:** ✅ Dokumentiert (keine Code-Änderungen nötig)
+</file>
+
 <file path="TEST_LLM_UPDATE.md">
 # LLM Auto-Update Test
 Timestamp: Sun Feb 15 19:22:45 CET 2026
@@ -160519,6 +160661,178 @@ GIT_SSH_COMMAND='ssh -i /Users/sawyer_ma/Desktop/Firma/2_DarkMa/0_WS_AI/ws_ai_ll
 
 echo "✅ LLM Pack updated successfully!"
 echo "🔗 Check: https://github.com/sawyerma/ws_ai_llm"
+</file>
+
+<file path="WS_PAGING_IMPLEMENTATION.md">
+# WS-Paging Implementation - Dokumentation
+
+## ✅ Implementiert: 2026-02-27
+
+### **Änderung: `backend/websocket/ws_router.py`**
+
+**Neues WS-Protokoll:**
+```
+# Alt (weiterhin unterstützt):
+historical:<interval>:<limit>
+
+# Neu (mit Paging):
+historical:<interval>:<limit>:<end_ms>
+```
+
+**Parameter:**
+- `interval`: Auflösung (z.B. `1m`, `1h`, `1d`)
+- `limit`: Anzahl Candles (Default: 500)
+- `end_ms`: **Optional** - Unix ms Timestamp (exklusiv)
+
+---
+
+## 🔧 Technische Details
+
+### **Backend-Änderungen**
+
+**Zeilen 95-145 in `ws_router.py`:**
+```python
+# optional paging end in ms (exclusive)
+end_ms: Optional[int] = None
+if len(parts) > 3:
+    try:
+        v = int(parts[3])
+        if v > 0:
+            end_ms = v
+    except Exception:
+        end_ms = None
+
+candles = await unified_ohlc.get_candles(
+    exchange=exchange,
+    symbol=symbol,
+    market=market,
+    resolution=interval_str,
+    end=end_ms,      # ✅ NEW: paging end (exclusive)
+    limit=limit,
+)
+```
+
+**Response enthält jetzt:**
+```json
+{
+  "type": "historical",
+  "exchange": "binance",
+  "symbol": "BTCUSDT",
+  "market": "spot",
+  "interval": "1d",
+  "candles": [...],
+  "count": 90,
+  "end_ms": 1772000000000  // ✅ NEW: echo for debugging
+}
+```
+
+---
+
+## 🧪 Verifikation
+
+### **Test 1: Initial Load (ohne end_ms)**
+```bash
+wscat -c ws://localhost:8100/ws/binance/BTCUSDT/spot
+> historical:1d:90
+```
+
+**Erwartung:**
+- 90 Candles zurück
+- `end_ms: null` in Response
+
+### **Test 2: Paging nach links (mit end_ms)**
+```bash
+> historical:1d:90:1772000000000
+```
+
+**Erwartung:**
+- 90 Candles **vor** 1772000000000 (exklusiv)
+- `end_ms: 1772000000000` in Response
+- Keine Duplikate am Rand (weil `unified_ohlc.py` `ts < end_ts` nutzt)
+
+---
+
+## 📐 Frontend-Integration (Beispiel)
+
+### **Initial Load**
+```typescript
+ws.send(`historical:1d:90`);
+```
+
+### **Paging nach links**
+```typescript
+// Nach erstem Load
+const oldest_ts_ms = candles[0].ts; // z.B. 1772000000000
+
+// Nächster Chunk (exklusiv)
+ws.send(`historical:1d:90:${oldest_ts_ms}`);
+```
+
+### **Vollständiges Beispiel**
+```typescript
+let allCandles: Candle[] = [];
+
+// Initial Load
+ws.send(`historical:1d:90`);
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  
+  if (msg.type === 'historical') {
+    allCandles = [...msg.candles, ...allCandles]; // prepend
+    
+    // Wenn mehr Daten gewünscht und Candles vorhanden
+    if (msg.candles.length > 0 && needMoreData()) {
+      const oldest_ts_ms = msg.candles[0].ts;
+      ws.send(`historical:1d:90:${oldest_ts_ms}`);
+    }
+  }
+};
+```
+
+---
+
+## 🔗 Verwandte Fixes
+
+1. **Fix #1: `end_ts` exklusiv** (unified_ohlc.py)
+   - `ts < toDateTime64(%(end_ts)s, 3, 'UTC')`
+   - Verhindert Duplikate bei Paging
+
+2. **Block 3: Winner-per-second** (unified_ohlc.py)
+   - `argMax(*, ver)` → Live gewinnt über Backfill
+   - Kein `src`-Filter nötig
+
+3. **REST: start/end Support** (ro_historical.py)
+   - Beide Endpoints unterstützen Range
+   - `start/end` Parameter (Unix ms)
+
+---
+
+## ✅ Status
+
+| Komponente | Status | Verifikation |
+|------------|--------|--------------|
+| **WS-Router Patch** | ✅ IMPLEMENTIERT | Zeilen 95-145 |
+| **end_ms Parameter** | ✅ OPTIONAL | Parse aus parts[3] |
+| **Response Echo** | ✅ IMPLEMENTIERT | `"end_ms": ...` |
+| **Exklusives Paging** | ✅ KORREKT | Via Fix #1 |
+
+---
+
+## 🚀 Deployment
+
+```bash
+# Backend neu bauen
+docker compose up -d --build --force-recreate backend
+
+# Logs prüfen
+docker logs -f 0_ws_ai-backend-1 | grep "WS Historical"
+```
+
+---
+
+**Erstellt:** 2026-02-27
+**Status:** ✅ Implementiert und bereit für Testing
 </file>
 
 <file path="ws_test.html">
@@ -167424,130 +167738,6 @@ const TradingPage = () => {
 export default TradingPage;
 </file>
 
-<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
-/**
- * CandleChart Component
- * =====================
- * 
- * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
- * 
- * Features:
- * - Lazy-Loading der TradingView Lightweight Charts Library
- * - Automatische Dark/Light Mode Synchronisation
- * - WebSocket Integration für Live-Daten
- * - Responsive Design
- * 
- * Usage:
- * ```tsx
- * <CandleChart 
- *   symbol="BTCUSDT"
- *   exchange="binance"
- *   market="spot"
- *   interval="1h"
- *   limit={100}
- * />
- * ```
- * 
- * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
- * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
- */
-
-import React, { useEffect, useRef } from 'react';
-import { useCandleChart } from './useCandleChart';
-import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
-import type { CandleChartProps } from './types';
-import LoadingBlockOverlay from './LoadingBlockOverlay';
-import { useShowLoadingBlockOverlay } from '../../state/uiPrefs';
-
-const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
-
-const CandleChart: React.FC<CandleChartProps> = ({
-  symbol,
-  exchange,
-  market,
-  interval,
-  limit = DEFAULT_LIMIT,
-  className = '',
-}) => {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-
-  // ✅ Chart Hook (Init, Theme, Resize)
-  const { isChartReady, setChartData, setInitialVisibleRangeOnce, chartInstance } = useCandleChart({
-    interval,
-    containerRef: chartContainerRef,
-  });
-
-  // ✅ Data Hook (WebSocket Integration)
-  const { chartData, loading, error, meta, fillBlock } = useChartView(
-    symbol,
-    market,
-    exchange,
-    interval,
-    limit
-  );
-
-  // ✅ Overlay Preference
-  const overlayPref = useShowLoadingBlockOverlay();
-
-  // 🔍 DEBUG: Log fillBlock state
-  useEffect(() => {
-    console.log('[CandleChart] fillBlock state:', fillBlock);
-    console.log('[CandleChart] overlayPref.enabled:', overlayPref.enabled);
-  }, [fillBlock, overlayPref.enabled]);
-
-  // Load Chart Data when ready
-  useEffect(() => {
-    if (isChartReady && chartData && chartData.length > 0) {
-      setChartData(chartData);
-      setInitialVisibleRangeOnce(chartData);
-    }
-  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
-
-  return (
-    <div className={`flex flex-col gap-2 ${className}`}>
-      <div className="text-xs opacity-70">
-        Historical: {meta.historicalCount} | Live: {meta.liveCount} | TotalPoints:{" "}
-        {meta.totalCount} | Real: {meta.realCount} | Whitespace: {meta.whitespaceCount}
-      </div>
-
-      <div
-        className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden"
-      >
-        {/* Chart Container */}
-        <div className="relative w-full h-full">
-          <div ref={chartContainerRef} className="chart-container w-full h-full" />
-
-          {/* ✅ Loading Block Overlay */}
-          <LoadingBlockOverlay 
-            chartRef={chartInstance}
-            enabled={overlayPref.enabled}
-            block={fillBlock}
-          />
-
-        {/* Loading State */}
-        {(loading || !isChartReady) && (
-          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          </div>
-        )}
-
-          {/* Error State */}
-          {error && (
-            <div className="absolute inset-0 flex items-center justify-center z-10">
-              <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
-                {error.message || String(error)}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default CandleChart;
-</file>
-
 <file path="frontend/src/shared/components/CandleChart/types.ts">
 /**
  * CandleChart Types
@@ -169214,6 +169404,130 @@ const CoinSelector: React.FC<AdvancedCoinSelectorProps> = ({
 };
 
 export default CoinSelector;
+</file>
+
+<file path="frontend/src/shared/components/CandleChart/CandleChart.tsx">
+/**
+ * CandleChart Component
+ * =====================
+ * 
+ * Wiederverwendbare Candlestick-Chart Komponente für alle Pages.
+ * 
+ * Features:
+ * - Lazy-Loading der TradingView Lightweight Charts Library
+ * - Automatische Dark/Light Mode Synchronisation
+ * - WebSocket Integration für Live-Daten
+ * - Responsive Design
+ * 
+ * Usage:
+ * ```tsx
+ * <CandleChart 
+ *   symbol="BTCUSDT"
+ *   exchange="binance"
+ *   market="spot"
+ *   interval="1h"
+ *   limit={100}
+ * />
+ * ```
+ * 
+ * ✅ DYNAMISCH: Keine Hardcodes, alle Props werden durchgereicht
+ * ✅ WIEDERVERWENDBAR: Kann in TradingPage, Quantum, etc. genutzt werden
+ */
+
+import React, { useEffect, useRef } from 'react';
+import { useCandleChart } from './useCandleChart';
+import { useChartView } from '../../../pages/TradingPage/hooks/useChartView';
+import type { CandleChartProps } from './types';
+import LoadingBlockOverlay from './LoadingBlockOverlay';
+import { useShowLoadingBlockOverlay } from '../../state/uiPrefs';
+
+const DEFAULT_LIMIT = Number(import.meta.env.VITE_CHART_MAX_REAL_CANDLES ?? '500');
+
+const CandleChart: React.FC<CandleChartProps> = ({
+  symbol,
+  exchange,
+  market,
+  interval,
+  limit = DEFAULT_LIMIT,
+  className = '',
+}) => {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // ✅ Chart Hook (Init, Theme, Resize)
+  const { isChartReady, setChartData, setInitialVisibleRangeOnce, chartInstance } = useCandleChart({
+    interval,
+    containerRef: chartContainerRef,
+  });
+
+  // ✅ Data Hook (WebSocket Integration)
+  const { chartData, loading, error, meta, fillBlock } = useChartView(
+    symbol,
+    market,
+    exchange,
+    interval,
+    limit
+  );
+
+  // ✅ Overlay Preference
+  const overlayPref = useShowLoadingBlockOverlay();
+
+  // 🔍 DEBUG: Log fillBlock state
+  useEffect(() => {
+    console.log('[CandleChart] fillBlock state:', fillBlock);
+    console.log('[CandleChart] overlayPref.enabled:', overlayPref.enabled);
+  }, [fillBlock, overlayPref.enabled]);
+
+  // Load Chart Data when ready
+  useEffect(() => {
+    if (isChartReady && chartData && chartData.length > 0) {
+      setChartData(chartData);
+      setInitialVisibleRangeOnce(chartData);
+    }
+  }, [isChartReady, chartData, setChartData, setInitialVisibleRangeOnce]);
+
+  return (
+    <div className={`flex flex-col gap-2 ${className}`}>
+      <div className="text-xs opacity-70">
+        Historical: {meta.historicalCount} | Live: {meta.liveCount} | TotalPoints:{" "}
+        {meta.totalCount} | Real: {meta.realCount} | Whitespace: {meta.whitespaceCount}
+      </div>
+
+      <div
+        className="chart-container bg-card rounded-lg shadow-sm border border-border h-full w-full overflow-hidden"
+      >
+        {/* Chart Container */}
+        <div className="relative w-full h-full">
+          <div ref={chartContainerRef} className="chart-container w-full h-full" />
+
+          {/* ✅ Loading Block Overlay */}
+          <LoadingBlockOverlay 
+            chartRef={chartInstance}
+            enabled={overlayPref.enabled && fillBlock !== null}
+            block={fillBlock}
+          />
+
+        {/* Loading State */}
+        {(loading || !isChartReady) && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+
+          {/* Error State */}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded">
+                {error.message || String(error)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CandleChart;
 </file>
 
 <file path="frontend/src/shared/layout/GlobalNav.tsx">
@@ -171309,6 +171623,256 @@ async def run_unified_aggregator() -> None:
         logger.info("✅ Unified Aggregator stopped gracefully")
 </file>
 
+<file path="backend/services/usecases/backfill_loop_service.py">
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from backend.services.usecases.unified_historical import UnifiedHistoricalService
+from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
+
+logger = logging.getLogger(__name__)
+
+
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class BackfillLoopService:
+    """
+    Enterprise Backfill LOOP
+
+    Eigenschaften:
+    - ClickHouse als Single Source of Truth (oldest_ts)
+    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
+    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
+    - Gap-Priorisierung vor normalem Backfill
+    - Auto-Resume nach Restart (Progress aus CH)
+    - Keine Hardcodes (Exchange/Symbol per ENV)
+    """
+
+    def __init__(
+        self,
+        exchange: str,
+        symbol: str,
+        until_date: datetime,
+        market: str = "spot",
+        batch_size: int = 5000,
+        pause_seconds: int = 2,
+        gap_scan_days: int = 7,
+        gap_bucket_seconds: int = 60,
+        gap_sources_csv: str = "live_ws,rest_backfill",
+    ):
+        self.exchange = exchange.strip().lower()
+        self.symbol = symbol.strip().upper()
+        self.until_date = _utc(until_date)
+        self.market = market.strip().lower()
+
+        self.batch_size = int(batch_size)
+        self.pause_seconds = int(pause_seconds)
+
+        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
+        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
+
+        env_sources = os.getenv("GAP_SOURCE_FILTER")
+        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
+
+        self._historical = UnifiedHistoricalService(self.exchange)
+
+        self._running = False
+        self._total_trades = 0
+        self._batch_count = 0
+
+        self._global_oldest_ts: Optional[datetime] = None
+
+        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
+        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
+        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
+        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _pause_for_exchange(self) -> int:
+        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
+        v = os.getenv(env_key)
+        if v:
+            try:
+                return max(0, int(v))
+            except Exception:
+                pass
+        try:
+            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
+        except Exception:
+            return self.pause_seconds
+
+    def _get_ch_client_sync(self):
+        """
+        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
+        """
+        from backend.database.clickhouse import unified_cl_service
+        import asyncio as _asyncio
+
+        try:
+            if hasattr(unified_cl_service, "get_client_sync"):
+                return unified_cl_service.get_client_sync()
+
+            loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(loop)
+            try:
+                if not unified_cl_service.is_initialized:
+                    loop.run_until_complete(unified_cl_service.initialize())
+
+                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
+                if pool is None:
+                    raise RuntimeError("unified_cl_service returned None pool")
+
+                if not pool.is_initialized:
+                    loop.run_until_complete(pool.initialize())
+
+                client = pool.get_client()
+                if client is None:
+                    raise RuntimeError("pool.get_client() returned None")
+                return client
+            finally:
+                loop.close()
+        except Exception as e:
+            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
+
+    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
+        table_name = f"{self.exchange}_trades"
+        query = f"""
+            SELECT minOrNull(timestamp) AS oldest
+            FROM trading.{table_name}
+            WHERE source = 'rest_backfill'
+              AND symbol = %(symbol)s
+              AND market = %(market)s
+        """
+
+        try:
+            def _run():
+                client = self._get_ch_client_sync()
+                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
+                if not res.result_rows:
+                    return None
+                v = res.result_rows[0][0]
+                if isinstance(v, datetime):
+                    if v.year < 2000:
+                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
+                        return None
+                    return v
+                return None
+
+            oldest = await asyncio.to_thread(_run)
+            return _utc(oldest) if oldest else None
+        except Exception as e:
+            logger.error(
+                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
+                exc_info=True,
+            )
+            return None
+
+    async def _find_gaps(self) -> List[GapWindow]:
+        scanner = GapScanService(
+            exchange=self.exchange,
+            symbol=self.symbol,
+            market=self.market,
+            gap_scan_days=self.gap_scan_days,
+            gap_bucket_seconds=self.gap_bucket_seconds,
+            gap_sources=self.gap_sources,
+            fine_scan_minutes=self._fine_scan_minutes,
+            fine_bucket_seconds=self._fine_bucket_seconds,
+            max_missing_buckets=self._max_missing_buckets,
+            max_windows=self._max_windows,
+        )
+        return await scanner.scan()
+
+    async def run(self) -> None:
+        self._running = True
+        self._total_trades = 0
+        self._batch_count = 0
+
+        logger.info(
+            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
+            f"market={self.market} until={self.until_date.date().isoformat()} "
+            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
+            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
+            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
+            f"sources={','.join(self.gap_sources)}"
+        )
+
+        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
+        if self._global_oldest_ts:
+            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
+
+        try:
+            while self._running:
+                gaps = await self._find_gaps()
+
+                if gaps:
+                    g = gaps[0]
+                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=g.start,
+                        to_date=g.end,
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+                else:
+                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
+                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
+                        break
+
+                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
+
+                    trades_loaded = await self._historical.history(
+                        symbol=self.symbol,
+                        market_type=self.market,
+                        end_date=self.until_date,
+                        to_date=cursor_to,
+                        interval="1m",
+                        limit=self.batch_size,
+                        oldest_backfill_ts=self._global_oldest_ts,
+                    )
+
+                if trades_loaded <= 0:
+                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
+                    await asyncio.sleep(self._pause_for_exchange())
+                    continue
+
+                self._total_trades += trades_loaded
+                self._batch_count += 1
+
+                batch_oldest = await self._get_oldest_backfill_timestamp()
+                if batch_oldest is not None:
+                    if self._global_oldest_ts is None:
+                        self._global_oldest_ts = batch_oldest
+                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
+                    elif batch_oldest < self._global_oldest_ts:
+                        self._global_oldest_ts = batch_oldest
+                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
+
+                await asyncio.sleep(self._pause_for_exchange())
+
+        except asyncio.CancelledError:
+            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
+        finally:
+            self._running = False
+            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
+</file>
+
 <file path="backend/websocket/ws_manager.py">
 from typing import Dict, Set, Optional, Tuple
 import asyncio
@@ -172137,256 +172701,6 @@ export class WebSocketPool {
 }
 </file>
 
-<file path="backend/services/usecases/backfill_loop_service.py">
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional
-
-from backend.services.usecases.unified_historical import UnifiedHistoricalService
-from backend.services.usecases.gap_scan_service import GapScanService, GapWindow
-
-logger = logging.getLogger(__name__)
-
-
-def _utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-class BackfillLoopService:
-    """
-    Enterprise Backfill LOOP
-
-    Eigenschaften:
-    - ClickHouse als Single Source of Truth (oldest_ts)
-    - Deterministischer Cursor via UnifiedHistorical.history(..., to_date=...)
-    - Gap-Detection NOW→Past via Expected-Buckets (inkl. Rand-Gaps)
-    - Gap-Priorisierung vor normalem Backfill
-    - Auto-Resume nach Restart (Progress aus CH)
-    - Keine Hardcodes (Exchange/Symbol per ENV)
-    """
-
-    def __init__(
-        self,
-        exchange: str,
-        symbol: str,
-        until_date: datetime,
-        market: str = "spot",
-        batch_size: int = 5000,
-        pause_seconds: int = 2,
-        gap_scan_days: int = 7,
-        gap_bucket_seconds: int = 60,
-        gap_sources_csv: str = "live_ws,rest_backfill",
-    ):
-        self.exchange = exchange.strip().lower()
-        self.symbol = symbol.strip().upper()
-        self.until_date = _utc(until_date)
-        self.market = market.strip().lower()
-
-        self.batch_size = int(batch_size)
-        self.pause_seconds = int(pause_seconds)
-
-        self.gap_scan_days = int(os.getenv("GAP_SCAN_DAYS", str(gap_scan_days)))
-        self.gap_bucket_seconds = int(os.getenv("GAP_BUCKET_SECONDS", str(gap_bucket_seconds)))
-
-        env_sources = os.getenv("GAP_SOURCE_FILTER")
-        self.gap_sources = [s.strip() for s in (env_sources or gap_sources_csv).split(",") if s.strip()]
-
-        self._historical = UnifiedHistoricalService(self.exchange)
-
-        self._running = False
-        self._total_trades = 0
-        self._batch_count = 0
-
-        self._global_oldest_ts: Optional[datetime] = None
-
-        self._fine_scan_minutes = int(os.getenv("GAP_FINE_SCAN_MINUTES", "120"))
-        self._fine_bucket_seconds = int(os.getenv("GAP_FINE_BUCKET_SECONDS", "5"))
-        self._max_missing_buckets = int(os.getenv("GAP_MAX_MISSING_BUCKETS", "20000"))
-        self._max_windows = int(os.getenv("GAP_MAX_WINDOWS", "50"))
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _pause_for_exchange(self) -> int:
-        env_key = f"BACKFILL_PAUSE_{self.exchange.upper()}"
-        v = os.getenv(env_key)
-        if v:
-            try:
-                return max(0, int(v))
-            except Exception:
-                pass
-        try:
-            return max(0, int(os.getenv("BACKFILL_PAUSE_SECONDS", str(self.pause_seconds))))
-        except Exception:
-            return self.pause_seconds
-
-    def _get_ch_client_sync(self):
-        """
-        THREAD-SAFE: Holt Client INNERHALB des Thread-Kontexts.
-        """
-        from backend.database.clickhouse import unified_cl_service
-        import asyncio as _asyncio
-
-        try:
-            if hasattr(unified_cl_service, "get_client_sync"):
-                return unified_cl_service.get_client_sync()
-
-            loop = _asyncio.new_event_loop()
-            _asyncio.set_event_loop(loop)
-            try:
-                if not unified_cl_service.is_initialized:
-                    loop.run_until_complete(unified_cl_service.initialize())
-
-                pool = loop.run_until_complete(unified_cl_service.get_clickhouse_client())
-                if pool is None:
-                    raise RuntimeError("unified_cl_service returned None pool")
-
-                if not pool.is_initialized:
-                    loop.run_until_complete(pool.initialize())
-
-                client = pool.get_client()
-                if client is None:
-                    raise RuntimeError("pool.get_client() returned None")
-                return client
-            finally:
-                loop.close()
-        except Exception as e:
-            raise RuntimeError(f"Failed to get ClickHouse client in thread: {e}")
-
-    async def _get_oldest_backfill_timestamp(self) -> Optional[datetime]:
-        table_name = f"{self.exchange}_trades"
-        query = f"""
-            SELECT minOrNull(timestamp) AS oldest
-            FROM trading.{table_name}
-            WHERE source = 'rest_backfill'
-              AND symbol = %(symbol)s
-              AND market = %(market)s
-        """
-
-        try:
-            def _run():
-                client = self._get_ch_client_sync()
-                res = client.query(query, parameters={"symbol": self.symbol, "market": self.market})
-                if not res.result_rows:
-                    return None
-                v = res.result_rows[0][0]
-                if isinstance(v, datetime):
-                    if v.year < 2000:
-                        logger.warning(f"⚠️ Invalid timestamp detected: {v.isoformat()} - ignoring")
-                        return None
-                    return v
-                return None
-
-            oldest = await asyncio.to_thread(_run)
-            return _utc(oldest) if oldest else None
-        except Exception as e:
-            logger.error(
-                f"❌ CLICKHOUSE oldest query FAILED | exchange={self.exchange} symbol={self.symbol} market={self.market} | error={e}",
-                exc_info=True,
-            )
-            return None
-
-    async def _find_gaps(self) -> List[GapWindow]:
-        scanner = GapScanService(
-            exchange=self.exchange,
-            symbol=self.symbol,
-            market=self.market,
-            gap_scan_days=self.gap_scan_days,
-            gap_bucket_seconds=self.gap_bucket_seconds,
-            gap_sources=self.gap_sources,
-            fine_scan_minutes=self._fine_scan_minutes,
-            fine_bucket_seconds=self._fine_bucket_seconds,
-            max_missing_buckets=self._max_missing_buckets,
-            max_windows=self._max_windows,
-        )
-        return await scanner.scan()
-
-    async def run(self) -> None:
-        self._running = True
-        self._total_trades = 0
-        self._batch_count = 0
-
-        logger.info(
-            f"🔄 BACKFILL GAP-LOOP START | ex={self.exchange} sym={self.symbol} "
-            f"market={self.market} until={self.until_date.date().isoformat()} "
-            f"batch={self.batch_size} pause={self._pause_for_exchange()}s "
-            f"coarse_days={self.gap_scan_days} coarse_bucket={self.gap_bucket_seconds}s "
-            f"fine_minutes={self._fine_scan_minutes} fine_bucket={self._fine_bucket_seconds}s "
-            f"sources={','.join(self.gap_sources)}"
-        )
-
-        self._global_oldest_ts = await self._get_oldest_backfill_timestamp()
-        if self._global_oldest_ts:
-            logger.info(f"📍 RESUME | existing backfill detected | oldest={self._global_oldest_ts.isoformat()}")
-
-        try:
-            while self._running:
-                gaps = await self._find_gaps()
-
-                if gaps:
-                    g = gaps[0]
-                    logger.info(f"🧩 GAP PRIO | {g.start.isoformat()} → {g.end.isoformat()}")
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=g.start,
-                        to_date=g.end,
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-                else:
-                    if self._global_oldest_ts and self._global_oldest_ts <= self.until_date:
-                        logger.info(f"✅ TARGET REACHED | oldest={self._global_oldest_ts.isoformat()} target={self.until_date.isoformat()}")
-                        break
-
-                    cursor_to = datetime.now(timezone.utc) if self._global_oldest_ts is None else (self._global_oldest_ts - timedelta(milliseconds=1))
-
-                    trades_loaded = await self._historical.history(
-                        symbol=self.symbol,
-                        market_type=self.market,
-                        end_date=self.until_date,
-                        to_date=cursor_to,
-                        interval="1m",
-                        limit=self.batch_size,
-                        oldest_backfill_ts=self._global_oldest_ts,
-                    )
-
-                if trades_loaded <= 0:
-                    logger.warning("⚠️ loaded<=0 → keep running (sleep + rescan)")
-                    await asyncio.sleep(self._pause_for_exchange())
-                    continue
-
-                self._total_trades += trades_loaded
-                self._batch_count += 1
-
-                batch_oldest = await self._get_oldest_backfill_timestamp()
-                if batch_oldest is not None:
-                    if self._global_oldest_ts is None:
-                        self._global_oldest_ts = batch_oldest
-                        logger.info(f"📍 INIT oldest={self._global_oldest_ts.isoformat()}")
-                    elif batch_oldest < self._global_oldest_ts:
-                        self._global_oldest_ts = batch_oldest
-                        logger.debug(f"📍 UPDATE oldest={self._global_oldest_ts.isoformat()}")
-
-                await asyncio.sleep(self._pause_for_exchange())
-
-        except asyncio.CancelledError:
-            logger.info("🛑 BACKFILL GAP-LOOP cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"❌ BACKFILL GAP-LOOP crashed: {e}", exc_info=True)
-        finally:
-            self._running = False
-            logger.info(f"🏁 BACKFILL GAP-LOOP STOP | trades={self._total_trades:,} batches={self._batch_count}")
-</file>
-
 <file path="backend/core/main.py">
 # backend/core/main.py
 """
@@ -172965,330 +173279,6 @@ if __name__ == "__main__":
     start()
 </file>
 
-<file path="backend/websocket/ws_router.py">
-import asyncio
-import logging
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-
-from fastapi import APIRouter, WebSocket
-from starlette.websockets import WebSocketDisconnect
-
-from backend.core.config import settings
-
-# IMPORTANT: use distinct names (no shadowing)
-from .ws_manager import ws_manager as lane_ws_manager
-from .ws_frontend_handler import ws_manager as frontend_ws_manager
-
-ws_router = APIRouter(prefix="/ws", tags=["websocket"])
-logger = logging.getLogger("ws_router")
-
-
-def _norm_exchange(x: str) -> str:
-    return (x or "").strip().lower()
-
-
-def _norm_symbol(x: str) -> str:
-    return (x or "").strip().upper()
-
-
-def _norm_market(x: str) -> str:
-    return ((x or "spot").strip().lower()) or "spot"
-
-
-def _channel(exchange: str, symbol: str, market: str) -> str:
-    # exchange:lower, market:lower, symbol:upper
-    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
-
-
-def _safe_int(x: str, default: int) -> int:
-    try:
-        return int(x)
-    except Exception:
-        return default
-
-
-@ws_router.websocket("/{exchange}/{symbol}/{market}")
-async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
-    # normalize first
-    exchange = _norm_exchange(exchange)
-    symbol = _norm_symbol(symbol)
-    market = _norm_market(market)
-
-    ch = _channel(exchange, symbol, market)
-    candle_push_task: Optional[asyncio.Task] = None
-
-    await websocket.accept()
-
-    try:
-        # start managers
-        await frontend_ws_manager.start()
-        await lane_ws_manager.start_websocket_lane(exchange, symbol, market)
-
-        # connect to frontend ws manager (already accepted)
-        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
-
-        await websocket.send_json({
-            "type": "connection",
-            "status": "connected",
-            "channel": ch,
-            "exchange": exchange,
-            "symbol": symbol,
-            "market": market,
-            "server_iso": datetime.now(timezone.utc).isoformat(),
-            "limits": {
-                "maxTrades": getattr(settings, "ws_max_trades", 0),
-                "maxCandles": getattr(settings, "ws_max_candles", 0),
-            },
-            "capabilities": {
-                "historical": True,
-                "subscribe_candles": True,
-                "symbols": True,
-            }
-        })
-
-        while True:
-            msg = await websocket.receive_text()
-            msg = (msg or "").strip()
-
-            if not msg:
-                continue
-
-            # ping/pong
-            if msg == "ping":
-                await websocket.send_text("pong")
-                continue
-
-            # HISTORICAL: "historical:1m:500"
-            if msg.startswith("historical:"):
-                parts = msg.split(":")
-                interval_str = (parts[1] if len(parts) > 1 else "1m").strip() or "1m"
-                limit = _safe_int(parts[2], 500) if len(parts) > 2 else 500
-
-                try:
-                    from backend.services.usecases.unified_ohlc import unified_ohlc
-
-                    candles = await unified_ohlc.get_candles(
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        resolution=interval_str,
-                        limit=limit,
-                    )
-
-                    await websocket.send_json({
-                        "type": "historical",
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "market": market,
-                        "interval": interval_str,
-                        "candles": candles,
-                        "count": len(candles),
-                    })
-                except Exception as e:
-                    logger.error(
-                        "[WS Historical Error] %s/%s/%s interval=%s: %s",
-                        exchange, symbol, market, interval_str, str(e),
-                        exc_info=True
-                    )
-                    await websocket.send_json({"type": "error", "message": f"Historical request failed: {str(e)}"})
-                continue
-
-            # SUBSCRIBE: "subscribe:1m" (starts push loop)
-            if msg.startswith("subscribe:"):
-                interval_str = msg.split(":", 1)[1].strip() if ":" in msg else "1m"
-                interval_str = interval_str or "1m"
-
-                # stop old task
-                if candle_push_task and not candle_push_task.done():
-                    candle_push_task.cancel()
-                    try:
-                        await candle_push_task
-                    except asyncio.CancelledError:
-                        pass
-
-                candle_push_task = asyncio.create_task(
-                    _candle_push_loop(
-                        websocket=websocket,
-                        exchange=exchange,
-                        symbol=symbol,
-                        market=market,
-                        interval=interval_str,
-                    )
-                )
-
-                await websocket.send_json({
-                    "type": "subscribe_confirmed",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                    "interval": interval_str,
-                })
-                continue
-
-            # UNSUBSCRIBE
-            if msg == "unsubscribe":
-                if candle_push_task and not candle_push_task.done():
-                    candle_push_task.cancel()
-                    try:
-                        await candle_push_task
-                    except asyncio.CancelledError:
-                        pass
-                candle_push_task = None
-
-                await websocket.send_json({
-                    "type": "unsubscribe_confirmed",
-                    "exchange": exchange,
-                    "symbol": symbol,
-                    "market": market,
-                })
-                continue
-
-            # SYMBOLS
-            if msg == "symbols":
-                try:
-                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
-                    from backend.api.models.keys import Market
-
-                    if market == "spot":
-                        market_enum = Market.SPOT
-                    else:
-                        market_enum = Market.USDTM
-
-                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
-
-                    symbols: List[str] = []
-                    for entry in (catalog or []):
-                        if not isinstance(entry, dict):
-                            continue
-                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
-                        if isinstance(sym, str) and sym.strip():
-                            symbols.append(sym.strip())
-
-                    await websocket.send_json({
-                        "type": "symbols",
-                        "exchange": exchange,
-                        "market": market,
-                        "symbols": symbols,
-                        "count": len(symbols),
-                    })
-                except Exception as e:
-                    logger.error("[WS Symbols Error] %s: %s", exchange, str(e), exc_info=True)
-                    await websocket.send_json({"type": "error", "message": f"Symbols request failed: {str(e)}"})
-                continue
-
-            # unknown command
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Unknown command: {msg}",
-            })
-
-    except WebSocketDisconnect:
-        logger.info("[WS Disconnect] %s", ch)
-    except Exception as e:
-        logger.error("[WS Error] %s: %s", ch, str(e), exc_info=True)
-
-    finally:
-        # cancel push task
-        if candle_push_task and not candle_push_task.done():
-            candle_push_task.cancel()
-            try:
-                await candle_push_task
-            except asyncio.CancelledError:
-                pass
-
-        # disconnect frontend manager
-        try:
-            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
-        except Exception:
-            pass
-
-        # stop lane if no more connections on this channel
-        try:
-            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
-                lane_ws_manager.stop_websocket_lane(exchange, symbol, market)
-        except Exception:
-            pass
-
-
-async def _candle_push_loop(
-    websocket: WebSocket,
-    exchange: str,
-    symbol: str,
-    market: str,
-    interval: str,
-):
-    """
-    Pushes candles to the client by polling ClickHouse via unified_ohlc.
-
-    IMPORTANT FIXES vs your draft:
-    - fetch a window (limit=N) and emit ALL new candles since last_ts
-      to avoid candle-loss during bursts / catch-up
-    - robust poll interval
-    """
-    from backend.services.usecases.unified_ohlc import unified_ohlc
-
-    poll_interval = float(getattr(settings, "ws_candle_push_interval", 1.0) or 1.0)
-
-    # window size: at least 3 (to handle boundary changes), configurable
-    window = int(getattr(settings, "ws_candle_push_window", 8) or 8)
-    window = max(3, min(window, 200))
-
-    last_sent_ts: Optional[int] = None
-
-    logger.info("[Candle Push] start ch=%s interval=%s poll=%ss window=%d", _channel(exchange, symbol, market), interval, poll_interval, window)
-
-    try:
-        while True:
-            try:
-                candles = await unified_ohlc.get_candles(
-                    exchange=exchange,
-                    symbol=symbol,
-                    market=market,
-                    resolution=interval,
-                    limit=window,
-                )
-
-                if candles:
-                    # candles are chronological
-                    if last_sent_ts is None:
-                        # send only the latest candle initially (avoid dumping history)
-                        last = candles[-1]
-                        await websocket.send_json({
-                            "type": "candle",
-                            "exchange": exchange,
-                            "symbol": symbol,
-                            "market": market,
-                            "interval": interval,
-                            "data": last,
-                        })
-                        last_sent_ts = last.get("ts")
-                    else:
-                        # send all candles with ts > last_sent_ts
-                        new = [c for c in candles if (c.get("ts") is not None and c["ts"] > last_sent_ts)]
-                        for c in new:
-                            await websocket.send_json({
-                                "type": "candle",
-                                "exchange": exchange,
-                                "symbol": symbol,
-                                "market": market,
-                                "interval": interval,
-                                "data": c,
-                            })
-                            last_sent_ts = c["ts"]
-
-            except WebSocketDisconnect:
-                raise
-            except Exception as e:
-                logger.error("[Candle Push Error] %s/%s/%s interval=%s: %s", exchange, symbol, market, interval, str(e), exc_info=True)
-
-            await asyncio.sleep(poll_interval)
-
-    except asyncio.CancelledError:
-        logger.info("[Candle Push] cancel ch=%s interval=%s", _channel(exchange, symbol, market), interval)
-        raise
-</file>
-
 <file path="frontend/src/App.tsx">
 // frontend/src/App.tsx
 
@@ -173775,6 +173765,344 @@ async def broadcast_orderbook_data(exchange: str, symbol: str, orderbook_data: A
     await ws_manager.broadcast_to_channel(channel, msg)
 </file>
 
+<file path="backend/websocket/ws_router.py">
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+
+from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
+
+from backend.core.config import settings
+
+# IMPORTANT: use distinct names (no shadowing)
+from .ws_manager import ws_manager as lane_ws_manager
+from .ws_frontend_handler import ws_manager as frontend_ws_manager
+
+ws_router = APIRouter(prefix="/ws", tags=["websocket"])
+logger = logging.getLogger("ws_router")
+
+
+def _norm_exchange(x: str) -> str:
+    return (x or "").strip().lower()
+
+
+def _norm_symbol(x: str) -> str:
+    return (x or "").strip().upper()
+
+
+def _norm_market(x: str) -> str:
+    return ((x or "spot").strip().lower()) or "spot"
+
+
+def _channel(exchange: str, symbol: str, market: str) -> str:
+    # exchange:lower, market:lower, symbol:upper
+    return f"{_norm_exchange(exchange)}:{_norm_market(market)}:{_norm_symbol(symbol)}"
+
+
+def _safe_int(x: str, default: int) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+@ws_router.websocket("/{exchange}/{symbol}/{market}")
+async def websocket_trades(websocket: WebSocket, exchange: str, symbol: str, market: str):
+    # normalize first
+    exchange = _norm_exchange(exchange)
+    symbol = _norm_symbol(symbol)
+    market = _norm_market(market)
+
+    ch = _channel(exchange, symbol, market)
+    candle_push_task: Optional[asyncio.Task] = None
+
+    await websocket.accept()
+
+    try:
+        # start managers
+        await frontend_ws_manager.start()
+        await lane_ws_manager.start_websocket_lane(exchange, symbol, market)
+
+        # connect to frontend ws manager (already accepted)
+        await frontend_ws_manager.connect(websocket, exchange, symbol, market, accept=False)
+
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "channel": ch,
+            "exchange": exchange,
+            "symbol": symbol,
+            "market": market,
+            "server_iso": datetime.now(timezone.utc).isoformat(),
+            "limits": {
+                "maxTrades": getattr(settings, "ws_max_trades", 0),
+                "maxCandles": getattr(settings, "ws_max_candles", 0),
+            },
+            "capabilities": {
+                "historical": True,
+                "subscribe_candles": True,
+                "symbols": True,
+            }
+        })
+
+        while True:
+            msg = await websocket.receive_text()
+            msg = (msg or "").strip()
+
+            if not msg:
+                continue
+
+            # ping/pong
+            if msg == "ping":
+                await websocket.send_text("pong")
+                continue
+
+            # HISTORICAL:
+            #  - "historical:1m:500"
+            #  - "historical:1s:5000:END_MS"   (END_MS optional, Unix ms, EXCLUSIVE)
+            if msg.startswith("historical:"):
+                parts = msg.split(":")
+                interval_str = (parts[1] if len(parts) > 1 else "1m").strip() or "1m"
+                limit = _safe_int(parts[2], 500) if len(parts) > 2 else 500
+
+                # optional paging end in ms (exclusive)
+                end_ms: Optional[int] = None
+                if len(parts) > 3:
+                    try:
+                        v = int(parts[3])
+                        if v > 0:
+                            end_ms = v
+                    except Exception:
+                        end_ms = None
+
+                try:
+                    from backend.services.usecases.unified_ohlc import unified_ohlc
+
+                    candles = await unified_ohlc.get_candles(
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        resolution=interval_str,
+                        end=end_ms,      # ✅ NEW: paging end (exclusive due to Fix #1)
+                        limit=limit,
+                    )
+
+                    await websocket.send_json({
+                        "type": "historical",
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "market": market,
+                        "interval": interval_str,
+                        "candles": candles,
+                        "count": len(candles),
+                        "end_ms": end_ms,  # ✅ NEW: echo for debugging
+                    })
+                except Exception as e:
+                    logger.error(
+                        "[WS Historical Error] %s/%s/%s interval=%s end_ms=%s: %s",
+                        exchange, symbol, market, interval_str, str(end_ms), str(e),
+                        exc_info=True
+                    )
+                    await websocket.send_json({"type": "error", "message": f"Historical request failed: {str(e)}"})
+                continue
+
+            # SUBSCRIBE: "subscribe:1m" (starts push loop)
+            if msg.startswith("subscribe:"):
+                interval_str = msg.split(":", 1)[1].strip() if ":" in msg else "1m"
+                interval_str = interval_str or "1m"
+
+                # stop old task
+                if candle_push_task and not candle_push_task.done():
+                    candle_push_task.cancel()
+                    try:
+                        await candle_push_task
+                    except asyncio.CancelledError:
+                        pass
+
+                candle_push_task = asyncio.create_task(
+                    _candle_push_loop(
+                        websocket=websocket,
+                        exchange=exchange,
+                        symbol=symbol,
+                        market=market,
+                        interval=interval_str,
+                    )
+                )
+
+                await websocket.send_json({
+                    "type": "subscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "interval": interval_str,
+                })
+                continue
+
+            # UNSUBSCRIBE
+            if msg == "unsubscribe":
+                if candle_push_task and not candle_push_task.done():
+                    candle_push_task.cancel()
+                    try:
+                        await candle_push_task
+                    except asyncio.CancelledError:
+                        pass
+                candle_push_task = None
+
+                await websocket.send_json({
+                    "type": "unsubscribe_confirmed",
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                })
+                continue
+
+            # SYMBOLS
+            if msg == "symbols":
+                try:
+                    from backend.services.domain.unified_symbol_registry import SYMBOL_REGISTRY
+                    from backend.api.models.keys import Market
+
+                    if market == "spot":
+                        market_enum = Market.SPOT
+                    else:
+                        market_enum = Market.USDTM
+
+                    catalog = await SYMBOL_REGISTRY.catalog(exchange, market_enum)
+
+                    symbols: List[str] = []
+                    for entry in (catalog or []):
+                        if not isinstance(entry, dict):
+                            continue
+                        sym = entry.get("native_symbol") or entry.get("symbol") or entry.get("name")
+                        if isinstance(sym, str) and sym.strip():
+                            symbols.append(sym.strip())
+
+                    await websocket.send_json({
+                        "type": "symbols",
+                        "exchange": exchange,
+                        "market": market,
+                        "symbols": symbols,
+                        "count": len(symbols),
+                    })
+                except Exception as e:
+                    logger.error("[WS Symbols Error] %s: %s", exchange, str(e), exc_info=True)
+                    await websocket.send_json({"type": "error", "message": f"Symbols request failed: {str(e)}"})
+                continue
+
+            # unknown command
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Unknown command: {msg}",
+            })
+
+    except WebSocketDisconnect:
+        logger.info("[WS Disconnect] %s", ch)
+    except Exception as e:
+        logger.error("[WS Error] %s: %s", ch, str(e), exc_info=True)
+
+    finally:
+        # cancel push task
+        if candle_push_task and not candle_push_task.done():
+            candle_push_task.cancel()
+            try:
+                await candle_push_task
+            except asyncio.CancelledError:
+                pass
+
+        # disconnect frontend manager
+        try:
+            await frontend_ws_manager.disconnect(websocket, exchange, symbol, market)
+        except Exception:
+            pass
+
+        # stop lane if no more connections on this channel
+        try:
+            if frontend_ws_manager.get_channel_connection_count(ch) == 0:
+                lane_ws_manager.stop_websocket_lane(exchange, symbol, market)
+        except Exception:
+            pass
+
+
+async def _candle_push_loop(
+    websocket: WebSocket,
+    exchange: str,
+    symbol: str,
+    market: str,
+    interval: str,
+):
+    """
+    Pushes candles to the client by polling ClickHouse via unified_ohlc.
+
+    IMPORTANT FIXES vs your draft:
+    - fetch a window (limit=N) and emit ALL new candles since last_ts
+      to avoid candle-loss during bursts / catch-up
+    - robust poll interval
+    """
+    from backend.services.usecases.unified_ohlc import unified_ohlc
+
+    poll_interval = float(getattr(settings, "ws_candle_push_interval", 1.0) or 1.0)
+
+    # window size: at least 3 (to handle boundary changes), configurable
+    window = int(getattr(settings, "ws_candle_push_window", 8) or 8)
+    window = max(3, min(window, 200))
+
+    last_sent_ts: Optional[int] = None
+
+    logger.info("[Candle Push] start ch=%s interval=%s poll=%ss window=%d", _channel(exchange, symbol, market), interval, poll_interval, window)
+
+    try:
+        while True:
+            try:
+                candles = await unified_ohlc.get_candles(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    resolution=interval,
+                    limit=window,
+                )
+
+                if candles:
+                    # candles are chronological
+                    if last_sent_ts is None:
+                        # send only the latest candle initially (avoid dumping history)
+                        last = candles[-1]
+                        await websocket.send_json({
+                            "type": "candle",
+                            "exchange": exchange,
+                            "symbol": symbol,
+                            "market": market,
+                            "interval": interval,
+                            "data": last,
+                        })
+                        last_sent_ts = last.get("ts")
+                    else:
+                        # send all candles with ts > last_sent_ts
+                        new = [c for c in candles if (c.get("ts") is not None and c["ts"] > last_sent_ts)]
+                        for c in new:
+                            await websocket.send_json({
+                                "type": "candle",
+                                "exchange": exchange,
+                                "symbol": symbol,
+                                "market": market,
+                                "interval": interval,
+                                "data": c,
+                            })
+                            last_sent_ts = c["ts"]
+
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                logger.error("[Candle Push Error] %s/%s/%s interval=%s: %s", exchange, symbol, market, interval, str(e), exc_info=True)
+
+            await asyncio.sleep(poll_interval)
+
+    except asyncio.CancelledError:
+        logger.info("[Candle Push] cancel ch=%s interval=%s", _channel(exchange, symbol, market), interval)
+        raise
+</file>
+
 <file path="frontend/src/shared/components/CandleChart/useCandleChart.ts">
 // frontend/src/shared/components/CandleChart/useCandleChart.ts
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -173783,7 +174111,7 @@ import { useTheme } from "../../ui/theme-provider";
 import { getChartTheme, getSeriesTheme } from "./chartThemes";
 import { useSafeCandleChart } from "../../../hooks/useSafeCandleChart";
 import type { CandleData } from "./types";
-import { createCandleChartAdapter, isRealPoint } from "./chartAdapter";
+import { createCandleChartAdapter } from "./chartAdapter";
 import { bindTradingViewScrollBehavior, type TradingViewScrollBehavior } from "./tradingViewScroll";
 
 interface UseCandleChartOptions {
@@ -173796,24 +174124,19 @@ interface UseCandleChartReturn {
   seriesInstance: React.MutableRefObject<any>;
   isChartReady: boolean;
 
-  /**
-   * Backward compatible:
-   * - You can keep calling setChartData(mergedSeries)
-   * - Adapter will choose setData vs update automatically.
-   */
   setChartData: (data: CandleData[]) => void;
-
   setInitialVisibleRangeOnce: (data: CandleData[]) => void;
 }
 
 const INITIAL_VISIBLE = Number(import.meta.env.VITE_CHART_INITIAL_VISIBLE ?? "500");
 
-function isRealCandle(d: CandleData): d is CandleData & {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-} {
+// Paging trigger tuning (safe defaults)
+const LEFT_EDGE_THRESHOLD = Number(import.meta.env.VITE_PAGING_LEFT_EDGE_THRESHOLD ?? "5"); // logical bars
+const LEFT_EDGE_COOLDOWN_MS = Number(import.meta.env.VITE_PAGING_COOLDOWN_MS ?? "400");
+
+function isRealCandle(
+  d: CandleData
+): d is CandleData & { open: number; high: number; low: number; close: number } {
   return (
     (d as any).open !== undefined &&
     Number.isFinite((d as any).open) &&
@@ -173823,10 +174146,7 @@ function isRealCandle(d: CandleData): d is CandleData & {
   );
 }
 
-export function useCandleChart({
-  interval,
-  containerRef,
-}: UseCandleChartOptions): UseCandleChartReturn {
+export function useCandleChart({ interval, containerRef }: UseCandleChartOptions): UseCandleChartReturn {
   const { actualTheme } = useTheme();
   const chartInstance = useRef<any>(null);
   const seriesInstance = useRef<any>(null);
@@ -173839,72 +174159,105 @@ export function useCandleChart({
 
   const safeChart = useSafeCandleChart(chartTheme, seriesTheme, containerRef);
 
-  // adapter instance per chart generation
   const adapterRef = useRef<ReturnType<typeof createCandleChartAdapter> | null>(null);
-  
+
   // ✅ TradingView-like scroll behavior
   const scrollBehaviorRef = useRef<TradingViewScrollBehavior | null>(null);
 
+  // ✅ Left paging throttle
+  const lastLeftFireAtRef = useRef<number>(0);
+
   useEffect(() => {
-    if (safeChart) {
-      chartInstance.current = safeChart.chart;
-      seriesInstance.current = safeChart.series;
-      adapterRef.current = createCandleChartAdapter(safeChart);
-      
-      // ✅ Bind TradingView-like scroll behavior
-      scrollBehaviorRef.current = bindTradingViewScrollBehavior(safeChart.chart);
-      
-      setIsChartReady(true);
-
-      const themeObserver = new MutationObserver(() => {
-        if (safeChart.chart && safeChart.series) {
-          const isDarkNow = document.documentElement.classList.contains("dark");
-          const newChartTheme = getChartTheme(isDarkNow, interval);
-          const newSeriesTheme = getSeriesTheme(isDarkNow);
-          try {
-            safeChart.chart.applyOptions(newChartTheme);
-            safeChart.series.applyOptions(newSeriesTheme);
-          } catch (e) {
-            console.warn("[useCandleChart] Theme update failed:", e);
-          }
-        }
-      });
-
-      themeObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-
-      const container = containerRef.current;
-      let resizeObserver: ResizeObserver | null = null;
-      if (container) {
-        resizeObserver = new ResizeObserver((entries) => {
-          if (entries[0] && safeChart.chart) {
-            const { width, height } = entries[0].contentRect;
-            safeChart.safeApplyOptions({ width, height });
-          }
-        });
-        resizeObserver.observe(container);
-      }
-
-      return () => {
-        themeObserver.disconnect();
-        resizeObserver?.disconnect();
-        
-        // ✅ Cleanup scroll behavior
-        if (scrollBehaviorRef.current) {
-          scrollBehaviorRef.current.destroy();
-          scrollBehaviorRef.current = null;
-        }
-        
-        adapterRef.current = null;
-      };
-    } else {
+    if (!safeChart) {
       setIsChartReady(false);
       adapterRef.current = null;
       scrollBehaviorRef.current = null;
+      return;
     }
-  }, [safeChart, interval, containerRef]);
+
+    chartInstance.current = safeChart.chart;
+    seriesInstance.current = safeChart.series;
+    adapterRef.current = createCandleChartAdapter(safeChart);
+
+    // ✅ Bind TradingView-like scroll behavior
+    scrollBehaviorRef.current = bindTradingViewScrollBehavior(safeChart.chart);
+
+    // ✅ Subscribe to visible range changes to trigger left paging
+    const ts = safeChart.chart.timeScale();
+    const onRange = (range: any) => {
+      try {
+        if (!range) return;
+        const from = Number(range.from);
+        if (!Number.isFinite(from)) return;
+
+        // near-left edge
+        if (from < LEFT_EDGE_THRESHOLD) {
+          const now = Date.now();
+          if (now - lastLeftFireAtRef.current < LEFT_EDGE_COOLDOWN_MS) return;
+          lastLeftFireAtRef.current = now;
+
+          // Fire a global event. useWsLane listens and sends WS paging using oldest pointer.
+          window.dispatchEvent(new CustomEvent("wsai:need_history", { detail: { reason: "left_edge" } }));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    ts.subscribeVisibleLogicalRangeChange(onRange);
+
+    setIsChartReady(true);
+
+    const themeObserver = new MutationObserver(() => {
+      if (safeChart.chart && safeChart.series) {
+        const isDarkNow = document.documentElement.classList.contains("dark");
+        const newChartTheme = getChartTheme(isDarkNow, interval);
+        const newSeriesTheme = getSeriesTheme(isDarkNow);
+        try {
+          safeChart.chart.applyOptions(newChartTheme);
+          safeChart.series.applyOptions(newSeriesTheme);
+        } catch (e) {
+          console.warn("[useCandleChart] Theme update failed:", e);
+        }
+      }
+    });
+
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+
+    const container = containerRef.current;
+    let resizeObserver: ResizeObserver | null = null;
+    if (container) {
+      resizeObserver = new ResizeObserver((entries) => {
+        if (entries[0] && safeChart.chart) {
+          const { width, height } = entries[0].contentRect;
+          safeChart.safeApplyOptions({ width, height });
+        }
+      });
+      resizeObserver.observe(container);
+    }
+
+    return () => {
+      themeObserver.disconnect();
+      resizeObserver?.disconnect();
+
+      try {
+        ts.unsubscribeVisibleLogicalRangeChange(onRange);
+      } catch {
+        // ignore
+      }
+
+      // ✅ Cleanup scroll behavior
+      if (scrollBehaviorRef.current) {
+        scrollBehaviorRef.current.destroy();
+        scrollBehaviorRef.current = null;
+      }
+
+      adapterRef.current = null;
+    };
+  }, [safeChart, interval, containerRef, chartTheme, seriesTheme]);
 
   const setChartData = (data: CandleData[]) => {
     if (!isChartReady || !safeChart) return;
@@ -173913,9 +174266,8 @@ export function useCandleChart({
     const adapter = adapterRef.current;
     if (!adapter) return;
 
-    // ✅ Key behavior: auto choose setData vs update()
     adapter.apply(data);
-    
+
     // ✅ TradingView-like: only auto-scroll if user is at right edge
     if (scrollBehaviorRef.current) {
       scrollBehaviorRef.current.maybeAutoScrollToRealTime();
@@ -173937,8 +174289,8 @@ export function useCandleChart({
     const lastCandle = real[lastIndex];
     if (!firstCandle || !lastCandle) return;
 
-    const fromSec = Math.floor(firstCandle.time / 1000);
-    const toSec = Math.floor(lastCandle.time / 1000);
+    const fromSec = Math.floor((firstCandle as any).time / 1000);
+    const toSec = Math.floor((lastCandle as any).time / 1000);
 
     if (fromSec > 0 && toSec > 0 && toSec >= fromSec) {
       chartInstance.current.timeScale().setVisibleRange({ from: fromSec, to: toSec });
@@ -174010,8 +174362,7 @@ export type FillBlock = {
 };
 
 function toNum(x: any): number {
-  const n =
-    typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
+  const n = typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN;
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -174031,14 +174382,7 @@ function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] 
   let changed = false;
   for (const c of incoming) {
     const old = map.get(c.t);
-    if (
-      !old ||
-      old.o !== c.o ||
-      old.h !== c.h ||
-      old.l !== c.l ||
-      old.c !== c.c ||
-      old.v !== c.v
-    ) {
+    if (!old || old.o !== c.o || old.h !== c.h || old.l !== c.l || old.c !== c.c || old.v !== c.v) {
       map.set(c.t, c);
       changed = true;
     }
@@ -174048,12 +174392,7 @@ function mergeCandles(prev: LiveCandle[], incoming: LiveCandle[]): LiveCandle[] 
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function useWsLane(
-  exchange: string,
-  symbol: string,
-  market: string,
-  interval: string
-) {
+export function useWsLane(exchange: string, symbol: string, market: string, interval: string) {
   const [status, setStatus] = useState<WsStatus>("INIT");
   const [trades, setTrades] = useState<LiveTrade[]>([]);
   const [candles, setCandles] = useState<LiveCandle[]>([]);
@@ -174070,6 +174409,9 @@ export function useWsLane(
   const histInFlightRef = useRef<boolean>(false);
   const histLastReqAtRef = useRef<number>(0);
 
+  // Oldest historical candle (for paging end_ms)
+  const histOldestSecRef = useRef<number>(0);
+
   const pendingTrades = useRef<LiveTrade[]>([]);
   const rafTrades = useRef<number | null>(null);
 
@@ -174085,6 +174427,7 @@ export function useWsLane(
 
     histInFlightRef.current = false;
     histLastReqAtRef.current = 0;
+    histOldestSecRef.current = 0;
 
     // RAF cleanup on key change
     if (rafTrades.current !== null) {
@@ -174101,8 +174444,7 @@ export function useWsLane(
     const normMarket = (market || "spot").toLowerCase().trim();
     const normInterval = (interval || "1m").trim();
 
-    // ✅ Einmaliger Historical-Request (kein Polling)
-    const requestHistoricalOnce = () => {
+    const requestHistorical = (endMs?: number) => {
       const now = Date.now();
       if (histInFlightRef.current) return;
       if (now - histLastReqAtRef.current < 250) return; // throttle
@@ -174110,13 +174452,20 @@ export function useWsLane(
       histInFlightRef.current = true;
       histLastReqAtRef.current = now;
 
-      // Protocol: "historical:<interval>:<limit>"
-      pool.send(
-        normExchange,
-        normSymbol,
-        normMarket,
-        `historical:${normInterval}:${histLimitRef.current}`
-      );
+      // Protocol:
+      // - "historical:<interval>:<limit>"
+      // - "historical:<interval>:<limit>:<end_ms>" (exclusive end_ms)
+      const limit = histLimitRef.current;
+      if (endMs && Number.isFinite(endMs) && endMs > 0) {
+        pool.send(normExchange, normSymbol, normMarket, `historical:${normInterval}:${limit}:${Math.floor(endMs)}`);
+      } else {
+        pool.send(normExchange, normSymbol, normMarket, `historical:${normInterval}:${limit}`);
+      }
+    };
+
+    // ✅ One-shot initial load (no polling)
+    const requestHistoricalOnce = () => {
+      requestHistorical(undefined);
     };
 
     // Ensure we unsubscribe old interval on cleanup/unmount
@@ -174127,6 +174476,33 @@ export function useWsLane(
         // ignore
       }
     };
+
+    // ✅ Global event from chart: "need more history"
+    const onNeedHistory = (ev: Event) => {
+      // Only act if we are OPEN and have some history pointer
+      if (status !== "OPEN") return;
+
+      // Prefer explicit end_ms from event detail, else use our oldest pointer
+      let endMs = 0;
+      try {
+        const ce = ev as CustomEvent<any>;
+        const d = ce?.detail;
+        if (d && Number.isFinite(Number(d.end_ms)) && Number(d.end_ms) > 0) {
+          endMs = Math.floor(Number(d.end_ms));
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!endMs) {
+        const oldestSec = histOldestSecRef.current;
+        if (oldestSec > 0) endMs = oldestSec * 1000; // exclusive end_ms
+      }
+
+      if (endMs > 0) requestHistorical(endMs);
+    };
+
+    window.addEventListener("wsai:need_history", onNeedHistory as any);
 
     const offStatus = pool.onStatus(normExchange, normSymbol, normMarket, (newStatus) => {
       setStatus(newStatus);
@@ -174154,7 +174530,6 @@ export function useWsLane(
         const hl = Number((limits as any).historicalLimit);
         if (Number.isFinite(hl) && hl > 0) histLimitRef.current = Math.floor(hl);
 
-        // allow re-request if backend suggests etc.
         histInFlightRef.current = false;
         return;
       }
@@ -174204,7 +174579,9 @@ export function useWsLane(
         const msgInterval = String(m.interval ?? "").trim();
         if (msgInterval && msgInterval !== normInterval) return;
 
-        // Backend format: { type:"candle", interval, data:{ ts,o,h,l,c,v,... } }
+        // Backend format:
+        // - either { type:"candle", interval, data:{ ts,o,h,l,c,v } }
+        // - or { type:"candle", ts,o,h,l,c,v }
         const data = m.data || m;
         const tMs = toNum(data.ts);
         const tSec = tMs > 0 ? (tMs >= 1e12 ? Math.floor(tMs / 1000) : Math.floor(tMs)) : 0;
@@ -174271,7 +174648,18 @@ export function useWsLane(
           }))
           .filter((c: LiveCandle) => c.t > 0 && Number.isFinite(c.o) && Number.isFinite(c.c));
 
-        setHistorical((prev) => mergeCandles(prev, hist));
+        setHistorical((prev) => {
+          const next = mergeCandles(prev, hist);
+
+          // update oldest pointer (chronological)
+          if (next.length > 0) {
+            const oldest = next[0];
+            if (oldest && oldest.t > 0) histOldestSecRef.current = oldest.t;
+          }
+
+          return next;
+        });
+
         return;
       }
 
@@ -174290,6 +174678,8 @@ export function useWsLane(
     });
 
     return () => {
+      window.removeEventListener("wsai:need_history", onNeedHistory as any);
+
       // ✅ unsubscribe current subscription before detaching listeners
       sendUnsubscribe();
 
@@ -174300,11 +174690,16 @@ export function useWsLane(
       }
 
       window.setTimeout(() => {
-        try { offStatus(); } catch {}
-        try { offMsg(); } catch {}
+        try {
+          offStatus();
+        } catch {}
+        try {
+          offMsg();
+        } catch {}
       }, 100);
     };
-  }, [exchange, symbol, market, interval]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchange, symbol, market, interval, status]);
 
   // ✅ Chart series: historical + live candles (live overwrites historical at same t)
   const mergedSeries = useMemo(() => {
@@ -174504,7 +174899,8 @@ class UnifiedOHLC:
             where.append("ts >= toDateTime64(%(start_ts)s, 3, 'UTC')")
             params["start_ts"] = _format_ch_dt(start_dt)
         if end_dt:
-            where.append("ts <= toDateTime64(%(end_ts)s, 3, 'UTC')")
+            # exklusiv = sauberes Paging (keine Doppel-Candle am Rand)
+            where.append("ts < toDateTime64(%(end_ts)s, 3, 'UTC')")
             params["end_ts"] = _format_ch_dt(end_dt)
 
         where_clause = " AND ".join(where)
